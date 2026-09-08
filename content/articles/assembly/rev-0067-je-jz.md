@@ -262,7 +262,7 @@ C: `if (counter == 0) { printf(...); }` — `je`가 아니라 `jne`가 나왔지
 - [SETcc](./rev-0076-setcc.md) — SETcc: 조건 결과를 0 또는 1로 만들기
 - [CALL](./rev-0071-call.md) — CALL: 함수 호출, 반환 주소, 인자 추적
 - [FLAGS 개요](./rev-0088-flags-overview.md) — EFLAGS/RFLAGS 플래그 레지스터 개요
-- REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교 (예정)
+- REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교
 - TEST 명령어 (예정)
 
 ## 출처/검증

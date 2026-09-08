@@ -278,7 +278,7 @@ C: `if (x != 0) { handle_nonzero(); } else { handle_zero(); }`
 - [SETcc](./rev-0076-setcc.md) — 조건 결과를 0 또는 1로 만들기
 - [CALL](./rev-0071-call.md) — 함수 호출, 반환 주소, 인자 추적
 - [FLAGS 개요](./rev-0088-flags-overview.md) — EFLAGS/RFLAGS 플래그 레지스터 개요
-- REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교 (예정)
+- REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교
 - LOOP 명령어 (예정)
 
 ## 출처/검증

@@ -135,9 +135,9 @@ $ gdb ./chall
 
 ## 관련 글
 - REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적
-- REV-0101 — Dynamic Linking과 Import 함수 추적 (예정)
-- REV-0102 — RELRO가 리버싱에 의미하는 것 (예정)
-- REV-0097 — ELF Entry Point에서 main까지 (예정)
+- REV-0101 — Dynamic Linking과 Import 함수 추적
+- REV-0102 — RELRO가 리버싱에 의미하는 것
+- REV-0097 — ELF Entry Point에서 main까지
 
 ## 출처/검증
 - PLT/GOT lazy binding 동작: System V Application Binary Interface, "Procedure Linkage Table" 섹션 및 glibc `elf/dl-runtime.c`(`_dl_runtime_resolve`) 개념 기준 (2026-09-08 검증).

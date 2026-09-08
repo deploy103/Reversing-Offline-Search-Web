@@ -1,0 +1,161 @@
+---
+id: REV-0091
+title: "readelf 기본 사용법"
+slug: "rev-0091-readelf-basics"
+category: "linux-elf"
+difficulty: "beginner"
+platform: [linux]
+architecture: [x86, x64]
+format: [ELF]
+tools: ["readelf", "binutils"]
+keywords: ["readelf", "readelf -h", "readelf -l", "readelf -S", "readelf -d", "readelf -r", "readelf -s"]
+aliases: ["readelf 사용법", "readelf 옵션", "readelf 명령어", "readelf 치트시트"]
+symptom_keywords: ["readelf 옵션이 뭐가 있는지 모름", "readelf 결과를 어떻게 읽는지 모름"]
+source_ids: ["SRC-GENERAL-REVERSING"]
+last_verified: "2026-09-08"
+---
+
+## 한 줄 요약
+`readelf`는 ELF 파일의 헤더, 세그먼트, 섹션, 심볼, 재배치, 동적 링킹 정보를 도구 없이 커맨드라인에서 바로 읽을 수 있는 GNU binutils의 기본 ELF 분석 명령어다.
+
+## 언제 검색해야 하나
+- IDA/Ghidra를 열기 전에 바이너리의 구조를 빠르게 파악하고 싶을 때
+- 특정 심볼의 주소나, 어떤 라이브러리에 동적으로 링크되어 있는지 스크립트로 자동 추출하고 싶을 때
+- GUI 도구가 없는 서버/컨테이너 환경에서 ELF를 분석해야 할 때
+
+## 핵심 개념
+`readelf`는 ELF 스펙의 각 구조체(ELF 헤더, Program Header, Section Header, 심볼 테이블, 재배치 테이블, `.dynamic` 섹션)를 그대로 사람이 읽을 수 있는 표 형태로 출력해주는 도구다. 옵션 하나가 대체로 ELF의 특정 구조체 하나에 대응된다. `objdump`(REV-0092)와 기능이 겹치는 부분이 있지만, `readelf`는 ELF 포맷 자체의 구조를 더 그대로 보여주고, `objdump`는 디스어셈블리 등 콘텐츠 해석에 더 강하다는 차이가 있다.
+
+## 화면/코드에서 보이는 징후
+분석 워크플로 어디서든 등장할 수 있지만, 특히 "이 바이너리 PIE야?", "동적으로 어떤 .so를 쓰지?", "심볼 몇 개나 남아있지?" 같은 질문이 나오면 readelf부터 돌려보는 게 정답인 경우가 많다.
+
+## 가장 먼저 할 것
+`readelf -a ./chall | less`로 전체 정보를 한 번에 훑어보고, 필요한 부분만 개별 옵션으로 다시 뽑아본다.
+
+## 단계별 절차 / 명령어 옵션 정리
+
+### `-h` : ELF 헤더
+```bash
+readelf -h ./chall
+```
+클래스(32/64bit), 엔디안, 타입(EXEC/DYN), 아키텍처, entry point 주소를 확인. 자세한 필드 설명은 REV-0089 참고.
+
+### `-l` (`--program-headers`) : Program Header (세그먼트)
+```bash
+readelf -l ./chall
+```
+`LOAD` 세그먼트, `INTERP`(동적 링커 경로), `DYNAMIC` 등을 확인. "Section to Segment mapping"으로 어떤 섹션이 어느 세그먼트에 속하는지도 같이 나온다. 자세한 내용은 REV-0090 참고.
+
+### `-S` (`--section-headers`) : Section Header (섹션)
+```bash
+readelf -S ./chall
+```
+`.text`, `.data`, `.bss`, `.symtab` 등 섹션 목록, 주소, 크기, 플래그.
+
+### `-s` (`--syms`) : 심볼 테이블
+```bash
+readelf -s ./chall
+```
+출력 예:
+```
+Symbol table '.dynsym' contains 8 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     1: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND printf@GLIBC_2.2.5 (2)
+     2: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND puts@GLIBC_2.2.5 (2)
+...
+Symbol table '.symtab' contains 27 entries:
+   Num:    Value          Size Type    Bind   Vis      Ndx Name
+     ...
+    24: 0000000000001149    26 FUNC    GLOBAL DEFAULT   14 main
+```
+`.dynsym`은 동적 링킹에 필요한 심볼(strip해도 대체로 남음), `.symtab`은 전체 심볼 테이블(디버그/분석용, strip 시 사라짐). `Ndx UND`는 "이 심볼은 여기 정의 안 돼있고 외부에서 가져와야 함"(undefined, 즉 외부 라이브러리 함수)이라는 뜻.
+
+### `-d` (`--dynamic`) : 동적 섹션
+```bash
+readelf -d ./chall
+```
+출력 예:
+```
+Dynamic section at offset 0x2e20 contains 24 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x000000000000000c (INIT)               0x1000
+ 0x000000000000000d (FINI)               0x1298
+ 0x000000000000001d (RUNPATH)            Library runpath: [/home/user/lib]
+```
+`NEEDED`가 바로 이 프로그램이 실행 시 로드해야 하는 공유 라이브러리 목록이다 — `libc.so.6`만 있으면 표준 라이브러리만 쓰는 단순한 바이너리, 그 외 이름이 더 있으면 커스텀 `.so`를 쓰는지 확인해야 한다.
+
+### `-r` (`--relocs`) : 재배치 정보
+```bash
+readelf -r ./chall
+```
+`R_X86_64_JUMP_SLOT`(함수용 GOT 슬롯), `R_X86_64_GLOB_DAT`(전역 변수용 GOT 슬롯) 타입의 엔트리들이 나온다. PLT/GOT 분석(REV-0100)의 기초 자료.
+
+### `-x <섹션이름>` / `-p <섹션이름>` : 섹션 raw 덤프
+```bash
+readelf -x .rodata ./chall     # hex 덤프
+readelf -p .rodata ./chall     # 문자열로 해석해서 덤프
+```
+
+### `-a` (`--all`) : 전부 한꺼번에
+```bash
+readelf -a ./chall
+```
+헤더+세그먼트+섹션+심볼+재배치+동적섹션을 모두 출력. 정보량이 많아 `| less`나 `| grep`과 함께 쓰는 게 실전적이다.
+
+### `-W` (`--wide`) : 줄바꿈 없이 넓게 출력
+```bash
+readelf -SW ./chall
+```
+터미널이 넓을 때 표가 잘리지 않게 해준다. 스크립트로 파싱할 때도 유용.
+
+## 명령어/단축키
+자주 쓰는 조합만 빠르게 정리:
+```bash
+readelf -h ./chall          # ELF 헤더 (엔트리포인트, 타입, 아키텍처)
+readelf -S ./chall          # 섹션 헤더 테이블
+readelf -l ./chall          # 프로그램 헤더(세그먼트) 테이블
+readelf -s ./chall          # 심볼 테이블
+readelf -d ./chall          # 동적 섹션 (NEEDED 라이브러리 등)
+readelf -x .rodata ./chall  # 특정 섹션 헥스 덤프
+readelf -aW ./chall | less  # 전부 + 넓게 출력 + 페이저
+```
+
+## 출력 해석
+- `readelf`는 필드 이름이 대체로 스펙 용어(`p_type`, `sh_flags` 등)를 사람이 읽기 쉽게 풀어쓴 것이므로, REV-0089/REV-0090에서 설명한 구조체 필드와 1:1로 대응한다고 생각하면 된다.
+- 여러 옵션 결과를 `grep`으로 조합하는 것이 실전에서 가장 빠르다. 예: `readelf -d ./chall | grep NEEDED`로 의존 라이브러리만 뽑기.
+
+## 흔한 실수
+- `readelf -a`만 계속 쓰다가 원하는 정보를 못 찾고 스크롤에 시간 낭비하는 것 — 필요한 옵션을 바로 지정하는 게 빠르다.
+- `-s`(심볼)와 `-S`(섹션 헤더) 대소문자를 헷갈리는 것 — 완전히 다른 정보다.
+- `.dynsym`에 함수 이름이 보이니 "strip 안 됐다"고 착각하는 것 — `.dynsym`은 동적 링킹용이라 strip해도 대부분 남는다. strip 여부는 `.symtab` 유무로 판단해야 한다(`file` 명령이 더 명확, REV-0095 참고).
+
+## 막혔을 때 다음 체크
+- 헤더 필드 자체의 의미가 궁금하면 → [REV-0089 ELF 헤더 읽는 법](./rev-0089-elf-header.md)
+- 세그먼트/섹션 차이가 헷갈리면 → [REV-0090 ELF Program Header와 Section Header 차이](./rev-0090-program-vs-section-header.md)
+- 디스어셈블리까지 보고 싶으면 → [REV-0092 objdump 기본 사용법](./rev-0092-objdump-basics.md)
+- 심볼만 빠르게 찾고 싶으면 → [REV-0093 nm으로 심볼 찾기](./rev-0093-nm-basics.md)
+
+## 미니 예제
+```bash
+$ readelf -d chall | grep NEEDED
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+
+$ readelf -h chall | grep Type
+  Type:                              DYN (Position-Independent Executable file)
+
+$ readelf -s chall | grep ' main$'
+    24: 0000000000001149    26 FUNC    GLOBAL DEFAULT   14 main
+```
+세 줄로 "libc만 쓰는 PIE 바이너리이고, strip 안 된 상태라 main 주소(0x1149)까지 바로 알 수 있다"는 걸 파악했다.
+
+## 관련 글
+- [REV-0089 — ELF 헤더 읽는 법](./rev-0089-elf-header.md)
+- [REV-0090 — ELF Program Header와 Section Header 차이](./rev-0090-program-vs-section-header.md)
+- [REV-0092 — objdump 기본 사용법](./rev-0092-objdump-basics.md)
+- [REV-0093 — nm으로 심볼 찾기](./rev-0093-nm-basics.md)
+- [REV-0100 — PLT와 GOT 기초](./rev-0100-plt-got.md)
+
+## 출처/검증
+- 옵션 목록과 출력 형식: GNU binutils `readelf(1)` man page 기준 (2026-09-08 검증).
+- 재배치 타입(`R_X86_64_JUMP_SLOT` 등): System V x86-64 psABI 문서 기준.

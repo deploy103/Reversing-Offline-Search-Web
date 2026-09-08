@@ -258,9 +258,9 @@ call    malloc
 - [REV-0052 — DIV: Unsigned 나눗셈](./rev-0052-div.md)
 - [REV-0053 — IDIV: Signed 나눗셈](./rev-0053-idiv.md)
 - [REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기](./rev-0088-flags-overview.md)
-- REV-0042 — LEA: 주소 계산인데 왜 산술 연산처럼 보이는가 (예정)
-- REV-0061 — SHL과 SAL: 왼쪽 시프트 (예정)
-- REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교 (예정)
+- REV-0042 — LEA: 주소 계산인데 왜 산술 연산처럼 보이는가
+- REV-0061 — SHL과 SAL: 왼쪽 시프트
+- REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교
 
 ## 출처/검증
 - MUL 명령어 동작, 오퍼랜드 형태, 플래그(CF/OF 설정 조건, SF/ZF/AF/PF undefined): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "MUL—Unsigned Multiply" 섹션 기준 (2026-09-08 검증).

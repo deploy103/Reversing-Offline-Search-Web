@@ -263,9 +263,9 @@ IDA/Ghidra 의사코드에서는 이 LEA 한 줄이 그대로 `y = x * 5;`로 �
 - [REV-0052 — DIV: Unsigned 나눗셈](./rev-0052-div.md)
 - [REV-0053 — IDIV: Signed 나눗셈](./rev-0053-idiv.md)
 - [REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기](./rev-0088-flags-overview.md)
-- REV-0042 — LEA: 주소 계산인데 왜 산술 연산처럼 보이는가 (예정)
-- REV-0061 — SHL과 SAL: 왼쪽 시프트 (예정)
-- REV-0047 — ADD: 덧셈과 플래그 (예정)
+- REV-0042 — LEA: 주소 계산인데 왜 산술 연산처럼 보이는가
+- REV-0061 — SHL과 SAL: 왼쪽 시프트
+- REV-0047 — ADD: 덧셈과 플래그
 
 ## 출처/검증
 - IMUL 명령어의 세 가지 형태, 오퍼랜드 규칙, 플래그(CF/OF truncation 조건, SF/ZF/AF/PF undefined): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "IMUL—Signed Multiply" 섹션 기준 (2026-09-08 검증).

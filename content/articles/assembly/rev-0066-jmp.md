@@ -262,8 +262,8 @@ jtable:
 - ./rev-0069-jg-jge-jl-jle.md — JG/JGE/JL/JLE: Signed 비교 분기
 - ./rev-0070-ja-jae-jb-jbe.md — JA/JAE/JB/JBE: Unsigned 비교 분기
 - ./rev-0088-flags-overview.md — 플래그 레지스터 전체 개요
-- REV-0072 — RET: 함수 반환과 스택 변화 (예정)
-- REV-0073 — LEAVE: 함수 에필로그와 스택 프레임 (예정)
+- REV-0072 — RET: 함수 반환과 스택 변화
+- REV-0073 — LEAVE: 함수 에필로그와 스택 프레임
 - 스위치-케이스 점프 테이블 (예정)
 
 ## 출처/검증

@@ -256,9 +256,9 @@ mov  [rbp-8], edx    ; r 저장
 - [REV-0050 — MUL: Unsigned 곱셈](./rev-0050-mul.md)
 - [REV-0051 — IMUL: Signed 곱셈과 컴파일러 패턴](./rev-0051-imul.md)
 - [REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기](./rev-0088-flags-overview.md)
-- REV-0041 — MOVSX와 MOVSXD: Sign Extension 이해 (예정)
-- REV-0069 — JG JGE JL JLE: Signed 비교 분기 (예정)
-- REV-0070 — JA JAE JB JBE: Unsigned 비교 분기 (예정)
+- REV-0041 — MOVSX와 MOVSXD: Sign Extension 이해
+- REV-0069 — JG JGE JL JLE: Signed 비교 분기
+- REV-0070 — JA JAE JB JBE: Unsigned 비교 분기
 
 ## 출처/검증
 - `DIV` 명령어 동작(오퍼랜드 폭별 피제수/몫/나머지 레지스터, 플래그 undefined 여부, `#DE` 예외 조건): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "DIV—Unsigned Divide" 섹션 기준 (2026-09-08 검증).

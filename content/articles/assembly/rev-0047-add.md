@@ -269,10 +269,10 @@ adc rdx, rbx    ; 상위 64비트 (하위에서 넘어온 CF까지 더함)
 - [REV-0048 — SUB: 뺄셈과 플래그](./rev-0048-sub.md)
 - [REV-0049 — INC와 DEC: 1 증가 감소와 CF 주의](./rev-0049-inc-dec.md)
 - [REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기](./rev-0088-flags-overview.md)
-- REV-0042 — LEA: 주소 계산인데 왜 산술 연산처럼 보이는가 (예정)
-- REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교 (예정)
-- REV-0069 — JG JGE JL JLE: Signed 비교 분기 (예정)
-- REV-0070 — JA JAE JB JBE: Unsigned 비교 분기 (예정)
+- REV-0042 — LEA: 주소 계산인데 왜 산술 연산처럼 보이는가
+- REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교
+- REV-0069 — JG JGE JL JLE: Signed 비교 분기
+- REV-0070 — JA JAE JB JBE: Unsigned 비교 분기
 
 ## 출처/검증
 - ADD 명령어 동작과 플래그 영향: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "ADD—Add" 섹션 기준 (2026-09-08 검증).

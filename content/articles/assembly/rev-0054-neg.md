@@ -249,8 +249,8 @@ add  eax, [rbp-4]    ; eax = a + (-b) = a - b
 - [REV-0048 — SUB: 뺄셈과 플래그](./rev-0048-sub.md)
 - [REV-0053 — IDIV: Signed 나눗셈](./rev-0053-idiv.md)
 - [REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기](./rev-0088-flags-overview.md)
-- REV-0058 — NOT: 비트 반전 (예정)
-- REV-0075 — CMOVcc: 분기 없는 조건부 이동 (예정)
+- REV-0058 — NOT: 비트 반전
+- REV-0075 — CMOVcc: 분기 없는 조건부 이동
 
 ## 출처/검증
 - NEG 명령어 정의와 플래그 규칙(CF는 피연산자가 0일 때만 clear, OF는 최소 음수값일 때만 set): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "NEG—Two's Complement Negation" 섹션 기준 (2026-09-08 검증).

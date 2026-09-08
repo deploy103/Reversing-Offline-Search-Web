@@ -121,7 +121,7 @@ chall_fixed: ELF 64-bit LSB executable, x86-64, ...
 
 ## 관련 글
 - REV-0001 — 리버싱 문제 파일을 받았을 때 30초 트리아지
-- REV-0020 — Magic Byte와 파일 시그니처 (예정)
+- REV-0020 — Magic Byte와 파일 시그니처
 - REV-0100 — PLT와 GOT 기초
 
 ## 출처/검증

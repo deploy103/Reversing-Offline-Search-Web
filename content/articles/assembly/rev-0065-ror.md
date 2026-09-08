@@ -199,11 +199,11 @@ xor  eax, eax
 
 ## 관련 글
 - ./rev-0088-flags-overview.md — 플래그 레지스터(CF/OF/ZF/SF/PF/AF) 전체 개요
-- REV-0064 — ROL: 왼쪽 Rotate (예정)
-- REV-0061 — SHL과 SAL: 왼쪽 시프트 (예정)
-- REV-0062 — SHR: 논리 오른쪽 시프트 (예정)
-- REV-0063 — SAR: 산술 오른쪽 시프트 (예정)
-- REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교 (예정)
+- REV-0064 — ROL: 왼쪽 Rotate
+- REV-0061 — SHL과 SAL: 왼쪽 시프트
+- REV-0062 — SHR: 논리 오른쪽 시프트
+- REV-0063 — SAR: 산술 오른쪽 시프트
+- REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교
 
 ## 출처/검증
 - ROR/ROL 동작, 플래그 규칙(CF, OF 정의 조건), 회전 횟수 마스킹 규칙: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "ROL/ROR/RCL/RCR—Rotate" 섹션 기준 (2026-09-08 검증).

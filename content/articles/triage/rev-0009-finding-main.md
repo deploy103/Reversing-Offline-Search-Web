@@ -97,7 +97,7 @@ call    __libc_start_main
 ## 관련 글
 - REV-0010 — stripped 바이너리에서 시작점 잡는 방법
 - REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적
-- REV-0099 — _libc_start_main이 무엇이고 main을 찾는 법 (예정)
+- REV-0099 — __libc_start_main이 무엇이고 main을 찾는 법
 - REV-0121 — Entry Point와 WinMain 찾기 (예정)
 
 ## 출처/검증

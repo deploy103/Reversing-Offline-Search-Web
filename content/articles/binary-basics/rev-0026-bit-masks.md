@@ -126,9 +126,9 @@ def fnv1a_32(data: bytes) -> int:
 
 ## 관련 글
 - REV-0024 — 2의 보수와 음수 표현
-- REV-0055 — AND: 마스크와 비트 제거 (예정)
-- REV-0203 — AND 0xFF 마스크 이해 (예정)
-- REV-0204 — AND 0xFFFFFF 24비트 마스크 이해 (예정)
+- REV-0055 — AND: 마스크와 비트 제거
+- REV-0203 — AND 0xFF 마스크 이해
+- REV-0204 — AND 0xFFFFFF 24비트 마스크 이해
 - REV-0208 — 16777619 상수가 보일 때 FNV 의심하기
 
 ## 출처/검증

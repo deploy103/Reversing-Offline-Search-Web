@@ -248,9 +248,9 @@ jge too_big        ; SF == OF (signed >=)면 분기
 - [REV-0047 — ADD: 덧셈과 플래그](./rev-0047-add.md)
 - [REV-0049 — INC와 DEC: 1 증가 감소와 CF 주의](./rev-0049-inc-dec.md)
 - [REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기](./rev-0088-flags-overview.md)
-- REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교 (예정)
-- REV-0069 — JG JGE JL JLE: Signed 비교 분기 (예정)
-- REV-0070 — JA JAE JB JBE: Unsigned 비교 분기 (예정)
+- REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교
+- REV-0069 — JG JGE JL JLE: Signed 비교 분기
+- REV-0070 — JA JAE JB JBE: Unsigned 비교 분기
 
 ## 출처/검증
 - SUB 명령어 동작과 플래그 영향: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "SUB—Subtract" 섹션 기준 (2026-09-08 검증).

@@ -292,8 +292,8 @@ sub_402000:
 이 예제에서 CALL이 실행될 때마다 스택에 반환 주소가 하나씩 쌓이고(push), RET이 실행될 때마다 하나씩 빠진다(pop) — 정확히 짝이 맞아야 프로그램이 정상 종료된다.
 
 ## 관련 글
-- REV-0072 — RET: 함수 반환과 스택 변화 (예정)
-- REV-0106 — SysV AMD64 Calling Convention (예정)
+- REV-0072 — RET: 함수 반환과 스택 변화
+- REV-0106 — SysV AMD64 Calling Convention
 - REV-0122 — Microsoft x64 Calling Convention (예정)
 - REV-0100 — PLT와 GOT 기초
 - REV-0151 — IDA Positive SP Value Has Been Detected 경고

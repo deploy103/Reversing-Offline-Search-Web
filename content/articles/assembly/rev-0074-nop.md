@@ -243,9 +243,9 @@ e8 12 34 00 00    call check_password
 
 ## 관련 글
 - [REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적](./rev-0071-call.md)
-- REV-0066 — JMP: 무조건 분기 (예정)
-- REV-0067 — JE와 JZ: ZF가 1일 때 분기 (예정)
-- REV-0068 — JNE와 JNZ: ZF가 0일 때 분기 (예정)
+- REV-0066 — JMP: 무조건 분기
+- REV-0067 — JE와 JZ: ZF가 1일 때 분기
+- REV-0068 — JNE와 JNZ: ZF가 0일 때 분기
 
 ## 출처/검증
 - NOP 명령어 정의, 단일 바이트(0x90)와 멀티바이트(0F 1F 계열) 인코딩: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "NOP—No Operation" 섹션 기준 (2026-09-08 검증).

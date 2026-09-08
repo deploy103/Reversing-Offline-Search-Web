@@ -402,15 +402,15 @@ cmovl eax, ebx   ; SF≠OF (즉 a < b)이면 eax에 ebx 값을 덮어씀 → eax
 - [REV-0052 — DIV: Unsigned 나눗셈](./rev-0052-div.md)
 - [REV-0053 — IDIV: Signed 나눗셈](./rev-0053-idiv.md)
 - [REV-0054 — NEG: 2의 보수 음수 만들기](./rev-0054-neg.md)
-- REV-0046 — PUSHF와 POPF: 플래그 저장과 복원 (예정)
+- REV-0046 — PUSHF와 POPF: 플래그 저장과 복원
 - REV-0055~REV-0058 — AND, OR, XOR, NOT (예정)
-- REV-0059 — TEST: 값을 바꾸지 않는 AND 비교 (예정)
-- REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교 (예정)
+- REV-0059 — TEST: 값을 바꾸지 않는 AND 비교
+- REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교
 - REV-0061~REV-0065 — SHL/SAL, SHR, SAR, ROL, ROR (예정)
-- REV-0066 — JMP: 무조건 분기 (예정)
+- REV-0066 — JMP: 무조건 분기
 - REV-0067~REV-0070 — JE/JZ, JNE/JNZ, JG/JGE/JL/JLE, JA/JAE/JB/JBE 각 Jcc 계열 상세 (예정)
-- REV-0075 — CMOVcc: 분기 없는 조건부 이동 (예정)
-- REV-0076 — SETcc: 조건 결과를 0 또는 1로 만들기 (예정)
+- REV-0075 — CMOVcc: 분기 없는 조건부 이동
+- REV-0076 — SETcc: 조건 결과를 0 또는 1로 만들기
 
 ## 출처/검증
 - EFLAGS/RFLAGS 레지스터 구조와 각 비트 정의: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 1, "3.4.3 EFLAGS Register" 섹션 기준 (2026-09-08 검증).

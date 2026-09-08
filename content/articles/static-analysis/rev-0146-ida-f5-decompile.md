@@ -1,0 +1,140 @@
+---
+id: REV-0146
+title: "IDA F5 디컴파일과 Pseudocode 읽기"
+slug: "rev-0146-ida-f5-decompile"
+category: "static-analysis"
+difficulty: "beginner"
+platform: [windows, linux]
+architecture: [x86, x64]
+format: [PE, ELF]
+tools: [IDA]
+keywords: ["IDA F5", "Hex-Rays decompiler", "pseudocode", "IDA 디컴파일", "IDA Free 디컴파일러", "Tab 키", "sub_XXXXXX", "a1 a2 v1 v2"]
+aliases: ["IDA 디컴파일 단축키", "Hex-Rays F5", "IDA pseudocode window", "IDA 의사코드"]
+symptom_keywords: ["IDA F5가 안 눌림", "IDA에 디컴파일 메뉴가 없음", "IDA pseudocode가 이상함", "sub_로 시작하는 함수가 뭔지 모름", "a1 a2가 뭔지 모름", "IDA Free는 F5가 되나요"]
+source_ids: ["SRC-HEXRAYS-DOCS"]
+last_verified: "2026-09-08"
+---
+
+## 한 줄 요약
+`F5`는 Hex-Rays 디컴파일러가 설치되어 있을 때 현재 함수를 C 비슷한 **Pseudocode(의사코드)**로 변환해 보여주는 단축키이며, `Tab`으로 디스어셈블리(IDA View)와 Pseudocode 창을 서로 오갈 수 있지만, 이 기능은 IDA Free의 클라우드 디컴파일러이거나 유료 IDA Pro의 디컴파일러 애드온이 있어야 동작하므로 F5가 안 보이거나 눌리지 않으면 먼저 자신의 IDA 에디션에 디컴파일러가 포함되어 있는지부터 확인해야 한다.
+
+## 언제 검색해야 하나
+- 어셈블리를 한 줄씩 읽는 게 너무 느려서 C 비슷한 코드로 보고 싶을 때
+- F5를 눌렀는데 아무 반응이 없거나 에러가 뜰 때
+- Pseudocode 창에 나오는 `sub_401000`, `a1`, `v3`, `(int)` 같은 표기가 뭔지 모를 때
+- Pseudocode와 디스어셈블리 화면을 오가는 방법을 모를 때
+
+## 핵심 개념
+
+### F5와 Hex-Rays 디컴파일러는 "별도 구성 요소"다
+가장 먼저 알아야 할 점: **디컴파일 기능(F5)은 IDA 본체의 기본 기능이 아니라 Hex-Rays 디컴파일러라는 별도 컴포넌트**다. 순수 디스어셈블러 기능(코드를 어셈블리로 보여주는 것)은 모든 IDA 에디션에 있지만, 그것을 다시 C 비슷한 고수준 코드로 재구성하는 디컴파일 기능은 별도로 갖춰야 한다.
+
+- **IDA Pro(유료)**: 별도 구독/라이선스 번들에 디컴파일러가 포함되는 방식이며, 몇 개 아키텍처(x86, x64, ARM 등)의 로컬 디컴파일러를 쓸 수 있는지는 구매한 플랜에 따라 다르다.
+- **IDA Free(무료)**: 과거에는 디컴파일러가 아예 없었지만, 최근 배포판부터는 **클라우드 기반 디컴파일러**가 포함되어 인터넷 연결이 있으면 F5를 쓸 수 있다(단, 오프라인 환경이나 인터넷이 막힌 대회 PC에서는 이 클라우드 디컴파일러가 동작하지 않을 수 있다). 클라우드 방식이므로 상업용 로컬 디컴파일러 대비 일부 고급 기능이 제한될 수 있다.
+
+즉, **오프라인 환경(예: 인터넷이 끊긴 CTF 대회 PC)에서 IDA Free를 쓰고 있다면 F5가 아예 동작하지 않을 수 있다.** 자신의 설치본에 디컴파일러가 붙어 있는지 확실치 않다면 `Help → About`(버전/구성 요소 확인) 또는 `Edit → Plugins` 메뉴에서 Hex-Rays 관련 플러그인이 로드되어 있는지 확인해보는 것이 좋다. F5를 눌러 봤을 때 메뉴 자체가 없거나 "decompiler license" 관련 에러가 뜨면 이 경우에 해당한다.
+
+### Pseudocode란 무엇인가
+Pseudocode(의사코드)는 어셈블리 명령어들을 분석해서 변수, 조건문(`if`), 반복문(`while`/`for`), 함수 호출 등 사람이 읽기 좋은 C 비슷한 구조로 재구성한 결과다. 완벽하게 원본 소스코드로 복원되는 것은 아니고 어디까지나 IDA의 "추측"이므로, 특히 최적화가 많이 된 코드나 스택 분석이 실패한 함수에서는 실제와 다르게 보일 수 있다(REV-0151, REV-0153 참고).
+
+### Pseudocode에서 자주 보이는 표기
+- **`sub_401000`** — 이름이 없는(사용자가 아직 안 붙인) 함수의 자동 생성 이름. 주소를 기반으로 만들어진다.
+- **`unknown_libname_1`** — FLIRT가 "이건 라이브러리 함수 같긴 한데 정확히 어떤 함수인지는 특정 못했다"고 판단했을 때 붙는 임시 이름.
+- **`a1`, `a2`, `a3`...** — 함수 인자(argument)에 자동으로 붙는 이름. 스택/레지스터 분석 결과를 바탕으로 IDA가 추정한 매개변수 순서다.
+- **`v1`, `v2`, `v3`...** — 지역 변수(local variable)에 자동으로 붙는 이름.
+- **`(int)`, `(char *)`, `(__int64)`** 등 캐스트 — IDA가 실제 타입을 정확히 모를 때 원본 어셈블리의 크기(4바이트, 8바이트 등)만 보고 붙인 기본 타입 표기다. 실제 의미(예: 포인터인지 정수인지)는 사람이 확인해서 `Y`(REV-0148)로 고쳐줘야 더 읽기 좋아진다.
+- **`BYTE1(x)`, `HIDWORD(x)`** 등 매크로 — 레지스터의 일부(상위/하위 바이트 등)만 쓰는 최적화 코드를 표현할 때 나오는 Hex-Rays 특유의 헬퍼 매크로.
+
+### Pseudocode와 디스어셈블리 동기화 이동
+Pseudocode 창과 디스어셈블리(IDA View) 창은 **커서 위치가 서로 연결**되어 있다. Pseudocode에서 특정 줄을 클릭하면 대응하는 어셈블리 위치가 강조되고, 반대도 마찬가지다. `Tab` 키를 누르면 두 창을 즉시 오갈 수 있다(Pseudocode 창이 아직 없으면 F5로 먼저 만들어야 한다). 이 동기화 덕분에 "Pseudocode에서 이상하게 보이는 줄이 실제 어셈블리에서는 어떻게 생겼는지" 바로바로 대조해볼 수 있다.
+
+## 화면/코드에서 보이는 징후
+- F5를 누르면 새 탭(예: "Pseudocode-A")이 열리고 회색/베이지 배경에 C 비슷한 코드가 표시된다.
+- F5를 눌렀는데 아무 일도 안 일어나거나, "Hex-Rays decompiler unavailable" 류의 메시지가 뜨면 디컴파일러가 설치/활성화되어 있지 않다는 뜻이다.
+- Pseudocode 안에서 원래 이름이 없던 함수/변수는 회색 또는 기본 색으로, 사용자가 이름을 바꾼 것은 다른 색(대개 파란색 계열)으로 표시되는 경우가 많다.
+- 함수 상단에 `// positive sp value has been detected` 같은 경고 주석이 자동으로 붙어 있으면 해당 함수의 스택 분석에 문제가 있었다는 신호다(REV-0151 참고).
+
+## 가장 먼저 할 것
+분석하고 싶은 함수 내부(디스어셈블리)에 커서를 두고 `F5`를 누른다. 처음 F5를 시도했는데 반응이 없다면, 코드를 더 파기 전에 먼저 `Help → About`이나 `Edit → Plugins`에서 Hex-Rays 디컴파일러가 이 설치본에 포함되어 있는지부터 확인한다.
+
+## 단계별 절차
+
+**1) 함수 내부로 이동**
+
+Functions 창(`Ctrl+P`, REV-0143)이나 xref 추적(`X`, REV-0145)으로 분석하고 싶은 함수 안으로 이동한다.
+
+**2) F5로 디컴파일**
+
+`F5`를 누른다. 처음 누르면 Pseudocode 창이 새로 열리며 해당 함수의 의사코드가 표시된다. 이미 Pseudocode 창이 열려 있는 상태에서 다른 함수 안으로 이동한 뒤 다시 F5를 누르면, 같은 창에서 그 함수의 코드로 갱신된다.
+
+**3) 코드 읽기**
+
+`if`, `while`, `for`, `return` 같은 익숙한 C 구조를 기준으로 로직을 따라간다. 이름 없는 함수/변수는 `sub_`, `a`, `v` 접두사로 나오므로, 문맥으로 역할을 추측하며 읽는다.
+
+**4) Tab으로 디스어셈블리와 오가기**
+
+Pseudocode의 특정 줄이 실제로 어떤 어셈블리 명령어들로 이루어졌는지 궁금하면, 그 줄을 클릭한 뒤 `Tab`을 눌러 IDA View로 전환한다. 커서가 대응하는 어셈블리 위치로 이동해 있을 것이다. 다시 `Tab`을 누르면 Pseudocode로 돌아간다.
+
+**5) 이름/타입 정리**
+
+읽으면서 역할을 파악한 변수/함수는 그 자리에서 바로 `N`(이름 변경, REV-0147)이나 `Y`(타입 지정, REV-0148)로 고쳐두면, 이후 같은 함수를 다시 볼 때 훨씬 빠르게 이해할 수 있다. 이 조작은 Pseudocode 창 안에서도 그대로 동작한다.
+
+**6) 우클릭 메뉴 활용**
+
+Pseudocode 창에서 변수/함수 이름을 우클릭하면 `Rename`, `Set lvar type`(변수 타입 지정), `Convert to hex/dec` 같은 숫자 표현 변경(REV-0149 참고), 주석 추가 등 다양한 항목이 나온다. 이 메뉴를 적극 활용하면 마우스만으로도 대부분의 정리 작업이 가능하다.
+
+## 명령어/단축키
+- `F5` : 현재 함수 디컴파일(Pseudocode 창 열기/갱신)
+- `Tab` : Pseudocode ↔ IDA View(디스어셈블리) 전환(커서 위치 동기화)
+- `N` : Pseudocode 안에서도 이름 변경 가능(REV-0147)
+- `Y` : Pseudocode 안에서도 타입 지정 가능(REV-0148)
+- 우클릭 메뉴 : Rename, Set lvar type, 주석, 숫자 표현 변경 등
+
+## 출력 해석
+- 함수 맨 위에 경고 주석(`// positive sp value...` 등)이 있으면 그 함수의 지역 변수/인자 매핑을 완전히 신뢰하지 말고 어셈블리와 대조해야 한다.
+- `(int)`, `(unsigned int)` 같은 캐스트가 유난히 많으면, IDA가 원래 타입을 잘 모르고 있다는 뜻이므로 구조체/포인터 타입을 직접 지정(`Y`)해주면 코드가 훨씬 깔끔해질 수 있다.
+- 함수 시작에 `__int64 __fastcall sub_401000(__int64 a1, int a2)`처럼 함수 원형이 표시되는데, 인자 개수/타입이 실제와 다르면 로직이 이상하게 보일 수 있다 — 이 경우 함수 원형을 `Y`로 직접 고쳐야 한다.
+- Pseudocode가 아예 생성되지 않고 "Decompilation failed" 메시지가 뜨면 REV-0152(IDA Decompiler Failed가 뜰 때)를 참고한다.
+
+## 흔한 실수
+- F5가 안 눌리는 이유를 코드 문제로 착각하고 계속 다른 함수에서 시도해보는 경우 — 사실은 애초에 디컴파일러가 이 설치본에 없는 라이선스 문제일 수 있다.
+- Pseudocode만 보고 어셈블리는 아예 안 보는 경우 — Pseudocode는 어디까지나 IDA의 추정 결과이므로, 중요한 판단(특히 조건문의 정확한 비교 방식, signed/unsigned 여부 등)은 실제 어셈블리(`cmp`, `jle` 등)와 대조해서 확인하는 습관이 필요하다.
+- `a1`, `v3` 같은 자동 이름을 그대로 둔 채 복잡한 함수를 읽으려다 헷갈리는 경우 — 역할을 파악하는 즉시 이름을 바꿔가며 읽으면 훨씬 수월하다.
+- Tab이 안 먹힌다고 착각하는 경우 — 포커스가 다른 창(예: Functions 창)에 가 있으면 Tab이 다른 동작(창 간 포커스 이동 등)을 할 수 있다. IDA View나 Pseudocode 창 내부를 한 번 클릭해서 포커스를 확실히 준 뒤 시도한다.
+
+## 막혔을 때 다음 체크
+- F5 자체가 안 될 때 → IDA Free/Pro 에디션과 인터넷 연결 여부(클라우드 디컴파일러) 확인. 오프라인 환경이라면 어셈블리 레벨 분석(Graph view, REV-0150)으로 전환해야 할 수도 있다.
+- 디컴파일은 되는데 결과가 깨져 보일 때 → REV-0151(Positive SP Value 경고), REV-0153(Stack Pointer 분석이 틀렸을 때) 확인.
+- 디컴파일 자체가 실패(에러)할 때 → REV-0152(IDA Decompiler Failed가 뜰 때) 참고.
+- 변수/함수 이름과 타입을 계속 고쳐가며 읽고 싶다면 → REV-0147, REV-0148을 참고해서 정리 워크플로를 익힌다.
+
+## 미니 예제
+이름 없는 함수를 처음 디컴파일해서 읽는 흐름:
+
+```text
+1. Functions 창(Ctrl+P)에서 sub_402100 더블클릭 → 함수 내부로 이동
+2. F5 → Pseudocode-A 탭에 아래와 같은 코드 표시
+     __int64 __fastcall sub_402100(__int64 a1)
+     {
+       int v2; // [rsp+0h]
+       v2 = *(int *)(a1 + 4);
+       if ( v2 == 1337 )
+         return 1;
+       return 0;
+     }
+3. a1이 어떤 구조체의 포인터로 보임 → Y로 함수 인자 타입을 struct * 로 지정
+4. v2가 "매직 넘버 비교 결과"임을 파악 → N으로 result 등으로 이름 변경
+5. 조건문이 정확히 어떤 어셈블리 비교(cmp/je)로 이루어졌는지 궁금 → 해당 줄 클릭 후 Tab으로 IDA View 확인
+```
+
+## 관련 글
+- REV-0147 — IDA 함수 변수 이름 N으로 바꾸기
+- REV-0148 — IDA Y로 타입 지정하기
+- REV-0151 — IDA Positive SP Value Has Been Detected 경고
+- REV-0152 — IDA Decompiler Failed가 뜰 때
+- REV-0145 — IDA Xrefs와 X 키 사용법
+
+## 출처/검증
+- F5/Tab 동작 및 Pseudocode ↔ 디스어셈블리 동기화 내비게이션은 Hex-Rays 공식 문서 "Interactive operation"(docs.hex-rays.com/user-guide/decompiler/interactive), "Subviews"(docs.hex-rays.com/core/user-interface/concepts/subviews), 공식 단축키 레퍼런스(docs.hex-rays.com/user-guide/configuration/shortcuts)를 기준으로 정리했다(2026-09-08 검증).
+- IDA Free의 클라우드 디컴파일러 포함 여부(7.6부터 도입)와 유료 IDA Pro의 로컬 디컴파일러 라이선스 번들 구조는 Hex-Rays 공식 블로그("Announcing version 7.6 for IDA Freeware", "Igor's tip of the week #40: Decompiler basics")와 공식 제품 페이지(hex-rays.com/ida-free, hex-rays.com/decompiler)를 기준으로 정리했다.
+- 라이선스/에디션별 정확한 기능 차이는 시점에 따라 계속 바뀌므로, 실제 설치된 IDA의 `Help → About`과 Hex-Rays 공식 제품 페이지를 통해 현재 기준으로 재확인할 것을 권장한다.

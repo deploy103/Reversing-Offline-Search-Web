@@ -120,10 +120,10 @@ je      fail
 `v4`가 `unsigned int`로 선언되어 있었다면 이 값은 `4294967295`(즉 `0xFFFFFFFF`)와 비교하는 것과 완전히 동일한 코드다. 디컴파일러가 변수 타입을 `int`(signed)로 추론해서 `-1`로 "예쁘게" 보여준 것뿐이다. 이럴 때는 "아, 이건 그냥 모든 비트가 1인 값(0xFFFFFFFF)을 검사하는 거구나"라고 해석하면 된다 — 예를 들어 함수가 실패 시 `-1`(즉 `0xFFFFFFFF`)을 반환하는 관례적 패턴이다.
 
 ## 관련 글
-- REV-0025 — Signed와 Unsigned 해석 (예정)
+- REV-0025 — Signed와 Unsigned 해석
 - REV-0026 — 8비트 16비트 24비트 32비트 64비트 마스크
-- REV-0027 — 정수 Overflow와 Wraparound (예정)
-- REV-0206 — 음수 상수를 Unsigned Hex로 다시 읽기 (예정)
+- REV-0027 — 정수 Overflow와 Wraparound
+- REV-0206 — 음수 상수를 Unsigned Hex로 다시 읽기
 
 ## 출처/검증
 - 2의 보수 정의: IEEE 및 대부분의 컴퓨터 구조 교과서 표준 정의(예: Patterson & Hennessy, Computer Organization and Design) 기준 개념 설명 (2026-09-08 검증).

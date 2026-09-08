@@ -274,10 +274,10 @@ jl  loop_top
 - [REV-0047 — ADD: 덧셈과 플래그](./rev-0047-add.md)
 - [REV-0048 — SUB: 뺄셈과 플래그](./rev-0048-sub.md)
 - [REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기](./rev-0088-flags-overview.md)
-- REV-0055 — AND: 마스크와 비트 제거 (예정)
-- REV-0066 — JMP: 무조건 분기 (예정)
-- REV-0069 — JG JGE JL JLE: Signed 비교 분기 (예정)
-- REV-0070 — JA JAE JB JBE: Unsigned 비교 분기 (예정)
+- REV-0055 — AND: 마스크와 비트 제거
+- REV-0066 — JMP: 무조건 분기
+- REV-0069 — JG JGE JL JLE: Signed 비교 분기
+- REV-0070 — JA JAE JB JBE: Unsigned 비교 분기
 
 ## 출처/검증
 - INC/DEC 명령어 동작과 플래그 영향(CF 미변경 포함): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "INC—Increment by 1" / "DEC—Decrement by 1" 섹션 기준 (2026-09-08 검증).

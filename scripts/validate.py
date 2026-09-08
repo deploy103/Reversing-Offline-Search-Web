@@ -127,7 +127,11 @@ def check_body_content(articles):
             fail("{}: body too short ({} chars < {} minimum) -- possible placeholder".format(
                 p, len(body.strip()), MIN_BODY_CHARS))
         lowered = body.lower()
-        for marker in ["tbd", "todo:", "placeholder", "lorem ipsum", "작성 예정 (본문 없음)"]:
+        # NOTE: "placeholder" itself is intentionally excluded -- it's a
+        # legitimate English loanword used in real Korean technical prose
+        # (e.g. describing Ghidra's default variable-naming convention),
+        # so a bare substring match on it produces false positives.
+        for marker in ["tbd", "todo:", "lorem ipsum", "작성 예정 (본문 없음)"]:
             if marker in lowered:
                 fail("{}: contains placeholder marker '{}'".format(p, marker))
         missing_sections = [s for s in REQUIRED_BODY_SECTIONS if s not in body]

@@ -330,7 +330,7 @@ jg  never_taken         ; ZF=0 AND SF=OF -> SF=OF가 거짓이므로 분기 안 
 - [REV-0076 — SETcc: 조건 결과를 0 또는 1로 만들기](./rev-0076-setcc.md)
 - [REV-0071 — CALL: 함수 호출](./rev-0071-call.md)
 - [REV-0088 — 플래그 레지스터(EFLAGS) 개요](./rev-0088-flags-overview.md)
-- REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교 (예정)
+- REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교
 
 ## 출처/검증
 - `Jcc` 조건 코드 전체 표(SF/OF/ZF/CF 조합): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "Jcc—Jump if Condition Is Met" 섹션의 공식 조건 표 기준 (2026-09-08 검증).

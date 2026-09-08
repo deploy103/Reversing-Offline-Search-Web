@@ -102,8 +102,8 @@ IDA가 만약 `_printf`를 잘못된 정보로 stdcall(피호출자가 정리)�
 
 ## 관련 글
 - REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적
-- REV-0152 — IDA Decompiler Failed가 뜰 때 (예정)
-- REV-0153 — IDA Stack Pointer 분석이 틀렸을 때 (예정)
+- REV-0152 — IDA Decompiler Failed가 뜰 때
+- REV-0153 — IDA Stack Pointer 분석이 틀렸을 때
 - REV-0123 — Windows x86 stdcall cdecl fastcall thiscall (예정)
 
 ## 출처/검증

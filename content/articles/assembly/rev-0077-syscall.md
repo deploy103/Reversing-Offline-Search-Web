@@ -239,8 +239,8 @@ libc가 전용 래퍼를 제공하지 않는 syscall을 직접 호출하고 싶�
 - [SYSENTER와 SYSEXIT 기초](./rev-0078-sysenter-sysexit.md)
 - [CALL: 함수 호출, 반환 주소, 인자 추적](./rev-0071-call.md)
 - [FLAGS 레지스터 개요](./rev-0088-flags-overview.md)
-- REV-0072 — RET: 함수 반환과 스택 변화 (예정)
-- REV-0079 — INT와 INT 0x80: 인터럽트 기반 시스템 콜 (예정)
+- REV-0072 — RET: 함수 반환과 스택 변화
+- REV-0079 — INT와 INT 0x80: 인터럽트 기반 시스템 콜
 
 ## 출처/검증
 - SYSCALL 동작(RCX/R11 저장, MSR 기반 진입, FMASK): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "SYSCALL—Fast System Call" 섹션 기준 (2026-09-08 검증).

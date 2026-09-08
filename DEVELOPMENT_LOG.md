@@ -74,4 +74,32 @@ AI가 중단되더라도 다음 작업자가 이어서 개발할 수 있도록 �
 - 50개(또는 자연스러운 배치 완료 시점)마다 이 로그 갱신
 
 ### Commit
+- 3b6a24d
+
+## 2026-09-09 01:30 KST — Phase 4 Wave 1 (seed 300 중 109개 추가, 누적 168개)
+
+### 완료
+- 처음 시작 카테고리 나머지 14개 (REV-0003~0008, 0011~0018) — 이제 REV-0001~0018 전부 완료
+- 바이너리 기초 카테고리 나머지 18개 (REV-0019~0023, 0025, 0027~0038) — REV-0019~0038 전부 완료
+- Linux/ELF 카테고리 나머지 24개 (REV-0089~0099, 0101~0113) — REV-0089~0113 전부 완료
+- 정적분석 카테고리 나머지 26개 (REV-0142~0150, 0152~0168) — REV-0142~0168 전부 완료 (IDA 15개 + Ghidra/공통기법 13개)
+- 알고리즘 패턴 카테고리 나머지 27개 (REV-0196~0207, 0209~0223) — REV-0196~0223 전부 완료
+- 9개 병렬 에이전트(+1 no-op)로 작성, 이후 직접 build/validate 실행하며 발견된 문제 수정:
+  - `관련 글` stale title 참조 59건 → 자동 재작성 스크립트로 일괄 수정 (title이 실제 frontmatter와 정확히 일치하도록)
+  - `scripts/validate.py`의 "placeholder" 문자열 오탐 제거 (정상적인 한국어 기술 문서에서 영어 차용어로 쓰이는 경우까지 잡아내던 문제) — marker 목록에서 제거하고 나머지(tbd/todo/lorem ipsum 등)는 유지
+  - 누락된 `미니 예제`/`명령어/단축키` 섹션 5건 직접 보완
+
+### 검증
+- `python3 scripts/build.py` → 168개 전부 빌드 성공
+- `python3 scripts/validate.py` → PASS (오류 0, 경고 0)
+- Node vm 스모크 테스트 재실행 — main 어디/ida f5/ida strings/ida xref/signed unsigned/2의 보수/0xffffff/16777619/pie breakpoint/aslr/elf 처음/stripped elf 등 정확히 매칭 확인. upx/ptrace/IsDebuggerPresent/x64dbg string은 아직 해당 카테고리(패킹, x64dbg 전용 글) 미작성이라 예상대로 fuzzy fallback — Wave 2에서 해소 예정
+
+### 문제
+- 병렬 작성 에이전트가 `관련 글` 불릿에 부가 설명을 덧붙이는 경향이 있어(예: "제목 (./slug.md)") validate.py가 stale로 오탐 — 매 웨이브 종료 후 일괄 재작성 스크립트로 정리하는 것으로 대응 중. 다음 웨이브 프롬프트에서 "정확히 실제 title과 동일하게, 괄호 부가설명 금지"를 더 명시할 것.
+
+### 다음 작업
+- Phase 4 Wave 2: Windows/PE(28), 동적분석(27), 패킹/안티분석(18), .NET/Android(16), 자동화/Solver(16), 툴 사용법(27) — seed 300 중 남은 132개
+- seed 300 완료 후 REQUIREMENTS.md 도메인 분포표 기준으로 1,000개까지 확장
+
+### Commit
 - (다음 로컬 커밋에서 기록, push는 전체 완료 후)

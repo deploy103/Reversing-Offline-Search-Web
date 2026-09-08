@@ -187,8 +187,8 @@ SYSCALL과 마찬가지로 일반 C 코드는 `sysenter`를 직접 만들어내�
 - [SYSCALL: x86-64 시스템 콜](./rev-0077-syscall.md) — 현대 64비트에서 이 명령어 쌍을 대체한 카운터파트
 - [CALL: 함수 호출, 반환 주소, 인자 추적](./rev-0071-call.md)
 - [FLAGS 레지스터 개요](./rev-0088-flags-overview.md)
-- REV-0072 — RET: 함수 반환과 스택 변화 (예정)
-- REV-0079 — INT와 INT 0x80: 인터럽트 기반 시스템 콜 (예정)
+- REV-0072 — RET: 함수 반환과 스택 변화
+- REV-0079 — INT와 INT 0x80: 인터럽트 기반 시스템 콜
 
 ## 출처/검증
 - SYSENTER/SYSEXIT 동작(MSR 기반 진입, EDX/ECX 관례, 플래그 비자동 저장): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "SYSENTER—Fast System Call" / "SYSEXIT—Fast Return from Fast System Call" 섹션 기준 (2026-09-08 검증).
