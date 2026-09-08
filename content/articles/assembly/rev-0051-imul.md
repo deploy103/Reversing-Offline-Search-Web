@@ -1,0 +1,272 @@
+---
+id: REV-0051
+title: "IMUL: Signed 곱셈과 컴파일러 패턴"
+slug: "rev-0051-imul"
+category: "assembly"
+difficulty: "beginner"
+platform: [windows, linux]
+architecture: [x86, x64]
+format: [PE, ELF]
+tools: [IDA, Ghidra, x64dbg, GDB]
+keywords:
+  - imul
+  - IMUL
+  - Imul
+  - imul 명령어
+  - imul instruction
+  - signed multiply
+  - signed 곱셈
+  - 부호있는 곱셈
+  - "imul eax, ebx"
+  - "imul eax, ecx, 5"
+  - "imul rax, rbx"
+  - one-operand imul
+  - two-operand imul
+  - three-operand imul
+  - 1-오퍼랜드 imul
+  - 2-오퍼랜드 imul
+  - 3-오퍼랜드 imul
+  - 곱셈 결과 잘림
+  - truncated multiply
+  - lea 곱셈
+  - lea shl 곱셈 패턴
+  - 상수 곱셈 최적화
+  - multiply by constant
+  - x * 5 어셈블리
+  - x * 3 어셈블리
+  - IMUL 플래그
+  - CF OF truncation
+  - 디스가이즈드 곱셈
+  - disguised multiplication
+  - int 곱셈 어셈블리
+aliases:
+  - imul 뭐임
+  - imul이 뭐죠
+  - imul 명령
+  - IMUL 명령어
+  - 아이뮬 명령어
+  - 부호있는 곱셈 명령어
+  - lea가 곱셈이라고?
+  - shl이 곱셈으로 쓰이는 이유
+  - mul이랑 imul 차이
+symptom_keywords:
+  - lea 명령어가 곱셈처럼 쓰여요
+  - shl add 조합이 뭘 하는지 모르겠음
+  - imul 오퍼랜드가 3개인 경우가 있어요
+  - 곱셈인데 mul이 아니라 imul이 나와요
+  - imul 결과가 왜 eax만 바뀌나요
+  - 음수 곱셈 결과가 이상해요
+  - 상수 곱셈이 어셈블리에서 이상하게 나와요
+source_ids: ["SRC-INTEL-SDM", "SRC-GENERAL-ASM"]
+last_verified: "2026-09-08"
+---
+
+## 한 줄 요약
+`IMUL`은 두 값을 **부호있는(signed) 정수**로 곱하는 명령어로, 오퍼랜드 개수에 따라 1개(레지스터 쌍에 전체 결과 저장), 2개(잘린 결과), 3개(레지스터 = 소스 × 즉시값) 형태가 있으며, 컴파일러가 상수 곱셈을 최적화할 때 `LEA`/`SHL`/`ADD` 조합으로 대체하는 경우가 매우 많아 리버싱에서 반드시 패턴을 알아둬야 하는 명령어다.
+
+## 언제 검색해야 하나
+- `imul eax, ebx`, `imul eax, ecx, 5`, `imul rax, rbx, 0Ah`처럼 오퍼랜드 개수가 다른 IMUL을 만났을 때 각각 뭘 하는지 모를 때
+- 곱셈이 있어야 할 자리에 `lea eax, [eax+eax*4]`나 `shl eax, 2` 같은 명령이 나와서 "이게 왜 곱셈이지?"라는 의문이 들 때
+- 음수가 섞인 변수의 곱셈 결과가 왜 MUL이 아니라 IMUL로 나오는지 궁금할 때
+- IDA/Ghidra 의사코드에 `x * 5` 처럼 디컴파일러가 재구성한 곱셈이 보이는데 원본 어셈블리와 안 맞아 보일 때
+- "imul 오퍼랜드가 3개인 경우가 있어요"처럼 3-오퍼랜드 형태가 낯설 때
+
+## 핵심 개념
+
+### IMUL의 세 가지 형태
+IMUL은 오퍼랜드 개수에 따라 동작이 완전히 다르다. 이 셋을 구분하는 것이 IMUL 이해의 핵심이다.
+
+**1) 1-오퍼랜드 형태: `IMUL r/m`**
+`MUL`과 동일하게 암묵적 피연산자(AL/AX/EAX/RAX)와 곱해서 **레지스터 쌍 전체**에 결과를 저장한다. 다른 점은 두 값을 **부호있는 수**로 해석한다는 것뿐이다.
+```
+IMUL r/m8   -> AX      = AL  * r/m8   (signed)
+IMUL r/m16  -> DX:AX   = AX  * r/m16  (signed)
+IMUL r/m32  -> EDX:EAX = EAX * r/m32  (signed)
+IMUL r/m64  -> RDX:RAX = RAX * r/m64  (signed)
+```
+
+**2) 2-오퍼랜드 형태: `IMUL dest, src`**
+`dest = dest * src`를 계산하고, 결과를 **dest 하나의 레지스터 폭으로 잘라서(truncate)** 저장한다. **상위 절반은 아예 계산되지 않고 버려지며, EDX/RDX는 전혀 건드리지 않는다.** dest는 반드시 레지스터여야 한다.
+```
+imul eax, ebx     ; EAX = (EAX * EBX)의 하위 32비트만. EDX는 안 건드림.
+imul rax, rcx     ; RAX = (RAX * RCX)의 하위 64비트만.
+```
+
+**3) 3-오퍼랜드 형태: `IMUL dest, src, imm`**
+`dest = src * imm`(즉시값 상수)을 계산하고, 역시 dest 폭으로 잘라서 저장한다. 컴파일러가 `변수 * 상수` 형태의 C 코드를 컴파일할 때 즉시값 상수가 LEA/SHL로 싸게 표현이 안 되는 경우 이 형태를 즐겨 쓴다.
+```
+imul eax, ecx, 25h   ; EAX = ECX * 0x25 (37)
+imul edx, eax, 64h   ; EDX = EAX * 0x64 (100)
+```
+
+### 왜 2-오퍼랜드/3-오퍼랜드는 EDX를 안 건드리는가
+이 두 형태는 애초에 "결과가 dest 레지스터 폭 안에 들어갈 것"을 전제로 설계됐다 — 대부분 C에서 `int a = b * c;`처럼 결과 타입이 입력과 같은 폭인 계산에 대응한다. 그래서 상위 절반을 별도로 보존하지 않고 버린다. 이게 1-오퍼랜드 형태(MUL과 동일하게 레지스터 쌍 전체를 채움)와의 결정적 차이다. **초보자가 가장 많이 하는 착각이 바로 이것 — "imul eax, ebx도 MUL처럼 EDX에 상위 비트가 남겠지"라고 생각하는 것이다. 아니다. EDX는 이 형태에서 전혀 건드려지지 않는다.**
+
+### 플래그
+- **1-오퍼랜드 형태**: MUL과 같은 원리지만 signed 기준. 상위 절반이 하위 절반의 부호 확장(sign extension)과 정확히 같으면(즉 결과가 원래 하위 절반 크기로도 표현 가능했으면) CF=OF=0, 아니면 CF=OF=1.
+- **2/3-오퍼랜드 형태**: 잘리기 전의 "진짜 수학적 결과"가 dest 폭에 signed로 다 들어갔으면 CF=OF=0, 잘리면서 유효 비트가 날아갔으면(즉 truncated 결과가 원래 곱과 다르면) CF=OF=1.
+- **모든 형태 공통**: SF, ZF, AF, PF는 **정의되지 않음(undefined)** — MUL과 마찬가지로 이 플래그들에 의존하면 안 된다.
+
+### Signed 전용인 이유와 컴파일러의 선택
+IMUL은 두 값을 2의 보수(two's complement) 부호있는 수로 해석하기 때문에 음수를 정확히 다룬다.
+```
+EAX = 0xFFFFFFFF   ; signed로 -1
+ECX = 0x00000002   ; 2
+
+imul eax, ecx      ; EAX = -1 * 2 = -2 = 0xFFFFFFFE  (정확함)
+```
+그래서 컴파일러는 C 소스 변수 타입이 `int`, `long`, `long long`처럼 부호있는 타입이면 IMUL을, `unsigned int`/`size_t`처럼 부호없는 타입이고 **더블워드 전체 결과가 필요한 경우**(드묾)에만 MUL을 선택한다. 실무에서는 대부분의 일반 정수 곱셈이 IMUL(주로 2-오퍼랜드나 LEA/SHL 대체 형태)로 나타나고, MUL은 오히려 드물게 보인다.
+
+### 컴파일러의 상수 곱셈 최적화 — LEA/SHL/ADD로 위장한 곱셈
+곱셈(특히 IMUL)은 SHL, ADD, LEA 같은 명령보다 실행 사이클이 더 걸린다. 그래서 컴파일러는 `변수 * 상수` 형태를 볼 때, 그 상수가 2의 거듭제곱이거나 몇 개의 시프트/덧셈으로 값싸게 표현 가능하면 **IMUL을 아예 안 쓰고** 다른 명령 조합으로 바꿔치기한다. 이 패턴을 모르면 디스어셈블리에서 "곱셈이 안 보이는데 왜 갑자기 곱해진 값이 나오지?"라며 헤매게 된다.
+
+자주 보이는 대응표(EAX 기준, x는 EAX의 원래 값):
+```
+x * 2  ->  add eax, eax          또는  shl eax, 1        또는  lea eax, [eax+eax]
+x * 3  ->  lea eax, [eax+eax*2]
+x * 4  ->  shl eax, 2             또는  lea eax, [eax*4]
+x * 5  ->  lea eax, [eax+eax*4]
+x * 8  ->  shl eax, 3             또는  lea eax, [eax*8]
+x * 9  ->  lea eax, [eax+eax*8]
+x * 6  ->  lea eax, [eax+eax*2]   ; 먼저 x*3
+           add eax, eax           ; 그 다음 *2 => 총 *6
+           ; 또는 lea eax, [eax*4+eax*2] 같은 한 방 조합(스케일 두 개를 더하는 LEA)도 쓰인다.
+```
+`LEA`가 `[base + index*scale]` 형태의 주소 계산 명령이라는 걸 알면, `lea eax, [eax+eax*4]`가 사실은 `eax + eax*4 = eax*5`를 계산하는 것뿐임을 알 수 있다 — 메모리 접근이 전혀 없는데도 LEA가 순수 산술 연산으로 쓰이는 대표적인 경우다 (LEA 자체는 REV-0042 참고).
+
+**리버싱에서 왜 중요한가**: 어떤 변수 하나를 대상으로 LEA/SHL/ADD가 연달아 나오는데 그 결과가 메모리 주소로 쓰이지 않고 계산값으로만 쓰인다면, 십중팔구 상수 곱셈이 위장된 것이다. Ghidra와 IDA의 디컴파일러는 대부분 이 패턴을 인식해서 의사코드에 `x * 5`처럼 원래 곱셈 형태로 재구성해서 보여준다 — 즉 디컴파일러 단계에서는 이 패턴이 자동으로 풀리지만, **디스어셈블리(어셈블리 원문)를 직접 읽을 때는 사람이 직접 알아채야 한다.**
+
+상수가 이런 값싼 조합으로 안 풀리는 경우(예: `x * 37`)는 컴파일러가 그냥 진짜 IMUL 3-오퍼랜드 형태를 쓴다:
+```
+imul eax, ecx, 25h   ; x * 37 (0x25 = 37), LEA/SHL 조합으로 값싸게 못 만듦
+```
+
+### IDA/Ghidra 의사코드
+- 일반적인 변수 간 곱셈: `a * b`
+- 폭이 넓어지는 경우: `(signed __int64)a * b` 같은 캐스팅
+- LEA/SHL/ADD로 위장된 상수 곱셈: 디컴파일러가 재구성해서 `x * 5`, `x * 6`처럼 원래 곱셈 형태로 표시 (원문 어셈블리와 의사코드가 겉보기에 안 맞아 보이는 이유가 이것)
+
+### 스택/RSP/RIP
+IMUL은 스택이나 RSP를 건드리지 않는다(오퍼랜드가 메모리일 때 그 메모리를 읽을 뿐, PUSH/POP과 무관). RIP는 다음 명령으로만 순차 증가한다.
+
+## 화면/코드에서 보이는 징후
+- `imul ecx` — 1-오퍼랜드, EDX:EAX에 전체 결과 (드묾)
+- `imul eax, ebx` — 2-오퍼랜드, EAX만 갱신, 잘림
+- `imul eax, ecx, 5` / `imul eax, ecx, 25h` — 3-오퍼랜드, 상수와의 곱
+- `lea eax, [eax+eax*2]`, `lea eax, [eax*4]`, `shl eax, N`, `add eax, eax` — 곱셈이 위장된 형태, 메모리 접근이 실제로 없다면 산술 연산으로 의심
+- IMUL 직후 `jo`(Jump if Overflow) — 정수 오버플로우 방어 코드
+
+## 가장 먼저 할 것
+1. 오퍼랜드 개수부터 센다 (1개/2개/3개) — 이게 동작을 결정한다.
+2. 1-오퍼랜드라면 EDX/RDX도 같이 확인(MUL과 동일한 이유). 2/3-오퍼랜드라면 EDX/RDX는 무관하다는 것을 기억.
+3. LEA/SHL/ADD가 곱셈처럼 쓰였는지 의심 — 특히 메모리 접근 없이 값 계산에만 결과가 쓰이는 LEA를 볼 때.
+4. 곱해지는 값이 signed 변수인지 확인 — signed면 IMUL이 정상.
+
+## 단계별 절차
+
+**1) 오퍼랜드 개수로 형태 판별**
+```asm
+imul eax, ebx, 0Ah   ; 오퍼랜드 3개 -> EAX = EBX * 10, 잘림
+```
+
+**2) LEA 곱셈 위장 패턴 손으로 풀어보기**
+```asm
+lea eax, [eax+eax*4]
+```
+`[base + index*scale]`에서 base=eax, index=eax, scale=4이므로 `eax + eax*4 = eax*5`. 즉 이 한 줄이 `x = x * 5;`와 동일하다.
+
+**3) 다단계 LEA/SHL 조합 풀어보기**
+```asm
+lea     eax, [rax+rax*2]   ; eax = x*3
+add     eax, eax           ; eax = (x*3)*2 = x*6
+```
+C로 치면 `x = x * 6;`.
+
+**4) 3-오퍼랜드 형태로 상수 곱셈 직접 확인**
+```asm
+imul    eax, ecx, 25h      ; eax = ecx * 37  (0x25 = 37, LEA로 값싸게 못 만드는 상수)
+```
+
+## 명령어/단축키
+- IDA: `F5`로 디컴파일해서 LEA/SHL 조합이 `x * N`으로 재구성되는지 비교, 디버거에서 `Alt+G`(레지스터 값 확인)
+- x64dbg: 레지스터 패널에서 EAX 변화 관찰, `F7`/`F8`로 LEA/SHL/ADD 체인을 한 줄씩 실행하며 값 추적
+- GDB/Pwndbg: `nexti`로 한 줄씩 실행, `p/d $rax`로 부호있는 10진수 값 확인(음수 곱셈 결과 검증에 유용)
+
+## 출력 해석
+- 디버거에서 IMUL(2/3-오퍼랜드) 실행 후 EDX 값이 실행 전과 동일하면 정상이다 — EDX는 건드려지지 않았기 때문이다. EDX가 바뀌었다면 그건 IMUL 때문이 아니라 다른 명령 때문이다.
+- IDA 의사코드에서 `x * N` 형태로 깔끔하게 보이는데 실제 디스어셈블리에는 LEA/SHL만 있다면, 디컴파일러가 상수 곱셈 최적화 패턴을 자동으로 되돌린(역최적화) 것이다.
+- `p/d $eax`(GDB, signed 10진수)로 찍었을 때 음수가 나오면 그 값을 unsigned로 잘못 해석하지 않도록 주의한다.
+
+## 흔한 실수
+- **2-오퍼랜드/3-오퍼랜드 IMUL도 1-오퍼랜드처럼 EDX에 상위 비트가 남는다고 착각하는 것** — 아니다. 2/3-오퍼랜드 형태는 dest 하나만 갱신하고 상위 절반은 계산조차 안 한다(그냥 버려진다).
+- **LEA 기반 곱셈 위장 패턴을 "주소를 계산하는 코드"라고 오해하는 것** — `lea eax, [eax+eax*4]`처럼 결과가 메모리 접근 없이 순수 산술값으로만 쓰이면, 이는 주소 계산이 아니라 `x*5` 곱셈이다. LEA는 오퍼랜드 문법만 주소 계산 형태일 뿐, 실제 메모리를 읽지 않는다.
+- **MUL과 IMUL을 아무 때나 바꿔써도 된다고 생각하는 것** — 두 값 모두 양수라면 결과가 같을 수 있지만, 하나라도 signed 음수가 섞이면 완전히 다른 결과가 나온다. 타입(unsigned vs signed)이 어느 쪽을 써야 하는지를 결정한다.
+- IMUL 이후 SF/ZF/AF/PF로 조건을 판단하려는 것 — undefined이므로 신뢰 불가.
+
+## 막혔을 때 다음 체크
+- LEA/SHL 조합이 곱셈인지 확신이 안 서면 → base, index, scale을 대수식으로 직접 풀어써본다(`base + index*scale`). 메모리 접근(대괄호 바깥에서 값이 읽히는지)이 실제로 있는지도 확인.
+- IMUL 결과가 이상하면 → 오퍼랜드 개수(1/2/3)를 다시 세어서 EDX가 갱신되는 형태인지 아닌지부터 확인.
+- 의사코드의 `x * N`과 원문 어셈블리가 안 맞아 보이면 → 디컴파일러가 상수 곱셈 최적화를 역으로 재구성했다는 것을 기억하고 원문 LEA/SHL 체인을 직접 대수식으로 검산.
+- 오버플로우 방어 코드처럼 보이면 → IMUL 직후 `jo`(Jump if Overflow) 분기 여부를 확인 (REV-0088 참고).
+
+## 미니 예제
+
+**예제 1 — 1-오퍼랜드 IMUL, 레지스터 쌍 전체 결과**
+```c
+int a = -1000000;
+int b = 5000;
+long long r = (long long)a * b;
+```
+```asm
+mov     eax, -1000000  ; 0xFFF0BDC0
+mov     ecx, 5000
+imul    ecx             ; EDX:EAX = EAX * ECX (signed)
+; 결과: EDX:EAX = 0xFFFFFFFFFFB9CA00  (즉 r = -5,000,000,000)
+```
+
+**예제 2 — 2-오퍼랜드 IMUL, 결과 잘림**
+```c
+int x = 7;
+int y = -3;
+int r = x * y;   // -21, int 폭 안에 충분히 들어감
+```
+```asm
+mov     eax, 7
+mov     ecx, -3
+imul    eax, ecx        ; EAX = EAX * ECX, 32비트로 잘림, EDX는 안 건드림
+; 결과: EAX = 0xFFFFFFEB (-21)
+```
+
+**예제 3 — 3-오퍼랜드 IMUL, 상수와의 곱 (LEA로 안 풀리는 상수)**
+```c
+int price;
+int total = price * 37;
+```
+```asm
+mov     eax, price
+imul    eax, eax, 25h   ; EAX = EAX * 37
+```
+
+**예제 4 — LEA로 위장된 상수 곱셈**
+```c
+int y = x * 5;
+```
+```asm
+mov     eax, x
+lea     eax, [eax+eax*4]   ; eax = eax + eax*4 = eax*5
+mov     y, eax
+```
+IDA/Ghidra 의사코드에서는 이 LEA 한 줄이 그대로 `y = x * 5;`로 재구성되어 보인다.
+
+## 관련 글
+- [REV-0050 — MUL: Unsigned 곱셈](./rev-0050-mul.md)
+- [REV-0052 — DIV: Unsigned 나눗셈](./rev-0052-div.md)
+- [REV-0053 — IDIV: Signed 나눗셈](./rev-0053-idiv.md)
+- [REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기](./rev-0088-flags-overview.md)
+- REV-0042 — LEA: 주소 계산인데 왜 산술 연산처럼 보이는가 (예정)
+- REV-0061 — SHL과 SAL: 왼쪽 시프트 (예정)
+- REV-0047 — ADD: 덧셈과 플래그 (예정)
+
+## 출처/검증
+- IMUL 명령어의 세 가지 형태, 오퍼랜드 규칙, 플래그(CF/OF truncation 조건, SF/ZF/AF/PF undefined): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "IMUL—Signed Multiply" 섹션 기준 (2026-09-08 검증).
+- 상수 곱셈의 LEA/SHL/ADD 대체(strength reduction) 컴파일러 최적화: GCC/Clang/MSVC의 일반적인 코드 생성 관례(공개 컴파일러 탐색기 관찰 및 컴파일러 최적화 문헌 기준).

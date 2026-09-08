@@ -137,6 +137,31 @@ def process_related_section(body_md, own_id, id_to_article):
     return "\n".join(out), related_ids
 
 
+LOCAL_MD_LINK_RE = re.compile(r'\]\(([^)]+?\.md)\)')
+
+
+def rewrite_local_md_links(body_md, slug_to_article):
+    """Rewrite any markdown link pointing at a local '*.md' article (written
+    directly by content authors as e.g. '[LEA](./rev-0042-lea.md)' or
+    '[...](../binary-basics/rev-0024-twos-complement.md)') into the flat
+    '<slug>.html' path that actually exists under dist/article/.
+
+    Only rewrites when the referenced slug exists in this build's corpus;
+    otherwise the link is left untouched so scripts/validate.py's broken-link
+    check can still catch genuinely dead references.
+    """
+    def repl(m):
+        href = m.group(1)
+        if href.startswith("http://") or href.startswith("https://"):
+            return m.group(0)
+        basename = href.rsplit("/", 1)[-1]
+        slug = basename[:-3] if basename.endswith(".md") else basename
+        if slug in slug_to_article:
+            return "]({}.html)".format(slug)
+        return m.group(0)
+    return LOCAL_MD_LINK_RE.sub(repl, body_md)
+
+
 # --------------------------------------------------------------------------
 # HTML templating
 # --------------------------------------------------------------------------
@@ -205,9 +230,10 @@ def tag_list_for(fm):
     return [t for t in tags if t]
 
 
-def render_article_html(article, id_to_article):
+def render_article_html(article, id_to_article, slug_to_article):
     fm = article["frontmatter"]
     body_md, related_ids = process_related_section(article["body_md"], fm["id"], id_to_article)
+    body_md = rewrite_local_md_links(body_md, slug_to_article)
     body_html = mdlib.markdown_to_html(body_md)
     tags_html = "".join('<span class="tag">{}</span>'.format(esc(t)) for t in tag_list_for(fm))
     page = ARTICLE_TEMPLATE.format(
@@ -345,7 +371,7 @@ def main():
     related_ids_by_id = {}
     rendered_pages = {}
     for a in articles:
-        page_html, related_ids = render_article_html(a, id_to_article)
+        page_html, related_ids = render_article_html(a, id_to_article, slug_to_article)
         slug = a["frontmatter"]["slug"]
         rendered_pages[slug] = page_html
         related_ids_by_id[a["frontmatter"]["id"]] = related_ids

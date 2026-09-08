@@ -48,4 +48,30 @@ AI가 중단되더라도 다음 작업자가 이어서 개발할 수 있도록 �
 - 10개 작성마다 build → validate → smoke test → 로그 → commit 반복
 
 ### Commit
-- (다음 커밋에서 기록)
+- e6c282d
+
+## 2026-09-08 23:50 KST — 진행상황 로그 주기 변경 안내
+사용자 지시로 워크플로 변경:
+- `DEVELOPMENT_LOG.md`는 이제부터 10개가 아니라 50개 작성마다 갱신 (rate limit로 중단될 경우를 대비한 복구용 기록이 목적)
+- 로컬 git 커밋은 배치 단위로 크게 묶어도 됨
+- `git push`는 1,000개 글 + 어셈블리 사전 + 툴킷 + 이미지 + 최종 검증까지 전부 끝난 뒤 마지막에 한 번만 수행 (그 전까지는 로컬 커밋만)
+
+### 완료 (누적 59개 글)
+- Phase 3 Assembly Dictionary 49개 전부 작성 완료 (REV-0039~0088, CALL 제외 — CALL은 Phase 1에서 이미 작성): MOV/MOVZX/MOVSX/LEA/XCHG/PUSH/POP/PUSHF·POPF/ADD/SUB/INC·DEC/MUL/IMUL/DIV/IDIV/NEG/AND/OR/XOR/NOT/TEST/CMP/SHL·SAL/SHR/SAR/ROL/ROR/JMP/JE·JZ/JNE·JNZ/JG·JGE·JL·JLE/JA·JAE·JB·JBE/RET/LEAVE/NOP/CMOVcc/SETcc/SYSCALL/SYSENTER·SYSEXIT/INT·INT0x80/REP/MOVS/STOS/LODS/SCAS/CMPS/CPUID/RDTSC/플래그 레지스터 개관
+- `scripts/build.py`에 전역 로컬 `.md`→`.html` 링크 재작성 로직 추가 (`rewrite_local_md_links`) — 병렬 작성 시 글 본문 어디서든 다른 글을 마크다운 링크로 자유롭게 상호 참조할 수 있게 됨 (이전에는 `관련 글` 섹션의 특정 불릿 포맷만 처리했음)
+- frontmatter 누락(aliases/symptom_keywords/source_ids) 3건, stale 관련 글 참조 1건, 필수 섹션 누락 경고 12건(가장 먼저 할 것/단계별 절차/명령어·단축키/막혔을 때 다음 체크) 전부 수정
+
+### 검증
+- `python3 scripts/build.py` → 59개 전부 빌드 성공
+- `python3 scripts/validate.py` → PASS (오류 0, 경고 0)
+- Node vm 스모크 테스트로 call/ret/lea/mov/movzx/movsx/cmp/test/jnz/jz/jg/ja/sar/shr/xor/and 등 어셈블리 니모닉 16개 전수 재확인 — 전부 자기 전용 글이 1위로 정확히 매칭
+
+### 문제
+- 없음 (경고까지 전부 해소)
+
+### 다음 작업
+- Phase 4: seed 300 나머지 카테고리(바이너리 기초, 처음 시작, Windows/PE, Linux/ELF, 정적분석, 동적분석, 알고리즘, 패킹, .NET/Android, 자동화, 툴 사용법) 병렬 작성 계속
+- 50개(또는 자연스러운 배치 완료 시점)마다 이 로그 갱신
+
+### Commit
+- (다음 로컬 커밋에서 기록, push는 전체 완료 후)
