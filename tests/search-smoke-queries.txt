@@ -1,0 +1,38 @@
+call
+ret
+lea
+mov
+movzx
+movsx
+cmp
+test
+jnz
+jz
+jg
+ja
+sar
+shr
+xor
+and
+_libc_start_main
+positive sp value
+main 어디
+ida f5
+ida strings
+ida xref
+x64dbg string
+rdi rsi
+rcx rdx
+signed unsigned
+2의 보수
+0xffffff
+16777619
+xor multiply loop
+pie breakpoint
+aslr
+upx
+ptrace
+IsDebuggerPresent
+pe 처음
+elf 처음
+stripped elf

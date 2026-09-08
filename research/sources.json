@@ -1,0 +1,44 @@
+[
+  {
+    "id": "SEED-001",
+    "title": "Hex-Rays IDA Shortcuts",
+    "url": "https://docs.hex-rays.com/user-guide/configuration/shortcuts",
+    "type": "official",
+    "notes": "Current IDA shortcut reference; verify version before publishing."
+  },
+  {
+    "id": "SEED-002",
+    "title": "Hex-Rays Decompiler Interactive Operation",
+    "url": "https://docs.hex-rays.com/user-guide/decompiler/interactive",
+    "type": "official",
+    "notes": "F5 decompilation and decompiler behavior."
+  },
+  {
+    "id": "SEED-003",
+    "title": "x64dbg Documentation",
+    "url": "https://help.x64dbg.com/en/latest/",
+    "type": "official",
+    "notes": "Commands, searching, breakpoints, UI."
+  },
+  {
+    "id": "SEED-004",
+    "title": "GDB Online Documentation",
+    "url": "https://sourceware.org/gdb/current/onlinedocs/gdb.html/",
+    "type": "official",
+    "notes": "Breakpoints, stepping, registers, memory."
+  },
+  {
+    "id": "SEED-005",
+    "title": "Pwndbg Documentation",
+    "url": "https://pwndbg.re/stable/",
+    "type": "official",
+    "notes": "Installation and debugger helpers."
+  },
+  {
+    "id": "SEED-006",
+    "title": "The Official Radare2 Book",
+    "url": "https://book.rada.re/",
+    "type": "official",
+    "notes": "Analysis/search/reference card."
+  }
+]
