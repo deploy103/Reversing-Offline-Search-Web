@@ -1,19 +1,15 @@
 {
-  "last_updated": "2026-09-08T21:03:00+09:00",
-  "phase": "not_started",
-  "completed_article_count": 0,
-  "validated_article_count": 0,
+  "last_updated": "2026-09-08T22:40:00+09:00",
+  "phase": "phase1_skeleton_complete",
+  "completed_article_count": 10,
+  "validated_article_count": 10,
   "pending_article_ids": [
-    "REV-0001",
-    "REV-0002",
     "REV-0003",
     "REV-0004",
     "REV-0005",
     "REV-0006",
     "REV-0007",
     "REV-0008",
-    "REV-0009",
-    "REV-0010",
     "REV-0011",
     "REV-0012",
     "REV-0013",
@@ -27,9 +23,7 @@
     "REV-0021",
     "REV-0022",
     "REV-0023",
-    "REV-0024",
     "REV-0025",
-    "REV-0026",
     "REV-0027",
     "REV-0028",
     "REV-0029",
@@ -74,7 +68,6 @@
     "REV-0068",
     "REV-0069",
     "REV-0070",
-    "REV-0071",
     "REV-0072",
     "REV-0073",
     "REV-0074",
@@ -103,7 +96,6 @@
     "REV-0097",
     "REV-0098",
     "REV-0099",
-    "REV-0100",
     "REV-0101",
     "REV-0102",
     "REV-0103",
@@ -154,7 +146,6 @@
     "REV-0148",
     "REV-0149",
     "REV-0150",
-    "REV-0151",
     "REV-0152",
     "REV-0153",
     "REV-0154",
@@ -211,7 +202,6 @@
     "REV-0205",
     "REV-0206",
     "REV-0207",
-    "REV-0208",
     "REV-0209",
     "REV-0210",
     "REV-0211",
@@ -1005,24 +995,38 @@
     "REV-0999",
     "REV-1000"
   ],
-  "last_completed_article_id": null,
+  "last_completed_article_id": "REV-0208",
   "current_tasks": [
+    "Phase 3: write remaining Assembly Dictionary articles (REV-0039..REV-0088, minus REV-0071 already done)",
     "expand CONTENT_PLAN.md seed 300 to exact 1000-entry manifest",
-    "create repository",
-    "build static site skeleton",
-    "implement offline search engine",
-    "write first 10 entries"
+    "begin Phase 2 aggressive web research and populate research/sources.json"
   ],
-  "known_issues": [],
+  "known_issues": [
+    "Markdown converter flattens nested sub-lists to sibling <li> items (acceptable for now, revisit if an article needs true nesting)",
+    "Several nav categories (dynamic-analysis, packing, tools, automation) have 0 articles so far and show an empty state; expected until Phase 3/4 content lands"
+  ],
   "next_actions": [
-    "read AGENTS.md and REQUIREMENTS.md",
-    "create private GitHub repository",
-    "implement file:// compatible prototype"
+    "author REV-0039..REV-0070, REV-0072..REV-0088 (remaining 49 assembly dictionary entries)",
+    "re-run scripts/build.py and scripts/validate.py after every ~10 new articles",
+    "run tests/search-smoke-queries.txt against updated search index each checkpoint",
+    "commit + update DEVELOPMENT_LOG.md + state/progress.json every ~10 articles per AGENTS.md recovery protocol"
   ],
   "target_entry_count": 1000,
   "target_mix": {
     "long_form": 500,
     "reference": 250,
     "troubleshooting": 250
-  }
+  },
+  "completed_article_ids": [
+    "REV-0001",
+    "REV-0002",
+    "REV-0009",
+    "REV-0010",
+    "REV-0024",
+    "REV-0026",
+    "REV-0071",
+    "REV-0100",
+    "REV-0151",
+    "REV-0208"
+  ]
 }
