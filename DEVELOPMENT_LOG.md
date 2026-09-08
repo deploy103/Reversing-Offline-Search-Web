@@ -154,4 +154,25 @@ AI가 중단되더라도 다음 작업자가 이어서 개발할 수 있도록 �
 - 이후 linux-elf(95) → static-analysis(85) → dynamic-analysis(70) → triage/binary-basics/algorithms(140) → packing/dotnet-android/automation/tools(70) 순으로 웨이브 계속
 
 ### Commit
+- 47c5b4c
+
+## 2026-09-09 06:30 KST — Expansion 700 Wave 2: windows-pe 카테고리 확장 완료 (누적 540개)
+
+### 완료
+- windows-pe 카테고리 확장 130개 전부 작성(REV-0496~0625): WinAPI 그룹별 레퍼런스(파일/레지스트리/프로세스/스레드/메모리/네트워크/CRT), PE 상수/플래그 치트시트, 하드웨어/소프트웨어 브레이크포인트·타이밍·SEH/VEH·self-debugging·부모프로세스 등 안티디버깅 심화, PE 심화 구조(.pdata/.reloc/.rsrc/버전정보/매니페스트/Delay-Load/Bound/Ordinal Import/Rich Header/Authenticode), 프로세스 할로잉/리플렉티브 DLL/API 해싱 개념, 실전 트러블슈팅(DLL 누락, x64dbg 로드 실패, anti-attach, 서명 검증 차단 등) — 13개 병렬 에이전트
+- 3건 stale title, 1건 마크다운 오탐 링크(`Data Directory[1](Import Table)`가 링크로 오인식됨 — 괄호+대괄호 인접 패턴), 5개 파일의 `한 줄 요약`/`미니 예제` 누락 섹션 수정
+
+### 검증
+- `python3 scripts/build.py` → 540개 전부 빌드 성공
+- `python3 scripts/validate.py` → PASS (오류 0, 경고 0)
+- Node vm 스모크 테스트 재확인 — 기존 매칭 전부 유지
+
+### 문제
+- `텍스트[숫자](단어)` 형태의 산문이 마크다운 링크로 오인식되는 패턴 발견(1건) — 향후 콘텐츠 작성 시 대괄호+괄호 인접 표기 주의 필요, validate.py에 이 패턴 감지 체크 추가를 고려할 것
+
+### 다음 작업
+- Expansion 700 Wave 3: linux-elf 95개
+- 이후 static-analysis(85) → dynamic-analysis(70) → triage/binary-basics/algorithms(140) → packing/dotnet-android/automation/tools(70)
+
+### Commit
 - (다음 로컬 커밋에서 기록, push는 전체 완료 후)

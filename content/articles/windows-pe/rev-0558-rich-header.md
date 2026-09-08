@@ -1,0 +1,135 @@
+---
+id: REV-0558
+title: "Rich Header에서 컴파일러 정보 추출하기"
+slug: "rev-0558-rich-header"
+category: "windows-pe"
+difficulty: "intermediate"
+platform: [windows]
+architecture: [x86, x64]
+format: [PE]
+tools: [IDA, "CFF Explorer", "Detect It Easy"]
+keywords: ["Rich Header", "DanS", "Rich", "comp.id", "MSVC 링커 버전", "빌드 지문", "malware attribution"]
+aliases: ["리치 헤더란", "danS 시그니처", "컴파일러 지문 확인", "rich header xor key"]
+symptom_keywords: ["DOS 스텁과 PE 헤더 사이에 이상한 바이트가 있음", "DanS 문자열이 헥스 에디터에 보임", "같은 그룹 악성코드인지 컴파일러로 비교하고 싶음", "rich header가 없는 파일을 봤음"]
+source_ids: ["SRC-MS-PE-FORMAT", "SRC-GENERAL-REVERSING"]
+last_verified: "2026-09-08"
+---
+
+## 한 줄 요약
+Rich Header는 DOS 스텁과 `"PE\0\0"` 시그니처 사이에 숨어 있는, **마이크로소프트 문서에 공식적으로 기술되지 않은 비공식 구조**로, MSVC 툴체인(링커, 컴파일러, 각 목적 파일을 만든 도구)의 버전과 사용 횟수를 XOR로 인코딩해서 담고 있어 "이 파일을 정확히 어떤 Visual Studio/도구 조합으로 빌드했는가"를 추정하는 데 쓰이며, 악성코드 패밀리 클러스터링(같은 개발 환경에서 나온 샘플 묶기)에도 실무적으로 활용된다.
+
+## 언제 검색해야 하나
+- 헥스 에디터로 PE 파일 앞부분을 보다가 DOS 스텁 이후, `"PE\0\0"` 시그니처 이전 구간에서 `Rich` 라는 텍스트를 발견했을 때
+- pestudio, CFF Explorer, `pefile` 같은 도구가 "Rich Header" 섹션을 별도로 파싱해서 보여주는데 이게 뭔지 궁금할 때
+- 같은 악성코드 패밀리로 의심되는 여러 샘플이 정말 같은 개발자/빌드 환경에서 나왔는지 비교하고 싶을 때
+- GCC/MinGW로 빌드된 파일에는 이 구조가 왜 없는지 궁금할 때
+- 컴파일러 버전을 근거로 취약점이나 특정 런타임 동작을 추정해야 할 때
+
+## 핵심 개념
+
+### Rich Header의 위치와 존재 이유
+Rich Header는 공식 PE 포맷 명세에 없는, **MSVC 링커가 남기는 비공식 부가 정보**다. 위치는 항상 DOS 스텁이 끝나는 지점부터 `IMAGE_NT_HEADERS`(`"PE\0\0"`) 시그니처 직전까지의 여백 공간이다. 이름의 유래는 구조 끝부분에 나오는 매직 문자열 `"Rich"` 때문이며, 이 이름을 처음 발견해서 공개한 것도 마이크로소프트 공식 문서가 아니라 리버싱 커뮤니티였다.
+
+### 구조 개요
+```text
+[DOS 헤더 + DOS 스텁]
+        │
+        ▼
+"DanS" 매직 (XOR 인코딩된 상태로 저장됨) + 패딩 0들 (역시 같은 키로 XOR됨)
+        │
+        ▼
+(CompID, 사용 횟수) 쌍들의 배열   ← 각 도구/목적파일마다 하나씩, 전부 같은 키로 XOR됨
+        │
+        ▼
+"Rich" 매직 (평문, XOR 안 됨) + 4바이트 XOR 키 (평문)
+        │
+        ▼
+"PE\0\0" 시그니처로 이어짐
+```
+
+XOR 키는 파일의 DOS 헤더 및 Rich Header 데이터 자체로부터 계산되는 체크섬 값이며, `"Rich"` 매직 바로 뒤 4바이트에 그대로(암호화하지 않고) 저장돼 있다. 즉 이 키를 읽어서 `"DanS"` 이후의 모든 DWORD를 XOR 해제하면 원래 값들이 복원된다.
+
+각 (CompID, 사용 횟수) 쌍에서 `CompID` DWORD는 상위 16비트가 **제품 ID(ProdId, 예: 특정 버전의 MSVC 컴파일러, 링커, CVTRES 등 내부 도구 식별자)**, 하위 16비트가 **빌드 번호(Build Number)**로 나뉘어 있고, 뒤따르는 DWORD는 "이 도구가 이 파일을 만드는 데 몇 번 관여했는가"에 해당하는 사용 횟수(Use Count)다. 예를 들어 오브젝트 파일 10개를 컴파일해서 링크한 EXE라면, 컴파일에 쓰인 도구의 사용 횟수가 10 근처로 나타나는 식이다.
+
+### 왜 리버서/분석가에게 유용한가
+1. **정밀한 빌드 환경 추정**: `.rdata`의 버전 문자열이나 컴파일 타임스탬프보다 더 세밀하게, 어떤 Visual Studio 버전/업데이트, 어떤 링커, 심지어 LTCG(Link-Time Code Generation) 사용 여부까지 유추할 수 있다.
+2. **악성코드 패밀리 클러스터링**: 위협 인텔리전스 진영(대표적으로 Mandiant/FireEye의 공개 리서치)에서 Rich Header 해시를 별도의 지문(fingerprint)으로 활용해, 같은 공격자가 만든 여러 샘플을 빌드 환경 유사성으로 묶는 데 써왔다.
+3. **위조 탐지**: 정상 소프트웨어를 사칭한 악성코드가 파일 버전 정보(`VS_VERSION_INFO`)는 그럴듯하게 위조했더라도 Rich Header까지 일치시키는 경우는 드물어서, 불일치가 위조의 단서가 될 수 있다.
+4. **GCC/MinGW/Clang 빌드와 구분**: Rich Header는 MSVC 링커(`link.exe`)의 산물이므로, GCC나 MinGW, Clang(lld 링커)으로 빌드된 PE에는 보통 이 구조가 없다. Rich Header의 유무 자체가 툴체인 추정에 쓰인다.
+
+## 화면/코드에서 보이는 징후
+- 헥스 에디터에서 DOS 스텁 뒤, PE 시그니처 앞 구간에 `Rich` 텍스트(ASCII `52 69 63 68`)가 보임
+- CFF Explorer의 "Rich Header" 탭에서 CompID/버전/사용 횟수가 표로 정리되어 나타남
+- pestudio가 "rich-header" 지표를 별도 패널에 XOR 해제된 상태로 표시함
+- GCC/MinGW로 빌드된 실행 파일을 같은 도구로 열었을 때 Rich Header 섹션 자체가 비어 있거나 존재하지 않는다고 표시됨
+
+## 가장 먼저 할 것
+직접 XOR 키를 계산해서 수작업으로 파싱하기보다는, 이미 검증된 파서를 쓰는 것이 훨씬 안전하고 빠르다. CFF Explorer를 열어 파일을 로드하면 Rich Header 탭이 자동으로 파싱된 표를 보여준다. Python 환경이라면 `pefile` 라이브러리의 `pe.RICH_HEADER` 속성(존재 시 `pe.RICH_HEADER.values`, `pe.RICH_HEADER.checksum`)으로 바로 접근할 수 있다.
+
+## 단계별 절차
+
+**1) Rich Header 존재 여부 확인**
+파일을 CFF Explorer나 pestudio, `pefile`로 열어 Rich Header 섹션이 파싱되는지 확인한다. 없으면 GCC/MinGW/Clang 계열 툴체인이거나, 의도적으로 제거(strip)됐을 가능성이 있다.
+
+**2) `"Rich"` 매직과 XOR 키 위치 찾기**
+헥스 에디터로 직접 볼 경우, `"PE\0\0"` 시그니처 바로 앞쪽에서 `52 69 63 68`(`"Rich"`) 바이트열을 찾는다. 그 직후 4바이트가 XOR 키다.
+
+**3) `"DanS"` 시작점까지 역방향으로 XOR 해제**
+`"Rich"` 앞의 데이터를 4바이트 단위로 읽어 키와 XOR 하면서 위로 거슬러 올라가면, 맨 처음 나오는 값이 XOR 키 자체와 같아지는 지점이 `"DanS"`(XOR 인코딩된 `0x536E6144`)다. 여기가 구조의 시작이다.
+
+**4) (CompID, 사용 횟수) 쌍 해석**
+`"DanS"` 다음의 각 DWORD 쌍을 XOR 해제해서, 첫 DWORD는 상위 16비트=ProdId, 하위 16비트=Build Number로 나누고, 두 번째 DWORD는 사용 횟수로 읽는다.
+
+**5) ProdId를 알려진 매핑표와 대조**
+ProdId는 공개적으로 정리된 매핑표(예: 리버싱 커뮤니티가 공개한 `comp.id` 데이터베이스, `pefile`이 내장한 표)를 참고해서 "Visual C++ 2019 컴파일러", "링커 14.2x" 같은 이름으로 변환한다.
+
+## 명령어/단축키
+```text
+CFF Explorer: 파일 로드 후 좌측 트리 → "Rich Header" (자동 XOR 해제된 표 제공)
+Python(pefile): pe = pefile.PE("파일.exe"); pe.RICH_HEADER.values 로 원소 배열 접근
+Detect It Easy(DIE): 여러 시그니처 스캔 결과 중 컴파일러 추정 정보에 Rich Header 근거가 반영되는 경우가 있음
+```
+
+## 출력 해석
+- 표에 여러 개의 ProdId/Build Number/Count 행이 나오고, 그중 하나가 "Linker"로 식별되면 그 버전이 최종 링크에 쓰인 `link.exe` 버전이다
+- Count 값이 유난히 큰 항목은 해당 도구(주로 C/C++ 컴파일러)로 컴파일된 오브젝트 파일 개수가 많다는 뜻 — 코드베이스 규모를 간접적으로 짐작할 수 있다
+- Rich Header 자체가 없다고 나오면 MSVC가 아닌 툴체인이거나, 링커 옵션(`/emittoolversioninfo:no`류) 또는 후처리 도구로 제거됐을 가능성을 함께 고려한다
+
+## 흔한 실수
+- Rich Header를 공식 PE 명세의 일부로 착각하는 것 — 마이크로소프트가 공식 문서화한 구조가 아니라 리버스 엔지니어링으로 밝혀진 비공식 구조다.
+- XOR 키가 파일마다 다르다는 것을 모르고 다른 파일에서 얻은 키를 그대로 재사용해 파싱을 시도하는 것 — 키는 각 파일의 DOS 헤더/Rich 데이터 자체로부터 계산되므로 파일마다 다르다.
+- Rich Header가 없다고 해서 무조건 "GCC로 빌드됐다"고 단정하는 것 — 특정 빌드 후처리 도구나 패커가 이 영역을 지우는 경우도 있으므로 다른 지표(REV-0126 DIE 분석 등)와 함께 판단해야 한다.
+- ProdId 매핑표가 버전마다 계속 추가되는 것을 모르고 오래된 매핑표만 참고해서 최신 Visual Studio 빌드를 "알 수 없음"으로 잘못 판단하는 것.
+
+## 막혔을 때 다음 체크
+- DOS 헤더/DOS 스텁 구조 자체가 헷갈리면 → [REV-0115 DOS Header와 MZ 시그니처](./rev-0115-dos-header.md)
+- 컴파일러/패커를 다른 각도(시그니처 스캔)로 확인하고 싶으면 → [REV-0126 Detect It Easy로 컴파일러 패커 확인](./rev-0126-die-basics.md)
+- 체크섬 필드와 Rich Header의 XOR 키 계산이 헷갈리면 → [REV-0557 PE 체크섬(Checksum) 검증과 리버싱 의미](./rev-0557-pe-checksum.md)
+- PE 전체 구조 감을 다시 잡고 싶으면 → [REV-0114 PE 파일 구조 한 번에 보기](./rev-0114-pe-overview.md)
+
+## 미니 예제
+CFF Explorer로 `sample.exe`를 열어 Rich Header 탭을 확인했다고 하자.
+
+```text
+Rich Header 탭 표시 내용(예시):
+  ProdId=0x00FE  BuildNo=25506   Count=12   → "Utc1900_C" (VC++ 2015~ 계열 C 컴파일러 추정)
+  ProdId=0x0102  BuildNo=25506   Count=45   → "Utc1900_CPP"
+  ProdId=0x0104  BuildNo=25506   Count=1    → "Linker"
+
+해석:
+  이 EXE는 오브젝트 파일 45개가 C++ 컴파일러를 거쳤고,
+  C 컴파일러를 거친 파일은 12개, 최종 링크는 한 번(링커 1회) 수행됐다.
+  같은 ProdId/BuildNo 조합을 가진 다른 샘플이 있다면
+  같은 빌드 환경(같은 개발자 PC 또는 같은 CI 파이프라인)에서 만들어졌을 가능성이 있다.
+```
+
+## 관련 글
+- REV-0115 — DOS Header와 MZ 시그니처
+- REV-0126 — Detect It Easy로 컴파일러 패커 확인
+- REV-0557 — PE 체크섬(Checksum) 검증과 리버싱 의미
+- REV-0114 — PE 파일 구조 한 번에 보기
+
+## 출처/검증
+- Rich Header가 공식 마이크로소프트 PE 명세에 없는 비공식 구조이며 `"DanS"`/`"Rich"` 매직과 XOR 인코딩 구조를 가진다는 점: 리버싱 커뮤니티가 공개한 리버스 엔지니어링 분석 자료 및 `pefile` 라이브러리 소스코드 구현 기준 (2026-09-08 검증). 마이크로소프트 공식 문서에는 이 구조가 기술되어 있지 않음을 밝혀둔다.
+- Rich Header가 위협 인텔리전스에서 악성코드 클러스터링에 활용된 사례: Mandiant/FireEye 공개 리서치("The Rich Header") 등 보안 업계 공개 자료 기준.
+- ProdId/컴파일러 버전 매핑표: 리버싱 커뮤니티가 공개/유지하는 `comp.id` 계열 데이터베이스 기준이며, 지속적으로 갱신되는 자료이므로 최신 Visual Studio 버전은 별도 확인이 필요할 수 있다.

@@ -1,0 +1,139 @@
+---
+id: REV-0546
+title: ".pdata 섹션과 x64 예외 처리 정보 읽는 법"
+slug: "rev-0546-pdata-exception-handling"
+category: "windows-pe"
+difficulty: "intermediate"
+platform: [windows]
+architecture: [x64]
+format: [PE]
+tools: [IDA, "PE-bear", WinDbg]
+keywords: ["IMAGE_DIRECTORY_ENTRY_EXCEPTION", "RUNTIME_FUNCTION", "UNWIND_INFO", "UNWIND_CODE", ".pdata", "RtlLookupFunctionEntry", "RtlVirtualUnwind", "table-based exception handling"]
+aliases: ["pdata 섹션이란", "x64 예외 처리 테이블", "RUNTIME_FUNCTION 구조체", "x64 스택 언와인드"]
+symptom_keywords: [".pdata 섹션이 뭔지 모름", "x64 바이너리에 SEH 체인이 안 보임", "함수 경계를 못 찾겠음", "UNWIND_INFO를 어떻게 읽는지 모름"]
+source_ids: ["SRC-MS-PE-FORMAT", "SRC-GENERAL-REVERSING"]
+last_verified: "2026-09-08"
+---
+
+## 한 줄 요약
+x64 PE에서는 x86처럼 스택에 예외 핸들러 체인을 직접 쌓는 대신, `.pdata` 섹션에 있는 `RUNTIME_FUNCTION` 배열과 그것이 가리키는 `UNWIND_INFO`로 "이 함수가 어디서 시작해서 어디서 끝나고, 예외가 나면 스택을 어떻게 되돌려야 하는지"를 테이블 형태로 미리 기록해두며, 이 테이블은 예외 처리뿐 아니라 스트립된 x64 바이너리에서 함수 경계를 정확히 찾는 데도 매우 유용하다.
+
+## 언제 검색해야 하나
+- x64 바이너리를 분석하는데 x86에서 익숙했던 `fs:[0]` 기반 SEH 체인이 전혀 보이지 않아 당황할 때
+- IDA가 스트립된 x64 바이너리에서도 함수 시작/끝 주소를 정확히 잡아내는 이유가 궁금할 때
+- PE-bear나 헤더 뷰어에서 `.pdata` 섹션과 Exception Directory를 봤는데 무슨 의미인지 모를 때
+- WinDbg에서 `!fnent`나 `.fnent` 명령을 만났는데 결과 구조가 이해되지 않을 때
+- 크래시 덤프를 분석하다가 스택 언와인드가 실패하는 이유를 예외 디렉터리 관점에서 확인하고 싶을 때
+
+## 핵심 개념
+
+### 왜 x64는 다른 방식을 쓰는가
+x86의 SEH는 스택 프레임마다 `EXCEPTION_REGISTRATION_RECORD`를 TIB(`fs:[0]`)에 체인처럼 걸어두는 **런타임 기반** 방식이다. 이 방식은 스택 어디에나 예외 핸들러 포인터가 존재할 수 있어서 스택 오버플로우 공격이나 SEH 오버라이트 공격에 취약했다. x64는 이 문제를 근본적으로 없애기 위해 스택에는 아무 포인터도 두지 않고, 대신 **PE 파일 자체(즉 읽기 전용 메모리)에 정적 테이블**을 두는 방식으로 바꿨다. 이 테이블이 바로 `.pdata` 섹션에 들어있는 `RUNTIME_FUNCTION` 배열이며, `IMAGE_OPTIONAL_HEADER.DataDirectory[IMAGE_DIRECTORY_ENTRY_EXCEPTION]`(인덱스 3)이 이 배열의 RVA와 크기를 가리킨다.
+
+### RUNTIME_FUNCTION 구조체
+```c
+typedef struct _RUNTIME_FUNCTION {
+    DWORD BeginAddress;      // 함수 시작 RVA
+    DWORD EndAddress;        // 함수 끝 RVA (마지막 바이트 다음)
+    DWORD UnwindInfoAddress; // UNWIND_INFO 구조체의 RVA
+} RUNTIME_FUNCTION, *PRUNTIME_FUNCTION;  // 총 12바이트
+```
+`.pdata`는 이 12바이트짜리 항목이 함수 시작 주소 순으로 정렬되어 나열된 배열이다. 함수 하나당 최소 한 개의 `RUNTIME_FUNCTION` 항목이 있어야 하며(리프 함수, 즉 스택을 건드리지 않고 다른 함수를 호출하지도 않는 아주 단순한 함수는 예외적으로 생략 가능), 이 규칙 덕분에 이 배열만 순서대로 읽으면 스트립된 x64 바이너리에서도 정확한 함수 경계 목록을 얻을 수 있다. IDA가 심벌이 없는 x64 바이너리에서도 함수를 놀랍도록 정확히 잘라내는 핵심 이유 중 하나가 바로 이 테이블을 파싱하기 때문이다.
+
+### UNWIND_INFO와 UNWIND_CODE
+`UnwindInfoAddress`가 가리키는 곳에는 `UNWIND_INFO` 구조체가 있다.
+```c
+typedef struct _UNWIND_INFO {
+    UBYTE Version       : 3;   // 현재 1
+    UBYTE Flags         : 5;   // UNW_FLAG_EHANDLER 등
+    UBYTE SizeOfProlog;
+    UBYTE CountOfCodes;
+    UBYTE FrameRegister  : 4;
+    UBYTE FrameOffset    : 4;
+    UNWIND_CODE UnwindCode[CountOfCodes]; // 가변 길이
+    // Flags에 따라 뒤에 예외 핸들러 RVA 또는 체인 정보가 이어짐
+} UNWIND_INFO;
+```
+`Flags` 필드는 이 함수가 예외 핸들러를 가지고 있는지(`UNW_FLAG_EHANDLER`, `0x1`), 종료 핸들러(`finally` 등)를 가지고 있는지(`UNW_FLAG_UHANDLER`, `0x2`), 아니면 다른 `RUNTIME_FUNCTION`으로 체이닝되는 프롤로그 없는 함수 조각인지(`UNW_FLAG_CHAININFO`, `0x4`)를 나타낸다. `UNW_FLAG_EHANDLER`나 `UNW_FLAG_UHANDLER`가 켜져 있으면 `UnwindCode` 배열 바로 뒤에 예외 핸들러 함수의 RVA(그리고 언어별 예외 데이터)가 이어진다 — 이 RVA가 바로 `try/except`, `try/finally`, C++ `try/catch`가 실제로 컴파일된 핸들러 함수의 주소이므로, 예외 흐름을 추적할 때 핵심 단서가 된다.
+
+`UnwindCode` 배열은 프롤로그에서 레지스터를 얼마나 어떻게 저장했는지(`push rbx`, `sub rsp, 0x28`, 비휘발성 레지스터를 스택에 저장 등)를 코드화해서 기록한다. `RtlVirtualUnwind` 같은 런타임 함수가 예외 발생 시 이 정보를 읽어 "이 함수의 프롤로그가 스택/레지스터를 어떻게 바꿨는지"를 역산해서 호출자 프레임으로 되돌아간다.
+
+### 런타임에서 실제로 쓰이는 흐름
+예외가 발생하면 커널/런타임은 현재 RIP를 가지고 `RtlLookupFunctionEntry(PC, &ImageBase, &HistoryTable)`를 호출해 해당 PC가 속한 `RUNTIME_FUNCTION`을 이진 탐색으로 찾는다. 그 다음 `UNWIND_INFO`를 읽어 `RtlVirtualUnwind`로 한 프레임을 되돌리고, 이 과정을 스택 최상위까지 반복하면서 각 프레임에 등록된 예외/종료 핸들러를 순서대로 호출한다. 이 전체 과정은 x86 SEH 체인 탐색과 목적은 같지만, 스택이 아니라 PE 파일에 내장된 읽기 전용 테이블을 기준으로 동작하기 때문에 스택 손상만으로는 예외 처리 메커니즘 자체를 조작할 수 없다는 게 x64 방식의 핵심 방어 이점이다.
+
+## 화면/코드에서 보이는 징후
+- IDA에서 x64 바이너리를 로드하면 View → Open subviews → Exceptions 창에서 각 함수의 언와인드 정보와 핸들러 RVA를 확인할 수 있음
+- PE-bear의 Directories 탭에서 `Exception Directory`(인덱스 3)의 RVA/Size가 `.pdata` 섹션 범위와 일치하는지 확인 가능
+- WinDbg에서 `!fnent <주소>` 또는 `.fnent`로 특정 주소가 속한 `RUNTIME_FUNCTION`과 `UNWIND_INFO`를 텍스트로 볼 수 있음
+- 크래시 덤프에서 콜스택이 갑자기 끊기고 `WARNING: Stack unwind information not available`류 메시지가 나오면, 해당 모듈에 `.pdata`가 없거나(JIT 코드, 손상된 PE 등) 손상된 것
+
+## 가장 먼저 할 것
+분석 대상이 x64 PE라면 x86식으로 `fs:[0]` SEH 체인을 찾으려 하지 말고, 먼저 IDA의 Exceptions 뷰나 헤더의 Exception Directory(`IMAGE_DIRECTORY_ENTRY_EXCEPTION`)부터 확인한다. `try/except`나 C++ 예외 처리가 어디서 걸리는지 알고 싶다면 문제의 함수를 감싸는 `RUNTIME_FUNCTION`을 찾고, 그 `UnwindInfoAddress`가 가리키는 `UNWIND_INFO.Flags`에 `UNW_FLAG_EHANDLER`가 켜져 있는지부터 본다.
+
+## 단계별 절차
+**1) Exception Directory 위치 확인**
+`OptionalHeader.DataDirectory[3].VirtualAddress`와 `.Size`를 읽는다. `Size`를 12로 나누면 `RUNTIME_FUNCTION` 항목 개수가 나온다.
+
+**2) 관심 있는 함수의 RUNTIME_FUNCTION 찾기**
+분석 중인 함수의 시작 RVA를 계산한 뒤, `BeginAddress <= RVA < EndAddress`를 만족하는 항목을 이진 탐색(배열은 정렬되어 있음)으로 찾는다. IDA/WinDbg를 쓰면 이 과정을 도구가 대신 해준다.
+
+**3) UNWIND_INFO 파싱**
+`UnwindInfoAddress`가 가리키는 위치의 `Flags`를 확인한다. `UNW_FLAG_CHAININFO`(`0x4`)가 켜져 있으면 이 항목은 프롤로그 없는 코드 조각이며, `UnwindCode` 배열 뒤에 진짜 부모 함수의 `RUNTIME_FUNCTION`이 이어져 있으니 그쪽을 따라간다.
+
+**4) 예외 핸들러 RVA 확인**
+`UNW_FLAG_EHANDLER`/`UNW_FLAG_UHANDLER`가 켜져 있으면 `UnwindCode` 배열 바로 뒤 4바이트가 핸들러 함수 RVA다. 이 주소로 이동하면 `try/except`/`try/finally`/C++ `catch` 블록이 컴파일된 실제 코드를 볼 수 있다.
+
+## 명령어/단축키
+```text
+IDA: View → Open subviews → Exceptions (함수별 UNWIND_INFO/핸들러 목록)
+WinDbg: !fnent <주소>   — RUNTIME_FUNCTION/UNWIND_INFO 텍스트 덤프
+WinDbg: .fnent <주소>   — 로컬 함수 엔트리 정보
+WinDbg: !exchain        — x86 전용, x64에서는 다른 메커니즘이라 사용 불가
+```
+
+## 출력 해석
+- `!fnent`가 "Unable to find function entry"류 메시지를 내면 해당 주소가 어떤 `RUNTIME_FUNCTION`에도 속하지 않는다는 뜻 — JIT 생성 코드이거나, 매우 단순한 리프 함수(예외 처리 진입점이 되지 않는 함수)로 항목이 생략됐을 가능성
+- `UNW_FLAG_CHAININFO`만 켜져 있고 `EHANDLER`/`UHANDLER`가 꺼져 있으면 이 함수 조각에는 자체 예외 핸들러가 없고, 단지 부모 함수의 언와인드 정보를 재사용하는 구조
+- `.pdata`가 통째로 비어있거나 Exception Directory의 `Size`가 `0`이면, 이 모듈은 언와인드 정보 없이 컴파일됐거나(드묾) 도구가 의도적으로 제거/손상시킨 경우이며, 이런 경우 IDA의 자동 함수 탐지 정확도가 떨어질 수 있음
+
+## 흔한 실수
+- x64 바이너리에서도 x86 SEH 체인(`fs:[0]`)을 찾으려고 시간을 낭비하는 것 — x64는 완전히 다른 테이블 기반 메커니즘을 쓴다.
+- `RUNTIME_FUNCTION`의 `BeginAddress`/`EndAddress`를 VA로 착각하는 것 — 이 값들은 모두 RVA이며 반드시 ImageBase를 더해야 실제 주소가 된다.
+- `UNW_FLAG_CHAININFO`가 켜진 항목을 독립된 함수로 오해하고 그 자체에서 예외 핸들러를 찾으려 하는 것 — 체인을 따라가 부모 항목을 봐야 한다.
+- `.pdata`가 없다고 해서 그 모듈에 예외 처리 코드가 전혀 없다고 단정하는 것 — 드물지만 특수한 코드 생성 옵션이나 손상으로 테이블이 비어있을 수도 있으니 디스어셈블리에서 직접 `try`류 패턴을 함께 확인해야 한다.
+
+## 막혔을 때 다음 체크
+- 이 Exception Directory가 헤더의 Data Directory 배열에서 정확히 어느 위치인지 헷갈리면 → [PE Header COFF Optional Header 읽기](./rev-0116-pe-coff-optional-header.md)
+- `.pdata`가 어느 섹션에 매핑되어 있는지 섹션 테이블 관점에서 다시 보고 싶으면 → [PE Section Table 읽기](./rev-0117-pe-section-table.md)
+- x86 SEH 체인 기반 예외 처리와 비교하고 싶으면 → [SEH와 예외 기반 제어 흐름 기초](./rev-0134-seh-basics.md)
+- 재배치 정보(`.reloc`)와 함께 x64 PE의 다른 데이터 디렉터리를 보고 싶으면 → [.reloc 섹션과 재배치 정보 읽는 법](./rev-0547-reloc-base-relocation.md)
+- RVA를 실제 파일 오프셋/VA로 변환하는 계산이 헷갈리면 → [RVA VA Raw Offset 계산](./rev-0118-rva-va-raw-offset.md)
+
+## 미니 예제
+x64 EXE 하나를 WinDbg로 열고 특정 함수 주소에서 `!fnent 00007ff6`1234`5678`를 입력했더니 다음과 비슷한 결과가 나왔다고 하자.
+
+```text
+BeginAddress      = 00000000`00011000
+EndAddress        = 00000000`000111a0
+UnwindInfoAddress = 00000000`00030040
+
+Unwind info at 00030040
+  Version 1, Flags UNW_FLAG_EHANDLER, SizeOfProlog 0xe, CountOfCodes 4
+  FrameRegister rbp, FrameOffset 0
+  UNWIND_CODE[4]:
+    ...
+  Handler: 0000000000031200
+```
+`Flags`에 `UNW_FLAG_EHANDLER`가 있으므로 이 함수는 `try/except` 블록을 가지고 있고, `Handler` 주소(`0x31200`, ImageBase 기준 RVA)로 이동하면 실제로 `except` 블록이 컴파일된 코드를 확인할 수 있다. `BeginAddress`/`EndAddress`로 이 함수의 정확한 크기(`0x1a0`바이트)도 바로 알 수 있어, 심벌이 없는 경우에도 함수 범위를 신뢰성 있게 잘라낼 수 있다.
+
+## 관련 글
+- REV-0117 — PE Section Table 읽기
+- REV-0116 — PE Header COFF Optional Header 읽기
+- REV-0134 — SEH와 예외 기반 제어 흐름 기초
+- REV-0547 — .reloc 섹션과 재배치 정보 읽는 법
+- REV-0118 — RVA VA Raw Offset 계산
+
+## 출처/검증
+- `RUNTIME_FUNCTION`, `UNWIND_INFO`, `UNWIND_CODE` 구조체 정의와 x64 예외 처리 메커니즘: Microsoft Learn "x64 exception handling" 및 "PE Format" 공식 문서 기준 (2026-09-08 검증).
+- `RtlLookupFunctionEntry`/`RtlVirtualUnwind` API 동작: Microsoft Learn Win32 API 문서 기준.
+- WinDbg `!fnent`/`.fnent` 명령 동작: Microsoft WinDbg 공식 문서 기준.
