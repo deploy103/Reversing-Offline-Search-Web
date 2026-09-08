@@ -207,6 +207,22 @@ def check_file_protocol_safety():
         fail("dist/ does not exist -- cannot run file:// smoke test")
         return
 
+    # (parent_dir_str, clean_url) -> resolved-path-exists bool. Most articles
+    # live in the same dist/article/ directory and share the same handful of
+    # relative links (nav, css/js assets, cross-article links repeat a lot
+    # across ~1000 pages), so memoizing collapses what would otherwise be
+    # thousands of redundant resolve()+exists() filesystem calls -- each of
+    # which is a slow round trip on WSL's DrvFs bridge for a /mnt/c/ path.
+    resolve_cache = {}
+
+    def resolves(parent, clean):
+        key = (str(parent), clean)
+        cached = resolve_cache.get(key)
+        if cached is None:
+            cached = (parent / clean).resolve().exists()
+            resolve_cache[key] = cached
+        return cached
+
     html_files = list(DIST_DIR.rglob("*.html")) + list(DIST_DIR.rglob("*.js"))
     for f in html_files:
         text = f.read_text(encoding="utf-8")
@@ -229,8 +245,8 @@ def check_file_protocol_safety():
                     clean = url.split("?")[0].split("#")[0]
                     if not clean:
                         continue
-                    resolved = (f.parent / clean).resolve()
-                    if not resolved.exists():
+                    if not resolves(f.parent, clean):
+                        resolved = (f.parent / clean).resolve()
                         fail("{}: broken local reference: {} (resolved to {})".format(f, url, resolved))
 
 

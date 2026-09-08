@@ -131,4 +131,27 @@ AI가 중단되더라도 다음 작업자가 이어서 개발할 수 있도록 �
 - 완료 후 Phase 5(툴 오프라인 킷) → Phase 6(이미지) → Phase 7(최종 검증)
 
 ### Commit
+- 75701a7
+
+## 2026-09-09 05:00 KST — Expansion 700 Wave 1: assembly 카테고리 확장 완료 (누적 410개)
+
+### 완료
+- CONTENT_PLAN.md를 REQUIREMENTS.md 도메인 분포표 기준 1,000개 전체 계획으로 확장(REV-0301~1000, 700개 신규) — 카테고리별 배분: assembly+110, windows-pe+130, linux-elf+95, static-analysis+85, dynamic-analysis+70, algorithms+55, binary-basics+45, triage+40, packing+35, dotnet-android+19, automation+14, tools+2. 중복 타이틀 0건 검증.
+- assembly 카테고리 확장 110개 전부 작성(REV-0386~0495): SIMD 베이직(MOVAPS/PXOR 등), BT 계열, LOOP 계열, XLAT/ENTER, x87 FPU 스택, RIP-relative/SIB 주소지정, switch 점프테이블/스택 카나리/루프 언롤링/vtable/RTTI 컴파일러 관용구 심화, 레지스터 스필/인라인 함수 등 트러블슈팅 패턴까지 — 11개 병렬 에이전트
+- **성능 최적화**: `scripts/validate.py`의 file:// 안전성 검사가 캐시 없이 매 링크마다 `resolve()+exists()`를 호출해 410개 글 기준 4분 15초 소요(WSL DrvFs 파일시스템 지연) → `(부모경로, URL)` 메모이제이션 캐시 추가로 27초로 단축 (9배 개선, 1,000개 확장 대비 필수)
+- 관련 글 stale title 2건 즉시 수정, 누락 섹션 경고 10건(배치 6, `단계별 절차` 누락) 보완
+
+### 검증
+- `python3 scripts/build.py` → 410개 전부 빌드 성공 (14초)
+- `python3 scripts/validate.py` → PASS (오류 0, 경고 0, 27초)
+- Node vm 스모크 테스트 재확인 — 기존 매칭 전부 유지
+
+### 문제
+- 없음 (성능 이슈는 해결됨)
+
+### 다음 작업
+- Expansion 700 Wave 2: windows-pe 130개 (REV-0496~0625로 추정, CONTENT_PLAN.md 확인 후 진행)
+- 이후 linux-elf(95) → static-analysis(85) → dynamic-analysis(70) → triage/binary-basics/algorithms(140) → packing/dotnet-android/automation/tools(70) 순으로 웨이브 계속
+
+### Commit
 - (다음 로컬 커밋에서 기록, push는 전체 완료 후)
