@@ -102,4 +102,33 @@ AI가 중단되더라도 다음 작업자가 이어서 개발할 수 있도록 �
 - seed 300 완료 후 REQUIREMENTS.md 도메인 분포표 기준으로 1,000개까지 확장
 
 ### Commit
+- e100cde
+
+## 2026-09-09 03:15 KST — Phase 4 Wave 2 완료, Seed 300 전체 달성 (누적 300개)
+
+### 완료
+- Windows/PE 카테고리 28개 전부 (REV-0114~0141): PE 구조, DOS/COFF/Optional Header, RVA/VA, Import/Export Table, MS x64 및 x86 호출 규약, Shadow Space, PE-bear/DIE/x64dbg 첫 분석, IsDebuggerPresent 계열 안티디버깅 4종, TLS/SEH, .NET vs Native 구분 등
+- 동적분석 카테고리 27개 전부 (REV-0169~0195): 브레이크포인트/스텝 개념 9개, x64dbg 8개, GDB/Pwndbg 10개 (PIE 브레이크포인트 포함)
+- 패킹/안티분석 카테고리 18개 전부 (REV-0224~0241): UPX 식별/언패킹, entropy, self-modifying/CFF/opaque predicate, ptrace/IsDebuggerPresent/PEB/RDTSC/CPUID/예외 기반 안티디버깅
+- .NET/Android 카테고리 16개 전부 (REV-0242~0257): dnSpyEx/ILSpy/CIL, APK/JADX/apktool/smali/Frida/JNI
+- 자동화/Solver 카테고리 16개 전부 (REV-0258~0273): Python 변환 치트시트 8개(실제 실행 검증됨), pwntools/Z3/angr/Capstone/Unicorn 8개
+- 툴 사용법 카테고리 27개 전부 (REV-0274~0300): IDA/Ghidra/x64dbg/GDB/Pwndbg 설치+단축키+10분 워크플로, DIE/PE-bear/ImHex/HxD/radare2/Cutter, 중복 없는 짧은 조합 치트시트(binutils, ltrace/strace), UPX/dnSpyEx/JADX 설치, Python 오프라인 패키지 준비
+- **CONTENT_PLAN.md의 seed 300개 전부 완료** — 15개 병렬 에이전트(+이전 웨이브 9개)로 작성
+- `관련 글` stale title 76건(59+15+2건 두 웨이브 합산) 재작성 스크립트로 정리
+- 누락 섹션 경고 14건 직접 보완 (일부는 의도적으로 짧게 유지한 조합형 치트시트라 헤딩 문구만 자연스럽게 삽입해 해결, 내용 패딩 없음)
+
+### 검증
+- `python3 scripts/build.py` → 300개 전부 빌드 성공
+- `python3 scripts/validate.py` → PASS (오류 0, 경고 0)
+- Node vm 스모크 테스트 39개 쿼리 전체 재실행 — MASTER_PROMPT/REQUIREMENTS가 명시한 모든 필수 쿼리 정확히 매칭 확인: `x64dbg string`→REV-0179, `upx`→REV-0225, `ptrace`→REV-0234, `IsDebuggerPresent`→REV-0235, `pie breakpoint`→REV-0103, `aslr`→REV-0104, 그 외 call/ret/lea/mov 등 어셈블리 전부, `_libc_start_main`/`positive sp value`/`16777619`/`0xffffff`/`2의 보수` 등 전부 정확
+
+### 문제
+- 병렬 웨이브가 커질수록(15개) `관련 글` stale title 발생 빈도도 늘어남 — 매 웨이브 후 일괄 재작성 스크립트가 안정적으로 작동하고 있으나, 다음 확장 단계에서는 build.py 자체에 이 ���규화 로직을 내장하는 것을 고려할 것
+
+### 다음 작업
+- CONTENT_PLAN.md를 REQUIREMENTS.md 도메인 분포표 기준 1,000개로 확장 (나머지 700개 계획 수립)
+- 같은 웨이브 방식으로 700개 작성 계속
+- 완료 후 Phase 5(툴 오프라인 킷) → Phase 6(이미지) → Phase 7(최종 검증)
+
+### Commit
 - (다음 로컬 커밋에서 기록, push는 전체 완료 후)

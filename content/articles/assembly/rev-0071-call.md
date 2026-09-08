@@ -294,12 +294,12 @@ sub_402000:
 ## 관련 글
 - REV-0072 — RET: 함수 반환과 스택 변화
 - REV-0106 — SysV AMD64 Calling Convention
-- REV-0122 — Microsoft x64 Calling Convention (예정)
+- REV-0122 — Microsoft x64 Calling Convention
 - REV-0100 — PLT와 GOT 기초
 - REV-0151 — IDA Positive SP Value Has Been Detected 경고
-- REV-0170 — Step Into와 Step Over 차이 (예정)
-- REV-0175 — CALL 직전 함수 인자 확인하는 법 (예정)
-- REV-0176 — CALL 직후 반환값 확인하는 법 (예정)
+- REV-0170 — Step Into와 Step Over 차이
+- REV-0175 — CALL 직전 함수 인자 확인하는 법
+- REV-0176 — CALL 직후 반환값 확인하는 법
 
 ## 출처/검증
 - CALL/RET 명령어 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "CALL—Call Procedure" / "RET—Return from Procedure" 섹션 기준 (2026-09-08 검증).

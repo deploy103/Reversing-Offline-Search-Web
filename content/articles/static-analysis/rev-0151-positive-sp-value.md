@@ -104,7 +104,7 @@ IDA가 만약 `_printf`를 잘못된 정보로 stdcall(피호출자가 정리)�
 - REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적
 - REV-0152 — IDA Decompiler Failed가 뜰 때
 - REV-0153 — IDA Stack Pointer 분석이 틀렸을 때
-- REV-0123 — Windows x86 stdcall cdecl fastcall thiscall (예정)
+- REV-0123 — Windows x86 stdcall cdecl fastcall thiscall
 
 ## 출처/검증
 - IDA SP-analysis 및 "positive sp value" 경고: Hex-Rays 공식 포럼/문서(SP-analysis failed 관련 troubleshooting 자료) 및 IDA 자체 Output window 실제 메시지 문구 기준 (2026-09-08 검증).
