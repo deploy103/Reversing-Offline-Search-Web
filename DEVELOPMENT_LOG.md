@@ -330,4 +330,31 @@ AI가 중단되더라도 다음 작업자가 이어서 개발할 수 있도록 �
 - MASTER_PROMPT 정의: 1,000개/검색/Assembly Dictionary/설치법/단축키/이미지/offline kit manifest/file:// 테스트 — **전부 완료**. 남은 것은 private GitHub push뿐.
 
 ### Commit
-- (아래 커밋에서 기록, 이후 `git push` 진행 예정)
+- 55b1d66
+
+## 2026-09-10 10:00 KST — 사용자 추가 요청: 드림핵 워게임 리버싱 Write-up 50개(REV-1001~1050) 완료
+
+### 배경
+사용자가 "드림핵 브론즈 티어에서 실버 티어까지 리버싱 문제 write-up 50개를 조사해서 넣자"고 요청. 원래 1,000개 계획(CONTENT_PLAN.md)에는 없던 확장이라 REV-1001~REV-1050 번호를 새로 부여하고 `category: "writeup"` 신설.
+
+### 완료
+- **실제 문제 목록 조사**: `dreamhack.io/wargame/challenges?tag=reversing&page=1~20`을 직접 순회 조회(WebFetch)해서 리버싱 카테고리 문제들의 실제 이름/티어(Bronze 4~Silver 1)/풀이자 수를 확인. 로그인 없이는 개별 챌린지 페이지 접근이 막히지만, 페이지네이션 목록 자체는 조회가 가능함을 발견해 이를 활용. 브론즈 42개 + 실버 8개 = 50개를 선정해 `CONTENT_PLAN.md` 끝에 "Extension: Dreamhack Wargame Write-up 50" 섹션으로 기록.
+- **6개 병렬 에이전트**가 각각 8~10개 문제를 실제로 WebSearch/WebFetch로 조사(velog/tistory/medium/github.io 블로그, 드림핵 공식 챌린지 페이지, GitHub write-up 저장소 등)한 뒤, **원문을 그대로 복제하지 않고** 확인된 기술적 패턴(검증 로직 종류, 사용 도구, 해결 절차)을 완전히 새로운 한국어 문장으로 재구성해서 작성. 상세 write-up을 못 찾은 문제(대략 12~15개)는 솔직하게 "출처/검증" 섹션에 그 사실을 명시하고 추정임을 밝힌 채 일반적 접근법만 서술 — 정답/플래그를 지어내지 않음.
+- 확인된 대표 사례: rev-basic-3(XOR+인덱스 공식, XOR 자기역원성으로 역산), rev-basic-8(곱셈 mod 256 브루트포스, 실제 정답 `Did_y0u_brute_force?` 확인), Simple Crack Me 2(32바이트 체인 XOR/INC/DEC, 실제 플래그 `DH{9ce745c0d5faaf29b7aecd1a4a72bc86}` 확인), Inject ME!!!(DllMain에서 프로세스명 검사 → 로더 파일명 위장으로 해결), Simple Patch Me(365일=8760=0x2238 카운터 초기값 패치), patch(GDI+ WM_PAINT 플래그 그리기 루틴 패치), Secure Mail(알고 보니 PE가 아니라 난독화된 JS 웹 리버싱 문제였음을 조사로 발견해 platform/format 정정), randzzz(RNG 역산이 아니라 GDB로 레지스터 값을 실행 중 직접 조작해 우회)
+- 새 카테고리 nav 항목 추가(`scripts/build.py` NAV_ITEMS에 "Write-up (드림핵)"), `research/sources.json`에 `SRC-DREAMHACK-WARGAME` 출처 추가
+- 관련 글 stale title 2건(REV-0080, REV-0572) 발견 즉시 재작성 스크립트로 수정
+- `tests/search-smoke-queries.txt`에 write-up 관련 쿼리 7개 추가(rev-basic-3, dreamhack patch, simple crack me 등) — 전부 올바른 REV-10XX 글로 정확히 매칭 확인
+
+### 검증
+- `python3 scripts/build.py` → **1,050개 전부 빌드 성공**
+- `python3 scripts/validate.py` → PASS (오류 0, 경고 0)
+- `node tests/run-smoke-test.js` → **129/129 매칭**(기존 122개 + write-up 신규 7개, no-result 0)
+
+### 문제
+- 없음. 다만 일부 문제(약 12~15개)는 공개된 상세 write-up을 찾지 못해 일반론 위주로 작성됐음을 각 글의 "출처/검증"에 투명하게 밝혀둠 — 향후 더 나은 출처를 찾으면 보강 가능.
+
+### 다음 작업
+- 없음(사용자 추가 요청까지 전부 완료). 최종 push 진행.
+
+### Commit
+- (아래 커밋에서 기록)

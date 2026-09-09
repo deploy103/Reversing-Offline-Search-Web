@@ -1118,3 +1118,64 @@ Generated to bring the seed 300 up to the full 1,000-entry manifest required by 
 
 - REV-0999 — WinDbg 기초 소개와 언제 쓰는지 [category:tools, type:reference, difficulty:basic]
 - REV-1000 — YARA 규칙 기초와 활용 소개 [category:tools, type:reference, difficulty:basic]
+
+## Extension: Dreamhack Wargame Write-up 50 (REV-1001-REV-1050)
+
+2026-09-10 추가. 드림핵(dreamhack.io) 워게임의 실제 리버싱(reversing) 카테고리 문제 목록을
+`https://dreamhack.io/wargame/challenges?tag=reversing&page=N`(1~20페이지)을 직접 조회해
+문제명/티어(Bronze 4 ~ Silver 1)/풀이자 수를 확인하고 브론즈~실버 구간에서 50개를 선정했다.
+난이도 매핑: Bronze * -> difficulty:basic, Silver * -> difficulty:intermediate.
+category: "writeup". 각 글은 원문 write-up을 그대로 복제하지 않고, 문제 설명과 실제 분석을 통해
+얻은 "문제 해결 패턴"을 한국어로 새로 서술하며 참고한 출처(드림핵 공식 페이지, 참고 블로그)를
+출처/검증 섹션에 명시한다.
+
+- REV-1001 — [Write-up] rev-basic-0 (Bronze 4)
+- REV-1002 — [Write-up] rev-basic-1 (Bronze 4)
+- REV-1003 — [Write-up] rev-basic-2 (Bronze 4)
+- REV-1004 — [Write-up] rev-basic-3 (Bronze 4)
+- REV-1005 — [Write-up] rev-basic-4 (Bronze 4)
+- REV-1006 — [Write-up] rev-basic-5 (Bronze 4)
+- REV-1007 — [Write-up] rev-basic-6 (Bronze 4)
+- REV-1008 — [Write-up] rev-basic-7 (Bronze 4)
+- REV-1009 — [Write-up] rev-basic-8 (Bronze 4)
+- REV-1010 — [Write-up] rev-basic-9 (Bronze 2)
+- REV-1011 — [Write-up] simple-operation (Bronze 4)
+- REV-1012 — [Write-up] Simple Crack Me (Bronze 4)
+- REV-1013 — [Write-up] Simple Crack Me 2 (Bronze 3)
+- REV-1014 — [Write-up] Inject ME!!! (Bronze 2)
+- REV-1015 — [Write-up] Simple Patch Me (Bronze 2)
+- REV-1016 — [Write-up] Small Counter (Bronze 1)
+- REV-1017 — [Write-up] r-xor-t (Bronze 3)
+- REV-1018 — [Write-up] Check Function Argument (Bronze 3)
+- REV-1019 — [Write-up] Check Return Value (Bronze 4)
+- REV-1020 — [Write-up] Collect Me (Bronze 2)
+- REV-1021 — [Write-up] Recover (Bronze 4)
+- REV-1022 — [Write-up] checkflag (Bronze 3)
+- REV-1023 — [Write-up] secret message (Bronze 1)
+- REV-1024 — [Write-up] Easy Assembly (Bronze 4)
+- REV-1025 — [Write-up] [CodeEngn] Malware L07 (Bronze 4)
+- REV-1026 — [Write-up] legacyopt (Bronze 2)
+- REV-1027 — [Write-up] [CodeEngn] Malware L06 (Bronze 3)
+- REV-1028 — [Write-up] public (Bronze 1)
+- REV-1029 — [Write-up] Batch Checker (Bronze 2)
+- REV-1030 — [Write-up] My Favorite Fruit (Bronze 2)
+- REV-1031 — [Write-up] [CodeEngn] Malware L08 (Bronze 2)
+- REV-1032 — [Write-up] Stop before stops! (Bronze 2)
+- REV-1033 — [Write-up] please, please, please (Bronze 4)
+- REV-1034 — [Write-up] dungeon-in-1983 (Bronze 2)
+- REV-1035 — [Write-up] flag printer (Bronze 2)
+- REV-1036 — [Write-up] mix-compare (Bronze 1)
+- REV-1037 — [Write-up] ezmix (Bronze 1)
+- REV-1038 — [Write-up] Summer Fan (Bronze 3)
+- REV-1039 — [Write-up] Happy New Year! (Bronze 4)
+- REV-1040 — [Write-up] 아 문제 이름 뭘로하지 (Bronze 2)
+- REV-1041 — [Write-up] Simple and Swap (Bronze 3)
+- REV-1042 — [Write-up] my rand (Bronze 2)
+- REV-1043 — [Write-up] patch (Silver 4)
+- REV-1044 — [Write-up] Secure Mail (Silver 4)
+- REV-1045 — [Write-up] baseball (Silver 3)
+- REV-1046 — [Write-up] Long Sleep (Silver 4)
+- REV-1047 — [Write-up] randzzz (Silver 4)
+- REV-1048 — [Write-up] hash-browns (Silver 2)
+- REV-1049 — [Write-up] What is your name? (Silver 4)
+- REV-1050 — [Write-up] fake (Silver 4)

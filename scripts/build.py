@@ -54,6 +54,7 @@ NAV_ITEMS = [
     ("툴 사용법", "index.html?cat=tools"),
     ("단축키", "index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4"),
     ("자동화 / Solver", "index.html?cat=automation"),
+    ("Write-up (드림핵)", "index.html?cat=writeup"),
 ]
 
 DIFFICULTY_LABEL = {"beginner": "입문", "basic": "기초", "intermediate": "중급"}

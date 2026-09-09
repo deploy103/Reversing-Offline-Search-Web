@@ -40,5 +40,12 @@
     "url": "https://book.rada.re/",
     "type": "official",
     "notes": "Analysis/search/reference card."
+  },
+  {
+    "id": "SRC-DREAMHACK-WARGAME",
+    "title": "Dreamhack Wargame - Reversing category challenge listing",
+    "url": "https://dreamhack.io/wargame/challenges?tag=reversing",
+    "type": "official",
+    "notes": "드림핵 워게임 리버싱 카테고리 문제 목록/티어(Bronze-Silver)/풀이자 수 확인용 (2026-09-10 조회). 개별 문제 URL은 각 글의 출처/검증 섹션에 기록."
   }
 ]
