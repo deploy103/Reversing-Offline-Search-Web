@@ -1,0 +1,657 @@
+[
+  {
+    "name": "IDA Free",
+    "version": "9.2 (Hex-Rays 공식 배포, My Hex-Rays 포털 기준 최신)",
+    "platform": [
+      "windows",
+      "linux",
+      "macos"
+    ],
+    "official_url": "https://hex-rays.com/ida-free",
+    "release_url": "",
+    "sha256": "",
+    "license": "Freeware/Proprietary (Hex-Rays IDA Free EULA, 비상업적 용도 한정, IDAPython/SDK 미포함)",
+    "offline_install": "공식 사이트(hex-rays.com/ida-free)에서 이메일 등록 후 My Hex-Rays 포털(my.hex-rays.com)에서 설치 프로그램을 수동으로 다운로드해야 함(직접 스크립트 다운로드 불가). 다운로드 페이지에 SHA256이 명시되지 않으므로, 다운로드 직후 verify-checksums.py로 검증하지 말고 수동으로 `sha256sum`을 실행해 값을 기록해 두었다가 재배포 시 그 값을 안내할 것.",
+    "local_path": "offline-kit/installers/ida-free/ida-free-installer"
+  },
+  {
+    "name": "GDB (소스 tarball)",
+    "version": "17.2",
+    "platform": [
+      "linux",
+      "windows",
+      "macos"
+    ],
+    "official_url": "https://www.gnu.org/software/gdb/",
+    "release_url": "https://ftp.gnu.org/gnu/gdb/gdb-17.2.tar.xz",
+    "sha256": "1c036c0d72e4b3d1fb5c94c88632add6f9d76f4d7c4d2ea793c12a9f19a3228c",
+    "license": "GPL-3.0-or-later (일부 라이브러리 LGPL-3.0)",
+    "offline_install": "대부분의 리눅스 배포판은 apt/dnf 패키지로 이미 포함되어 있음(우분투 기준: `apt-get download gdb` 로 오프라인 설치용 .deb 미리 받기 → 오프라인 PC에서 `dpkg -i gdb_*.deb`). 소스에서 직접 빌드하려면 tar -xJf gdb-17.2.tar.xz 후 ./configure && make && sudo make install (Windows는 MinGW/MSYS2 환경 필요). Ubuntu/Debian 패키지 페이지: https://packages.ubuntu.com/noble/gdb",
+    "local_path": "offline-kit/tools/gdb/gdb-17.2.tar.xz"
+  },
+  {
+    "name": "binutils (file/strings/readelf/objdump/nm)",
+    "version": "2.47 (GNU 공식) / 배포판별 apt 패키지 버전은 상이할 수 있음",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://packages.ubuntu.com/noble/binutils",
+    "release_url": "",
+    "sha256": "",
+    "license": "GPL-3.0-or-later (일부 파일 GPL-2.0-or-later, libiberty 등은 LGPL 계열)",
+    "offline_install": "대부분의 리눅스 배포판에 기본 포함되거나 apt 패키지로 설치됨. 오프라인 준비: 인터넷 되는 PC에서 `apt-get download binutils binutils-common libbinutils`로 .deb 파일들을 받아 SSD에 저장 후, 오프라인 PC에서 `sudo dpkg -i *.deb`로 설치. sha256은 배포판마다 다르므로 값을 고정하지 않으며, 필요 시 해당 배포판의 Packages/Release 파일에 명시된 체크섬을 참조. GNU 공식 소스: https://ftp.gnu.org/gnu/binutils/binutils-2.47.tar.xz",
+    "local_path": "offline-kit/tools/binutils/binutils-debs/"
+  },
+  {
+    "name": "ltrace",
+    "version": "0.7.3 (Ubuntu noble 기준 apt 패키지 버전)",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://packages.ubuntu.com/noble/ltrace",
+    "release_url": "",
+    "sha256": "",
+    "license": "GPL-2.0-or-later",
+    "offline_install": "Linux 전용 apt 패키지. 인터넷 되는 PC에서 `apt-get download ltrace`로 .deb를 받아 SSD에 저장 후, 오프라인 PC에서 `sudo dpkg -i ltrace_*.deb`로 설치. sha256은 배포판 미러마다 다르므로 빈 값으로 두며, 필요 시 해당 배포판 Packages 파일의 체크섬을 참조. 공식 업스트림 소스는 GitLab(https://gitlab.com/cespedes/ltrace)에 있음.",
+    "local_path": "offline-kit/tools/ltrace/ltrace-debs/"
+  },
+  {
+    "name": "strace",
+    "version": "6.8 (Ubuntu noble 기준 apt 패키지 버전)",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://packages.ubuntu.com/noble/strace",
+    "release_url": "",
+    "sha256": "",
+    "license": "LGPL-2.1-or-later (테스트 스위트는 GPL-2.0-or-later, bundled/linux 헤더는 GPL-2.0 with syscall exception)",
+    "offline_install": "Linux 전용 apt 패키지. 인터넷 되는 PC에서 `apt-get download strace`로 .deb를 받아 SSD에 저장 후, 오프라인 PC에서 `sudo dpkg -i strace_*.deb`로 설치. sha256은 배포판 미러마다 다르므로 빈 값으로 두며, 필요 시 해당 배포판 Packages 파일의 체크섬을 참조. 공식 업스트림 소스: https://strace.io",
+    "local_path": "offline-kit/tools/strace/strace-debs/"
+  },
+  {
+    "name": "HxD",
+    "version": "2.5.0.0",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://mh-nexus.de/en/hxd/",
+    "release_url": "https://mh-nexus.de/downloads/HxDSetup.zip",
+    "sha256": "5065041c7b03c24b9533a5b32b33db58f2b4924cd84bed41834ff2db51c1cb7c",
+    "license": "Freeware (개인/상업적 사용 무료, 재판매 금지, mh-nexus 공식 라이선스 조항)",
+    "offline_install": "HxDSetup.zip 압축 해제 후 setup 실행 파일로 설치. 관리자 권한 불필요한 포터블판이 필요하면 HxDPortableSetup.zip 사용 권장.",
+    "local_path": "offline-kit/installers/hxd/HxDSetup.zip"
+  },
+  {
+    "name": "Resource Hacker",
+    "version": "5.2.8",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://www.angusj.com/resourcehacker/",
+    "release_url": "http://www.angusj.com/resourcehacker/reshacker_setup.exe",
+    "sha256": "b611be2f35cb44efd1c29df03e7ebe62bd556a500585680e1afa5e073eaf1756",
+    "license": "Freeware (재배포/미러링은 저작권자의 사전 서면 승인 필요 - 공개 재배포 금지, 개인 오프라인 사용 목적으로만 로컬 보관)",
+    "offline_install": "reshacker_setup.exe 실행 후 설치 마법사 진행. 라이선스상 공개 사이트/미디어를 통한 재배포가 금지되어 있으므로 이 파일은 개인 오프라인 킷(로컬 SSD)에만 보관하고 저장소에는 커밋하지 않는다.",
+    "local_path": "offline-kit/installers/resource-hacker/reshacker_setup.exe"
+  },
+  {
+    "name": "Python (Windows 설치 프로그램)",
+    "version": "3.13.15",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://www.python.org/downloads/",
+    "release_url": "https://www.python.org/ftp/python/3.13.15/python-3.13.15-amd64.exe",
+    "sha256": "edec09c4853aeae9ac36efb8c9f95b6b8e2fee65eee56d9767a8b7c69c574403",
+    "license": "PSF License Agreement (PSF-2.0, BSD 계열 오픈소스)",
+    "offline_install": "python-3.13.15-amd64.exe 실행 후 'Add python.exe to PATH' 체크 후 설치. 오프라인 PC에서 pip 패키지를 쓰려면 별도로 필요한 wheel들을 offline-kit/tools/pypi-wheels/ 에 미리 받아두고 `pip install --no-index --find-links=...`로 설치.",
+    "local_path": "offline-kit/installers/python/python-3.13.15-amd64.exe"
+  },
+  {
+    "name": "Python (소스 tarball, Linux/macOS 빌드용)",
+    "version": "3.13.15",
+    "platform": [
+      "linux",
+      "macos"
+    ],
+    "official_url": "https://www.python.org/downloads/",
+    "release_url": "https://www.python.org/ftp/python/3.13.15/Python-3.13.15.tar.xz",
+    "sha256": "1e66a7945a48390ee4c2a4268a0e4185884059a13c4aab6d148aa208deea4a76",
+    "license": "PSF License Agreement (PSF-2.0, BSD 계열 오픈소스)",
+    "offline_install": "대부분의 Linux 배포판은 python3가 기본 포함되어 있으므로 apt 패키지(`apt-get download python3`)로 충분한 경우가 많음. 소스에서 직접 빌드하려면 tar -xJf Python-3.13.15.tar.xz 후 ./configure --enable-optimizations && make && sudo make altinstall.",
+    "local_path": "offline-kit/tools/python/Python-3.13.15.tar.xz"
+  },
+  {
+    "name": "WinDbg",
+    "version": "1.2506.x (Microsoft Store/winget 롤링 배포, 고정 버전 태그 없음)",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://learn.microsoft.com/en-us/windows-hardware/drivers/debugger/",
+    "release_url": "",
+    "sha256": "",
+    "license": "Microsoft Software License Terms (Freeware/Proprietary, Microsoft Store 앱 라이선스)",
+    "offline_install": "Microsoft Store 앱이므로 직접 다운로드 URL이 없음. 인터넷 되는 PC에서 `winget install Microsoft.WinDbg` 로 설치하거나 Microsoft Store에서 설치. 완전 오프라인 PC라면 winget이 지원하는 오프라인 패키지 캐시(winget download Microsoft.WinDbg)를 사전에 받아 두거나, Windows SDK에 포함된 구버전 WinDbg(windbg.exe, Debugging Tools for Windows)를 대신 사용하는 것도 방법.",
+    "local_path": "offline-kit/installers/windbg/"
+  },
+  {
+    "name": "Ghidra",
+    "version": "12.1.3",
+    "platform": [
+      "windows",
+      "linux",
+      "macos"
+    ],
+    "official_url": "https://ghidra-sre.org",
+    "release_url": "https://github.com/NationalSecurityAgency/ghidra/releases/download/Ghidra_12.1.3_build/ghidra_12.1.3_PUBLIC_20260817.zip",
+    "sha256": "93a5d11a9ad510622acaaf908c556a7b9b764d338e78a7567f3689bf5081fd54",
+    "license": "Apache-2.0",
+    "offline_install": "JDK 17 이상 설치 후 zip 압축 해제. 리눅스/macOS는 ghidraRun, 윈도우는 ghidraRun.bat 실행. 인터넷 연결 불필요 (플랫폼 독립 Java 배포판).",
+    "local_path": "offline-kit/tools/ghidra/ghidra_12.1.3_PUBLIC_20260817.zip"
+  },
+  {
+    "name": "UPX (Linux x86_64)",
+    "version": "5.2.1",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://upx.github.io",
+    "release_url": "https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-amd64_linux.tar.xz",
+    "sha256": "402162aad30af47e60dbd767fb2e64ca394ace9727ba1f40283641f1d1b91657",
+    "license": "GPL-2.0-or-later",
+    "offline_install": "tar -xJf upx-5.2.1-amd64_linux.tar.xz 로 압축 해제 후 내부의 upx 바이너리를 PATH에 두고 바로 실행. 별도 의존성 없는 정적 실행 파일.",
+    "local_path": "offline-kit/tools/upx/upx-5.2.1-amd64_linux.tar.xz"
+  },
+  {
+    "name": "UPX (Windows x64)",
+    "version": "5.2.1",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://upx.github.io",
+    "release_url": "https://github.com/upx/upx/releases/download/v5.2.1/upx-5.2.1-win64.zip",
+    "sha256": "eabc6792a347d45e945be7748423e7868fd01b0d2bcaa2f4b1031fd71ff69bda",
+    "license": "GPL-2.0-or-later",
+    "offline_install": "zip 압축 해제 후 upx.exe 를 바로 실행. 설치 과정 불필요, 단독 실행 파일.",
+    "local_path": "offline-kit/tools/upx/upx-5.2.1-win64.zip"
+  },
+  {
+    "name": "YARA",
+    "version": "4.5.8",
+    "platform": [
+      "linux",
+      "macos",
+      "windows"
+    ],
+    "official_url": "https://virustotal.github.io/yara/",
+    "release_url": "https://github.com/VirusTotal/yara/releases/tag/v4.5.8",
+    "sha256": "9d7a65f1f6581a4b6da23cbfdd057a6e75b0d956e89a3d385c27637a6c770a78",
+    "license": "BSD-3-Clause",
+    "offline_install": "v4.5.8은 사전 컴파일 바이너리를 제공하지 않는 소스코드 전용 릴리스임(마지막 공식 Windows 사전빌드는 v4.5.5). autoreconf -fiv && ./configure && make && sudo make install 로 오프라인 빌드 필요(automake, libtool, libssl-dev 등 사전 설치 필요).",
+    "local_path": "offline-kit/tools/yara/yara-4.5.8-src.tar.gz"
+  },
+  {
+    "name": "checksec.sh",
+    "version": "1.7.0 (legacy script bundled in slimm609/checksec release 3.2.0)",
+    "platform": [
+      "linux",
+      "macos"
+    ],
+    "official_url": "https://github.com/slimm609/checksec",
+    "release_url": "https://raw.githubusercontent.com/slimm609/checksec/3.2.0/checksec.bash",
+    "sha256": "222a5558af1e64c95ad3a799e1edff36ad6124d449cfd4819ef72ea4264f19f4",
+    "license": "BSD-3-Clause",
+    "offline_install": "chmod +x checksec.bash 후 ./checksec.bash --file=<binary> 형태로 직접 실행. readelf/objdump(binutils) 필요. 참고: 이 스크립트는 저장소 내에서 더 이상 유지보수되지 않는 레거시 버전이며(내부 버전 1.7.0), 현재 활발히 개발되는 checksec 3.2.0은 Go로 재작성되어 apt-get download checksec 또는 .deb/.rpm/.apk 바이너리로 별도 배포됨.",
+    "local_path": "offline-kit/tools/checksec/checksec.bash"
+  },
+  {
+    "name": "Pwndbg",
+    "version": "2026.07.29",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://github.com/pwndbg/pwndbg",
+    "release_url": "https://github.com/pwndbg/pwndbg/releases/download/2026.07.29/pwndbg_2026.07.29_amd64.deb",
+    "sha256": "27030bb5c86e54a386aed88a309a844483fe0ef63e0be28ab7a024e0e627a79b",
+    "license": "MIT",
+    "offline_install": "sudo apt install ./pwndbg_2026.07.29_amd64.deb (또는 dpkg -i) 로 오프라인 설치. GDB 및 python3 등 의존 패키지 사전 설치 필요. arm64용 별도 .deb(pwndbg_2026.07.29_arm64.deb)도 동일 릴리스에 존재.",
+    "local_path": "offline-kit/tools/pwndbg/pwndbg_2026.07.29_amd64.deb"
+  },
+  {
+    "name": "x64dbg (x32dbg 포함)",
+    "version": "2026.05.27 (rolling snapshot build)",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://x64dbg.com/",
+    "release_url": "https://github.com/x64dbg/x64dbg/releases/download/2026.05.27/snapshot_2026-05-27_12-11.zip",
+    "sha256": "d41966dfc5b435a372798245300ca0ab7bb8e48bdbf48512c6fb20fcca427697",
+    "license": "GPL-3.0 (modified)",
+    "offline_install": "압축 해제 후 release/x64/x64dbg.exe(64비트) 또는 release/x32/x32dbg.exe(32비트) 실행. 포터블이며 Visual C++ 재배포 패키지가 필요할 수 있음.",
+    "local_path": "offline-kit/tools/x64dbg/snapshot_2026-05-27_12-11.zip"
+  },
+  {
+    "name": "Detect It Easy (DIE) (Windows)",
+    "version": "4.0.0 (DIE-engine Beta rolling release)",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://github.com/horsicq/Detect-It-Easy",
+    "release_url": "https://github.com/horsicq/DIE-engine/releases/download/Beta/die_win64_qt6_4.0.0.zip",
+    "sha256": "1a4d9b7a7e060377af9c007d5cb099458766ba1272cb4aa804f0b7d052793243",
+    "license": "MIT",
+    "offline_install": "압축 해제 후 die.exe(Qt6 GUI) 실행. 포터블, 설치 과정 불필요.",
+    "local_path": "offline-kit/tools/detect-it-easy/die_win64_qt6_4.0.0.zip"
+  },
+  {
+    "name": "Detect It Easy (DIE) (Linux AppImage)",
+    "version": "4.0.0 (DIE-engine Beta rolling release)",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://github.com/horsicq/Detect-It-Easy",
+    "release_url": "https://github.com/horsicq/DIE-engine/releases/download/Beta/Detect_It_Easy-4.0.0-x86_64.AppImage",
+    "sha256": "3d718b7f272ff26393e7656cab0bf3e220709780bb9a4a4c17e4836a8d66a117",
+    "license": "MIT",
+    "offline_install": "chmod +x Detect_It_Easy-4.0.0-x86_64.AppImage 후 ./Detect_It_Easy-4.0.0-x86_64.AppImage 로 실행. FUSE 라이브러리 필요할 수 있음.",
+    "local_path": "offline-kit/tools/detect-it-easy/Detect_It_Easy-4.0.0-x86_64.AppImage"
+  },
+  {
+    "name": "PE-bear (Windows)",
+    "version": "0.7.2",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://github.com/hasherezade/pe-bear",
+    "release_url": "https://github.com/hasherezade/pe-bear/releases/download/v0.7.2/PE-bear_0.7.2_qt6_x64_win_vs22.zip",
+    "sha256": "d2b995b213d0e6b3910a863c12fdb842722ce47387e65fc8e711ee9013d0876e",
+    "license": "GPL-2.0",
+    "offline_install": "압축 해제 후 PE-bear.exe 실행(포터블). Windows 10 이상 권장, VS2017 재배포 패키지 필요할 수 있음.",
+    "local_path": "offline-kit/tools/pe-bear/PE-bear_0.7.2_qt6_x64_win_vs22.zip"
+  },
+  {
+    "name": "PE-bear (Linux AppImage)",
+    "version": "0.7.2",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://github.com/hasherezade/pe-bear",
+    "release_url": "https://github.com/hasherezade/pe-bear/releases/download/v0.7.2/PE-bear_0.7.2_qt6_x86_64_linux.AppImage",
+    "sha256": "588310a852ec21956f637bfc67dd9b36a55fa8625ad4e528440cc273d632a400",
+    "license": "GPL-2.0",
+    "offline_install": "chmod +x 후 ./PE-bear_0.7.2_qt6_x86_64_linux.AppImage 로 실행. FUSE 라이브러리 필요할 수 있음.",
+    "local_path": "offline-kit/tools/pe-bear/PE-bear_0.7.2_qt6_x86_64_linux.AppImage"
+  },
+  {
+    "name": "ImHex (Windows)",
+    "version": "v1.38.1",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://imhex.werwolv.net/",
+    "release_url": "https://github.com/WerWolv/ImHex/releases/download/v1.38.1/imhex-1.38.1-Windows-x86_64.msi",
+    "sha256": "f0be16446f546ade94e55c3626a67c831cc85c03965a9c12bacf0c076214851c",
+    "license": "GPL-2.0",
+    "offline_install": "MSI 파일 실행 후 설치 마법사 진행. GPU 드라이버 문제 시 NoGPU 빌드 사용 권장.",
+    "local_path": "offline-kit/tools/imhex/imhex-1.38.1-Windows-x86_64.msi"
+  },
+  {
+    "name": "ImHex (Linux AppImage)",
+    "version": "v1.38.1",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://imhex.werwolv.net/",
+    "release_url": "https://github.com/WerWolv/ImHex/releases/download/v1.38.1/imhex-1.38.1-x86_64.AppImage",
+    "sha256": "20417481f9c05f0f4f633f9cd590e53ab6596fd755cc5b4c53374e5ae198e864",
+    "license": "GPL-2.0",
+    "offline_install": "chmod +x 후 ./imhex-1.38.1-x86_64.AppImage 로 실행. FUSE 라이브러리 필요할 수 있음.",
+    "local_path": "offline-kit/tools/imhex/imhex-1.38.1-x86_64.AppImage"
+  },
+  {
+    "name": "Cutter (Windows)",
+    "version": "v2.5.0",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://cutter.re/",
+    "release_url": "https://github.com/rizinorg/cutter/releases/download/v2.5.0/Cutter-v2.5.0-Windows-x86_64.zip",
+    "sha256": "a04154a03a392dbf5886a629938582f7d23a93636fa0611c3e1c34905b197e69",
+    "license": "GPL-3.0",
+    "offline_install": "Cutter-v2.5.0-Windows-x86_64.zip 압축을 원하는 폴더에 해제한 후, 폴더 내 Cutter.exe를 실행합니다. 별도 설치 과정 없이 바로 사용 가능합니다.",
+    "local_path": "offline-kit/tools/cutter/Cutter-v2.5.0-Windows-x86_64.zip"
+  },
+  {
+    "name": "Cutter (Linux)",
+    "version": "v2.5.0",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://cutter.re/",
+    "release_url": "https://github.com/rizinorg/cutter/releases/download/v2.5.0/Cutter-v2.5.0-Linux-x86_64.AppImage",
+    "sha256": "b8ad215d7a9e2af9e1f463511229f16e1f4745a0fb541413e5f4787f949ac0cf",
+    "license": "GPL-3.0",
+    "offline_install": "다운로드한 AppImage 파일에 실행 권한을 부여합니다(chmod +x Cutter-v2.5.0-Linux-x86_64.AppImage). 이후 ./Cutter-v2.5.0-Linux-x86_64.AppImage 명령으로 바로 실행합니다. FUSE가 없는 환경에서는 --appimage-extract 옵션으로 압축 해제 후 실행하세요.",
+    "local_path": "offline-kit/tools/cutter/Cutter-v2.5.0-Linux-x86_64.AppImage"
+  },
+  {
+    "name": "Rizin (Windows)",
+    "version": "v0.9.1",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://rizin.re/",
+    "release_url": "https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin_installer-v0.9.1-x86_64.exe",
+    "sha256": "3bfea0e6e4cd3c557fa61e2118805047da73da8907a26007c64d7f32bc113f22",
+    "license": "GPL-3.0",
+    "offline_install": "rizin_installer-v0.9.1-x86_64.exe를 관리자 권한으로 실행하여 설치 마법사를 따라 설치합니다. 설치 후 시작 메뉴 또는 명령 프롬프트에서 rizin 명령을 사용할 수 있습니다.",
+    "local_path": "offline-kit/tools/rizin/rizin_installer-v0.9.1-x86_64.exe"
+  },
+  {
+    "name": "Rizin (Linux)",
+    "version": "v0.9.1",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://rizin.re/",
+    "release_url": "https://github.com/rizinorg/rizin/releases/download/v0.9.1/rizin-v0.9.1-static-x86_64.tar.xz",
+    "sha256": "9102249a9f0b6319c5334a2e5cf8d9cc3f2035e1d3def027c41f6a90f647e8cf",
+    "license": "GPL-3.0",
+    "offline_install": "tar -xJf rizin-v0.9.1-static-x86_64.tar.xz 로 압축을 해제한 후, bin/rizin 실행 파일을 PATH에 등록하거나 직접 경로로 실행합니다. 정적 빌드이므로 별도 의존성 설치가 필요 없습니다.",
+    "local_path": "offline-kit/tools/rizin/rizin-v0.9.1-static-x86_64.tar.xz"
+  },
+  {
+    "name": "radare2 (Windows)",
+    "version": "6.2.2",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://radare.org/",
+    "release_url": "https://github.com/radareorg/radare2/releases/download/6.2.2/radare2-6.2.2-w64.zip",
+    "sha256": "913e7d95e7458226a5e783240877f2c1d405398ab38ba176ce9b12e046e31f34",
+    "license": "LGPL-3.0",
+    "offline_install": "radare2-6.2.2-w64.zip 압축을 원하는 폴더에 해제한 후, bin 폴더 안의 radare2.exe(r2.exe)를 직접 실행하거나 해당 폴더를 PATH에 추가합니다.",
+    "local_path": "offline-kit/tools/radare2/radare2-6.2.2-w64.zip"
+  },
+  {
+    "name": "radare2 (Linux)",
+    "version": "6.2.2",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://radare.org/",
+    "release_url": "https://github.com/radareorg/radare2/releases/download/6.2.2/radare2_6.2.2_amd64.deb",
+    "sha256": "09234e4139bf8dfcbb7fc1fdb2519859ad516e63c19d3c27d92aaecdf463b1ad",
+    "license": "LGPL-3.0",
+    "offline_install": "sudo dpkg -i radare2_6.2.2_amd64.deb 명령으로 설치합니다. 의존성 오류 발생 시 sudo apt-get install -f 로 해결합니다.",
+    "local_path": "offline-kit/tools/radare2/radare2_6.2.2_amd64.deb"
+  },
+  {
+    "name": "Apktool",
+    "version": "v3.0.3",
+    "platform": [
+      "windows",
+      "linux",
+      "macos"
+    ],
+    "official_url": "https://apktool.org/",
+    "release_url": "https://github.com/iBotPeaches/Apktool/releases/download/v3.0.3/apktool_3.0.3.jar",
+    "sha256": "dbf930b076c6b9be08d57c449cacefc3bdd6b71ebd59b3066fc0e1f5b14f9423",
+    "license": "Apache-2.0",
+    "offline_install": "apktool_3.0.3.jar 실행에는 Java(JRE 8+)가 필요합니다. 공식 실행 래퍼 스크립트(Windows용 apktool.bat, Linux/macOS용 apktool)를 apktool 공식 GitHub 저장소(https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/)에서 별도로 받아 jar 파일과 같은 폴더에 두고, jar 파일명을 apktool.jar로 변경한 뒤 래퍼 스크립트로 실행합니다. 직접 실행 시 'java -jar apktool_3.0.3.jar' 명령을 사용합니다.",
+    "local_path": "offline-kit/tools/apktool/apktool_3.0.3.jar"
+  },
+  {
+    "name": "dnSpyEx (dnSpy)",
+    "version": "v6.6.0",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://github.com/dnSpyEx/dnSpy",
+    "release_url": "https://github.com/dnSpyEx/dnSpy/releases/download/v6.6.0/dnSpy-net-win64.zip",
+    "sha256": "8ed48f165dc355e869f3a0037ad4f9216147f995a5ae0258b296eeef1f73aab0",
+    "license": "GPL-3.0",
+    "offline_install": "압축 해제 후 dnSpy.exe 실행. .NET 런타임이 포함된 self-contained 빌드(coreclr.dll 포함)라 별도 설치 불필요. Windows x64 전용.",
+    "local_path": "offline-kit/tools/dnspyex/dnSpy-net-win64.zip"
+  },
+  {
+    "name": "ILSpy",
+    "version": "v11.0 (assembly 11.0.0.9375)",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://github.com/icsharpcode/ILSpy",
+    "release_url": "https://github.com/icsharpcode/ILSpy/releases/download/v11.0/ILSpy_windows_selfcontained_11.0.0.9375-x64.zip",
+    "sha256": "7f8dcc507095656bb509a5051b9abab9656ec45d71cb33132866020590b56e42",
+    "license": "MIT",
+    "offline_install": "압축 해제 후 ILSpy.exe 실행. self-contained 빌드(coreclr.dll, hostfxr.dll 포함)로 .NET 런타임 별도 설치 불필요. Windows x64 전용.",
+    "local_path": "offline-kit/tools/ilspy/ILSpy_windows_selfcontained_11.0.0.9375-x64.zip"
+  },
+  {
+    "name": "JADX",
+    "version": "v1.5.6",
+    "platform": [
+      "windows",
+      "linux",
+      "macos"
+    ],
+    "official_url": "https://github.com/skylot/jadx",
+    "release_url": "https://github.com/skylot/jadx/releases/download/v1.5.6/jadx-1.5.6.zip",
+    "sha256": "545ea2be9c242511bc145755cf4bda2485ade42966e096f8b4d3da2a230e8974",
+    "license": "Apache-2.0",
+    "offline_install": "압축 해제 후 bin/jadx(CLI, Linux/macOS) 또는 bin/jadx.bat, bin/jadx-gui.bat(Windows) 실행. JRE는 포함되어 있지 않으므로 Java 11 이상이 시스템에 별도 설치되어 있어야 함.",
+    "local_path": "offline-kit/tools/jadx/jadx-1.5.6.zip"
+  },
+  {
+    "name": "adb / Android SDK Platform-Tools (Windows)",
+    "version": "37.0.1",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://developer.android.com/tools/releases/platform-tools",
+    "release_url": "https://dl.google.com/android/repository/platform-tools-latest-windows.zip",
+    "sha256": "45f4d63113e895ebde0c90f194099a4676b6ac653bd28d54314a9e022bbc1a99",
+    "license": "Android Software Development Kit License Agreement (proprietary, Google SDK 라이선스, OSI 오픈소스 아님) - 전문: https://developer.android.com/studio/terms",
+    "offline_install": "압축 해제 후 platform-tools 폴더를 원하는 위치에 두고 PATH에 추가. adb.exe 실행(Windows에서 USB 디바이스 인식 시 드라이버 별도 필요할 수 있음).",
+    "local_path": "offline-kit/tools/adb/platform-tools-latest-windows.zip"
+  },
+  {
+    "name": "adb / Android SDK Platform-Tools (Linux)",
+    "version": "37.0.1",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://developer.android.com/tools/releases/platform-tools",
+    "release_url": "https://dl.google.com/android/repository/platform-tools-latest-linux.zip",
+    "sha256": "d230f13842f60f782a8645f9c813f8f845bf36089ea7289f28c48f17979313f1",
+    "license": "Android Software Development Kit License Agreement (proprietary, Google SDK 라이선스, OSI 오픈소스 아님) - 전문: https://developer.android.com/studio/terms",
+    "offline_install": "압축 해제 후 platform-tools/adb에 실행 권한 부여(chmod +x) 후 PATH에 추가하여 사용.",
+    "local_path": "offline-kit/tools/adb/platform-tools-latest-linux.zip"
+  },
+  {
+    "name": "Sysinternals Strings",
+    "version": "2.54",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://learn.microsoft.com/en-us/sysinternals/downloads/strings",
+    "release_url": "https://download.sysinternals.com/files/Strings.zip",
+    "sha256": "b1a0a3dc5f639af1c98ae5832676727646eb3d543640e65e310dff747e733a25",
+    "license": "Microsoft Software License Terms for Microsoft Sysinternals Suite (freeware, 독점 라이선스, OSI 오픈소스 아님; Eula.txt 동봉)",
+    "offline_install": "압축 해제 후 strings64.exe(x64) / strings.exe(x86) / strings64a.exe(ARM64) 실행. 최초 실행 시 EULA 동의 창이 뜨며 -accepteula 옵션으로 무인 동의 가능.",
+    "local_path": "offline-kit/tools/strings/Strings.zip"
+  },
+  {
+    "name": "Process Monitor (ProcMon)",
+    "version": "4.1",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://learn.microsoft.com/en-us/sysinternals/downloads/procmon",
+    "release_url": "https://download.sysinternals.com/files/ProcessMonitor.zip",
+    "sha256": "4ff309fe52c56599377896b7863cb77b6c601d9f2522e52da7a182eac593e8e1",
+    "license": "Microsoft Software License Terms for Microsoft Sysinternals Suite (freeware, 독점 라이선스, OSI 오픈소스 아님; Eula.txt 동봉)",
+    "offline_install": "압축 해제 후 Procmon64.exe(x64) / Procmon.exe(x86) / Procmon64a.exe(ARM64) 실행. 커널 드라이버(PROCMON25.SYS) 로드를 위해 관리자 권한 필요, 최초 실행 시 EULA 동의 필요.",
+    "local_path": "offline-kit/tools/procmon/ProcessMonitor.zip"
+  },
+  {
+    "name": "pwntools (PyPI)",
+    "version": "4.15.0",
+    "platform": [
+      "windows",
+      "linux",
+      "macos"
+    ],
+    "official_url": "https://github.com/Gallopsled/pwntools",
+    "release_url": "https://files.pythonhosted.org/packages/87/03/b5aab57706d61c65aaf6ed181727e7621c7cf32109b22245ac04f1c76094/pwntools-4.15.0-py2.py3-none-any.whl",
+    "sha256": "f5508729b310ef1e959ad324306a0964cb6f2b04a34247484e446f0343eefc5c",
+    "license": "대부분 MIT, 일부 GPL/BSD-2-Clause 컴포넌트 포함 (LICENSE-pwntools.txt 참조)",
+    "offline_install": "인터넷 되는 PC에서 `pip download pwntools -d offline-kit/wheels/`로 미리 받아서 SSD에 넣고, 오프라인 PC에서 `pip install --no-index --find-links=offline-kit/wheels/ pwntools`로 설치",
+    "local_path": "offline-kit/tools/pypi-wheels/pwntools-4.15.0-py2.py3-none-any.whl"
+  },
+  {
+    "name": "z3-solver (PyPI, manylinux x86_64)",
+    "version": "5.1.0.0",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://github.com/Z3Prover/z3",
+    "release_url": "https://files.pythonhosted.org/packages/34/de/30329041d9a2dda11308576a80b5db17060e4b03a7ba7f550437fb38dd6b/z3_solver-5.1.0.0-py3-none-manylinux_2_27_x86_64.whl",
+    "sha256": "dfad9e309d7010b1ff6bdb33f21570a1603ef4727373221c7117a74448f0cfef",
+    "license": "MIT",
+    "offline_install": "인터넷 되는 PC에서 `pip download z3-solver -d offline-kit/wheels/`로 미리 받아서 SSD에 넣고, 오프라인 PC에서 `pip install --no-index --find-links=offline-kit/wheels/ z3-solver`로 설치",
+    "local_path": "offline-kit/tools/pypi-wheels/z3_solver-5.1.0.0-py3-none-manylinux_2_27_x86_64.whl"
+  },
+  {
+    "name": "z3-solver (PyPI, win_amd64)",
+    "version": "5.1.0.0",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://github.com/Z3Prover/z3",
+    "release_url": "https://files.pythonhosted.org/packages/3f/5a/e3651dc6c976bc44861f4ba0167366a1ce0b11b3bcbad7377f0d28f9f513/z3_solver-5.1.0.0-py3-none-win_amd64.whl",
+    "sha256": "1561efd36e06f4cb7cbf11b63a2fba8fc8fdeb9c5754df90c84f9bd7a4864552",
+    "license": "MIT",
+    "offline_install": "인터넷 되는 PC에서 `pip download z3-solver -d offline-kit/wheels/`로 미리 받아서 SSD에 넣고, 오프라인 PC에서 `pip install --no-index --find-links=offline-kit/wheels/ z3-solver`로 설치",
+    "local_path": "offline-kit/tools/pypi-wheels/z3_solver-5.1.0.0-py3-none-win_amd64.whl"
+  },
+  {
+    "name": "angr (PyPI, manylinux x86_64)",
+    "version": "9.3.4",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://github.com/angr/angr",
+    "release_url": "https://files.pythonhosted.org/packages/a1/a3/f8df9017e9ad0f6d3720bfd24f9b8ba157b43ca6d3b52ab75a982628a06b/angr-9.3.4-cp312-abi3-manylinux_2_28_x86_64.whl",
+    "sha256": "1bda0062a0b0f481b8349dc81fb4cb06d330898023a7559ebe3b602412077963",
+    "license": "BSD-2-Clause",
+    "offline_install": "인터넷 되는 PC에서 `pip download angr -d offline-kit/wheels/`로 미리 받아서 SSD에 넣고, 오프라인 PC에서 `pip install --no-index --find-links=offline-kit/wheels/ angr`로 설치",
+    "local_path": "offline-kit/tools/pypi-wheels/angr-9.3.4-cp312-abi3-manylinux_2_28_x86_64.whl"
+  },
+  {
+    "name": "angr (PyPI, win_amd64)",
+    "version": "9.3.4",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://github.com/angr/angr",
+    "release_url": "https://files.pythonhosted.org/packages/ee/53/b7bd4b0cf8f0136181faa54aa83a3ef9541048d608bbd763adb8a2c3a511/angr-9.3.4-cp312-abi3-win_amd64.whl",
+    "sha256": "c397f8ce62c676305b5f8d4a2719ab901c5a40ecaad68208ac0e2ff2811bb35b",
+    "license": "BSD-2-Clause",
+    "offline_install": "인터넷 되는 PC에서 `pip download angr -d offline-kit/wheels/`로 미리 받아서 SSD에 넣고, 오프라인 PC에서 `pip install --no-index --find-links=offline-kit/wheels/ angr`로 설치",
+    "local_path": "offline-kit/tools/pypi-wheels/angr-9.3.4-cp312-abi3-win_amd64.whl"
+  },
+  {
+    "name": "capstone (PyPI, manylinux x86_64)",
+    "version": "5.0.9",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://github.com/capstone-engine/capstone",
+    "release_url": "https://files.pythonhosted.org/packages/d1/39/17747862222bb062e86b501f1f148d5ff589b77908b080d30f7f085cbfb7/capstone-5.0.9-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "sha256": "273fd8d747d2e35c88f91450be51a603ecfaafb00d96d9f315dcb8689c86193e",
+    "license": "BSD-3-Clause",
+    "offline_install": "인터넷 되는 PC에서 `pip download capstone -d offline-kit/wheels/`로 미리 받아서 SSD에 넣고, 오프라인 PC에서 `pip install --no-index --find-links=offline-kit/wheels/ capstone`로 설치",
+    "local_path": "offline-kit/tools/pypi-wheels/capstone-5.0.9-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+  },
+  {
+    "name": "capstone (PyPI, win_amd64)",
+    "version": "5.0.9",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://github.com/capstone-engine/capstone",
+    "release_url": "https://files.pythonhosted.org/packages/50/e6/6f06fdb6a9ed32b2f7cd9c036b92d5324112c3ef7080f2c71efc367d40dd/capstone-5.0.9-py3-none-win_amd64.whl",
+    "sha256": "732cedbbb56d42e723f14d7af6387f1454194a820b4b96b56d1e53f865ef85d0",
+    "license": "BSD-3-Clause",
+    "offline_install": "인터넷 되는 PC에서 `pip download capstone -d offline-kit/wheels/`로 미리 받아서 SSD에 넣고, 오프라인 PC에서 `pip install --no-index --find-links=offline-kit/wheels/ capstone`로 설치",
+    "local_path": "offline-kit/tools/pypi-wheels/capstone-5.0.9-py3-none-win_amd64.whl"
+  },
+  {
+    "name": "keystone-engine (PyPI, manylinux x86_64)",
+    "version": "0.9.2",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://github.com/keystone-engine/keystone",
+    "release_url": "https://files.pythonhosted.org/packages/01/5c/40ffbec589262f49ff7c463d96ff0bfab0fbd98d9d869c370a70853a13fb/keystone_engine-0.9.2-py2.py3-none-manylinux1_x86_64.whl",
+    "sha256": "5a5316a34323620b1bba31dcfe9e4b4ca6f0c030e82fc7a151da7c8fbe81a379",
+    "license": "GPL-2.0 (듀얼 라이선스, 상업용은 LICENSE-COM.TXT 참조하여 별도 계약 가능)",
+    "offline_install": "인터넷 되는 PC에서 `pip download keystone-engine -d offline-kit/wheels/`로 미리 받아서 SSD에 넣고, 오프라인 PC에서 `pip install --no-index --find-links=offline-kit/wheels/ keystone-engine`로 설치",
+    "local_path": "offline-kit/tools/pypi-wheels/keystone_engine-0.9.2-py2.py3-none-manylinux1_x86_64.whl"
+  },
+  {
+    "name": "keystone-engine (PyPI, win_amd64)",
+    "version": "0.9.2",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://github.com/keystone-engine/keystone",
+    "release_url": "https://files.pythonhosted.org/packages/a4/8d/58471cb026de45397b29ba4b37ae3e20b434fae14c4b92fd3e9771a7bac8/keystone_engine-0.9.2-py2.py3-none-win_amd64.whl",
+    "sha256": "c91db1ff16d9d094e00d1827107d1b4afd5e63ce19b491a0140e660635000e8b",
+    "license": "GPL-2.0 (듀얼 라이선스, 상업용은 LICENSE-COM.TXT 참조하여 별도 계약 가능)",
+    "offline_install": "인터넷 되는 PC에서 `pip download keystone-engine -d offline-kit/wheels/`로 미리 받아서 SSD에 넣고, 오프라인 PC에서 `pip install --no-index --find-links=offline-kit/wheels/ keystone-engine`로 설치",
+    "local_path": "offline-kit/tools/pypi-wheels/keystone_engine-0.9.2-py2.py3-none-win_amd64.whl"
+  },
+  {
+    "name": "unicorn (PyPI, manylinux x86_64)",
+    "version": "2.1.4",
+    "platform": [
+      "linux"
+    ],
+    "official_url": "https://github.com/unicorn-engine/unicorn",
+    "release_url": "https://files.pythonhosted.org/packages/e7/df/ded5e3684c2d7600b30cc8a7530277b8cb36644a1a9d34cade7ebb45604c/unicorn-2.1.4-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl",
+    "sha256": "9d6e6dea140560de4ebd8446661f7ef84a357d428c14a3ef09dacd306ec8c239",
+    "license": "GPL-2.0 (QEMU 기반이므로 GPLv2 상속)",
+    "offline_install": "인터넷 되는 PC에서 `pip download unicorn -d offline-kit/wheels/`로 미리 받아서 SSD에 넣고, 오프라인 PC에서 `pip install --no-index --find-links=offline-kit/wheels/ unicorn`로 설치",
+    "local_path": "offline-kit/tools/pypi-wheels/unicorn-2.1.4-cp37-abi3-manylinux_2_17_x86_64.manylinux2014_x86_64.whl"
+  },
+  {
+    "name": "unicorn (PyPI, win_amd64)",
+    "version": "2.1.4",
+    "platform": [
+      "windows"
+    ],
+    "official_url": "https://github.com/unicorn-engine/unicorn",
+    "release_url": "https://files.pythonhosted.org/packages/70/3d/de7be9bd1addabe6d8a1369381f8a080400c349850e978689c5e18287957/unicorn-2.1.4-cp37-abi3-win_amd64.whl",
+    "sha256": "d7107500c64ce5c168fbff6bef9485b5db1350050036f4cea568650cf8bdbdf5",
+    "license": "GPL-2.0 (QEMU 기반이므로 GPLv2 상속)",
+    "offline_install": "인터넷 되는 PC에서 `pip download unicorn -d offline-kit/wheels/`로 미리 받아서 SSD에 넣고, 오프라인 PC에서 `pip install --no-index --find-links=offline-kit/wheels/ unicorn`로 설치",
+    "local_path": "offline-kit/tools/pypi-wheels/unicorn-2.1.4-cp37-abi3-win_amd64.whl"
+  },
+  {
+    "name": "frida-tools (PyPI, sdist)",
+    "version": "14.10.4",
+    "platform": [
+      "windows",
+      "linux",
+      "macos"
+    ],
+    "official_url": "https://github.com/frida/frida-tools",
+    "release_url": "https://files.pythonhosted.org/packages/80/5e/4592b8005bb5126642c80dfa7ea7a1ab81fd8c232fa03e20374216c04831/frida_tools-14.10.4.tar.gz",
+    "sha256": "7a2c544b545d095040fffbd3768a287a426343dad89095b4a24f4b20382d926a",
+    "license": "wxWindows Library Licence, Version 3.1 (LGPL 계열 예외 조항 포함)",
+    "offline_install": "인터넷 되는 PC에서 `pip download frida-tools -d offline-kit/wheels/`로 미리 받아서 SSD에 넣고, 오프라인 PC에서 `pip install --no-index --find-links=offline-kit/wheels/ frida-tools`로 설치 (frida-tools는 wheel이 아닌 sdist만 제공되므로 빌드 도구 필요할 수 있음)",
+    "local_path": "offline-kit/tools/pypi-wheels/frida_tools-14.10.4.tar.gz"
+  }
+]
