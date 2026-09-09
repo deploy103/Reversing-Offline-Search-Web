@@ -292,4 +292,42 @@ AI가 중단되더라도 다음 작업자가 이어서 개발할 수 있도록 �
 - Phase 7: file:// 스모크 테스트 100개로 확장 자동화, `scripts/storage-report.py` 실행, `pe 처음` 랭킹 이슈 수정, 최종 private GitHub push
 
 ### Commit
-- (아래 커밋에서 기록)
+- e915485
+
+## 2026-09-09 15:00 KST — Phase 5·6·7 완료, 프로젝트 종료 조건 전부 달성
+
+### 완료 — Phase 5 (툴 오프라인 킷)
+- `tools/manifest.json` 작성: 49개 항목(IDA Free, Ghidra, x64dbg/x32dbg, GDB, Pwndbg, DIE, PE-bear, HxD, ImHex, binutils, checksec.sh, ltrace, strace, UPX, Cutter, Rizin, radare2, dnSpyEx, ILSpy, JADX, apktool, adb, Frida, Python, pwntools, Z3, angr, Capstone, Keystone, Unicorn, WinDbg, Sysinternals Strings, Process Monitor, Resource Hacker, YARA)
+- 32개 항목은 공식 배포처에서 **실제 다운로드 후 sha256sum 직접 계산**(임시 파일은 검증 후 삭제, git에는 해시만 커밋), 12개는 PyPI JSON API로 해시 확보, 5개(IDA Free/binutils/ltrace/strace/WinDbg)는 이메일 등록·apt 패키지·Store 설치 특성상 수동 설치 안내만 기록
+- 작업 중 라이선스 오표기 발견해 정정: unicorn/keystone-engine이 PyPI 메타데이터엔 BSD로 나오지만 실제 GitHub COPYING 확인 결과 GPL-2.0(QEMU 기반 상속/듀얼 라이선스)이 정확함
+- `scripts/fetch-tools.sh`(bash+curl), `scripts/fetch-tools.ps1`(PowerShell 5+ 내장 기능만) 작성 — manifest 기반 다운로드 후 SHA256 불일치 시 파일 삭제하고 중단
+- `tools/verify-checksums.py` 작성(stdlib only) — 실행 결과 49개 전부 SKIP(로컬 파일 없음, 정상), exit 0
+
+### 완료 — Phase 6 (이미지)
+- **환경 제약 공개**: 이 자동화 환경에는 IDA/Ghidra/x64dbg/PE-bear/DIE를 실제로 실행할 GUI가 없어, AGENTS.md가 우선순위로 요구하는 "직접 만든 화면 캡처"는 만들 수 없었음. 대신 AGENTS.md의 대체 경로("외부 이미지 라이선스 불가 시 원본 다이어그램으로 대체")를 따라 **프로젝트 자체 제작 SVG 다이어그램 5종**을 순수 코드로 작성: CALL/RET 스택 변화, EFLAGS 비트 레이아웃, SysV vs Microsoft x64 호출규약 비교, PE 구조, ELF 구조
+- `scripts/mdlib.py`에 마크다운 이미지 문법(`![alt](src)`) 렌더링 지원 추가(이전엔 이미지 구문 자체가 없었음), `scripts/build.py`에 `/assets/images/...` → `../assets/images/...` 경로 재작성 + `dist/assets/images/` 복사 로직 추가, `assets/css/style.css`에 `.article-image` 반응형 스타일 추가
+- 플래그십 글 6개(REV-0071 CALL, REV-0072 RET, REV-0060 CMP, REV-0106 SysV, REV-0122 MS x64, REV-0114 PE 개요, REV-0089 ELF 헤더)에 다이어그램 삽입
+- `assets/images/metadata.json`에 AGENTS.md 요구 자산 메타데이터(출처/저자/라이선스/SHA256) 전부 기록
+
+### 완료 — Phase 7 (최종 검증)
+- `tests/search-smoke-queries.txt`를 38개 → **122개**로 확장(MASTER_PROMPT의 100개 요구 충족) — 필수 쿼리 전부 + 증상형/욕설형 쿼리("스택 씨발", "rsp 뭐임" 등) + 12개 카테고리 전반 커버
+- `tests/run-smoke-test.js`로 그동안 임시로 실행하던 Node vm 스모크 테스트를 저장소에 영구 저장(재현 가능)
+- 랭킹 품질 이슈 3건 발견 및 수정: `언패킹`→REV-0936(체크리스트)에 정확한 bare keyword 추가해 REV-0508(무관한 WinAPI 글)로 오탐되던 것 수정, `format string`→REV-0635(printf 계열)에 keyword 추가, 그리고 이전부터 있던 `pe 처음`→REV-0402(LOOPE/LOOPZ) 오탐을 REV-0003에 "PE 처음" alias 추가로 수정
+- `scripts/storage-report.py` 작성 및 실행 — 현재 총 용량 **37.18 MB** (하드리밋 40GB 대비 0.09%, 소프트타겟 35GB 대비 여유 충분)
+- 최종 전체 재검증: `build.py`(1,000개, 15초, exit 0) → `validate.py`(오류 0/경고 0, exit 0) → `run-smoke-test.js`(122/122 매칭, exit 0) → 빌드 idempotency 확인(연속 2회 실행 시 `search-index.js` SHA256 동일) → `dist/` 전체에 `fetch(`/`XMLHttpRequest`/`type="module"`/원격 `http(s)://` src·href 0건 확인
+- `README.md`를 Phase 1 상태(글 10개)에서 최종 상태(1,000개, 카테고리별 표, 빌드/테스트/오프라인 사용법/툴킷 준비법 전부)로 전면 갱신
+
+### 남은 선택 사항 (종료 조건에는 영향 없음)
+- 실제 IDA/Ghidra/x64dbg GUI 스크린샷: 사람이 실제 데스크톱에서 툴을 실행해 캡처해야 하는 작업이라 이 자동화 세션에서는 불가능함. 현재는 자체 제작 다이어그램으로 대체됨 — 추후 원하면 실제 스크린샷을 `assets/images/screenshots/`에 추가하고 해당 글들의 `![]()` 참조만 바꾸면 됨.
+- `offline-kit/`의 실제 바이너리 다운로드: 인터넷 되는 PC에서 `scripts/fetch-tools.sh`/`fetch-tools.ps1` 실행 시 언제든 채울 수 있음(git에는 포함 안 함, 의도된 설계).
+
+### 검증 요약 (최종)
+- 콘텐츠: 1,000/1,000 (long-form/reference/troubleshooting 혼합, 중복 없음)
+- `python3 scripts/build.py` → PASS
+- `python3 scripts/validate.py` → PASS (오류 0, 경고 0)
+- `node tests/run-smoke-test.js` → 122/122 매칭 (no-result 0)
+- `python3 scripts/storage-report.py` → 37.18 MB (한도 내)
+- MASTER_PROMPT 정의: 1,000개/검색/Assembly Dictionary/설치법/단축키/이미지/offline kit manifest/file:// 테스트 — **전부 완료**. 남은 것은 private GitHub push뿐.
+
+### Commit
+- (아래 커밋에서 기록, 이후 `git push` 진행 예정)

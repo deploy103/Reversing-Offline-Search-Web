@@ -4,16 +4,54 @@
 
 프로젝트 스펙은 `MASTER_PROMPT.md` / `AGENTS.md` / `REQUIREMENTS.md` / `CONTENT_PLAN.md`에 있습니다. 진행 상태는 `DEVELOPMENT_LOG.md`와 `state/progress.json`에 계속 기록됩니다.
 
+## 현재 상태
+
+**콘텐츠 1,000/1,000개 작성 완료.** 카테고리별 구성:
+
+| 카테고리 | 개수 |
+|---|---|
+| assembly (x86/x64 어셈블리 사전) | 160 |
+| windows-pe | 158 |
+| linux-elf | 120 |
+| static-analysis | 112 |
+| dynamic-analysis | 97 |
+| algorithms | 83 |
+| binary-basics | 65 |
+| triage | 58 |
+| packing | 53 |
+| dotnet-android | 35 |
+| automation | 30 |
+| tools | 29 |
+| **합계** | **1,000** |
+
+장문 가이드/레퍼런스/문제해결 유형이 섞여 있으며, x86/x64 어셈블리 니모닉은 mnemonic 하나만 검색해도 전용 글이 최상단에 뜨도록 설계되어 있습니다(Assembly Dictionary, `assembly` 카테고리).
+
+완료된 항목:
+- 콘텐츠 1,000개 (Phase 1~4)
+- 툴 오프라인 킷 매니페스트(`tools/manifest.json`, 49개 도구) + 다운로드 스크립트(Phase 5)
+- 프로젝트 자체 제작 SVG 다이어그램(Phase 6, `assets/images/diagrams/`)
+- 검색 스모크 테스트 122개 쿼리 자동화(Phase 7, `tests/`)
+
 ## 빌드하기
 
 Python 3 표준 라이브러리만 사용합니다 (외부 패키지 불필요).
 
 ```bash
 python3 scripts/build.py       # content/articles/*.md -> dist/ 생성
-python3 scripts/validate.py    # 중복/깨진 링크/frontmatter/placeholder 등 검증
+python3 scripts/validate.py    # 중복/깨진 링크/frontmatter/placeholder/file:// 안전성 검증
 ```
 
 `dist/`는 빌드 산출물이라 git에 커밋하지 않습니다(.gitignore). 실제 오프라인 배포 시에는 `dist/` 폴더 전체를 SSD에 복사하면 됩니다.
+
+빌드/검증은 idempotent합니다 — 연속으로 두 번 실행해도 같은 결과가 나옵니다.
+
+## 검색 테스트
+
+```bash
+node tests/run-smoke-test.js   # tests/search-smoke-queries.txt의 122개 쿼리를 실제 검색 엔진으로 실행
+```
+
+Node.js의 `vm` 모듈로 빌드된 `dist/assets/search-index.js` + `assets/js/search.js`를 그대로 로드해서 실행하므로, 브라우저에서 `dist/index.html`을 열었을 때와 동일한 코드 경로를 검증합니다.
 
 ## 오프라인 사용법
 
@@ -22,24 +60,40 @@ python3 scripts/validate.py    # 중복/깨진 링크/frontmatter/placeholder �
 3. 인터넷 연결 없이 `dist/index.html`을 더블클릭해서 연다.
 4. 검색창에 명령어, 레지스터, 에러 메시지, 상수, 증상 등을 아무렇게나 입력한다.
 
-로컬 서버, Node, Python, CDN, 원격 폰트/이미지, `fetch()`/`XMLHttpRequest` 없이 순수 `file://`로 동작하도록 만들어져 있습니다.
+로컬 서버, Node, Python, CDN, 원격 폰트/이미지, `fetch()`/`XMLHttpRequest` 없이 순수 `file://`로 동작하도록 만들어져 있습니다. 이미지도 전부 로컬 SVG(`assets/images/`)만 사용합니다.
+
+### 오프라인 툴킷 준비 (선택)
+
+인터넷이 되는 PC에서 실제 리버싱 도구(IDA Free/Ghidra/x64dbg/GDB/Pwndbg/DIE/PE-bear 등 49종)를 미리 받아두려면:
+
+```bash
+# Linux/macOS
+bash scripts/fetch-tools.sh
+
+# Windows
+powershell -ExecutionPolicy Bypass -File scripts\fetch-tools.ps1
+```
+
+`tools/manifest.json`에 기록된 공식 배포처에서 다운로드하고 SHA256을 자동 검증합니다. PyPI 패키지/apt 패키지처럼 직접 다운로드 URL이 없는 항목은 안내 메시지만 출력하니, `tools/manifest.json`의 `offline_install` 필드를 참고하세요. 받은 파일은 `offline-kit/`(git에서 제외됨) 아래에 저장되며, 다운로드 후에는 `python3 tools/verify-checksums.py`로 언제든 재검증할 수 있습니다.
 
 ## 저장소 구조
 
 ```text
 content/articles/<category>/<slug>.md   # 글 원본 (frontmatter + markdown)
 assets/css, assets/js                   # 손으로 작성한 사이트 정적 리소스
+assets/images/diagrams/                 # 프로젝트 자체 제작 SVG 다이어그램
 scripts/build.py                        # 빌드 스크립트 (마크다운 -> dist/)
 scripts/mdlib.py                        # 의존성 없는 frontmatter/markdown 파서
-scripts/validate.py                     # 콘텐츠/링크/검색 인덱스 검증
+scripts/validate.py                     # 콘텐츠/링크/검색 인덱스/file:// 안전성 검증
+scripts/storage-report.py               # 카테고리별 디스크 사용량 리포트 (40GB 한도 대조)
+scripts/fetch-tools.sh / .ps1           # 툴 오프라인 킷 다운로드 스크립트
+tools/manifest.json                     # 오프라인 툴킷 매니페스트 (버전/URL/SHA256/라이선스)
+tools/verify-checksums.py               # 다운로드된 툴 파일 체크섬 검증
 research/sources.json                   # 리서치 출처 기록
 state/progress.json                     # 진행 상태 (다른 AI/작업자가 이어받기 위함)
-tests/search-smoke-queries.txt          # 검색 스모크 테스트 쿼리 목록
+tests/search-smoke-queries.txt          # 검색 스모크 테스트 쿼리 목록 (122개)
+tests/run-smoke-test.js                 # 검색 스모크 테스트 실행 스크립트 (Node.js vm 샌드박스)
 dist/                                   # 빌드 산출물 (gitignore, 배포용)
 ```
 
 `reversing_analysis/`는 이 저장소와 무관한 별도 프로젝트이며 git에서 제외되어 있습니다.
-
-## 현재 상태
-
-Phase 1(정적 사이트 골격 + 오프라인 검색 엔진 + 샘플 10개 글) 완료. 나머지 990개 글, 어셈블리 사전, 툴 오프라인 킷, 이미지 등은 `state/progress.json`의 `pending_article_ids`를 참고해 계속 진행합니다.

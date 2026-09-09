@@ -1,24 +1,21 @@
 {
-  "last_updated": "2026-09-09T13:30:00+09:00",
-  "phase": "content_1000_complete",
+  "last_updated": "2026-09-09T15:00:00+09:00",
+  "phase": "phase_5_6_7_complete",
   "completed_article_count": 1000,
   "validated_article_count": 1000,
   "pending_article_ids": [],
   "last_completed_article_id": "REV-1000",
   "current_tasks": [
-    "1,000/1,000 콘텐츠 완료. 다음: Phase 5 tools/manifest.json + fetch-tools.ps1/.sh + verify-checksums.py",
-    "Phase 6: 이미지(자체 캡처/다이어그램) 확보 및 자산 메타데이터",
-    "Phase 7: 최종 file:// 스모크 테스트 100개 자동화, storage-report 실행, private GitHub push"
+    "모든 Phase(1-7) 완료. 남은 것은 사용자 승인 하 최종 private GitHub push뿐."
   ],
   "known_issues": [
     "Watch for markdown false-link patterns like 'text[N](word)' in prose -- N in brackets immediately followed by parens gets misparsed as a markdown link. Instruct each wave's agents explicitly to avoid this.",
     "관련 글 stale-title mismatches recur every wave when parallel agents cite existing articles from memory instead of reading the actual file -- run the stale-title reconciliation script after every wave before validate.py."
   ],
   "next_actions": [
-    "continue expansion-700 waves by category per CONTENT_PLAN.md's 'Expansion 700' section",
-    "each wave: launch parallel agents reading their REV-ID range directly from CONTENT_PLAN.md, require grep-verified exact titles in 관련 글 bullets",
-    "after each wave: build.py + validate.py + stale-title reconciliation script + smoke test + DEVELOPMENT_LOG.md update (~every 50 articles) + local commit (no push)",
-    "after 1000/1000: Phase 5 tools/manifest.json + fetch scripts, Phase 6 images, Phase 7 final file:// validation + storage report + private GitHub push"
+    "선택: offline-kit/ 실제 다운로드는 필요 시 인터넷 되는 PC에서 scripts/fetch-tools.sh(.ps1) 실행",
+    "선택: 실제 IDA/Ghidra/x64dbg GUI 스크린샷은 이 자동화 환경에 GUI가 없어 대신 프로젝트 자체 제작 SVG 다이어그램 5종으로 대체함 - 추후 실제 툴 스크린샷 추가 여지 있음",
+    "선택: 'pe 처음' 외 다른 fuzzy 랭킹 품질은 필요 시 계속 튜닝 가능"
   ],
   "target_entry_count": 1000,
   "target_mix": {
