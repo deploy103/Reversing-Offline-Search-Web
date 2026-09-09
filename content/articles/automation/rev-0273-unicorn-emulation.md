@@ -12,7 +12,7 @@ keywords: ["Unicorn", "unicorn-engine", "CPU 에뮬레이터", "mu.mem_map", "mu
 aliases: ["유니콘 에뮬레이터", "unicorn 파이썬", "unicorn 사용법", "함수만 따로 실행하기"]
 symptom_keywords: ["바이너리 전체 실행 안 하고 함수만 돌리고 싶음", "unicorn 어떻게 씀", "mem_map mem_write 순서", "emu_start 인자 뭐임", "레지스터 값 읽는 법 unicorn"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -213,6 +213,50 @@ for c in [ord('A'), ord('Z'), 0x5a]:
 ```
 
 이렇게 여러 입력값에 대한 결과를 즉시 확인할 수 있으므로, 바이너리 전체를 매번 다시 실행하지 않고도 검증 함수 하나의 동작을 빠르게 파악하고 역산 실마리를 얻을 수 있다.
+
+## 실전 예시: 반복문(루프)이 있는 함수 에뮬레이션
+지금까지의 예시는 분기가 없는 직선 코드(straight-line code)였다. 하지만 실전 체크섬/해시 함수는 대부분 **반복문**을 돈다. Unicorn은 CPU를 실제로 흉내 내는 엔진이므로, 조건부 분기(`cmp`/`jge` 등)가 있는 진짜 루프도 명령어 그대로 실행하면서 결과를 만들어낼 수 있다. 아래는 `0`부터 `n-1`까지 더하는 아주 단순한 누산 루프를 실제 x64 기계어로 만들어 실행하는 예시다.
+
+```c
+// 원본 C 로직: 0부터 4까지(즉 n=5) 더하는 루프
+// int sum = 0;
+// for (int i = 0; i < 5; i++) sum += i;
+// 결과: sum == 10
+```
+
+```python
+from unicorn import *
+from unicorn.x86_const import *
+
+# xor eax,eax ; xor ecx,ecx ; L1: cmp ecx,5 ; jge L2 ; add eax,ecx ; inc ecx ; jmp L1 ; L2: ret
+CODE = bytes([
+    0x31, 0xc0,        # xor eax, eax        ; eax(누산기 sum) = 0
+    0x31, 0xc9,        # xor ecx, ecx        ; ecx(카운터 i) = 0
+    0x83, 0xf9, 0x05,  # L1: cmp ecx, 5      ; i와 5를 비교
+    0x7d, 0x06,        # jge L2               ; i >= 5 이면 루프 종료(L2로 이동)
+    0x01, 0xc8,        # add eax, ecx        ; sum += i
+    0xff, 0xc1,        # inc ecx              ; i += 1
+    0xeb, 0xf5,        # jmp L1                ; 다시 루프 시작으로
+    0xc3               # L2: ret
+])
+
+BASE = 0x1000000
+STACK = 0x2000000
+RET_ADDR = BASE + 0x0f   # ret 명령어가 있는 정확한 주소(끝까지 실행하지 않고 여기서 정지)
+
+mu = Uc(UC_ARCH_X86, UC_MODE_64)
+mu.mem_map(BASE, 0x1000)          # 코드 영역 매핑
+mu.mem_write(BASE, CODE)           # 코드 기록
+mu.mem_map(STACK, 0x10000)         # 스택 영역도 반드시 매핑(이 코드엔 call/ret이 없지만 습관적으로 준비)
+mu.reg_write(UC_X86_REG_RSP, STACK + 0x8000)
+
+mu.emu_start(BASE, RET_ADDR)         # ret 직전까지 실행 (ret까지 실행하면 초기화 안 된 스택값으로 튀어 에러가 남)
+
+print('sum(eax) =', mu.reg_read(UC_X86_REG_EAX))   # 10
+print('i(ecx)   =', mu.reg_read(UC_X86_REG_ECX))    # 5
+```
+
+이 스크립트를 그대로 실행하면 `sum(eax) = 10`, `i(ecx) = 5`가 정확히 출력된다(직접 Unicorn 2.x로 재현 검증됨, `0+1+2+3+4 = 10`). 여기서 주목할 점은 `emu_start(BASE, RET_ADDR)`의 두 번째 인자를 **`ret` 명령어가 실제로 있는 주소**로 정확히 지정했다는 것이다. 만약 이 함수처럼 스택에 유효한 반환 주소를 미리 준비해두지 않은 상태에서 `ret`까지 실행되도록 두면, CPU가 스택에서 초기화되지 않은(보통 0인) 값을 "돌아갈 주소"로 읽어 그 주소(0번지)로 점프하려다가 `Invalid memory fetch` 예외가 발생한다. 이처럼 **함수를 진짜로 호출해서 끝까지 실행하는 게 아니라 함수의 로직만 값을 확인하고 싶을 때는, 항상 `ret` 명령어 바로 앞에서 실행을 멈추는 것**이 스택 준비의 번거로움을 줄이는 실용적인 방법이다. 루프가 있는 코드도 이렇게 직접 실행해서 검증할 수 있다는 사실은, Capstone(REV-0272)이 "정적으로 읽기만" 할 수 있는 것과 대비되는 Unicorn의 핵심 강점이다.
 
 ## 관련 글
 - REV-0272 — Capstone으로 디스어셈블 자동화

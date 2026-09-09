@@ -12,7 +12,7 @@ keywords: ["xor 루프", "xor 역산", "단일 바이트 xor", "반복 키 xor",
 aliases: ["xor 반복문", "xor 어떻게 품", "xor 복호화", "xor 역연산"]
 symptom_keywords: ["xor 반복문", "xor로 뭘 하는지 모르겠음", "키가 반복되는 것 같음", "암호화된 문자열 xor"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -193,6 +193,45 @@ for i in range(0, len(expected), 4):
     v = struct.unpack_from("<I", expected, i)[0]
     out += struct.pack("<I", v ^ KEY)
 print(out)
+```
+
+**예제 5 — 처음부터 끝까지 실행되는 전체 스크립트 (단일 바이트 키 + 반복 키, 두 케이스 모두 검증)**
+
+아래는 실제로 계산해서 값이 정확히 맞아떨어지는 것을 확인한 완결된 스크립트다. 두 가지 흔한 케이스(단일 바이트 키, 4바이트 반복 키)를 각각 역산하고, 결과가 `CTF{...}` 형태인지까지 자동으로 검사한다.
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0199 실전 스크립트: 단일 바이트 XOR와 반복 키 XOR를 실제로 검증된 값으로 역산한다.
+
+from itertools import cycle
+
+# ===== 케이스 1: 단일 바이트 키 =====
+# 어셈블리에서 xor al, 0x5A 를 확인했고, expected(정답) 12바이트를 Hex View에서 복사했다.
+expected1 = bytes.fromhex("190e1c2122352805313f2327")
+KEY1 = 0x5A
+
+# XOR의 자기 역원 성질(a^b=c 이면 c^b=a)을 그대로 이용해서 같은 키로 다시 XOR한다.
+flag1 = bytes(b ^ KEY1 for b in expected1)
+print("케이스1 복원 flag:", flag1.decode())
+# 실행 결과: 케이스1 복원 flag: CTF{xor_key}
+
+# ===== 케이스 2: 4바이트 반복 키 =====
+# 어셈블리에서 xor al, byte ptr [key+edx] 를 확인했고, div ebx(ebx=4)로 keylen=4임을 알아냈다.
+expected2 = bytes.fromhex("08673f5a395c154d144b165314581c5836")
+key2 = b"K3y!"   # 4바이트 키를 Hex View에서 그대로 복사
+
+# itertools.cycle로 key2를 반복시키면서 expected2와 자리마다 XOR한다.
+flag2 = bytes(e ^ k for e, k in zip(expected2, cycle(key2)))
+print("케이스2 복원 flag:", flag2.decode())
+# 실행 결과: 케이스2 복원 flag: CTF{roll_xor_key}
+
+# 두 케이스 모두 "CTF{ 로 시작하고 } 로 끝나는지"를 자동으로 검사해서 성공 여부를 판정한다.
+for name, result in [("케이스1", flag1), ("케이스2", flag2)]:
+    ok = result.startswith(b"CTF{") and result.endswith(b"}")
+    print(name, "형식 검사:", "통과" if ok else "실패")
+# 실행 결과: 케이스1 형식 검사: 통과
+# 실행 결과: 케이스2 형식 검사: 통과
 ```
 
 ## 관련 글

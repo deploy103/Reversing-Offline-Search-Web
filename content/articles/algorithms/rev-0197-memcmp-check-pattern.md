@@ -12,7 +12,7 @@ keywords: ["memcmp", "flag 검증", "고정 길이 비교", "call memcmp", "rep 
 aliases: ["memcmp 뭐임", "memcmp이랑 strcmp 차이", "고정 길이 비교 함수", "해시값 비교"]
 symptom_keywords: ["memcmp 세 번째 인자가 뭔지 모르겠음", "strcmp 없는데 비슷한 게 있음", "바이너리 데이터 비교", "16바이트 다이제스트 비교"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -175,6 +175,46 @@ if ( memcmp(&user_input_struct, &expected_struct, sizeof(struct Check)) == 0 )
 ```python
 expected_hex = "48656c6c6f2c20464c414721"  # IDA Hex View에서 복사한 값
 print(bytes.fromhex(expected_hex))          # b'Hello, FLAG!'
+```
+
+**예제 5 — 처음부터 끝까지 실행되는 전체 스크립트 (길이로 분류 → 각각 처리)**
+
+`memcmp`의 세 번째 인자(길이)가 유명한 해시 크기인지 아닌지에 따라 대응 방법이 완전히 달라진다. 아래 스크립트는 (A) 길이가 flag 길이인 "고정 길이 문자열 직접 비교"와 (B) 길이가 16인 "MD5 다이제스트 비교"를 한 번에 실습해본다.
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0197 실전 스크립트: memcmp 세 번째 인자(길이)로 먼저 분류하고 각 경우를 처리한다.
+
+import hashlib
+
+# ========== (A) 길이가 12 -> 유명 해시 크기가 아니므로 "문자열 자체" 비교로 판단 ==========
+length_a = 12                                     # 어셈블리의 mov edx, 12 (또는 mov r8d, 12)에서 읽은 값
+dumped_hex_a = "48656c6c6f2c20464c414721"          # Hex View에서 복사한 12바이트 raw byte
+
+expected_a = bytes.fromhex(dumped_hex_a)
+assert len(expected_a) == length_a, "길이가 안 맞으면 hex를 잘못 복사했을 가능성이 크다"
+
+flag_a = expected_a.decode()                       # 사람이 읽을 수 있는 문자열로 변환
+print("(A) 고정 길이 비교 결과 flag:", flag_a)
+# 실행 결과: (A) 고정 길이 비교 결과 flag: Hello, FLAG!
+
+# ========== (B) 길이가 16 -> MD5 다이제스트 크기이므로 해시 비교로 판단 ==========
+length_b = 16                                      # mov edx, 16 에서 읽은 값
+dumped_hex_b = "d41d8cd98f00b204e9800998ecf8427e"  # Hex View에서 복사한 16바이트(예: 빈 문자열의 MD5)
+
+expected_b = bytes.fromhex(dumped_hex_b)
+assert len(expected_b) == length_b
+
+# memcmp의 첫 번째 인자(계산된 값)가 어떤 입력의 MD5인지 프로그램 로직을 보고 추정한 뒤
+# 그 후보 입력을 hashlib으로 직접 계산해서 두 값이 진짜 같은지 재현·대조한다.
+candidate_input = b""                              # 예: 프로그램이 빈 입력을 그대로 해시했다고 가정
+computed_hash = hashlib.md5(candidate_input).digest()
+
+print("(B) 후보 입력의 MD5:", computed_hash.hex())
+print("(B) 바이너리의 기대값과 일치?", computed_hash == expected_b)
+# 실행 결과: (B) 후보 입력의 MD5: d41d8cd98f00b204e9800998ecf8427e
+# 실행 결과: (B) 바이너리의 기대값과 일치? True
 ```
 
 ## 관련 글

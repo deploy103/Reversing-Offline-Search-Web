@@ -12,7 +12,7 @@ keywords: ["Z3 unsat", "unsat core", "제약조건 모순", "BitVec 부호 비�
 aliases: ["Z3가 unsat이라고 함", "Z3 solver 답이 없음", "z3 조건이 모순됨", "z3 unsat_core 사용법"]
 symptom_keywords: ["z3.check()가 unsat을 반환함", "제약조건을 걸었는데 답이 없다고 나옴", "분명 정답이 있는데 z3가 unsat이라고 함", "z3 모델을 못 찾음"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -135,6 +135,33 @@ s.add(x > 250)          # 250은 8비트 unsigned 범위(0~255) 안의 값
 print(s.check())        # unsat: 100보다 작으면서 250보다 큰 값은 없음 (이 예시는 진짜 모순)
 ```
 이 경우는 실제로 모순인 조건(100보다 작으면서 250보다 큼)이라 `unsat`이 정답이다. 하지만 실무에서는 이런 명백한 모순이 아니라, 부호 비교/루프 변수 재사용처럼 **겉보기에는 멀쩡해 보이는 코드가 몰래 이런 모순을 만들어낸다**는 점이 진짜 함정이다. `unsat_core`로 어떤 `add()` 호출이 문제인지 태그를 붙여 추적하면, 사람 눈으로는 안 보이던 이런 숨은 모순도 바로 드러난다.
+
+### 추가 예제 — signed 비교가 진짜로 unsat을 만드는 실행 가능한 사례
+"겉보기엔 멀쩡한데 몰래 모순을 만드는" 상황을 실제로 재현해보자. 원본 로직은 "8비트 unsigned char `x`가 126보다 크고 130보다 작다"(`0x7E < x < 0x82`, 즉 실제로 만족하는 값은 127, 128, 129)이다.
+
+```python
+from z3 import *   # Solver, BitVec, UGT, ULT 등을 사용하기 위해 z3 모듈 전체를 가져온다
+
+x = BitVec('x', 8)   # 8비트 unsigned char 하나를 표현하는 심볼릭 변수
+
+# [틀린 코드] Z3 기본 비교 연산자(>, <)를 그대로 사용 -> 사실은 signed(부호 있는) 비교로 해석됨
+s_buggy = Solver()
+s_buggy.add(x > 0x7E)   # signed로는 0x7E == 126(양수 그대로) -> "x > 126"
+s_buggy.add(x < 0x82)   # signed로는 0x82 == -126(8비트에서 최상위 비트가 1이라 음수) -> "x < -126"
+print("[틀린 코드] check():", s_buggy.check())
+# 출력: [틀린 코드] check(): unsat
+# 이유: signed로 x>126이면 x==127(8비트 signed 최댓값)만 가능하고,
+#      x<-126이면 x<=-127(즉 x==-127 또는 -128)만 가능해서 두 조건을 동시에 만족하는 x가 없다.
+
+# [고친 코드] 부호 없는 비교 함수 UGT/ULT를 명시적으로 사용
+s_fixed = Solver()
+s_fixed.add(UGT(x, 0x7E))   # unsigned로 "x > 126"
+s_fixed.add(ULT(x, 0x82))   # unsigned로 "x < 130"
+result = s_fixed.check()
+print("[고친 코드] check():", result)          # sat
+print("[고친 코드] model():", s_fixed.model())  # 예: [x = 128]
+```
+`x`를 선언한 코드, 부등호 기호, 상수값까지 전부 원본과 똑같이 보이지만, **비교 연산자 하나(`>`/`<` vs `UGT`/`ULT`)만 다르다는 이유로 결과가 `unsat`에서 `sat`으로 완전히 뒤바뀐다.** 실제 원본 알고리즘이 unsigned 8비트 값을 다룬다면, 정답은 언제나 `UGT`/`ULT` 버전이 알려주는 `127`, `128`, `129` 중 하나이며, 기본 연산자를 그대로 쓴 `unsat` 결과는 "답이 없다"가 아니라 "제약조건을 잘못 걸었다"는 신호였을 뿐이다.
 
 ## 관련 글
 - REV-0268 — Z3 BitVec 기초

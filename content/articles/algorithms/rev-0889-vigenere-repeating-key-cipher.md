@@ -12,7 +12,7 @@ keywords: ["Vigenere cipher", "비제네르 암호", "반복 키 암호", "repea
 aliases: ["비제네르", "반복키 XOR과 차이", "key modulo length 패턴", "다중 치환 암호"]
 symptom_keywords: ["key[i % keylen] 패턴이 보임", "키가 입력보다 짧아서 반복 사용됨", "XOR인데 매번 다른 값과 연산함", "키 길이를 모르는데 반복 주기가 있는 것 같음"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -150,6 +150,68 @@ flag = bytes(c ^ key[i % len(key)] for i, c in enumerate(expected))
 print(flag)
 ```
 만약 키가 바이너리에 없고 암호문만 주어졌다면, 앞서 소개한 `guess_key_length()`로 키 길이 후보(여기서는 4)를 먼저 찾고, 각 위치(`i % 4 == 0, 1, 2, 3`)별로 분리한 부분열을 단일 바이트 XOR 문제로 풀어 키를 바이트 단위로 복구한 뒤 동일한 절차로 복호화하면 된다.
+
+### 실행 가능한 전체 스크립트 — 키 길이 추정부터 전체 복호화까지 한 번에
+
+이번에는 "키가 몇 바이트인지조차 모른다"는 가장 어려운 상황을 그대로 재현해서, Index of Coincidence로 키 길이를 먼저 추정하고, 알려진 평문 일부(known-plaintext)로 키를 복구해 전체 문장을 복원하는 흐름을 끝까지 실행해본다.
+
+```python
+# -*- coding: utf-8 -*-
+from collections import Counter   # 바이트별 등장 횟수를 세기 위한 표준 도구
+
+# --- 1) 바이너리에서 덤프했다고 가정한 암호문(비교 대상 상수) ---
+ciphertext = bytes.fromhex("755bcaaa6841c2aa7659cebf7668cfa87e58d6")
+print("암호문 길이:", len(ciphertext))   # 실행 결과: 19
+
+def index_of_coincidence(data: bytes) -> float:
+    """같은 바이트가 반복될 확률을 계산 — 값이 클수록 '무작위스럽지 않다'는 신호."""
+    n = len(data)
+    if n < 2:
+        return 0.0   # 데이터가 너무 짧으면 계산이 의미 없으므로 0 반환
+    counts = Counter(data)                                    # 바이트값별 등장 횟수
+    return sum(c * (c - 1) for c in counts.values()) / (n * (n - 1))  # IC 공식
+
+def guess_key_length(ciphertext: bytes, max_len: int = 8):
+    """1부터 max_len까지 후보 키 길이를 모두 시도해 IC가 가장 높은 길이를 찾는다."""
+    scores = {}
+    for klen in range(1, max_len + 1):
+        # ciphertext[i::klen] : i번째부터 klen 간격으로 건너뛰며 뽑은 부분열
+        # (같은 키 바이트로 XOR된 바이트들만 모아놓은 것과 같다)
+        cols = [ciphertext[i::klen] for i in range(klen)]
+        avg_ic = sum(index_of_coincidence(col) for col in cols) / klen
+        scores[klen] = avg_ic
+    return sorted(scores.items(), key=lambda kv: -kv[1])   # IC가 높은 순으로 정렬
+
+# --- 2) 키 길이 후보를 IC로 추정 ---
+candidates = guess_key_length(ciphertext)
+print("키 길이 후보(IC 높은 순):", candidates)
+best_len = candidates[0][0]   # IC가 가장 높은 길이를 1순위 후보로 채택
+print("가장 유력한 키 길이:", best_len)
+
+# --- 3) 문제에서 알려진 평문 일부("flag")로 그 길이만큼의 키를 직접 복구 ---
+known_plaintext = b"flag"   # best_len(4)과 정확히 같은 길이만큼 알고 있다고 가정
+key = bytes(c ^ p for c, p in zip(ciphertext[:len(known_plaintext)], known_plaintext))
+print("복구한 키(16진수):", key.hex())
+
+# --- 4) 복구한 키로 전체 암호문을 복호화 ---
+def repeating_xor(data: bytes, key: bytes) -> bytes:
+    return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+
+plaintext = repeating_xor(ciphertext, key)
+print("복호화 결과:", plaintext)
+```
+
+이 스크립트를 그대로 실행하면 다음과 같은 결과가 나온다.
+
+```text
+암호문 길이: 19
+키 길이 후보(IC 높은 순): [(4, 0.06666666666666667), (2, 0.025), (3, 0.022222222222222223), (1, 0.017543859649122806), (5, 0.0), (6, 0.0), (7, 0.0), (8, 0.0)]
+가장 유력한 키 길이: 4
+복구한 키(16진수): 1337abcd
+복호화 결과: b'flag{vigenere_demo}'
+```
+
+IC 점수를 보면 키 길이 4일 때가 `0.0667`로 다른 후보(2, 3, 1, 5~8)보다 뚜렷하게 높다 — 같은 키 바이트로 XOR된 바이트들을 한 묶음으로 모았을 때, 우연이 아니라 실제로 반복되는 값이 더 자주 나타난다는 신호다. 이렇게 찾은 길이 4가 실제 정답 키(`13 37 AB CD`, 4바이트)와 정확히 일치했고, 그 키로 복호화한 결과가 `flag{vigenere_demo}`라는 완전한 문장으로 나왔다. IC만으로 키 길이를 좁히고, known-plaintext로 실제 키 값을 확정하는 이 두 단계 조합이 반복 키 암호를 공략하는 표준 절차다.
 
 ## 관련 글
 - REV-0199 — XOR 반복 변환 역산

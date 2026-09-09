@@ -12,7 +12,7 @@ keywords: ["XOR 키 복구", "known plaintext", "반복 키 길이", "key length
 aliases: ["XOR 키가 반만 맞음", "복호화가 일부만 됨", "키 길이를 잘못 추정함", "크립 공격 부분 실패"]
 symptom_keywords: ["복호화했더니 일부 글자만 맞음", "특정 자리마다 계속 틀림", "키 일부만 알아냄", "반복 주기로 틀린 자리가 보임"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -114,6 +114,75 @@ bad = [i for i, b in enumerate(plain) if not (0x20 <= b <= 0x7e)]
 print(bad)   # 예: [5, 6, 7, 13, 14, 15] -> 8 간격 반복, 키 길이 8 확정
 ```
 `bad` 리스트가 정확히 8 간격으로 반복되므로 키 길이 8은 확정이고, `key[5]`, `key[6]`, `key[7]` 세 바이트만 더 구하면 된다는 것이 명확해진다.
+
+### 완전한 예제 스크립트 — 키를 직접 만들어서 암호화하고, 부분 크립으로 다시 복구해보기
+이번에는 우리가 직접 키와 평문을 정해서 암호문을 만들고, 그 암호문을 마치 "처음 받은 문제"처럼 취급해서 크립 공격으로 다시 원래 키를 복구하는 전체 과정을 끝까지 실행해본다. 스스로 만든 예제라서 정답을 미리 알고 있으므로, 복구한 값이 정확히 맞는지 100% 확인할 수 있다.
+
+```python
+def xor_repeat(data: bytes, key: bytes) -> bytes:
+    """반복 XOR: data의 각 바이트를 key[i % len(key)]와 XOR한다."""
+    return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+
+
+# --- 문제를 만드는 단계 (실전에서는 이 부분을 우리가 볼 수 없다) ---
+real_key = b"K3YB8YTE"                                   # 실제 키, 길이 8 (문제 출제자만 아는 값)
+plaintext = b"Hello CTF player, welcome to rev wiki site!!"  # 원래 평문
+cipher = xor_repeat(plaintext, real_key)                   # 암호문 생성
+print("우리에게 주어진 암호문 (hex):", cipher.hex())
+
+# --- 여기부터가 실전에서 우리가 실제로 하는 작업이다 ---
+
+# 1) 크립(known-plaintext)으로 앞 5바이트만 안다고 가정: "Hello"
+crib = b"Hello"
+partial_key = bytes(c ^ p for c, p in zip(cipher, crib))
+print("\n[1단계] 크립으로 복구한 부분 키 (앞 5바이트만 확실함):", partial_key)
+
+# 2) 키 길이가 8이라고 이미 확인됐다고 가정하고(예: 버퍼 크기 등으로 REV-0218 방식 확인),
+#    모르는 나머지 3바이트는 임시로 0x00으로 채워서 전체를 복호화해본다.
+guess_key = partial_key + b"\x00" * 3
+plain_partial = xor_repeat(cipher, guess_key)
+print("[2단계] 부분 키로 복호화한 결과:", plain_partial)
+
+# 3) 아스키 출력 가능 범위(0x20~0x7e)를 벗어나는 바이트의 인덱스를 모두 찾는다.
+bad_idx = [i for i, b in enumerate(plain_partial) if not (0x20 <= b <= 0x7e)]
+print("[3단계] 깨진 바이트의 인덱스:", bad_idx)
+print("        8로 나눈 나머지(주기 확인):", sorted(set(i % 8 for i in bad_idx)))
+
+# 4) 뒷부분에 " site!!"라는 문구가 있다는 걸 추가로 알아냈다고 가정하고(구조적 힌트),
+#    그 구간으로 남은 키 바이트를 전부 채운다.
+tail_crib = b" site!!"
+tail_start = len(plaintext) - len(tail_crib)   # 이 크립이 시작하는 암호문 상의 위치
+guess_key = bytearray(guess_key)                # 바이트를 하나씩 고칠 수 있도록 bytearray로 변환
+for offset in range(tail_start, len(plaintext)):
+    key_idx = offset % 8                         # 이 위치가 8바이트 키 중 몇 번째에 해당하는지 계산
+    guess_key[key_idx] = cipher[offset] ^ tail_crib[offset - tail_start]  # 그 키 바이트를 확정
+guess_key = bytes(guess_key)
+
+print("\n[4단계] 완성된 전체 키:", guess_key)
+print("        실제 키와 정확히 일치하는가?:", guess_key == real_key)
+
+# 5) 완성된 키로 암호문 전체를 다시 복호화해서 처음부터 끝까지 정상적인 문장이 나오는지 확인
+final_plain = xor_repeat(cipher, guess_key)
+print("[5단계] 최종 복호화 결과:", final_plain)
+print("        원래 평문과 정확히 일치하는가?:", final_plain == plaintext)
+```
+
+실제로 실행한 결과:
+```
+우리에게 주어진 암호문 (hex): 0356352e577917110d13292e5920313767132e27543a3b282e132d2d182b31336b4430295179272c3f567863
+
+[1단계] 크립으로 복구한 부분 키 (앞 5바이트만 확실함): b'K3YB8'
+[2단계] 부분 키로 복호화한 결과: b"Helloy\x17\x11F pla 17, wel:;(e to +13 wikiy',te!!"
+[3단계] 깨진 바이트의 인덱스: [6, 7]
+        8로 나눈 나머지(주기 확인): [6, 7]
+
+[4단계] 완성된 전체 키: b'K3YB8YTE'
+        실제 키와 정확히 일치하는가?: True
+[5단계] 최종 복호화 결과: b'Hello CTF player, welcome to rev wiki site!!'
+        원래 평문과 정확히 일치하는가?: True
+```
+
+이 실행에서는 깨진 바이트가 `i % 8 in {6, 7}`인 자리에서만 나타났다 — 이는 앞서 크립으로 확보한 5바이트(`key[0]`~`key[4]`)와 임시로 0으로 채운 3바이트(`key[5]`~`key[7]`) 중, 공교롭게도 `key[5]` 자리에 해당하는 바이트는 우연히 XOR 결과가 출력 가능한 문자 범위에 들어가서 "깨진 것처럼 보이지 않는" 경우였다(본문의 "흔한 실수"에서 경고한, 우연히 정상처럼 보이는 바이트가 실제로 존재할 수 있다는 사례를 그대로 보여준다). 그래서 `tail_crib`으로 `key[5]`, `key[6]`, `key[7]` 세 바이트를 한꺼번에 확정지었을 때 비로소 전체 키가 실제 키(`K3YB8YTE`)와 완벽하게 일치했다. 이처럼 "깨진 바이트만 보고 안전하다고 판단하지 말고, 가능한 모든 미지 바이트를 추가 크립으로 명시적으로 확정하는 것"이 실전에서 가장 안전한 절차다.
 
 ## 관련 글
 - REV-0921 — 알고리즘을 복원했는데 출력이 원본과 안 맞을 때

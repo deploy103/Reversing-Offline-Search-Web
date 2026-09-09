@@ -12,7 +12,7 @@ keywords: ["Base85", "Ascii85", "btoa", "85진법", "z 특수문자", "4바이�
 aliases: ["base85 상수", "ascii85 인코딩", "85진수 인코딩", "z 압축 인코딩", "adobe base85"]
 symptom_keywords: ["4바이트가 5글자로 늘어남", "z라는 글자가 특별하게 처리됨", "느낌표부터 시작하는 문자셋이 보임", "85로 나누는 연산이 반복됨", "물결표(~) 로 시작하거나 끝남"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -116,6 +116,64 @@ print(base64.a85decode(b"BOu!rD]j7BEbo7"))
 # b'hello world'
 ```
 결과가 `b'hello world'`로 사람이 읽을 수 있는 문자열이 나오므로 Ascii85 디코딩이 정확함을 확인할 수 있다. 만약 원본에 `z`가 하나 섞여 있었다면(예: `<~z~>`) 이는 4바이트 `00 00 00 00`을 압축한 것이므로 디코딩 시 곧바로 4개의 0바이트로 복원해야 한다.
+
+### 심화 예제 — base64 모듈 없이 Ascii85 인코더를 직접 구현하기(z 압축 포함)
+디코딩만 `base64.a85decode`에 맡기지 않고, 인코딩 원리(85진법 5자리 변환 + z 압축 + 패딩 제거)를 처음부터 끝까지 직접 구현해서 표준 라이브러리와 대조해본다.
+```python
+def encode_base85_manual(data: bytes) -> str:
+    """base64 모듈 없이 Adobe Ascii85 인코딩을 직접 구현 (z 압축 규칙 포함)."""
+    # 4바이트 배수로 맞추기 위해 필요한 만큼 0x00으로 패딩한다
+    pad_len = (-len(data)) % 4          # 부족한 바이트 수 (0, 1, 2, 3 중 하나)
+    padded = data + b"\x00" * pad_len   # 실제 계산용으로만 패딩된 버전을 만든다
+
+    out_chars = []
+    for i in range(0, len(padded), 4):        # 4바이트씩 잘라서 처리
+        chunk = padded[i:i+4]
+        n = int.from_bytes(chunk, "big")      # 4바이트를 하나의 32비트 정수로 합침(빅엔디안)
+
+        if n == 0 and i + 4 <= len(data):
+            # 4바이트가 전부 0이고, 패딩이 아니라 실제 원본 데이터인 경우에만 'z' 압축
+            out_chars.append("z")
+            continue
+
+        digits = []
+        for _ in range(5):                  # 85진법 5자리를 최하위 자리부터 뽑는다
+            digits.append(n % 85)
+            n //= 85
+        digits.reverse()                    # 뒤집어서 최상위 자리부터 정상 순서로 만든다
+        out_chars.extend(chr(d + 33) for d in digits)  # 0~84 -> ASCII '!'(33)~'u'(117)
+
+    encoded = "".join(out_chars)
+    if pad_len:
+        # 패딩으로 늘어난 만큼 결과 끝에서 문자를 잘라낸다(4:5 비율이므로 패딩 바이트 수만큼 제거)
+        encoded = encoded[:len(encoded) - pad_len]
+    return encoded
+
+import base64  # 표준 라이브러리 결과와 대조하기 위해서만 사용
+
+sample = b"hello world"
+manual = encode_base85_manual(sample)
+standard = base64.a85encode(sample).decode()
+print("직접 구현 결과 :", manual)
+print("표준 라이브러리:", standard)
+assert manual == standard, "직접 구현이 base64.a85encode와 다름!"
+print("직접 구현한 Base85 인코더가 표준 라이브러리와 정확히 일치")
+
+# z 압축이 실제로 동작하는지도 확인 (앞 4바이트가 전부 0인 경우)
+zero_case = b"\x00\x00\x00\x00" + b"AB"
+manual_zero = encode_base85_manual(zero_case)
+standard_zero = base64.a85encode(zero_case).decode()
+print("전부 0인 그룹 포함 - 직접 구현:", manual_zero, "/ 표준:", standard_zero)
+assert manual_zero == standard_zero
+```
+실제로 실행하면 다음과 같이 나온다(실행 확인함):
+```text
+직접 구현 결과 : BOu!rD]j7BEbo7
+표준 라이브러리: BOu!rD]j7BEbo7
+직접 구현한 Base85 인코더가 표준 라이브러리와 정확히 일치
+전부 0인 그룹 포함 - 직접 구현: z5sb / 표준: z5sb
+```
+이렇게 인코딩 원리를 직접 구현해두면, 바이너리 안의 커스텀 Base85 변형(알파벳 순서가 다른 경우)을 만났을 때도 `chr(d + 33)` 부분의 오프셋만 바꿔서 손쉽게 대응할 수 있다.
 
 ## 관련 글
 - [rev-0212-base64-pattern.md](./rev-0212-base64-pattern.md) — 더 널리 쓰이는 3:4 비율 인코딩과의 비교

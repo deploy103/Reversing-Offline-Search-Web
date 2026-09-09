@@ -12,7 +12,7 @@ keywords: ["순수 비트 연산", "ARX 알고리즘", "지문 없는 커스텀 
 aliases: ["상수가 하나도 없는 암호 알아내기", "지문 매칭이 안되는 알고리즘", "순수 XOR SHIFT ROTATE 조합", "identifiable 상수가 없을 때"]
 symptom_keywords: ["알려진 매직넘버가 하나도 안보임", "S-box 테이블이 아예 없음", "shift xor and or 명령어만 계속 반복됨", "REV-0207~0211 지문 매칭이 전부 실패함"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -161,6 +161,79 @@ print(encrypt(0x11111111, 0x22222222))
 ```
 
 이 결과를 실제 바이너리를 GDB로 같은 초기값을 넣어 실행한 결과와 라운드마다 비교하면, 재구현이 정확한지 확실히 검증할 수 있다.
+
+### 완전한 예제 스크립트 — 역방향 라운드 함수까지 만들어서 완전히 되돌리기
+상수 지문이 하나도 없는 커스텀 ARX 알고리즘이라도, 라운드 함수 하나를 정확히 재구현했다면 그 역함수도 만들 수 있는지가 "이 알고리즘이 실제로 가역인지"를 확인하는 가장 확실한 방법이다. 아래 스크립트는 라운드 함수와 그 역함수를 모두 구현하고, 암호화한 값을 다시 원래대로 되돌려서 검증한다.
+
+```python
+def rol32(x: int, k: int) -> int:
+    """32비트 정수 x를 왼쪽으로 k비트 회전시킨다."""
+    x &= 0xFFFFFFFF                              # 혹시 32비트를 넘는 값이 들어와도 안전하게 자른다
+    return ((x << k) | (x >> (32 - k))) & 0xFFFFFFFF  # 왼쪽으로 넘친 비트를 오른쪽으로 채워넣는다
+
+
+def ror32(x: int, k: int) -> int:
+    """32비트 정수 x를 오른쪽으로 k비트 회전시킨다. rol32와 정확히 반대 동작이다."""
+    x &= 0xFFFFFFFF
+    return ((x >> k) | (x << (32 - k))) & 0xFFFFFFFF
+
+
+def round_func(a: int, b: int):
+    """GDB로 관찰해서 확인한 커스텀 라운드 함수 (암호화 방향)."""
+    a = (a + b) & 0xFFFFFFFF   # 1. a에 b를 더한다
+    a = rol32(a, 7)             # 2. a를 왼쪽으로 7비트 회전
+    a ^= b                      # 3. a와 b를 XOR
+    b = (b + a) & 0xFFFFFFFF   # 4. (갱신된) a를 b에 더한다
+    b = rol32(b, 3)             # 5. b를 왼쪽으로 3비트 회전
+    return a, b
+
+
+def round_func_inv(a: int, b: int):
+    """round_func의 모든 연산을 정확히 반대 순서로 되돌리는 역함수 (복호화 방향)."""
+    b = ror32(b, 3)              # 5번의 반대: 오른쪽으로 3비트 회전시켜 원상복구
+    b = (b - a) & 0xFFFFFFFF   # 4번의 반대: 더했던 a를 다시 빼준다
+    a ^= b                      # 3번의 반대: XOR은 자기 자신이 역함수이므로 그대로 다시 XOR
+    a = ror32(a, 7)              # 2번의 반대: 오른쪽으로 7비트 회전
+    a = (a - b) & 0xFFFFFFFF   # 1번의 반대: 더했던 b를 다시 빼준다
+    return a, b
+
+
+def encrypt(a: int, b: int, rounds: int = 4):
+    """라운드 함수를 지정된 횟수만큼 반복 적용한다."""
+    for _ in range(rounds):
+        a, b = round_func(a, b)
+    return a, b
+
+
+def decrypt(a: int, b: int, rounds: int = 4):
+    """역함수를 암호화와 같은 횟수만큼, 순서는 그대로(마지막 라운드부터 거슬러 올라가는 효과) 적용한다."""
+    for _ in range(rounds):
+        a, b = round_func_inv(a, b)
+    return a, b
+
+
+# 실제 크랙미에서 관찰한 것과 비슷한 초기값이라고 가정
+a0, b0 = 0x11111111, 0x22222222
+print("원래 값:", hex(a0), hex(b0))
+
+encrypted_a, encrypted_b = encrypt(a0, b0)
+print("암호화 결과:", hex(encrypted_a), hex(encrypted_b))
+
+decrypted_a, decrypted_b = decrypt(encrypted_a, encrypted_b)
+print("복호화 결과:", hex(decrypted_a), hex(decrypted_b))
+
+print("왕복 검증 (원래 값과 같아야 함):", (decrypted_a, decrypted_b) == (a0, b0))
+```
+
+실제로 실행한 결과:
+```
+원래 값: 0x11111111 0x22222222
+암호화 결과: 0x8ee5faa 0x11e8a1dd
+복호화 결과: 0x11111111 0x22222222
+왕복 검증 (원래 값과 같아야 함): True
+```
+
+역함수까지 정확히 만들어서 원래 값으로 완전히 되돌아온다는 것을 확인했다면, 이 알고리즘은 "가역"이라는 것이 실험적으로 증명된 것이다(REV-0221과 이어지는 판단). 만약 실제 바이너리의 검증 로직이 이 `encrypt()`의 결과를 어떤 고정된 상수와 비교하는 형태라면, `decrypt()` 함수에 그 고정 상수를 그대로 넣기만 해도 원래 입력값(`a0`, `b0`)을 즉시 복원할 수 있다는 뜻이다.
 
 ## 관련 글
 - REV-0915 — 라이브러리 호출 없이 손으로 구현된 암호를 알아채는 단서

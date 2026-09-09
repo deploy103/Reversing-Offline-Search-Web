@@ -12,7 +12,7 @@ keywords: ["matrix transform", "2D array", "행렬 변환", "row-major", "transp
 aliases: ["행렬 뒤집기", "그리드 변환", "2차원 배열 순회", "회전 변환"]
 symptom_keywords: ["이중 루프 i j", "행렬 곱셈처럼 생김", "2차원 배열 인덱싱", "그리드 회전"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -176,6 +176,68 @@ result = rotate_grid("ABCDEFGHIJKLMNOP", 4)
 print(result)  # MIEANJFBOKGCPLHD
 ```
 검증 루틴이 "회전된 격자가 목표 문자열과 같으면 Correct"라는 구조라면, 목표 문자열에 반대 방향 회전(`rotate90_ccw`)을 적용해 원래 입력을 즉시 복원할 수 있다.
+
+**심화 예제 — 16글자 flag를 4×4 격자 회전에서 복원하는 완결된 스크립트**
+
+이번에는 실제로 16글자짜리 flag 후보가 4×4 격자로 시계방향 90도 회전되어 저장된 상황을 가정하고, 처음부터 끝까지 실행되는 스크립트로 복원한다.
+
+```python
+def rotate90_cw(grid: list[list[str]], n: int) -> list[list[str]]:
+    # ↑ n×n 격자를 시계방향으로 90도 회전시켜 새 격자를 돌려주는 함수.
+    return [[grid[n - 1 - j][i] for j in range(n)] for i in range(n)]
+    # ↑ 새 격자의 [i][j] 위치에는 원래 격자의 [n-1-j][i] 값을 가져다 놓는다.
+    #   이 한 줄이 바로 "행과 열을 어떻게 맞바꾸는가"를 나타내는 회전 공식이다.
+
+def rotate90_ccw(grid: list[list[str]], n: int) -> list[list[str]]:
+    # ↑ 시계방향 회전을 정확히 되돌리는, 반시계방향 90도 회전 함수.
+    return [[grid[j][n - 1 - i] for j in range(n)] for i in range(n)]
+    # ↑ rotate90_cw와 정반대 방향으로 인덱스를 계산하므로, 두 함수를 순서대로
+    #   적용하면 원래 격자로 정확히 돌아온다.
+
+def str_to_grid(s: str, n: int) -> list[list[str]]:
+    # ↑ 길이 n*n인 1차원 문자열을 n×n 2차원 격자(리스트의 리스트)로 바꿔주는 함수.
+    return [list(s[i * n:(i + 1) * n]) for i in range(n)]
+    # ↑ 문자열을 n글자씩 잘라서 한 행씩 만들고, 그 행들을 모아 격자를 완성한다.
+
+def grid_to_str(grid: list[list[str]]) -> str:
+    # ↑ 2차원 격자를 다시 1차원 문자열로 펼쳐주는 함수(str_to_grid의 반대).
+    return "".join("".join(row) for row in grid)
+    # ↑ 각 행(row)의 문자들을 먼저 이어붙이고, 그 행들을 다시 순서대로 이어붙인다.
+
+if __name__ == "__main__":
+    # ↑ 이 파일을 직접 실행할 때만 아래 블록을 수행한다.
+    original_flag = "FLAG_ROTATE_GRID"
+    # ↑ 검증용 원본 16글자 문자열(4×4 격자에 정확히 맞는 길이, 실전에서는 모르는 값).
+
+    grid = str_to_grid(original_flag, 4)
+    # ↑ 16글자 문자열을 4×4 격자로 바꾼다.
+
+    rotated_grid = rotate90_cw(grid, 4)
+    # ↑ 바이너리가 하는 것처럼(가정) 시계방향으로 90도 회전시킨다.
+    rotated_str = grid_to_str(rotated_grid)
+    # ↑ 회전된 격자를 다시 1차원 문자열로 펼친다 — 이게 바이너리가 저장/비교하는 값이다.
+    print("회전된 결과:", rotated_str)
+    # ↑ 회전된 문자열을 출력해서 확인한다.
+
+    restored_grid = rotate90_ccw(rotated_grid, 4)
+    # ↑ 반시계방향 90도 회전으로 원래 격자를 복원한다.
+    restored_str = grid_to_str(restored_grid)
+    # ↑ 복원된 격자를 다시 1차원 문자열로 펼친다.
+    print("복원된 결과:", restored_str)
+    # ↑ 복원된 문자열을 출력한다.
+
+    assert restored_str == original_flag
+    # ↑ 복원 결과가 원본과 정확히 같은지 스스로 검증한다.
+    print("검증 성공: 시계방향 회전은 반시계방향 회전으로 정확히 되돌아온다.")
+```
+
+이 스크립트를 그대로 실행하면 다음과 같이 출력된다(직접 계산해서 검증한 값):
+```
+회전된 결과: GA_FRTRLIEOAD_TG
+복원된 결과: FLAG_ROTATE_GRID
+검증 성공: 시계방향 회전은 반시계방향 회전으로 정확히 되돌아온다.
+```
+즉 바이너리가 `"FLAG_ROTATE_GRID"`라는 16글자 문자열을 4×4 격자로 놓고 시계방향으로 90도 돌리면 `"GA_FRTRLIEOAD_TG"`라는, 전혀 알아볼 수 없는 문자열이 저장/비교된다. 실전에서는 이 `"GA_FRTRLIEOAD_TG"` 위치에 바이너리에서 실제로 뽑아낸 값을 넣고, `str_to_grid` → `rotate90_ccw` → `grid_to_str` 세 단계만 그대로 실행하면 즉시 원래 flag가 복원된다.
 
 ## 관련 글
 - [REV-0216 — 배열 인덱스 재배열 Shuffle 검증](./rev-0216-array-shuffle-check.md)

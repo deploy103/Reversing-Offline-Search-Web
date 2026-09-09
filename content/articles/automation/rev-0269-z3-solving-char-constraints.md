@@ -12,7 +12,7 @@ keywords: ["Z3 문자열", "Z3 char", "BitVec 8비트", "flag 복원", "출력�
 aliases: ["z3로 flag 구하기", "z3 문자열 조건", "z3 아스키 범위 제약", "z3 패스워드 복원"]
 symptom_keywords: ["flag 각 글자 조건 z3로 풀고 싶음", "z3 문자 배열 어떻게 씀", "출력가능한 문자로 제한하려면", "z3로 문자열 복원", "패스워드 문자별 조건"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -194,6 +194,45 @@ print(''.join(chr(m[flag[i]].as_long()) for i in range(len(key))))
 ```
 
 복원된 문자열은 이후 REV-0266의 `sendline()`으로 실제 바이너리에 넣어 최종 검증할 수 있다.
+
+## 실전 예시: 치환 테이블(S-box) 참조를 조건으로 옮기기
+XOR 키만 쓰는 검증 로직보다 조금 더 까다로운 실전 패턴은, 바이너리 안에 **256바이트짜리 치환 테이블(S-box)**을 두고 `output[i] = table[input[i]]` 형태로 각 글자를 변환하는 방식이다. 이런 테이블 조회는 산술식 하나로 표현할 수 없기 때문에, "입력 글자가 특정 값 k일 때만 출력이 `table[k]`와 같다"는 조건들을 `Or()`로 전부 나열해서 표현해야 한다.
+
+리버싱한 바이너리에 다음과 같은(가상의) 256바이트 치환 테이블이 있고, 그 테이블로 4글자짜리 문자열을 변환한 뒤 결과를 상수 배열과 비교한다고 가정한다. 재현 가능하도록 `random.seed()`로 테이블을 고정해서 만든다.
+
+```python
+from z3 import *
+import random
+
+# 리버싱 대상 바이너리의 .rodata에 있다고 가정한 256바이트 치환 테이블.
+# 실전에서는 이 테이블을 직접 손으로 옮겨 적거나 바이너리에서 읽어와야 하지만,
+# 여기서는 누구나 동일하게 재현할 수 있도록 고정된 시드로 생성한다.
+random.seed(1337)
+sbox = list(range(256))
+random.shuffle(sbox)
+
+# 바이너리 안에 상수로 박혀 있다고 가정하는 목표값(4바이트) — sbox[ord('A')], sbox[ord('z')], sbox[ord('9')], sbox[ord('!')]
+target = [0x00, 0x2d, 0xef, 0x39]
+
+n = len(target)
+flag = [BitVec(f'c{i}', 8) for i in range(n)]   # 8비트 문자 변수 4개
+s = Solver()
+
+for i in range(n):
+    # "flag[i]가 k라면, target[i]는 반드시 sbox[k]와 같다"를 k=0..255 전부에 대해 나열하고 Or로 묶는다.
+    # 즉 테이블 조회 table[input] == output을 "가능한 입력값 전부"에 대한 선택지로 풀어서 표현하는 방식이다.
+    s.add(Or([And(flag[i] == k, target[i] == sbox[k]) for k in range(256)]))
+    s.add(flag[i] >= 0x20, flag[i] <= 0x7e)   # 출력 가능 문자로 제한(항상 넣는 습관)
+
+if s.check() == sat:
+    m = s.model()
+    recovered = ''.join(chr(m[flag[i]].as_long()) for i in range(n))
+    print('recovered:', recovered)   # Az9!
+else:
+    print('unsat')
+```
+
+이 스크립트를 그대로 실행하면 `recovered: Az9!`가 나온다(`random.seed(1337)`로 만든 테이블 기준으로 직접 재현 검증됨). `Or([And(flag[i] == k, target[i] == sbox[k]) for k in range(256)])` 한 줄이 하는 일은 "flag[i]로 가능한 256가지 값 중, 그 값을 테이블에 넣었을 때 실제로 목표값이 나오는 것만 참으로 남긴다"는 뜻이며, 이 방식은 XOR/덧셈처럼 수식으로 바로 표현되지 않는 **임의의 룩업 테이블 기반 변환**에도 그대로 적용할 수 있는 일반적인 패턴이다. 테이블이 256바이트보다 작더라도(예: 16바이트 니블 치환 테이블) `range(256)` 대신 실제 테이블 크기만큼만 순회하도록 바꾸면 그대로 재사용 가능하다.
 
 ## 관련 글
 - REV-0268 — Z3 BitVec 기초

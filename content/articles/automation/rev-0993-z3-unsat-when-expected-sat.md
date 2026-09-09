@@ -12,7 +12,7 @@ keywords: ["z3 unsat", "Z3 unsat 원인", "sat unsat 차이", "z3 조건 오류"
 aliases: ["z3에서 답이 안 나옴", "z3 unsat 해결", "z3 check unsat", "왜 z3가 unsat이라고 함"]
 symptom_keywords: ["s.check()가 unsat만 나옴", "분명히 답이 있을텐데 z3가 없다고 함", "z3 unsat 원인을 모르겠음", "z3 조건을 다 맞게 짰는데 unsat"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -21,7 +21,7 @@ last_verified: "2026-09-09"
 ## 언제 검색해야 하나
 - 리버싱한 검증 함수를 손으로 확인했을 때는 분명히 만족 가능한 조건인데 Z3가 `unsat`을 반환할 때
 - `s.add()`로 조건을 하나씩 추가하다가 특정 시점부터 갑자기 `unsat`으로 바뀌어서 원인 조건을 못 찾겠을 때
-- 부호 있는 비교(`<`, `>`)를 썼는데 Z3의 기본 비교 연산자가 부호 없는 비교라는 사실을 몰라서 결과가 이상할 때
+- 부호 없는(unsigned) 비교가 필요한 조건인데 Z3의 기본 비교 연산자(`<`, `>`)가 이미 부호 있는(signed) 비교라는 사실을 몰라서 결과가 이상할 때
 - CTF 라이트업 코드를 그대로 따라 쳤는데 자신의 바이너리에서는 `unsat`이 나서 코드가 틀렸는지 로직 파악이 틀렸는지 구분이 안 될 때
 
 ## 핵심 개념
@@ -29,7 +29,7 @@ Z3의 `s.check()`는 세 가지 결과만 반환한다. `sat`(만족하는 값�
 
 리버싱 자동화에서 `unsat`이 뜨는 원인은 거의 항상 다음 중 하나다.
 
-1. **부호(signed/unsigned) 불일치** — Z3 `BitVec`의 기본 비교 연산자(`<`, `>`, `<=`, `>=`)는 **부호 없는(unsigned) 비교**다. C 코드가 `int`(부호 있는 타입)를 비교하는데 이를 그대로 `x > y`로 옮기면, 음수가 관여하는 순간 실제 C의 의미와 다르게 해석되어 모순이 생길 수 있다. 부호 있는 비교가 필요하면 별도의 signed 비교 연산자를 써야 한다.
+1. **부호(signed/unsigned) 불일치** — Z3 `BitVec`의 기본 비교 연산자(`<`, `>`, `<=`, `>=`)는 **부호 있는(signed) 비교**(`bvslt`/`bvsgt` 등)다. C 코드가 `unsigned int`/`unsigned char`(부호 없는 타입)를 비교하는데 이를 그대로 `x > y`로 옮기면, 최상위 비트가 1인 값(unsigned 관점에서는 매우 큰 양수지만 signed 관점에서는 음수로 해석됨)이 관여하는 순간 실제 C의 의미와 반대로 해석되어 모순이 생길 수 있다. 부호 없는 비교가 필요하면 `ULT`/`ULE`/`UGT`/`UGE` 같은 별도의 unsigned 비교 함수를 명시적으로 써야 한다.
 2. **비트 폭 불일치** — C에서는 `char`(8비트)였는데 Z3에서 `BitVec('x', 32)`로 선언하면, 값이 잘리는(truncate) 지점이 달라져서 원래는 성립하던 오버플로우 조건이 성립하지 않게 된다.
 3. **로직 번역 실수** — 조건문의 방향을 반대로 옮기거나(`==`를 `!=`로), 비트 연산 우선순위를 파이썬 연산자 우선순위와 착각해서 괄호를 빠뜨리는 경우.
 4. **도달 불가능한 분기 로직** — 원래 C 코드에 애초에 실행되지 않는 죽은 코드(dead code)나 상수로 인해 항상 거짓인 분기가 있는 경우, 그 분기의 조건까지 그대로 `s.add()`에 옮기면 처음부터 `unsat`이 되는 것이 오히려 정상이다.
@@ -65,21 +65,30 @@ print('A+B:', s.check())     # 여기서 unsat이면 B가 의심
 조건을 하나씩 추가할 때마다 `s.check()`를 찍어 어느 시점부터 `unsat`으로 바뀌는지 확인한다.
 
 **2) 부호 비교인지 확인하기**
-C 코드가 `if (x < 0)`처럼 부호 있는 비교를 한다면, Z3 기본 연산자 대신 부호 있는 비교를 명시적으로 써야 한다.
+C 코드가 `if (x < 0)`처럼 원래 부호 있는(`int`) 비교를 한다면 Z3 기본 `<`가 정확히 같은 의미(signed)이므로 그대로 써도 된다. 반대로 C 코드가 `if ((unsigned int)x < 10)`처럼 부호 없는 비교를 한다면, Z3 기본 `<`를 그대로 쓰면 안 되고 `ULT`(unsigned less-than)를 명시적으로 써야 한다.
 ```python
 from z3 import *
 x = BitVec('x', 32)
+
+# 올바른 예: C의 "int x; if (x < 0)"과 정확히 같은 의미다 (Z3 기본 <는 이미 signed 비교)
 s = Solver()
+s.add(x < 0)
+print(s.check())   # sat -- 예: x가 -1(0xffffffff)일 때 성립
+print(s.model())
 
-# 잘못된 예: 기본 <, > 는 unsigned 비교라서 "음수"라는 개념 자체가 다르게 취급된다
-s.add(x < 0)          # unsigned 기준으로는 절대 참이 될 수 없어 항상 unsat 유발 가능
-print(s.check())       # unsat
-
+# 잘못된 예: C의 "unsigned int x; if (x < 10)"을 그대로 기본 <로 옮기면
+# 실제로는 signed 비교(bvslt)가 되어버려서 unsigned 의도와 달라진다
 s2 = Solver()
-s2.add(x < BitVecVal(0, 32))  # 여전히 unsigned 비교이므로 동일하게 unsat
-print(s2.check())
+s2.add(x < 10)               # 기본 <: signed 비교 -- unsigned를 의도했다면 잘못된 번역
+s2.add(x == 0xfffffffb)       # unsigned로는 4294967291(매우 큰 값), signed로는 -5
+print(s2.check())              # sat: signed 관점에서는 -5 < 10 이 성립해버려 unsigned 의도와 어긋남
+
+# 고친 예: unsigned 비교가 필요하면 ULT(부호 없는 <)를 명시적으로 사용
+s3 = Solver()
+s3.add(ULT(x, 10))            # 부호 없는 비교: 0 <= x < 10 (unsigned 관점)
+s3.add(x == 0xfffffffb)
+print(s3.check())               # unsat: unsigned 관점에서 4294967291은 10보다 작지 않으므로 모순 -- 원본 C 로직과 일치
 ```
-부호 있는 음수 조건을 표현하려면 signed 비교 연산자를 쓰거나, 조건을 `x > 0x7fffffff`(32비트 unsigned 표현에서 최상위 비트가 1인 범위)처럼 unsigned 관점으로 다시 써야 한다.
 
 **3) 비트 폭 재확인**
 원래 C 변수 타입을 다시 확인한다. `char`는 8비트, `short`는 16비트, `int`는 32비트, `long`(리눅스 x64)은 64비트다. `BitVec` 선언에 잘못된 폭을 쓰지 않았는지 각 변수마다 다시 점검한다.
@@ -99,7 +108,7 @@ print(s2.check())
 - 조건을 하나씩 껐다 켰다 하면서 `sat`으로 바뀌는 지점을 찾았다면, 그 조건이 원래 C 로직과 정확히 같은 의미인지(부호, 비트 폭, 연산 순서) 다시 대조해야 한다.
 
 ## 흔한 실수
-- Z3 `BitVec`의 기본 비교 연산자가 unsigned라는 사실을 모르고 부호 있는 C `int` 비교를 그대로 옮기는 것.
+- Z3 `BitVec`의 기본 비교 연산자가 이미 signed라는 사실을 모르고, C의 `unsigned` 비교를 `ULT`/`UGT` 없이 그대로 기본 연산자로 옮겨서 큰 값이 음수로 잘못 해석되는 것.
 - 원래 변수가 8비트/16비트인데 습관적으로 32비트 `BitVec`을 선언해서 잘림(truncate) 지점이 달라지는 것.
 - `unsat`이 뜨자마자 "Z3가 이 문제를 못 푼다"고 오해하고 다른 도구로 갈아타는 것 — 대부분은 도구 문제가 아니라 조건 번역 실수다.
 - 여러 `Solver()` 인스턴스를 헷갈려서, 조건을 추가한 솔버가 아니라 새로 만든 빈 솔버에 `check()`를 호출하는 것.
@@ -130,6 +139,47 @@ print(s2.check())      # sat이지만 model 값이 8비트일 때와 전혀 다�
 ```
 이처럼 비트 폭 하나만 달라져도 `sat`/`unsat` 여부와 모델 값이 통째로 바뀔 수 있으므로, 원래 C 타입을 정확히 확인하는 것이 `unsat` 디버깅의 출발점이다.
 
+### 에러를 재현하는 잘못된 코드 vs 고쳐서 정상 동작하는 코드
+`unsigned int len;`처럼 부호 없는 값을 다루는 C 검증 로직을 Z3로 옮기는 상황을 그대로 재현한다. 두 스크립트 모두 `pip install z3-solver`만 되어 있으면 그대로 실행된다.
+
+**잘못된 코드 — Z3 기본 `<`가 signed라는 걸 모르고 unsigned 조건을 그대로 옮김**
+```python
+from z3 import *
+
+# C 원본: unsigned int len; if (len < 10) { ... 통과 ... }
+# len은 "부호 없는" 값이므로 0 이상의 정수로만 취급되어야 한다.
+length = BitVec('length', 32)   # 32비트 값 하나 선언 (내장 함수 len과 이름이 겹치지 않게 length로 지음)
+
+s_wrong = Solver()
+# *** 잘못된 부분: 기본 <는 사실 signed(bvslt) 비교인데, unsigned를 의도했다고 착각하고 그냥 씀 ***
+s_wrong.add(length < 10)                 # 의도: "unsigned 관점에서 10보다 작다"
+s_wrong.add(length == 0xfffffffb)         # 이 값은 unsigned로는 4294967291(매우 큰 값), signed로는 -5
+
+print('[잘못된 코드] check():', s_wrong.check())
+if s_wrong.check() == sat:
+    print('[잘못된 코드] model():', s_wrong.model())
+# sat이 나온다: signed 관점에서는 -5 < 10 이 참이라서 통과해버린다.
+# 하지만 원본 C 로직(unsigned)에서는 4294967291은 10보다 훨씬 크므로
+# 절대로 이 조건을 만족해서는 안 된다 -- 즉 "번역이 틀려서 원래는 안 통과해야 할 값이 sat으로 나온" 경우다.
+```
+
+**고친 코드 — 부호 없는 비교가 필요하면 `ULT`를 명시적으로 사용**
+```python
+from z3 import *
+
+length = BitVec('length', 32)
+
+s_fixed = Solver()
+# *** 고친 부분: unsigned 비교가 필요하면 기본 <가 아니라 ULT(부호 없는 <)를 명시적으로 쓴다 ***
+s_fixed.add(ULT(length, 10))              # 부호 없는 <: 0 <= length < 10 (unsigned 관점 그대로)
+s_fixed.add(length == 0xfffffffb)
+
+print('[고친 코드] check():', s_fixed.check())
+# unsat이 나온다: unsigned 관점에서 4294967291은 10보다 작지 않으므로 두 조건이 정확히 모순된다.
+# 이것이 바로 원본 C의 "unsigned int len; if (len < 10)"과 정확히 같은 의미를 갖는 올바른 번역이며,
+# 이 글의 제목처럼 "생각과 다른 sat/unsat이 나왔을 때" 부호(signed/unsigned) 문제부터 의심해야 하는 이유다.
+```
+
 ## 관련 글
 - REV-0994 — Z3 제약조건 작성 시 비트 폭이 안 맞아서 오류가 날 때
 - REV-0268 — Z3 BitVec 기초
@@ -137,5 +187,5 @@ print(s2.check())      # sat이지만 model 값이 8비트일 때와 전혀 다�
 - REV-0270 — Z3에서 8비트 32비트 Overflow 다루기
 
 ## 출처/검증
-- `s.check()`가 `sat`/`unsat`/`unknown` 세 가지만 반환한다는 점과 `BitVec` 비교 연산자의 기본 동작(unsigned)은 Z3 공식 GitHub(Z3Prover/z3) 및 Z3py 튜토리얼 문서를 기준으로 정리했다(2026-09-09 검증).
+- `s.check()`가 `sat`/`unsat`/`unknown` 세 가지만 반환한다는 점과 `BitVec` 비교 연산자의 기본 동작(signed 비교이며, unsigned 비교는 `ULT`/`ULE`/`UGT`/`UGE`로 명시해야 함)은 Z3 공식 GitHub(Z3Prover/z3) 및 Z3py 튜토리얼 문서를 기준으로 정리했다(2026-09-10 재검증).
 - 코드 예제는 `pip install z3-solver` 환경의 표준 CPython 3에서 그대로 재현 가능하다.

@@ -12,7 +12,7 @@ keywords: ["python 엔디안 변환", "little endian python", "big endian python
 aliases: ["파이썬 엔디안", "리틀엔디안 빅엔디안 변환 코드", "바이트오더 파이썬"]
 symptom_keywords: ["메모리 덤프 바이트 순서 이상함", "값이 거꾸로 읽힘", "hex dump 순서 반대"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -150,6 +150,35 @@ endian = 'little' if ei_data == 1 else 'big'
 print(f"class={ei_class}, endian={endian}")
 ```
 이처럼 파일 포맷 스스로가 엔디안을 명시하는 필드를 갖고 있는 경우도 많으므로, 무작정 `'little'`을 가정하기 전에 헤더에 그런 필드가 있는지부터 확인하는 습관을 들이면 실수를 줄일 수 있다.
+
+### 실전 예제 2 — 게임 세이브 파일의 정수 필드를 읽고, 값을 바꿔서 다시 쓰기
+이번엔 PE/ELF 헤더가 아니라, 리버싱 실습에서 자주 만나는 "커스텀 세이브 파일" 형태를 다뤄본다. 파일 앞부분 12바이트에 체력(HP), 골드(Gold), 레벨(Level)이 각각 4바이트 리틀엔디안 정수로 저장되어 있다고 하자.
+
+```python
+# 세이브 파일의 앞 12바이트를 그대로 흉내낸 데이터
+# HP=100(0x64), Gold=1000(0x3e8), Level=5 가 각각 4바이트 리틀엔디안으로 들어있다
+# 12바이트를 4바이트씩 끊어서 보면: 64 00 00 00 | e8 03 00 00 | 05 00 00 00
+data = bytes.fromhex("64000000e803000005000000")
+
+# 1) 각 필드를 오프셋과 크기(4바이트씩)에 맞춰 잘라서 정수로 해석
+hp = int.from_bytes(data[0:4], "little")      # 첫 4바이트 -> HP
+gold = int.from_bytes(data[4:8], "little")    # 다음 4바이트 -> Gold
+level = int.from_bytes(data[8:12], "little")  # 마지막 4바이트 -> Level
+
+print("HP:", hp, "Gold:", gold, "Level:", level)   # HP: 100 Gold: 1000 Level: 5
+
+# 2) Gold 값을 99999로 바꾸고, 다시 4바이트 리틀엔디안 바이트로 조립
+new_gold_bytes = (99999).to_bytes(4, "little")     # 정수 -> 4바이트 리틀엔디안
+
+# 3) 원본 데이터에서 Gold 필드(오프셋 4~8)만 새 값으로 교체해 새로운 세이브 데이터를 만든다
+patched = data[0:4] + new_gold_bytes + data[8:12]
+print("패치된 데이터(hex):", patched.hex())
+
+# 4) 실제로 값이 반영됐는지 다시 읽어서 확인
+check_gold = int.from_bytes(patched[4:8], "little")
+print("패치 후 Gold 확인:", check_gold)   # 99999
+```
+이 패턴(오프셋과 크기를 정확히 잘라 `int.from_bytes`로 읽고, 값을 바꾼 뒤 `int.to_bytes`로 다시 조립해 원본 자리에 끼워 넣는 것)은 세이브 파일 에디터, 게임 치트, CTF의 파일 포맷 변조 문제에서 그대로 재사용할 수 있는 기본 골격이다.
 
 ## 관련 글
 - REV-0258 — 리버싱용 Python 숫자 변환 치트시트

@@ -12,7 +12,7 @@ keywords: ["p32", "p64", "u32", "u64", "pwntools 패킹", "little endian", "stru
 aliases: ["pwntools pack unpack", "정수 바이트 변환 함수", "p32 u32 차이", "엔디안 변환 pwntools"]
 symptom_keywords: ["p32 u32 차이 모르겠음", "주소를 바이트열로 어떻게 바꿈", "little endian 헷갈림", "struct pack 대신 pwntools", "pwntools 패킹 함수 정리"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -168,6 +168,47 @@ p.close()
 ```
 
 이 예제는 `scanf`가 아니라 `read()`로 raw 바이트를 읽는 프로그램이므로, 텍스트 `b'3405691582'`를 보내면 실패하고 반드시 `p32()`로 패킹한 4바이트를 보내야 통과한다는 점이 핵심이다.
+
+## 실전 예시: 여러 필드로 이루어진 패킷 조립/해석
+실전 프로토콜은 4바이트 정수 하나가 아니라, **매직 값 + 명령 코드 + 길이 + 가변 길이 페이로드**처럼 여러 필드가 순서대로 이어진 구조를 쓰는 경우가 많다. 이런 구조는 `p8`/`p16`/`p32`를 필드 순서대로 이어붙이기만 하면 그대로 조립되고, 응답을 받을 때는 각 필드의 고정 길이만큼 잘라서 `u8`/`u16`으로 해석하면 된다.
+
+```python
+from pwn import *
+
+# 요청 패킷 구조: [매직 4바이트][명령 1바이트][페이로드 길이 2바이트][페이로드 N바이트]
+MAGIC = 0xCAFEBABE
+CMD_LOGIN = 0x01
+payload = b'login:admin'
+
+# 각 필드를 정해진 크기로 패킹한 뒤 순서대로 이어붙인다
+packet = p32(MAGIC) + p8(CMD_LOGIN) + p16(len(payload)) + payload
+print(packet.hex())
+# bebafeca010b006c6f67696e3a61646d696e
+# (매직 4바이트 리틀엔디안 + 명령 1바이트 + 길이 2바이트 리틀엔디안 + payload 11바이트)
+
+p = process('./server')     # 이 패킷을 받아 처리하는 대상 서버/바이너리라고 가정
+p.send(packet)
+
+# 응답 패킷 구조: [상태 1바이트][응답 길이 2바이트][응답 페이로드 N바이트]
+status = u8(p.recv(1))          # 첫 1바이트: 상태 코드 (0이면 성공)
+resp_len = u16(p.recv(2))        # 다음 2바이트: 이어질 응답 페이로드의 길이
+resp_payload = p.recv(resp_len)   # 그 길이만큼 페이로드를 정확히 얻어온다
+
+print('status:', status)
+print('payload:', resp_payload)
+
+p.close()
+```
+
+만약 서버가 `status=0`(성공), 응답 페이로드로 `b'welcome admin'`(13바이트)을 돌려준다면, 실제로 소켓에 흐르는 응답 바이트열은 다음과 같이 정확히 계산된다.
+
+```python
+resp = p8(0) + p16(13) + b'welcome admin'
+print(resp.hex())
+# 000d0077656c636f6d652061646d696e
+```
+
+여기서 핵심은 **각 필드를 읽을 때 정확히 그 필드의 크기만큼만 `recv()`를 호출**한다는 점이다. `resp_len`처럼 뒤에 나올 데이터의 길이를 미리 알려주는 필드가 있다면, 그 값을 먼저 해석해서 다음 `recv()` 호출의 인자로 그대로 사용하는 것이 정석이다. 길이를 무시하고 무작정 `recv(1024)`처럼 큰 값을 넘기면, 다음 패킷의 앞부분까지 한꺼번에 읽어와 버려 이후 파싱이 전부 어긋나는 사고로 이어지기 쉽다.
 
 ## 관련 글
 - REV-0266 — pwntools로 프로세스 실행하고 입력 보내기

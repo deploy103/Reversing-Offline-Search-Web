@@ -12,7 +12,7 @@ keywords: ["angr state explosion", "angr 탐색이 안 끝남", "simgr.active �
 aliases: ["angr 상태 폭발", "angr 탐색 무한대기", "angr 메모리 터짐", "angr explore 안끝남"]
 symptom_keywords: ["angr가 몇 시간째 안 끝남", "메모리 사용량이 계속 늘어남", "simgr.active 개수가 계속 커짐", "angr 스크립트가 멈춘 것처럼 보임"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -118,6 +118,53 @@ if simgr.found:
 ```
 
 전체 프로그램 대신 검증 함수 하나만 대상으로 좁히는 것만으로도 상태 폭발 문제가 사라지는 경우가 실전에서 매우 흔하다.
+
+### 에러를 재현하는 잘못된 코드 vs 고쳐서 정상 동작하는 코드
+실제 angr가 상태를 지수적으로 늘리는 과정을 그대로 재현하려면 몇 시간이 걸리거나 메모리를 다 써버릴 수 있으므로, 여기서는 "조건 분기를 만날 때마다 상태 수가 2배로 늘어난다"는 핵심 동작만 순수 파이썬으로 안전하게 흉내낸다. 외부 라이브러리 없이 파이썬 3만 있으면 그대로 실행되며, 실제 메모리를 많이 쓰지 않도록 상태는 리스트가 아니라 정수(개수)로만 다룬다.
+
+**잘못된 코드 — 반복(분기) 횟수에 아무 제한이 없어 상태 수가 기하급수적으로 폭발**
+```python
+class StateExplosionError(Exception):
+    """실제로는 angr가 메모리를 계속 늘리며 멈추지 않는 상황을, 예제에서는
+    상태 수가 감당 못할 만큼 커진 시점에 일부러 예외를 던져서 확인하기 쉽게 만든 것이다."""
+    pass
+
+def explore_no_bound(steps, max_states=1_000_000):
+    """angr가 조건 분기를 만날 때마다 상태를 둘로 쪼개는 것을 단순화해서 흉내낸 함수.
+    LoopSeer 같은 반복 제한이 전혀 없으면 상태 수가 2**step으로 계속 커진다."""
+    state_count = 1   # 처음에는 상태가 1개(entry_state 하나)뿐이다
+    for step in range(steps):
+        state_count *= 2   # 분기를 만날 때마다 상태가 2배로 늘어남(제한 없음)
+        print(f'step {step}: 활성 상태 수 = {state_count}')
+        if state_count > max_states:
+            # 실제 angr였다면 이 시점부터 메모리 사용량이 계속 늘어나며 멈추지 않았을 것이다.
+            raise StateExplosionError(f'상태 수가 {state_count}개로 폭발함 (step={step})')
+    return state_count
+
+try:
+    explore_no_bound(steps=30)   # 2**20 = 약 105만 시점에서 max_states(100만)를 넘어 예외 발생
+except StateExplosionError as e:
+    print('에러 발생:', e)
+```
+
+**고친 코드 — LoopSeer(bound=N)처럼 일정 횟수 이후로는 상태를 더 쪼개지 않고 접어버림**
+```python
+def explore_with_loopseer(steps, bound):
+    """angr의 LoopSeer(bound=N) 기법이 하는 일을 단순화해서 흉내낸 함수.
+    bound번째 분기까지만 실제로 상태를 쪼개고, 그 이후로는 상태 수를 더 늘리지 않는다
+    (LoopSeer는 실제로는 그 반복 상태를 'spinning' 스태시에 보류시킨다)."""
+    state_count = 1
+    for step in range(steps):
+        if step < bound:
+            state_count *= 2   # bound에 도달하기 전까지만 정상적으로 분기시킴
+        # bound 이후에는 더 쪼개지 않고 그대로 유지 (LoopSeer가 반복을 접어버리는 것과 같은 효과)
+        print(f'step {step}: 활성 상태 수 = {state_count}')
+    return state_count
+
+final_count = explore_with_loopseer(steps=30, bound=10)
+print('최종 활성 상태 수:', final_count)   # 2**10 = 1024로 억제되어 예외 없이 끝까지 실행됨
+```
+`bound` 값을 10으로 제한한 두 번째 스크립트는 30단계를 전부 돌고도 상태 수가 1024개에서 멈추고, `StateExplosionError` 없이 끝까지 실행된다. 실제 angr 코드에서 이 역할을 하는 것이 바로 이 글의 "명령어/단축키" 절에 있는 `simgr.use_technique(LoopSeer(bound=10))`이며, 위 두 함수는 그 기법이 왜 상태 폭발을 억제하는지를 angr 없이도 직접 확인시켜주기 위한 것이다.
 
 ## 관련 글
 - REV-0987 — angr 심볼릭 실행 심화(상태 탐색 전략)

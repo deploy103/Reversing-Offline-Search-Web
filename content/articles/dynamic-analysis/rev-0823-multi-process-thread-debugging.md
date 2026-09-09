@@ -129,7 +129,7 @@ Breakpoint 1, main () at chall.c:10
 - REV-0503 — WinAPI 프로세스 함수 사전: CreateProcess 계열
 - REV-0505 — WinAPI 스레드 함수 사전: CreateThread ExitThread
 - REV-0617 — 실행마다 API 호출 순서가 달라 보일 때(멀티스레드)
-- REV-0822 — Time Travel Debugging 개념 소개(WinDbg 참고) (예정)
+- REV-0822 — Time Travel Debugging 개념 소개(WinDbg 참고)
 
 ## 출처/검증
 - GDB `follow-fork-mode`, `detach-on-fork`, `info inferiors`, `info threads`, `thread apply` 명령: GNU GDB 공식 매뉴얼(Debugging with GDB) 문서 기준.

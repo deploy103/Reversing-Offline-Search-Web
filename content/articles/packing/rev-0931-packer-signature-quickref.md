@@ -90,8 +90,8 @@ ASPack
 - REV-0225 — UPX인지 확인하는 법
 - REV-0226 — UPX 기본 언패킹
 - REV-0227 — 수동 언패킹 개념 OEP와 Dump
-- REV-0934 — Entropy 값 해석 기준 빠른 참조 (예정)
-- REV-0935 — VMProtect/Themida 등 상용 프로텍터 존재만 알아두는 참조표 (예정)
+- REV-0934 — Entropy 값 해석 기준 빠른 참조
+- REV-0935 — VMProtect/Themida 등 상용 프로텍터 존재만 알아두는 참조표
 
 ## 출처/검증
 - UPX/ASPack/PECompact/FSG/MEW/Petite/NSPack의 섹션 명명 규칙과 매직 문자열은 각 프로젝트 공식 문서 또는 저장소(예: github.com/upx/upx)와 다수의 공개 리버싱 교육 자료에서 공통적으로 확인되는 내용을 정리한 것이다(2026-09-09 검증).

@@ -12,7 +12,7 @@ keywords: ["pwntools EOFError", "EOFError recv", "pwntools 프로세스 죽음",
 aliases: ["pwntools EOFError 원인", "recvline EOFError", "pwntools 프로세스가 죽었다고 함", "EOFError: EOF while reading"]
 symptom_keywords: ["pwntools에서 EOFError가 남", "recv 하다가 EOFError", "프로세스가 갑자기 죽어서 recv 실패", "pwntools 스크립트가 EOFError로 멈춤"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -161,6 +161,58 @@ except EOFError:
     print('EOF! exit code:', p.poll())  # -11 (SIGSEGV) 이면 오버플로우로 크래시난 것
 ```
 디버그 로그와 `p.poll()` 결과를 함께 보면, 100바이트 입력이 스택을 손상시켜 프로세스가 `SIGSEGV`로 죽었고, 그래서 이후 `recvline()`이 `EOFError`를 던졌다는 인과관계를 정확히 확인할 수 있다.
+
+### 에러를 재현하는 잘못된 코드 vs 고쳐서 정상 동작하는 코드
+C 바이너리를 따로 컴파일하지 않아도 그대로 실행해볼 수 있도록, 파이썬 자신을 `process()`의 대상으로 실행한다. 이 "가짜 대상 프로세스"는 `ready`를 출력하고 입력을 한 줄 받은 뒤, 마치 크래시가 난 것처럼 곧바로 종료 코드 1로 종료한다. `pip install pwntools`만 되어 있으면 리눅스에서 그대로 실행된다.
+
+**잘못된 코드 — 대상이 이미 종료됐을 가능성을 고려하지 않고 계속 recv를 시도해서 EOFError로 죽음**
+```python
+from pwn import *
+
+# 실제 C 바이너리 대신, 파이썬 자신을 "대상 프로세스"로 사용한다.
+# ready를 출력하고 입력 한 줄을 받은 뒤 곧바로 종료(exit code 1)한다 -- 크래시 상황을 흉내낸 것.
+target_script = (
+    "import sys\n"
+    "print('ready', flush=True)\n"   # flush=True: 버퍼에 남지 않고 즉시 출력되게 함
+    "sys.stdin.readline()\n"          # 입력 한 줄을 받고
+    "sys.exit(1)\n"                    # 그대로 종료 (SIGSEGV 등으로 죽는 상황을 단순화한 것)
+)
+
+p = process(['python3', '-c', target_script])   # 파이썬을 자식 프로세스로 실행
+p.recvline()          # b'ready\n' 수신
+p.sendline(b'trigger')   # 아무 입력이나 전송 -> 대상은 이 직후 곧바로 종료됨
+
+# *** 잘못된 부분: 대상이 이미 죽었을 수 있다는 걸 고려하지 않고 그냥 recvline을 또 호출 ***
+response = p.recvline()   # 대상이 이미 종료해서 더 보낼 데이터가 없음 -> EOFError 발생
+print(response)             # 이 줄까지 도달하지 못하고 예외로 스크립트가 중단된다
+```
+
+**고친 코드 — EOFError를 명시적으로 예상하고, poll()로 종료 상태까지 확인**
+```python
+from pwn import *
+
+target_script = (
+    "import sys\n"
+    "print('ready', flush=True)\n"
+    "sys.stdin.readline()\n"
+    "sys.exit(1)\n"
+)
+
+p = process(['python3', '-c', target_script])
+p.recvline()
+p.sendline(b'trigger')
+
+# *** 고친 부분: EOFError가 날 수 있다는 것을 미리 알고 try/except로 감싼다 ***
+try:
+    response = p.recvline(timeout=2)
+    print('응답:', response)
+except EOFError:
+    exit_code = p.poll()   # 이미 종료된 프로세스의 종료 코드 확인 (음수면 -시그널번호)
+    print(f'EOF 발생 - 대상이 이미 종료됨 (exit code={exit_code})')
+    # exit_code == 1 이면 sys.exit(1)로 정상적으로 종료했다는 뜻이므로,
+    # 이 상황을 예외로 스크립트를 죽이는 대신 정상적인 분기로 처리할 수 있다.
+```
+두 스크립트를 비교하면, 문제는 pwntools가 아니라 "대상이 이미 죽었다"는 사실을 스크립트가 미리 예상하고 처리했는지 여부에 있다는 것을 알 수 있다.
 
 ## 관련 글
 - REV-0997 — pwntools 타임아웃(TimeoutError)이 반복될 때

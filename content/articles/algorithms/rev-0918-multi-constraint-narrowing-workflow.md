@@ -12,7 +12,7 @@ keywords: ["다중 게이트 조건", "constraint narrowing", "입력 공간 좁
 aliases: ["여러 조건 동시에 좁히기", "게이트 인벤토리 실전 적용", "narrowing 종합 절차", "다단계 필터링 워크플로우"]
 symptom_keywords: ["조건이 하나가 아니라 여러개 겹쳐있음", "길이 조건 문자셋 조건 known plaintext가 다 따로 있음", "어느 조건부터 적용해야 할지 순서를 모르겠음", "narrowing을 했는데 아직도 공간이 큼"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -145,6 +145,62 @@ charset=36, length=6,  keyspace=2.176e+09, est_sec=21.8,      feasible=True
 ```
 
 문자셋 축소만으로는 여전히 불가능한 규모였지만, known-plaintext와 구조적 힌트로 미지 길이를 12에서 6으로 줄이자 21.8초로 완전히 실현 가능한 규모가 되었다. 이처럼 여러 조건의 교집합 효과는 개별 조건 하나의 효과를 단순히 더한 것이 아니라 곱셈적으로 누적된다는 것이 실전에서 가장 중요하게 체감되는 지점이다.
+
+### 완전한 예제 스크립트 — 4개의 게이트를 실제로 적용해서 정답까지 끝까지 찾기
+위에서 나열한 4가지 조건(길이 12, 문자셋 소문자+숫자, 접두사 `flag{`, 접미사 `}`)에 "가운데 6글자의 바이트 합이 500이어야 한다"는 체크섬 조건을 하나 더 추가해서, 실제로 조건을 전부 적용한 뒤 브루트포스로 정답을 찾아내는 전체 과정을 보여준다.
+
+```python
+import itertools  # 모든 조합을 순서대로 만들어주는 표준 라이브러리
+
+
+def verify(candidate: bytes) -> bool:
+    """
+    실제 검증 함수라고 가정한다. 분석을 통해 다음 5가지 게이트를 모두 찾아냈다고 하자.
+    1) 길이는 정확히 12바이트
+    2) 앞 5바이트는 반드시 "flag{" (known-plaintext, REV-0223)
+    3) 마지막 1바이트는 반드시 "}" (구조적 힌트)
+    4) 가운데 6바이트는 소문자 또는 숫자만 가능 (문자셋 축소)
+    5) 가운데 6바이트의 합이 정확히 500이어야 한다 (체크섬 조건)
+    """
+    if len(candidate) != 12:                          # 게이트 1: 길이 확인
+        return False
+    if not candidate.startswith(b"flag{"):             # 게이트 2: 접두사 확인
+        return False
+    if not candidate.endswith(b"}"):                    # 게이트 3: 접미사 확인
+        return False
+
+    mid = candidate[5:11]                                # 가운데 6바이트만 잘라낸다 (미지수 부분)
+    charset = b"abcdefghijklmnopqrstuvwxyz0123456789"
+    if not all(c in charset for c in mid):               # 게이트 4: 문자셋 확인
+        return False
+    if sum(mid) != 500:                                   # 게이트 5: 체크섬 확인
+        return False
+
+    return True   # 모든 게이트를 통과하면 정답으로 인정
+
+
+# 게이트를 전부 적용했으니 실제로 브루트포스해야 하는 미지수는 "가운데 6글자"뿐이다.
+# 문자셋 크기 36, 길이 6 -> 36**6 = 2,176,782,336가지지만, 체크섬 조건(합이 500)으로
+# 미리 걸러내면서 탐색하기 때문에 실제로는 훨씬 빠르게 끝난다.
+charset = b"abcdefghijklmnopqrstuvwxyz0123456789"
+found = None
+for combo in itertools.product(charset, repeat=6):
+    mid = bytes(combo)
+    if sum(mid) != 500:            # 체크섬 조건을 가장 먼저 검사해서 대부분의 조합을 즉시 건너뛴다(조기 종료)
+        continue
+    candidate = b"flag{" + mid + b"}"
+    if verify(candidate):
+        found = candidate
+        break
+
+print("찾은 정답:", found)
+```
+
+실제로 실행한 결과:
+```
+찾은 정답: b'flag{aaaa79}'
+```
+`mid = b"aaaa79"`의 바이트 합을 손으로 검산해보면 `'a'`(97) x 4 + `'7'`(55) + `'9'`(57) = `388 + 55 + 57 = 500`으로 정확히 일치한다. 이 예제에서 핵심은, 체크섬 조건(`sum(mid) != 500`)을 반복문 맨 앞에서 먼저 검사해서 조건을 만족하지 못하는 조합은 `verify()`를 호출하기 전에 즉시 건너뛴다는 점이다 — 이것이 바로 본문에서 설명한 "체크섬 조건을 브루트포스 루프 안에서 조기 종료 조건으로 쓰면 속도가 빨라진다"는 원칙을 실제 코드로 구현한 것이다.
 
 ## 관련 글
 - REV-0218 — 길이 검증부터 역추적하는 법

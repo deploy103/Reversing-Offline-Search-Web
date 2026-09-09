@@ -12,7 +12,7 @@ keywords: ["meet in the middle", "MITM", "중간에서 만나기", "double DES",
 aliases: ["미트인더미들", "중간 매칭 공격", "절반씩 브루트포스", "MITM 공격"]
 symptom_keywords: ["브루트포스 너무 오래걸림", "탐색공간이 반으로 나뉘는것같음", "키가 두 부분으로 나뉨", "중간값 비교하는 구조"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -138,6 +138,86 @@ for combo in product(CHARSET.encode(), repeat=3):
 ```
 
 이렇게 비교식을 대수적으로 정리해서 "한쪽 = 다른 쪽으로 표현되는 어떤 값"의 형태로 만들 수만 있다면, XOR/덧셈/뺄셈처럼 역연산이 쉬운 연산자가 중간에 껴 있어도 MITM을 그대로 적용할 수 있다.
+
+**심화 예제 — 두 절반을 실제로 딕셔너리로 매칭해서 flag를 복원하는 완결된 스크립트**
+
+이번에는 실제로 3바이트씩 두 절반으로 나뉜 6바이트 flag 본문을 MITM으로 찾아내는 전체 과정을 실행한다. `transform_a`/`transform_b`는 "바이너리를 역산해서 얻은 진짜 변환 로직"의 자리를 대신하는 예시 함수다.
+
+```python
+import hashlib
+# ↑ 이 예제에서 두 절반을 뒤섞는 변환 함수를 만들기 위해 hashlib 모듈을 불러온다.
+#   실전에서는 이 자리에 실제 디스어셈블리를 역산한 로직이 들어간다.
+from itertools import product
+# ↑ 모든 후보 조합을 만들어주는 product() 함수를 불러온다.
+
+CHARSET = "abcdefghijklmnopqrstuvwxyz"
+# ↑ 각 절반에 들어갈 수 있는 문자 종류(소문자 26개)로 좁혔다고 가정한다.
+
+def transform_a(chunk: bytes) -> int:
+    # ↑ flag 앞쪽 절반(3바이트)에 적용되는 변환. 실전에서는 실제 역산 로직으로 교체.
+    return int.from_bytes(hashlib.md5(b"A" + chunk).digest()[:4], "big")
+    # ↑ 여기서는 "결정적이지만 예측하기 어려운 변환"을 흉내 내기 위해
+    #   MD5 해시의 앞 4바이트를 정수로 바꿔서 돌려준다.
+
+def transform_b(chunk: bytes) -> int:
+    # ↑ flag 뒤쪽 절반(3바이트)에 적용되는 변환. 역시 실전에서는 실제 로직으로 교체.
+    return int.from_bytes(hashlib.md5(b"B" + chunk).digest()[:4], "big")
+    # ↑ transform_a와 구분하기 위해 접두사만 다르게 붙였을 뿐, 원리는 동일하다.
+
+if __name__ == "__main__":
+    # ↑ 이 파일을 직접 실행할 때만 아래 블록을 수행한다.
+
+    secret1, secret2 = b"cat", b"dog"
+    # ↑ 검증용으로 우리가 미리 알고 있는 정답 두 절반(실전에서는 모르는 값).
+    TARGET = transform_a(secret1) ^ transform_b(secret2)
+    # ↑ 바이너리가 저장/비교하는 목표값. 실전에서는 디버거로 직접 확인해서 넣는다.
+    print("목표값:", hex(TARGET))
+    # ↑ 목표값을 16진수로 출력해서 확인한다.
+
+    table = {}
+    # ↑ 앞쪽 절반의 모든 후보와 그 중간값을 저장할 딕셔너리(해시 테이블)를 준비한다.
+    for combo in product(CHARSET.encode(), repeat=3):
+        # ↑ 소문자 3글자로 만들 수 있는 모든 조합(26^3 = 17,576가지)을 하나씩 만든다.
+        chunk = bytes(combo)
+        # ↑ 문자 코드 튜플을 실제 바이트열로 바꾼다.
+        table[transform_a(chunk)] = chunk
+        # ↑ "이 중간값은 이 후보에서 나왔다"는 사실을 딕셔너리에 저장한다.
+
+    print("앞쪽 절반 테이블 크기:", len(table))
+    # ↑ 딕셔너리에 몇 개의 서로 다른 중간값이 저장됐는지 확인한다.
+
+    matches = []
+    # ↑ 최종적으로 찾아낸 (절반1, 절반2) 정답 쌍들을 저장할 리스트.
+    for combo in product(CHARSET.encode(), repeat=3):
+        # ↑ 뒤쪽 절반의 모든 후보(마찬가지로 17,576가지)를 하나씩 만든다.
+        chunk = bytes(combo)
+        # ↑ 문자 코드 튜플을 실제 바이트열로 바꾼다.
+        needed = TARGET ^ transform_b(chunk)
+        # ↑ "앞쪽 절반의 중간값이 이 값이어야만 전체가 TARGET과 맞아떨어진다"는
+        #   필요조건을 계산한다(TARGET = a_value ^ b_value 이므로 a_value = TARGET ^ b_value).
+        if needed in table:
+            # ↑ 이 필요값이 앞서 만든 딕셔너리에 실제로 존재한다면(=일치하는 절반1이 있다면)
+            matches.append((table[needed], chunk))
+            # ↑ (절반1, 절반2) 쌍을 정답 후보 리스트에 추가한다.
+
+    print("찾아낸 정답 쌍:", matches)
+    # ↑ 최종적으로 찾아낸 모든 정답 쌍을 출력한다.
+    if matches:
+        # ↑ 정답 쌍이 하나 이상 있다면
+        half1, half2 = matches[0]
+        # ↑ 첫 번째 정답 쌍을 꺼낸다.
+        print("복원된 flag 본문:", half1 + half2)
+        # ↑ 두 절반을 이어붙여서 전체 flag 본문을 완성한다.
+```
+
+이 스크립트를 그대로 실행하면 다음과 같이 출력된다(직접 실행해서 검증한 값):
+```
+목표값: 0xa228fc30
+앞쪽 절반 테이블 크기: 17576
+찾아낸 정답 쌍: [(b'cat', b'dog')]
+복원된 flag 본문: b'catdog'
+```
+앞쪽 절반 17,576가지와 뒤쪽 절반 17,576가지를 곱하면 `17,576 × 17,576 = 308,915,776`가지의 조합이 나오지만, MITM 딕셔너리 매칭 덕분에 실제 계산은 `17,576 + 17,576 = 35,152`번의 해시 계산으로 끝난다 — 약 8,789배 더 적은 계산으로 정확히 `b"cat"`과 `b"dog"`라는 정답 쌍 하나만을 정확히 찾아낸다. 실전에서는 `transform_a`/`transform_b`를 실제 디스어셈블리에서 역산한 로직으로, `TARGET`을 바이너리에서 확인한 실제 목표값으로 바꿔 넣기만 하면 이 스크립트가 곧 solve script가 된다.
 
 ## 관련 글
 - [rev-0219-bruteforce-feasibility.md](./rev-0219-bruteforce-feasibility.md) — Brute Force가 가능한 입력 공간 계산 (MITM을 검토하기 전에 순진한 브루트포스가 왜 안 되는지부터 계산)

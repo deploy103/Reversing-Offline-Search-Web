@@ -12,7 +12,7 @@ keywords: ["PKCS7 패딩", "MD 강화 패딩", "패딩 누락", "블록 정렬 �
 aliases: ["패딩을 빼먹음", "블록 암호 패딩 오류", "해시 패딩 안 함", "PKCS7 풀 블록 패딩"]
 symptom_keywords: ["블록 크기 배수인데 패딩이 이상함", "PKCS7 언패딩 에러", "해시 패딩을 안 넣어서 값이 다름", "메시지 길이 필드가 이상함"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -113,6 +113,51 @@ print(padded.hex())
 # 0000000000000000000000000000000000000000000000000000001800000000000000
 ```
 `61 62 63`(="abc") 뒤에 `80`(패딩 시작), 그 뒤로 `00`이 이어지다가, 마지막 8바이트에 `18 00 00 00 00 00 00 00`(비트 길이 24를 리틀 엔디안으로 표현)이 온다. 이 패딩을 빼먹고 `"abc"` 3바이트만 압축 함수에 넣으면, 원본 MD5 구현과는 완전히 다른(더 짧은, 규칙에 안 맞는) 입력을 해싱하는 셈이 되어 절대 같은 결과가 나올 수 없다.
+
+### 추가 예제 — "이미 블록 배수니까 패딩 생략" 버그를 실제로 재현하기
+PKCS#7에서 가장 흔한 실수를 블록 암호 워크플로 전체(패딩 -> 암호화 -> 복호화 -> 언패딩 흉내)로 재현해본다. 이번엔 실제 AES 대신, "패딩이 제대로 되어야만 언패딩이 성공한다"는 것 자체를 보여주는 데 집중한다.
+
+```python
+def pkcs7_pad_buggy(data: bytes, block_size: int = 8) -> bytes:
+    """[틀린 코드] 길이가 이미 블록 크기의 배수면 패딩을 생략해버린다."""
+    if len(data) % block_size == 0:      # 버그: "이미 배수니까 괜찮겠지"라는 잘못된 가정
+        return data                       # 패딩을 전혀 붙이지 않고 그대로 반환
+    n = block_size - (len(data) % block_size)
+    return data + bytes([n]) * n
+
+
+def pkcs7_pad_fixed(data: bytes, block_size: int = 8) -> bytes:
+    """[고친 코드] 배수 여부와 무관하게 항상 패딩을 계산해서 붙인다."""
+    n = block_size - (len(data) % block_size)   # 배수일 때 n == block_size(풀 블록)가 나옴
+    return data + bytes([n]) * n
+
+
+def pkcs7_unpad(data: bytes, block_size: int = 8) -> bytes:
+    """수신 측(정상적인 PKCS7 구현)이 패딩을 제거하는 표준 로직."""
+    n = data[-1]                          # 마지막 바이트 값이 곧 패딩 길이
+    if n < 1 or n > block_size or data[-n:] != bytes([n]) * n:
+        raise ValueError("잘못된 PKCS7 패딩")   # 규칙에 안 맞으면 즉시 에러
+    return data[:-n]
+
+
+msg = b"ABCDEFGH"   # 정확히 8바이트 -> block_size(8)의 배수인 경계 케이스
+
+buggy = pkcs7_pad_buggy(msg)     # 패딩 없이 그대로 8바이트
+fixed = pkcs7_pad_fixed(msg)     # 8바이트짜리 패딩 블록이 통째로 추가되어 16바이트
+
+print("[틀린 코드] 패딩 결과:", buggy, "길이:", len(buggy))   # b'ABCDEFGH' 길이 8
+print("[고친 코드] 패딩 결과:", fixed, "길이:", len(fixed))   # 16바이트, 뒤에 \x08이 8개
+
+# 수신 측(표준 PKCS7 구현)이 각각을 언패딩하려고 하면 어떻게 되는지 확인
+try:
+    pkcs7_unpad(buggy)
+except ValueError as e:
+    # 마지막 바이트가 'H'(0x48=72)인데 block_size(8)보다 커서 "패딩 길이"로 인정될 수 없음
+    print("[틀린 코드] 언패딩 시도 결과:", type(e).__name__, "-", e)
+
+print("[고친 코드] 언패딩 결과:", pkcs7_unpad(fixed))   # b'ABCDEFGH' 정상 복원
+```
+`pkcs7_pad_buggy`는 입력이 이미 8바이트라서 패딩을 생략했지만, 이 데이터를 받는 쪽(표준 PKCS7 구현)은 마지막 바이트(`H` = `0x48` = 십진수 72)를 "패딩 길이"로 해석하려다가 `block_size(8)`보다 크다는 것을 발견하고 `ValueError: 잘못된 PKCS7 패딩`을 던진다. 즉 "패딩을 생략해도 되겠지"라는 가정은 데이터가 우연히 패딩 규칙과 충돌하지 않는 한에서만 조용히 넘어가고, 대부분의 경우 상대편에서 명확한 에러로 드러난다 — 반대로 `pkcs7_pad_fixed`는 8바이트 전체가 배수여도 예외 없이 풀 블록(`\x08`이 8개)을 추가하므로 언패딩이 항상 안전하게 성공한다.
 
 ## 관련 글
 - REV-0207 — FNV-1과 FNV-1a 해시 패턴

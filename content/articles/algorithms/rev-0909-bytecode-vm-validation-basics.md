@@ -12,7 +12,7 @@ keywords: ["bytecode VM", "가상머신 크랙미", "opcode dispatch", "custom V
 aliases: ["VM 크랙미란", "바이트코드 인터프리터 리버싱", "opcode dispatch loop", "커스텀 가상머신 초급"]
 symptom_keywords: ["코드 안에 opcode 배열이 하드코딩되어 있음", "while문 하나가 프로그램 전체 로직인 것처럼 보임", "switch case가 opcode 번호별로 나뉨", "pc라는 변수가 계속 증가하며 opcode를 읽음"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -151,6 +151,62 @@ print(run_vm(bytecode, b""))  # False
 ```
 
 이 바이트코드는 입력과 무관하게 항상 실패하도록 만들어진 예시다. 실전에서는 `XOR_INPUT`처럼 사용자 입력을 소비하는 opcode가 섞여 들어가면서 최종 스택 값이 입력에 따라 달라지고, 그 최종 값이 특정 조건(0이 아님, 또는 특정 상수와 일치)을 만족해야 `HALT`에서 성공을 리턴하는 구조로 확장된다. opcode 표를 정확히 만들었다면, 이런 조건을 만족하는 입력을 Z3 제약식(REV-0268, REV-0269)으로 넘겨 자동으로 풀어낼 수도 있다.
+
+### 심화 예제 — 매 실행 단계를 출력해주는 "trace" 버전 인터프리터
+opcode 표를 다 옮겼는지 확인하는 가장 쉬운 방법은, 실행하면서 매 단계(pc, opcode, 그 결과 스택이 어떻게 바뀌는지)를 전부 로그로 찍어보는 것이다. 아래 스크립트는 위 미니 인터프리터를 확장해서 한 줄씩 실행 과정을 출력하는 "트레이스" 기능을 추가했다.
+```python
+def run_vm_traced(bytecode: bytes, user_input: bytes):
+    """opcode를 하나씩 실행하면서, 각 단계의 pc/opcode/스택 상태를 문자열 로그로 함께 반환한다."""
+    stack = []             # 연산에 쓰는 스택
+    pc = 0                 # 다음에 읽을 바이트코드 위치(program counter)
+    input_idx = 0          # 사용자 입력 중 몇 번째 바이트까지 소비했는지
+    trace = []             # 실행 로그를 한 줄씩 쌓아둘 리스트
+
+    while pc < len(bytecode):
+        op = bytecode[pc]        # 현재 위치의 opcode를 읽는다
+        start_pc = pc             # 로그 출력용으로 이 opcode가 시작된 위치를 따로 저장
+        pc += 1                    # opcode 1바이트를 읽었으므로 pc를 한 칸 전진
+
+        if op == 0x01:            # PUSH_IMM: 바이트코드에서 즉시값을 하나 더 읽어 스택에 넣음
+            operand = bytecode[pc]; pc += 1     # 오퍼랜드 1바이트를 추가로 소비
+            stack.append(operand)
+            trace.append(f"pc={start_pc:02d} PUSH_IMM {operand} -> stack={stack}")
+        elif op == 0x02:          # ADD: 스택에서 2개를 꺼내 더한 뒤 다시 넣음
+            b = stack.pop(); a = stack.pop()
+            stack.append((a + b) & 0xFF)
+            trace.append(f"pc={start_pc:02d} ADD -> stack={stack}")
+        elif op == 0x03:          # XOR_INPUT: 스택 top을 사용자 입력 한 바이트와 XOR
+            v = stack.pop()
+            stack.append(v ^ user_input[input_idx]); input_idx += 1
+            trace.append(f"pc={start_pc:02d} XOR_INPUT -> stack={stack}")
+        elif op == 0x04:          # CMP_TOP_ZERO: 스택 top이 0이면 1, 아니면 0으로 바꿔치기
+            stack.append(1 if stack.pop() == 0 else 0)
+            trace.append(f"pc={start_pc:02d} CMP_TOP_ZERO -> stack={stack}")
+        elif op == 0xFF:          # HALT: 실행 종료, 스택 맨 위 값을 성공/실패로 리턴
+            trace.append(f"pc={start_pc:02d} HALT -> return {bool(stack[-1])}")
+            return bool(stack[-1]), trace
+        else:                      # 알 수 없는 opcode: opcode 표를 잘못 옮겼다는 신호
+            trace.append(f"pc={start_pc:02d} UNKNOWN opcode {op:#x}")
+            return False, trace
+    return False, trace
+
+bytecode = bytes([0x01, 0x05, 0x01, 0x03, 0x02, 0x04, 0xFF])
+ok, trace = run_vm_traced(bytecode, b"")
+for line in trace:            # 실행 로그를 한 줄씩 출력해서 실행 흐름을 눈으로 확인
+    print(line)
+print("최종 결과:", ok)
+assert ok is False   # 이 바이트코드는 항상 실패하도록 만들어진 예시이므로 False가 정상
+```
+실제로 실행하면 다음과 같이 나온다(실행 확인함):
+```text
+pc=00 PUSH_IMM 5 -> stack=[5]
+pc=02 PUSH_IMM 3 -> stack=[5, 3]
+pc=04 ADD -> stack=[8]
+pc=05 CMP_TOP_ZERO -> stack=[0]
+pc=06 HALT -> return False
+최종 결과: False
+```
+이 트레이스 로그를 GDB로 뽑은 실제 실행 로그(같은 바이트코드를 실제 바이너리에서 실행했을 때의 스택 덤프)와 한 줄씩 나란히 비교하면, opcode 표를 옮기다 놓친 부분이나 오퍼랜드 바이트 수를 잘못 센 부분을 바로 찾아낼 수 있다.
 
 ## 관련 글
 - REV-0908 — State Machine(상태 기계) 기반 검증 로직 알아보기

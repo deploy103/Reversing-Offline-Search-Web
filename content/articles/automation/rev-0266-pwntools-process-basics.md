@@ -12,7 +12,7 @@ keywords: ["pwntools", "process()", "sendline", "recvline", "interactive()", "CT
 aliases: ["pwn 라이브러리", "python pwn", "from pwn import *", "pwntools 프로세스 실행"]
 symptom_keywords: ["pwntools 어떻게 씀", "process 실행하고 입력 어떻게 보냄", "sendline recvline 차이", "pwn 스크립트 처음", "인터랙티브 모드 어떻게 씀"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -168,6 +168,68 @@ p.close()
 ```
 
 `python3 solve.py`로 실행하면 사람이 손으로 `42`를 입력하는 과정을 자동화해서 곧바로 `Correct!`를 확인할 수 있다.
+
+## 실전 예시: 메뉴 기반 서버와 로컬/원격 겸용 스크립트
+CTF 서버는 단순히 값 하나를 입력받는 게 아니라, "1) 메모 쓰기 2) 플래그 읽기 3) 종료" 같은 **메뉴를 반복해서 보여주는** 구조가 매우 흔하다. 이런 구조는 "메뉴가 나올 때까지 기다렸다가 번호를 보낸다"는 동작을 함수로 뽑아 반복 재사용하면 코드가 훨씬 짧아진다. 아래는 그런 메뉴형 서버를 가정한 예시다.
+
+```c
+// menu.c (참고용 대상 프로그램 — 메모를 "unlock"으로 정확히 채워야 플래그가 나옴)
+#include <stdio.h>
+#include <string.h>
+char note[64] = "";
+int main() {
+    while (1) {
+        printf("1) write note\n2) read flag\n3) exit\n> ");
+        int choice;
+        scanf("%d", &choice);
+        if (choice == 1) {
+            printf("note: ");
+            scanf("%63s", note);
+        } else if (choice == 2) {
+            if (strcmp(note, "unlock") == 0) printf("flag{fake_flag_for_demo}\n");
+            else printf("locked\n");
+        } else {
+            break;
+        }
+    }
+    return 0;
+}
+```
+
+이 서버는 로컬 테스트 때는 `process('./menu')`로, 실제 대회 당일에는 `remote('host', port)`로 접속하는 것만 다를 뿐 나머지 코드는 완전히 동일하다. 이 두 경우를 하나의 스크립트에서 명령줄 인자로 전환하는 관용적인 패턴을 함께 보여준다.
+
+```python
+from pwn import *
+import sys
+
+# 커맨드라인에 'remote'를 넘기면 실제 서버로, 안 넘기면 로컬 프로세스로 접속한다.
+# 즉 튜브(tube) 인터페이스가 같기 때문에 이 한 줄만 바뀌고 아래 로직은 그대로 재사용된다.
+if len(sys.argv) > 1 and sys.argv[1] == 'remote':
+    p = remote('ctf.example.com', 31337)   # 실제 대회에서 공지된 host, port로 교체해야 함
+else:
+    p = process('./menu')
+
+def choose(option: int):
+    # 메뉴 프롬프트의 마지막 글자인 '> '가 나올 때까지 기다린 뒤 번호를 보낸다
+    p.recvuntil(b'> ')
+    p.sendline(str(option).encode())
+
+# 1) 메모를 "unlock"으로 채운다
+choose(1)
+p.recvuntil(b'note: ')      # "note: " 프롬프트까지 읽어치운다
+p.sendline(b'unlock')        # 정답 문자열 전송
+
+# 2) 플래그 읽기를 시도한다
+choose(2)
+result = p.recvline()
+print(result)                 # b'flag{fake_flag_for_demo}\n' 이 나오면 성공, b'locked\n'이면 note가 아직 안 맞음
+
+# 3) 정상적으로 종료 메뉴를 선택해 서버 쪽 루프를 빠져나오게 한다
+choose(3)
+p.close()
+```
+
+이 흐름을 한 줄씩 따라가 보면: `choose(1)`이 첫 메뉴의 `"> "`까지 읽고 `"1"`을 보내면 서버가 `"note: "`를 출력하며 대기하고, 그다음 `sendline(b'unlock')`으로 메모를 채운 뒤 서버는 다시 메뉴를 출력한다. `choose(2)`가 그 두 번째 메뉴의 `"> "`까지 읽고 `"2"`를 보내면 서버가 `strcmp`로 메모를 검사해서 `"flag{fake_flag_for_demo}\n"`을 돌려준다 — 이 논리는 대상 C 코드를 그대로 따라가며 손으로 유도한 것이므로, 실제로 이 C 코드를 컴파일해서 실행해도 동일한 순서로 동일한 문자열이 출력된다. 메뉴가 두 단계, 세 단계로 더 늘어나도 `choose()` 함수 하나만 반복 호출하면 되므로, 실전 CTF의 복잡한 메뉴형 바이너리에도 그대로 확장할 수 있다.
 
 ## 관련 글
 - REV-0267 — pwntools p32 p64 u32 u64

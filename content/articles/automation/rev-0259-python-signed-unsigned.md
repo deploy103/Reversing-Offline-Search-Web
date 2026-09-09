@@ -12,7 +12,7 @@ keywords: ["python signed unsigned", "2의 보수 파이썬", "python 부호 변
 aliases: ["파이썬 부호 있는 정수 변환", "2의 보수 변환 코드", "signed int python 구현"]
 symptom_keywords: ["디버거에서 음수인데 파이썬은 양수", "int overflow signed python", "부호 확장 안 됨", "eax 값이 음수로 보임"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -135,6 +135,36 @@ def check(v_raw, bits=32):
 print(check(0xA3))   # v를 부호 있는 int로 해석해서 그대로 대입
 ```
 이처럼 원본 코드의 변수 타입(`int`)을 그대로 존중해 `to_signed`를 적용한 뒤 연산하면, 디버거에서 관찰한 값과 Python 계산 결과가 항상 일치한다.
+
+### 실전 예제 2 — 디버거에서 읽은 오프셋 값을 다시 패킷 바이트로 만들기
+스택 카나리 검사를 우회하려고 디버거에서 `EAX` 레지스터 값을 읽었더니 `0xFFFFFFEC`였다고 하자. 이 값을 그대로 부호 없는 큰 수(4294967276)로 취급하면 "오프셋"이라는 의미가 사라진다. 이 값은 사실 **음수 오프셋**이며, `to_signed`로 변환하고, 그 결과를 다시 소켓으로 보낼 4바이트로 조립하는 전체 과정을 실행해본다.
+
+```python
+def to_signed(x: int, bits: int) -> int:
+    # x를 bits비트 2의 보수 signed 값으로 해석해서 돌려준다
+    mask = (1 << bits) - 1
+    x &= mask
+    if x >= (1 << (bits - 1)):
+        x -= (1 << bits)
+    return x
+
+
+eax_raw = 0xFFFFFFEC        # 디버거 레지스터 창에서 그대로 복사한 16진수 값(부호 없는 표현)
+
+offset = to_signed(eax_raw, 32)   # 32비트 EAX이므로 bits=32로 변환
+print("오프셋(signed):", offset)   # -20  <- 사람이 이해할 수 있는 "음수 오프셋"으로 해석됨
+
+# 이 오프셋 값을 다시 4바이트 리틀엔디안(x86 기본) 바이트로 패킹해서
+# 취약점 서버에 그대로 보낼 페이로드를 만든다고 가정
+payload = offset.to_bytes(4, "little", signed=True)   # signed=True를 반드시 명시해야 음수를 담을 수 있음
+print("전송할 payload:", payload.hex())                # ecffffff
+
+# 페이로드를 다시 정수로 복원해서, 왕복 변환이 원래 값과 정확히 일치하는지 확인
+restored = int.from_bytes(payload, "little", signed=True)
+print("복원된 값:", restored)          # -20
+assert restored == offset, "왕복 변환 결과가 원본과 다르다면 signed 플래그를 빼먹은 것"
+```
+`0xFFFFFFEC`라는 16진수 표기 하나가 "부호 없는 값으로 보면 42억이 넘는 큰 수"이면서 동시에 "부호 있는 값으로 보면 `-20`"이라는 완전히 다른 의미를 갖는다는 것을, `to_signed`와 `to_bytes(..., signed=True)`를 왕복시켜 직접 확인할 수 있다. `signed=True`를 빼먹으면 음수를 담으려 할 때 `OverflowError: can't convert negative int to unsigned`가 즉시 발생해서, 부호를 빼먹었다는 사실을 코드 실행 시점에 바로 알 수 있다.
 
 ## 관련 글
 - REV-0258 — 리버싱용 Python 숫자 변환 치트시트

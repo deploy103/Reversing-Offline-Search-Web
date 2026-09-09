@@ -12,7 +12,7 @@ keywords: ["RC4", "ARC4", "ARCFOUR", "KSA", "PRGA", "256바이트 S박스", "스
 aliases: ["rc4 상수", "rc4 흔적", "스트림 암호 흔적", "arcfour", "256개 순열 배열"]
 symptom_keywords: ["0부터 255까지 채워진 배열이 있음", "swap S[i] S[j] 패턴이 보임", "j = j + S[i] + key 패턴이 보임", "출력이 키스트림과 XOR됨", "블록 크기 제약이 없는 암호화 함수"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -153,6 +153,52 @@ for (n = 0; n < len; n++) {
 }
 ```
 256회 초기화 루프, `key[i % keylen]` 나머지 인덱싱, 그리고 `S[(S[i]+S[j]) & 0xFF]` 출력 공식까지 정확히 일치하므로 RC4로 확정된다. Python 참조 구현으로 검증한 결과가 바이너리의 출력과 바이트 단위로 일치하면 키와 알고리즘이 모두 확정된 것이다.
+
+### 심화 예제 — KSA/PRGA를 한 줄씩 주석과 함께 구현하고 대칭성까지 확인하기
+아래는 앞서 설명한 KSA/PRGA를 처음부터 끝까지 실행 가능한 하나의 함수로 정리하고, RC4의 핵심 성질인 "암호화와 복호화가 완전히 같은 함수"라는 점까지 실제로 확인하는 스크립트다.
+```python
+def rc4(key: bytes, data: bytes) -> bytes:
+    """RC4 스트림 암호의 KSA(키 스케줄링)와 PRGA(키스트림 생성)를 그대로 구현한 함수.
+    암호화와 복호화가 완전히 동일한 함수이며, 같은 키로 다시 넣으면
+    원래 값으로 돌아온다(XOR의 대칭성 덕분)."""
+    # --- 1단계: KSA (Key Scheduling Algorithm) ---
+    S = list(range(256))          # 항등 순열로 초기화: S[i] = i (0부터 255까지 순서대로)
+    j = 0                          # 키를 이용해 섞을 때 쓰는 보조 인덱스
+    for i in range(256):
+        j = (j + S[i] + key[i % len(key)]) % 256   # 키를 순환 재사용하며 j 갱신
+        S[i], S[j] = S[j], S[i]                     # S[i]와 S[j]를 swap(뒤섞기)
+
+    # --- 2단계: PRGA (Pseudo-Random Generation Algorithm) ---
+    i = j = 0                      # 메인 루프용 두 인덱스를 다시 0부터 시작
+    out = bytearray()
+    for byte in data:              # 입력 데이터를 한 바이트씩 처리(임의 길이 가능)
+        i = (i + 1) % 256                    # i는 항상 1씩 단순 증가
+        j = (j + S[i]) % 256                 # j는 S[i] 값에 의존해서 누적 증가
+        S[i], S[j] = S[j], S[i]              # 매 바이트마다 swap
+        keystream_byte = S[(S[i] + S[j]) % 256]  # 키스트림 한 바이트를 뽑아낸다
+        out.append(byte ^ keystream_byte)    # 입력 바이트와 키스트림을 XOR
+    return bytes(out)
+
+# --- 참조 테스트 벡터로 정확성부터 확인 ---
+key = b"Key"
+plaintext = b"Plaintext"
+ciphertext = rc4(key, plaintext)
+print("암호문(hex):", ciphertext.hex())          # bbf316e8d940af0ad3 이 나와야 정상
+assert ciphertext.hex() == "bbf316e8d940af0ad3", "RC4 구현이 참조 테스트 벡터와 다름!"
+
+# --- RC4의 대칭성 확인: 같은 키로 암호문을 다시 넣으면 평문이 복원된다 ---
+decrypted = rc4(key, ciphertext)
+print("복호화 결과:", decrypted)                 # b'Plaintext' 가 나와야 정상
+assert decrypted == plaintext, "복호화 결과가 원본과 다름!"
+print("RC4는 암호화 함수와 복호화 함수가 동일하다는 것이 실제로 확인됨")
+```
+실제로 실행하면 다음과 같이 출력된다(실행 확인함):
+```text
+암호문(hex): bbf316e8d940af0ad3
+복호화 결과: b'Plaintext'
+RC4는 암호화 함수와 복호화 함수가 동일하다는 것이 실제로 확인됨
+```
+이 성질 때문에 바이너리에 "암호화 함수"와 "복호화 함수"가 완전히 똑같이 생겼다면 RC4(혹은 다른 스트림 암호)일 가능성을 바로 의심할 수 있다.
 
 ## 관련 글
 - REV-0901 — ChaCha20/Salsa20 상수(expand 32-byte k) 알아보기

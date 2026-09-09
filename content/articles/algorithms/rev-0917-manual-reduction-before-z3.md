@@ -12,7 +12,7 @@ keywords: ["Z3 전처리", "constant folding", "죽은 코드 제거", "dead cod
 aliases: ["Z3 돌리기 전에 할 일", "Z3 타임아웃 해결", "solver에 넘기기 전 정리", "제약식 줄이는 법"]
 symptom_keywords: ["Z3가 몇시간째 안끝남", "Z3 unknown 리턴함", "BitVec 변수가 너무 많음", "제약식을 그대로 다 때려박음"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -159,6 +159,70 @@ if solver.check() == sat:
 ```
 
 변수 2개짜리 이 예시는 축소 없이도 순식간에 풀리지만, 실전에서 변수가 30~40개로 늘어나고 `key` 같은 상수 계산이 여러 겹으로 중첩된 함수 호출이라면, 이 축소 과정을 생략하는 순간 Z3가 몇 시간 동안 응답하지 않는 상황을 실제로 자주 겪게 된다.
+
+### 완전한 예제 스크립트 — 상수 폴딩과 독립 변수 그룹 분리를 모두 적용한 전체 흐름
+Z3를 쓰려면 먼저 `pip install z3-solver`로 설치해야 한다(오프라인 환경이라면 미리 설치된 패키지를 오프라인 저장소에 준비해둔다). 아래 스크립트는 앞서 "축소 기법 1"에서 설명한 `compute_something()`이 섞인 `key` 계산을 실제로 상수 폴딩하고, `a`와 `b`가 서로 독립적이라는 걸 이용해 두 개의 작은 Z3 인스턴스로 나눠서 푸는 전체 과정을 담고 있다.
+
+```python
+from z3 import *  # Z3 SMT solver를 파이썬에서 쓰기 위한 모듈
+
+
+def compute_something(x: int) -> int:
+    """검증 함수 안에 있던, 입력과 무관한 서브루틴이라고 가정한다."""
+    return (x * 3 + 7) & 0xFF
+
+
+# --- 1단계: 상수 폴딩 ---
+# 원본 C 코드가 `int key = (0x12 ^ 0x34) + compute_something(0x56);` 라고 하자.
+# 이 계산은 입력(a, b)과 전혀 무관하므로, Z3에게 맡기지 않고 파이썬에서 미리 계산해 숫자 하나로 만든다.
+key = ((0x12 ^ 0x34) + compute_something(0x56)) & 0xFF
+print("상수 폴딩으로 미리 계산한 key:", hex(key), key)  # 어떤 값이 나왔는지 직접 확인
+
+# --- 2단계: 죽은 코드 제거 ---
+# 원본에 있던 debug_log_enabled 같은 조건은 결과에 영향이 없으므로 아예 코드에 옮기지 않는다 (여기서는 생략).
+
+# --- 3단계: 독립 변수 그룹 분리 ---
+# 검증 로직이 `(input[0] ^ key == 0x55) and (input[1] ^ key == 0x22)` 형태라면,
+# input[0]과 input[1]은 서로의 값에 전혀 영향을 주지 않는 완전히 독립적인 조건이다.
+# 그러므로 하나의 큰 Solver에 다 넣지 않고, 각각 작은 Solver로 따로 푼다.
+
+a = BitVec('a', 8)  # 8비트(0~255) 크기의 미지수 a
+b = BitVec('b', 8)  # 8비트 크기의 미지수 b
+
+solver_a = Solver()
+solver_a.set("timeout", 5000)   # 5초 안에 못 풀면 포기하고 unknown을 반환하도록 설정
+solver_a.add(a ^ key == 0x55)    # 원본 조건: a를 key로 XOR한 결과가 0x55와 같아야 한다
+
+solver_b = Solver()
+solver_b.set("timeout", 5000)
+solver_b.add(b ^ key == 0x22)    # 원본 조건: b를 key로 XOR한 결과가 0x22와 같아야 한다
+
+result_a = solver_a.check()      # solver_a만 독립적으로 풀어본다
+result_b = solver_b.check()      # solver_b도 독립적으로 풀어본다
+print("solver_a 결과:", result_a)
+print("solver_b 결과:", result_b)
+
+if result_a == sat:                       # sat이면 "만족하는 해가 있다"는 뜻
+    model_a = solver_a.model()             # 실제로 만족시키는 값(모델)을 꺼낸다
+    a_value = model_a[a].as_long()         # BitVec 값을 파이썬 정수로 변환
+    print("복원된 a:", a_value, hex(a_value))
+
+if result_b == sat:
+    model_b = solver_b.model()
+    b_value = model_b[b].as_long()
+    print("복원된 b:", b_value, hex(b_value))
+```
+
+실제로 실행한 결과:
+```
+상수 폴딩으로 미리 계산한 key: 0x2f 47
+solver_a 결과: sat
+solver_b 결과: sat
+복원된 a: 122 0x7a
+복원된 b: 13 0xd
+```
+
+이 결과가 맞는지는 XOR의 성질(`a ^ key == 0x55`이면 `a == 0x55 ^ key`)로 손으로도 바로 검산할 수 있다: `0x55 ^ 0x2f = 0x7a`, `0x22 ^ 0x2f = 0x0d` — Z3가 내놓은 값과 정확히 일치한다. 이 예제처럼 아주 간단한 XOR 조건은 사실 Z3 없이도 풀리지만, 검증 로직이 곱셈·시프트·조건 분기가 뒤섞여 손으로 뒤집기 어려운 형태라면, 상수 폴딩과 그룹 분리만 미리 해둔 뒤 Z3에 맡기는 이 워크플로우가 실전에서 solver 응답 시간을 극적으로 줄여준다.
 
 ## 관련 글
 - REV-0268 — Z3 BitVec 기초

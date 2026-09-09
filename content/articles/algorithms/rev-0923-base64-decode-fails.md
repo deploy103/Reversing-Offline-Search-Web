@@ -12,7 +12,7 @@ keywords: ["Base64 디코드 실패", "Incorrect padding", "URL-safe Base64", "�
 aliases: ["Base64 디코드 에러", "Incorrect padding 에러", "Base64인데 안 풀림", "커스텀 Base64 알파벳"]
 symptom_keywords: ["binascii.Error Incorrect padding", "base64 디코드하면 에러남", "문자셋이 이상한 base64", "디코드는 되는데 결과가 이상함"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -114,6 +114,50 @@ padded = s + "=" * ((-len(s)) % 4)  # "ZmxhZ3t0ZXN0fQ=="
 print(base64.b64decode(padded))     # b'flag{test}'
 ```
 길이 14를 4로 나눈 나머지가 2이므로 부족한 패딩은 정확히 2개(`==`)이고, 이를 채우면 곧바로 `b'flag{test}'`가 나온다.
+
+### 추가 예제 — "틀린 코드" vs "고친 코드" 전체 실행 비교
+이번엔 URL-safe 알파벳(`-`, `_`)과 패딩 손실이 동시에 일어난, 더 실전에 가까운 상황을 처음부터 끝까지 실행 가능한 코드로 비교해본다. 원본 바이트는 `b'flag{b64_url_safe_test}\xfb\xff'`(마지막 2바이트는 사람이 읽을 수 없는 값)이고, 이를 URL-safe Base64로 인코딩한 뒤 패딩을 잘라낸 문자열이 `"ZmxhZ3tiNjRfdXJsX3NhZmVfdGVzdH37_w"`이다.
+
+```python
+import base64  # 표준 라이브러리의 Base64 인코딩/디코딩 모듈을 불러온다
+
+# 바이너리에서 발견했다고 가정한 인코딩된 문자열이다.
+# '_' 문자가 섞여 있고(표준 알파벳에는 없음), 끝에 '=' 패딩도 잘려 있다.
+encoded = "ZmxhZ3tiNjRfdXJsX3NhZmVfdGVzdH37_w"
+
+
+def wrong_decode(s: str) -> None:
+    """[틀린 코드] 문자 종류나 패딩을 확인하지 않고 표준 디코더에 그대로 넣는다."""
+    try:
+        # validate=True를 주면 표준 알파벳(A-Z, a-z, 0-9, +, /)에 없는 문자가
+        # 섞여 있을 때 조용히 무시하지 않고 바로 에러를 낸다.
+        result = base64.b64decode(s, validate=True)
+        print("[틀린 코드] 디코드 성공(?):", result)
+    except Exception as e:
+        # 실제로는 여기서 항상 예외가 발생한다.
+        print("[틀린 코드] 에러 발생:", type(e).__name__, "-", e)
+
+
+def fix_padding(s: str) -> str:
+    """문자열 길이를 4의 배수로 맞추기 위해 부족한 '=' 개수를 계산해서 붙인다."""
+    missing = (-len(s)) % 4   # 4로 나눈 나머지를 이용해 부족분을 정확히 계산
+    return s + "=" * missing
+
+
+def right_decode(s: str) -> bytes:
+    """[고친 코드] 1) 패딩을 먼저 보충하고 2) '-', '_'를 이해하는 URL-safe 디코더를 쓴다."""
+    padded = fix_padding(s)                     # 부족한 '=' 채우기
+    return base64.urlsafe_b64decode(padded)      # '-'->'+', '_'->'/' 로 알아서 해석해줌
+
+
+wrong_decode(encoded)
+# 출력 예: [틀린 코드] 에러 발생: Error - Only base64 data is allowed
+
+result = right_decode(encoded)
+print("[고친 코드] 디코드 결과:", result)
+# 출력: [고친 코드] 디코드 결과: b'flag{b64_url_safe_test}\xfb\xff'
+```
+정확히 같은 입력 문자열인데도, 문자 종류(`_`)와 패딩 상태를 무시하고 표준 디코더에 그대로 넣은 `wrong_decode`는 예외로 끝나고, URL-safe 디코더와 패딩 보충을 둘 다 적용한 `right_decode`만 원본 바이트를 정확히 복원한다. 이 두 함수를 나란히 실행해보면 "왜 안 되는지"와 "무엇을 고쳐야 하는지"가 코드 한 줄 차이로 드러난다.
 
 ## 관련 글
 - REV-0212 — Base64 인코딩 검증 패턴

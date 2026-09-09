@@ -12,7 +12,7 @@ keywords: ["FNV", "FNV-1", "FNV-1a", "해시 루프 구조", "곱셈 최적화",
 aliases: ["fnv 구조", "곱셈이 shift add로 바뀜", "fnv 64비트", "fnv 커스텀 변형"]
 symptom_keywords: ["xor랑 곱셈이 번갈아 나옴", "imul이 안 보이는데 곱셈같음", "hash 함수 이름을 모르겠음", "64비트 해시 상수가 이상함"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -193,6 +193,50 @@ h ^= s[i];
 h *= 0x01000199;   // 표준 0x01000193과 마지막 바이트만 다름
 ```
 구조는 FNV-1a와 동일하므로, 이 관찰된 상수를 그대로 prime에 넣어서 재현하면 된다 — "이게 진짜 FNV냐 아니냐"를 고민할 필요 없이 그대로 계산하면 끝.
+
+**예제 5 — 처음부터 끝까지 실행되는 전체 스크립트 (32비트/64비트/shift-add 변형까지 한 번에)**
+
+`generic_fnv()` 하나로 표준 32비트, 표준 64비트, 그리고 "shift-add로 풀려서 곱셈 상수가 안 보이는 경우"까지 전부 처리하는 실전 스크립트다.
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0207 실전 스크립트: FNV-1/1a를 32비트/64비트, 표준/커스텀 변형까지 한 함수로 전부 재현한다.
+
+def generic_fnv(data: bytes, offset_basis: int, prime: int, bits: int = 32, variant: str = "1a") -> int:
+    mask = (1 << bits) - 1          # bits폭에 맞는 마스크(오버플로를 그대로 재현하기 위함)
+    h = offset_basis                # 초기값(offset basis)에서 시작
+    for b in data:
+        if variant == "1a":
+            h = (h ^ b) & mask      # FNV-1a: XOR을 먼저 한다
+            h = (h * prime) & mask  # 그다음 곱셈을 한다
+        else:
+            h = (h * prime) & mask  # FNV-1: 곱셈을 먼저 한다
+            h = (h ^ b) & mask      # 그다음 XOR을 한다
+    return h
+
+# 1) 표준 32비트 FNV-1a
+result_1a_32 = generic_fnv(b"hello", 0x811C9DC5, 0x01000193, 32, "1a")
+print("FNV-1a 32bit hello:", hex(result_1a_32))
+# 실행 결과: FNV-1a 32bit hello: 0x4f9f2cab
+
+# 2) 표준 32비트 FNV-1 (XOR과 곱셈의 순서만 반대)
+result_1_32 = generic_fnv(b"hello", 0x811C9DC5, 0x01000193, 32, "1")
+print("FNV-1 32bit hello:", hex(result_1_32))
+# 실행 결과: FNV-1 32bit hello: 0xb6fa7167
+
+# 3) 표준 64비트 FNV-1a (bits=64로 지정해야 마스크가 올바르게 적용된다)
+result_1a_64 = generic_fnv(b"hello", 0xCBF29CE484222325, 0x100000001B3, 64, "1a")
+print("FNV-1a 64bit hello:", hex(result_1a_64))
+# 실행 결과: FNV-1a 64bit hello: 0xa430d84680aabd0b
+
+# 4) 코드에서 shl 24 / shl 8 / shl 7 / shl 4 / shl 1 / (시프트 없는 자기 자신)이 전부 add로
+#    더해지는 것을 직접 관찰했다고 가정하고, 그 시프트양들로 원래 곱셈 상수를 역으로 재구성한다.
+shifts = [24, 8, 7, 4, 1, 0]
+reconstructed_prime = sum(1 << s for s in shifts)
+print("shift-add로 복원한 곱셈 상수:", reconstructed_prime)
+# 실행 결과: shift-add로 복원한 곱셈 상수: 16777619  -> 표준 FNV prime과 정확히 일치
+```
 
 ## 관련 글
 - ./rev-0208-fnv-16777619.md — 16777619 상수가 보일 때 FNV 의심하기

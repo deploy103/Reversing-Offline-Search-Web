@@ -12,7 +12,7 @@ keywords: ["정수 오버플로 재구현", "32비트 마스킹 누락", "무한
 aliases: ["파이썬 정수 오버플로 안남", "마스킹 빼먹음", "긴 입력에서만 틀림", "32비트 랩어라운드 누락"]
 symptom_keywords: ["짧은 입력은 맞는데 긴 입력은 틀림", "누산 값이 계속 커짐", "파이썬 정수라 오버플로가 안 남", "특정 길이부터 결과가 달라짐"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -126,6 +126,75 @@ print(hex(check_wrong(data)))  # 0x726a7b35f4922f6f (32비트를 한참 넘음)
 print(hex(check_right(data)))  # 0xf4922f6f (실제 32비트 레지스터가 갖는 값)
 ```
 `check_right`가 반환하는 `0xf4922f6f`만이 실제 바이너리의 `eax` 레지스터 값과 일치한다.
+
+### 추가 예제 — 곱셈 상수가 클수록 오버플로우가 훨씬 더 빨리 시작된다
+앞의 예제는 곱셈 상수(33)가 작아서 오버플로우가 3바이트째부터 시작됐다. 이번엔 FNV-1a라는 실제로 널리 쓰이는 해시 알고리즘(초기값 `0x811c9dc5`, 곱셈 상수 `0x01000193`)으로 같은 문제를 재현해본다. 곱셈 상수가 훨씬 크기 때문에 **첫 바이트를 처리하는 순간부터 이미 32비트를 넘어선다.**
+
+```python
+MASK32 = 0xFFFFFFFF          # 32비트 마스크 (2**32 - 1)
+FNV_PRIME = 0x01000193        # FNV-1a의 곱셈 상수
+FNV_OFFSET = 0x811C9DC5       # FNV-1a의 초기값(offset basis)
+
+
+def fnv1a_wrong(data: bytes) -> int:
+    """[틀린 코드] 마스킹을 전혀 하지 않은 FNV-1a."""
+    h = FNV_OFFSET             # 초기값으로 시작
+    for b in data:             # 입력 바이트를 하나씩 처리
+        h = h ^ b               # 1) 현재 바이트와 XOR
+        h = h * FNV_PRIME       # 2) 큰 상수를 곱함 (마스킹 없음 -> 파이썬 정수가 계속 커짐)
+    return h
+
+
+def fnv1a_right(data: bytes) -> int:
+    """[고친 코드] 매 곱셈 직후 32비트로 마스킹한 FNV-1a."""
+    h = FNV_OFFSET
+    for b in data:
+        h = h ^ b
+        h = (h * FNV_PRIME) & MASK32   # 곱한 직후 즉시 32비트로 잘라냄 (진짜 CPU 동작과 동일)
+    return h
+
+
+data = b"pwntools"   # 8바이트 테스트 입력
+
+wrong = fnv1a_wrong(data)
+right = fnv1a_right(data)
+
+print("마스킹 없음:", hex(wrong))   # 0x8122f7d861706cf680fc1ef753ed1b5552e1aaa2cad22ce1d1abe5dd (32비트를 한참 초과)
+print("마스킹 적용:", hex(right))   # 0xd1abe5dd (실제 32비트 레지스터가 갖는 값)
+
+# 마스킹 없이 계산한 값을 마지막에만 잘라내도 같은 결과가 나오는지 확인
+print("마지막에만 마스킹:", hex(wrong & MASK32))
+print("두 값이 같은가?:", (wrong & MASK32) == right)
+```
+실행해보면 `마지막에만 마스킹`한 값이 `right`와 정확히 같게 나온다 — XOR와 곱셈만 반복되는 이 구조에서는 우연이 아니라, "매 단계 32비트로 자르기"와 "맨 마지막에 한 번만 32비트로 자르기"가 수학적으로 같은 결과를 주기 때문이다(곱셈과 XOR는 32비트 모듈러 연산과 잘 맞물린다).
+
+**하지만 시프트(`<<`, `>>`)가 섞이면 이 우연이 깨진다.** 오른쪽 시프트(`>>`)는 "지금 몇 비트짜리 값인가"에 따라 완전히 다른 비트를 끌어오기 때문이다.
+```python
+MASK32 = 0xFFFFFFFF
+
+def mixer_wrong(data: bytes) -> int:
+    h = 0x12345678
+    for b in data:
+        h = h ^ b
+        h = (h << 13) ^ (h >> 7)              # [틀린 코드] 왼쪽 시프트 뒤 마스킹을 빼먹음
+    return h
+
+def mixer_right(data: bytes) -> int:
+    h = 0x12345678
+    for b in data:
+        h = h ^ b
+        h = ((h << 13) & MASK32) ^ (h >> 7)   # [고친 코드] 왼쪽 시프트 직후 즉시 마스킹
+    return h
+
+data = b"pwntools"
+w = mixer_wrong(data)
+r = mixer_right(data)
+print("마스킹 없음(끝에서만 자름):", hex(w & MASK32))
+print("매 단계 마스킹:            ", hex(r))
+print("두 값이 같은가?:", (w & MASK32) == r)
+# 출력: 두 값이 같은가?: False
+```
+`mixer_wrong`은 `h << 13` 뒤에 마스킹을 안 했기 때문에 `h`가 32비트보다 훨씬 커진 상태에서 `h >> 7`을 계산하게 되고, 이는 실제 32비트 레지스터가 `shl`/`shr`을 수행할 때 참조하는 비트와 전혀 다르다. 그래서 최종 결과를 아무리 `& MASK32`로 잘라내도 원본과 절대 같아질 수 없다 — **시프트가 섞인 코드는 반드시 그 시프트 연산 바로 뒤에서 마스킹해야 하며, "마지막에만 마스킹"으로는 절대 대체할 수 없다.**
 
 ## 관련 글
 - REV-0921 — 알고리즘을 복원했는데 출력이 원본과 안 맞을 때

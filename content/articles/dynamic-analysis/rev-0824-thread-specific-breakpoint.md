@@ -113,7 +113,7 @@ Breakpoint 1, validate_input (buf=...) at chall.c:55
 - REV-0823 — 여러 프로세스/스레드를 디버거로 동시에 다루는 법
 - REV-0183 — x64dbg 조건부 Breakpoint 기초
 - REV-0638 — libc 함수 사전: pthread_create 기초
-- REV-0819 — GDB에서 조건부 브레이크포인트(condition) 활용하기 (예정)
+- REV-0819 — GDB에서 조건부 브레이크포인트(condition) 활용하기
 - REV-0617 — 실행마다 API 호출 순서가 달라 보일 때(멀티스레드)
 
 ## 출처/검증

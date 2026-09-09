@@ -12,7 +12,7 @@ keywords: ["shl", "shr", "sar", "shift 변환", "니블 분리", "nibble split",
 aliases: ["shl 반복문", "shr 역산 안됨", "shift는 왜 역산이 안됨", "니블 분리 조합"]
 symptom_keywords: ["shl shr이 반복됨", "shift 역산이 이상함", "니블 나누는 것 같음", "hash<<5 패턴"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -178,6 +178,49 @@ cdq
 sar eax, 3      ; signed val / 8 과 근접(단, 음수 처리 미세한 차이 존재)
 ```
 이건 문자 변환이 아니라 인덱스나 카운터 계산일 가능성이 크므로, 이 값이 실제로 flag 바이트와 비교되는지 아니면 루프 제어에만 쓰이는지부터 구분한다.
+
+**예제 5 — 처음부터 끝까지 실행되는 전체 스크립트 (니블 분리·조합 라운드트립 + djb2 정방향 재현)**
+
+Shift는 정보가 유실될 수 있으므로, "역산 가능한 케이스(니블 분리·조합)"와 "역산이 아니라 알고리즘 재현이 필요한 케이스(djb2 해시)"를 구분해서 각각 실습한다.
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0202 실전 스크립트: 니블 분리/조합 라운드트립 + djb2 해시 정방향 재현을 함께 다룬다.
+
+# ===== 패턴 A: 바이트를 상위/하위 니블로 쪼갠 뒤 다시 합치기 (완전히 역산 가능) =====
+def split_nibbles(b: int):
+    hi = (b >> 4) & 0xF   # 오른쪽으로 4비트 밀어서 상위 4비트만 하위 자리에 남김
+    lo = b & 0xF          # 마스크로 하위 4비트만 남김
+    return hi, lo
+
+def join_nibbles(hi: int, lo: int) -> int:
+    # 상위 니블을 다시 4비트 왼쪽으로 밀어 올리고, 하위 니블과 OR로 합쳐서 원래 바이트를 복원한다.
+    return ((hi & 0xF) << 4) | (lo & 0xF)
+
+original = b"Hi!"
+for b in original:
+    hi, lo = split_nibbles(b)
+    restored = join_nibbles(hi, lo)
+    assert restored == b        # 분리한 뒤 다시 합치면 항상 원래 바이트로 정확히 돌아와야 한다
+print("니블 분리/조합 라운드트립 성공, 원본:", original)
+# 실행 결과: 니블 분리/조합 라운드트립 성공, 원본: b'Hi!'
+
+# ===== 패턴 B: djb2 해시(hash = (hash<<5)+hash+c)를 "역산"이 아니라 정방향으로 그대로 재현 =====
+def djb2(data: bytes) -> int:
+    h = 5381                                 # djb2의 표준 초기값
+    for c in data:
+        h = ((h << 5) + h + c) & 0xFFFFFFFF  # h*33 + c 와 완전히 동일한 계산(shift-add로 곱셈 대체)
+    return h
+
+target_hash = 0xF923099           # 바이너리에서 뽑은 목표 해시값(djb2(b"hello")의 실제 결과)
+candidate = b"hello"               # 프로그램 로직을 보고 추정한 후보 입력
+computed = djb2(candidate)
+print("djb2(hello) =", hex(computed))
+print("목표값과 일치?", computed == target_hash)
+# 실행 결과: djb2(hello) = 0xf923099
+# 실행 결과: 목표값과 일치? True
+```
 
 ## 관련 글
 - REV-0198 — 문자별 for 루프 검증 패턴

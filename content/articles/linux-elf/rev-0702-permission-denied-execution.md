@@ -101,7 +101,7 @@ Hello, reversing!
 ## 관련 글
 - REV-0089 — ELF 헤더 읽는 법
 - REV-0706 — 공유 라이브러리를 못 찾아서 error while loading shared libraries가 뜰 때
-- REV-0715 — Docker 컨테이너 안에서 gdb가 ptrace 권한 오류를 낼 때 (예정)
+- REV-0715 — Docker 컨테이너 안에서 gdb가 ptrace 권한 오류를 낼 때
 
 ## 출처/검증
 - 실행 비트(`x`)와 디렉터리 통과 권한(`x`)의 의미: POSIX 파일 권한 모델 및 Linux `chmod(1)`/`namei(1)` 공식 매뉴얼 기준.

@@ -12,7 +12,7 @@ keywords: ["python xor 역산", "xor_bytes 함수", "repeating key xor python", 
 aliases: ["파이썬 xor 함수", "xor bytes 템플릿", "rolling xor 파이썬 구현"]
 symptom_keywords: ["xor 복호화 코드 어떻게 짜지", "반복 키 xor 파이썬으로 풀기", "flag xor 되어있음"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -138,6 +138,41 @@ flag = xor_bytes(expected, key)
 print(flag)   # 사람이 읽을 수 있는 문자열이 나오면 성공
 ```
 같은 `xor_bytes` 함수로 반대로 `xor_bytes(flag, key)`를 하면 다시 `expected`가 나온다 — 암호화/복호화가 완전히 대칭이라는 것을 직접 확인할 수 있다.
+
+### 실전 예제 2 — 키를 전혀 모를 때, 알려진 접두어(`"flag{"`)만으로 단일 바이트 키 복구하기
+이번엔 키가 몇 바이트인지도, 값이 무엇인지도 모르는 상황을 가정한다. 다만 플래그 형식의 문제라면 결과가 `"flag{"`로 시작한다는 것은 거의 확실하다 — 이 사전 지식만으로 단일 바이트 키를 정확히 역산해본다.
+
+```python
+from itertools import cycle  # 키를 데이터 길이에 맞춰 반복시켜주는 반복자
+
+
+def xor_bytes(data: bytes, key: bytes) -> bytes:
+    # data와 key를 반복 키 XOR로 결합한다 (키가 1바이트여도, 여러 바이트여도 동일하게 동작)
+    return bytes(d ^ k for d, k in zip(data, cycle(key)))
+
+
+# 바이너리에서 덤프한, 아직 어떤 키로 XOR됐는지 모르는 암호화된 바이트열
+expected = bytes.fromhex("4c464b4d515943444d464f7548535e4f75524558751b19191d57")
+
+known_prefix = b"flag{"   # 복호화 결과가 이 문자열로 시작할 것이라는 사전 지식
+
+# 1) "정답 XOR 키 = 암호문 XOR 평문"이라는 XOR의 성질을 이용해, 앞 5바이트로 키 후보를 계산한다
+candidate = xor_bytes(expected[:len(known_prefix)], known_prefix)
+print("후보 키 바이트열:", candidate.hex())   # 예: 2a2a2a2a2a
+
+# 2) 후보 키 바이트가 전부 같은 값이면, "1바이트짜리 고정 키"라는 가정이 맞다는 뜻이다
+if len(set(candidate)) == 1:
+    recovered_key = candidate[0]           # 후보들이 전부 같으므로 그중 첫 값을 키로 확정
+    print("복구된 단일 바이트 키:", hex(recovered_key))
+
+    # 3) 복구한 키로 전체 데이터를 복호화해서 실제로 사람이 읽을 수 있는 문자열이 나오는지 확인
+    decoded = xor_bytes(expected, bytes([recovered_key]))
+    print("복호화 결과:", decoded)   # b'flag{single_byte_xor_1337}'
+else:
+    # 후보 바이트가 서로 다르다면 1바이트 고정 키가 아니라 반복 키(여러 바이트)일 가능성이 높다
+    print("1바이트 키 가정이 맞지 않음 - 반복 키(rolling key)일 가능성 확인 필요")
+```
+`candidate` 바이트열(`expected`의 앞 5바이트와 `"flag{"`를 XOR한 결과)이 전부 똑같은 값(`0x2a`)으로 나온다는 것 자체가 "이 문제는 1바이트 고정 키를 쓴다"는 가정이 맞았다는 강력한 증거다. 만약 반복 키(예: 4바이트 키)였다면 이 5개의 후보 바이트는 서로 다른 값들이 섞여서 나왔을 것이다 — 이런 "후보 바이트가 전부 일치하는가"라는 검사만으로도 키 길이를 함께 추정할 수 있다.
 
 ## 관련 글
 - REV-0261 — Python struct pack unpack

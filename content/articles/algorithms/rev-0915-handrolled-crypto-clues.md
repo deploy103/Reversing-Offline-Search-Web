@@ -12,7 +12,7 @@ keywords: ["handrolled crypto", "손으로 구현한 암호", "custom crypto 식
 aliases: ["직접 구현된 암호 알아보기", "라이브러리 없이 만든 crypto", "표준 암호 상수로 알고리즘 식별", "custom cipher 알아채는 법"]
 symptom_keywords: ["OpenSSL이나 CryptoAPI import가 안보임", "그런데 암호처럼 보이는 라운드 구조가 있음", "S-box같은 256개짜리 테이블이 있음", "라운드 상수가 반복됨"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -134,6 +134,70 @@ void encrypt(uint32_t *v0, uint32_t *v1, uint32_t *key) {
 ```
 
 `delta = 0x9E3779B9`라는 상수가 정확히 TEA 계열의 지문(REV-0210)과 일치하므로, 이 알고리즘이 TEA 또는 그 변형임을 즉시 알 수 있다. 이후에는 TEA의 공개된 표준 구현을 참고해 `v0`/`v1`이 어떻게 갱신되는지 나머지 절반을 대조하고, 라운드 수(여기서는 32)가 표준과 같은지만 확인하면 재구현이 끝난다.
+
+### 완전한 예제 스크립트 — TEA 표준 명세를 그대로 재구현해서 암호화/복호화 왕복 검증하기
+지문 상수(`0x9E3779B9`)를 확인했다면, TEA의 공개된 표준 알고리즘을 그대로 파이썬으로 옮겨서 암호화한 값이 다시 복호화했을 때 원래 값으로 돌아오는지(왕복 검증) 확인하는 것이 재구현 정확성을 검증하는 가장 확실한 방법이다.
+
+```python
+def tea_encrypt(v0: int, v1: int, key: tuple, rounds: int = 32):
+    """
+    TEA(Tiny Encryption Algorithm) 표준 암호화.
+    v0, v1 : 암호화할 64비트 평문을 32비트씩 나눈 두 조각
+    key    : 128비트 키를 32비트씩 4조각으로 나눈 튜플 (k[0], k[1], k[2], k[3])
+    rounds : 라운드 수 (표준은 32라운드)
+    """
+    delta = 0x9E3779B9   # TEA 고유의 지문 상수 (황금비 기반)
+    mask = 0xFFFFFFFF     # 32비트로 결과를 잘라내기 위한 마스크
+    total = 0             # sum 역할을 하는 누산 변수, 매 라운드마다 delta씩 증가
+
+    for _ in range(rounds):
+        total = (total + delta) & mask
+        # v1을 이용해 v0를 갱신 (좌측 시프트/우측 시프트로 v1을 흔들고, 키의 일부와 XOR)
+        v0 = (v0 + (((v1 << 4) ^ (v1 >> 5)) + v1 ^ (total + key[total & 3]))) & mask
+        # 이번엔 갱신된 v0를 이용해 v1을 갱신 (대칭적인 구조)
+        v1 = (v1 + (((v0 << 4) ^ (v0 >> 5)) + v0 ^ (total + key[(total >> 11) & 3]))) & mask
+    return v0, v1
+
+
+def tea_decrypt(v0: int, v1: int, key: tuple, rounds: int = 32):
+    """TEA 표준 복호화. 암호화의 모든 연산을 정확히 반대 순서로 되돌린다."""
+    delta = 0x9E3779B9
+    mask = 0xFFFFFFFF
+    total = (delta * rounds) & mask   # 복호화는 total이 이미 최댓값에서 시작해서 거꾸로 줄어든다
+
+    for _ in range(rounds):
+        # 암호화의 마지막 라운드부터 거꾸로 v1, v0를 원래대로 되돌린다 (뺄셈으로 더하기를 상쇄)
+        v1 = (v1 - (((v0 << 4) ^ (v0 >> 5)) + v0 ^ (total + key[(total >> 11) & 3]))) & mask
+        v0 = (v0 - (((v1 << 4) ^ (v1 >> 5)) + v1 ^ (total + key[total & 3]))) & mask
+        total = (total - delta) & mask
+    return v0, v1
+
+
+# 128비트 키를 32비트 4조각으로 나눈 예시 값
+key = (0x11111111, 0x22222222, 0x33333333, 0x44444444)
+
+# 암호화할 원래 평문 (64비트를 32비트 두 조각으로 나눈 값)
+v0, v1 = 0x01020304, 0x05060708
+print("원래 평문:", hex(v0), hex(v1))
+
+encrypted_v0, encrypted_v1 = tea_encrypt(v0, v1, key)
+print("암호화 결과:", hex(encrypted_v0), hex(encrypted_v1))
+
+decrypted_v0, decrypted_v1 = tea_decrypt(encrypted_v0, encrypted_v1, key)
+print("복호화 결과:", hex(decrypted_v0), hex(decrypted_v1))
+
+print("왕복 검증 (원래 평문과 같아야 함):", (decrypted_v0, decrypted_v1) == (v0, v1))
+```
+
+실제로 실행한 결과:
+```
+원래 평문: 0x1020304 0x5060708
+암호화 결과: 0xf1fa925f 0xa6627240
+복호화 결과: 0x1020304 0x5060708
+왕복 검증 (원래 평문과 같아야 함): True
+```
+
+암호화한 값을 복호화했더니 정확히 원래 평문으로 돌아왔다. 이렇게 "암호화 -> 복호화 왕복"이 항상 원본과 일치하는지 확인하는 것은, 표준 알고리즘을 재구현했을 때 로직이 정확한지 판단하는 가장 기본적이면서도 강력한 검증 방법이다(REV-0912의 유닛 테스트, REV-0919의 차분 테스트와도 같은 원리다). 만약 실전에서 만난 바이너리가 표준 TEA와 라운드 수나 델타 값이 다르다면, 위 스크립트의 `rounds` 인자와 `delta` 상수만 실제로 확인한 값으로 바꿔서 똑같이 왕복 검증을 해보면 된다.
 
 ## 관련 글
 - REV-0207 — FNV-1과 FNV-1a 해시 패턴

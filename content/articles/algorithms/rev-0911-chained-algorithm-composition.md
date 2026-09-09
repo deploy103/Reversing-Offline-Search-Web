@@ -12,7 +12,7 @@ keywords: ["다단계 검증", "chained transform", "알고리즘 합성", "여�
 aliases: ["단계가 여러개인 크랙미", "변환이 여러번 이어지는 문제", "다단계 알고리즘 리버싱", "파이프라인 검증 로직"]
 symptom_keywords: ["함수 안에서 서로 다른 변환 함수를 순서대로 여러번 호출함", "중간 결과가 다음 함수의 입력으로 그대로 들어감", "XOR 하고나서 다시 테이블 변환하고 다시 해시 비교함", "한 알고리즘만 역산했는데 결과가 안맞음"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -135,6 +135,70 @@ for combo in itertools.product(charset, repeat=length):
         break
 ```
 길이 6, 문자셋 26이면 `26^6 ≈ 3.09×10^8`으로 REV-0219 기준 최적화된 환경에서 수 초~수십 초면 충분히 실현 가능한 크기다. 이렇게 "역산 가능한 단계는 역산하고, 안 되는 마지막 단계는 좁혀진 공간에서 브루트포스"하는 것이 다단계 문제의 현실적인 최종 전략이다.
+
+### 완전한 예제 스크립트 — 파이프라인을 끝까지 실행하고 브루트포스로 검증까지
+아래 스크립트는 앞서 나온 `f1`(XOR), `f2`(테이블 치환), `f3`(다항식 해시)을 다시 처음부터 정의하고, 실제로 `TARGET` 값을 계산한 뒤 브루트포스로 원문을 되찾는 과정을 전부 담고 있다. 파이썬 초보자도 그대로 복사해서 실행할 수 있다.
+
+```python
+import itertools  # 문자 조합을 순서대로 만들어주는 표준 라이브러리
+
+
+def f1(x: bytes) -> bytes:
+    # 1단계: 모든 바이트에 0x5A를 XOR한다 (REV-0199 참고)
+    return bytes(b ^ 0x5A for b in x)
+
+
+def f2(x: bytes) -> bytes:
+    # 2단계: 각 바이트를 4칸짜리 테이블에서 치환한다 (REV-0215 참고)
+    # 주의: 테이블 크기가 4뿐이라서 원래 256가지였던 값이 4가지로 줄어든다 -> 정보가 크게 손실된다
+    table = [0x63, 0x7C, 0x77, 0x7B]
+    return bytes(table[b % len(table)] for b in x)
+
+
+def f3(x: bytes) -> int:
+    # 3단계: 다항식 해시로 전체를 하나의 32비트 정수로 압축한다 (REV-0906 참고, 비가역)
+    h = 0
+    for c in x:
+        h = (h * 31 + c) & 0xFFFFFFFF
+    return h
+
+
+def pipeline(x: bytes) -> int:
+    # 실제 검증 함수와 동일한 순서로 세 단계를 이어붙인다: f1 -> f2 -> f3
+    return f3(f2(f1(x)))
+
+
+# 1) 원래 비밀 문자열이 있었다고 가정하고, 그 문자열의 pipeline() 결과를 TARGET으로 삼는다
+#    (실전에서는 이 값을 어셈블리의 cmp 명령 상수에서 직접 읽어온다)
+secret = b"ctf"
+TARGET = pipeline(secret)
+print("원래 비밀 문자열:", secret)
+print("TARGET (실제로는 바이너리에 박혀 있는 값):", hex(TARGET))
+
+# 2) TARGET만 안다고 가정하고, 길이 3짜리 소문자 조합을 전부 시도해서 pipeline(candidate) == TARGET을
+#    만족하는 문자열을 찾는다. 문자셋과 길이는 REV-0218 방식으로 이미 좁혀뒀다고 가정한다.
+charset = b"abcdefghijklmnopqrstuvwxyz"
+length = 3
+found = None
+for combo in itertools.product(charset, repeat=length):  # 26 x 26 x 26 = 17,576가지 조합을 전부 만든다
+    candidate = bytes(combo)          # combo는 정수 튜플이므로 바이트 문자열로 바꾼다
+    if pipeline(candidate) == TARGET: # 파이프라인 결과가 TARGET과 같으면 정답 후보를 찾은 것
+        found = candidate
+        break                          # 하나 찾았으니 더 찾을 필요 없이 반복을 멈춘다
+
+print("브루트포스로 찾은 문자열:", found)
+print("원래 비밀 문자열과 같은가?:", found == secret)
+```
+
+실제로 실행하면 다음과 같이 출력된다.
+```
+원래 비밀 문자열: b'ctf'
+TARGET (실제로는 바이너리에 박혀 있는 값): 0x1e048
+브루트포스로 찾은 문자열: b'cdb'
+원래 비밀 문자열과 같은가?: False
+```
+
+여기서 아주 중요한 교훈이 드러난다 — 브루트포스로 찾은 문자열 `b'cdb'`가 원래 비밀 문자열 `b'ctf'`와 **다르다**는 점이다. 원인은 `f2` 단계가 256가지 바이트를 4가지 값으로만 치환하는 손실 변환이기 때문이다 — 서로 다른 여러 입력이 `f2`를 거치면 같은 값이 되어버려서, 최종 `TARGET`도 여러 개의 서로 다른 입력에서 나올 수 있다. 즉 이 파이프라인은 앞서 배운 "출력이 입력보다 작아지는 단계가 있으면 유일한 원문 복원이 불가능하다"(REV-0913)는 원칙이 그대로 적용된 실제 사례다. CTF 정답 제출 시에는 브루트포스로 찾은 후보가 실제로 사람이 읽을 수 있는 의미 있는 문자열인지(예: `flag{...}` 형식에 맞는지) 추가로 확인해서 진짜 정답을 골라내야 한다.
 
 ## 관련 글
 - REV-0196 — strcmp 기반 Flag 검증 패턴

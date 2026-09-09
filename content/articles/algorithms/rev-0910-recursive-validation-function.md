@@ -12,7 +12,7 @@ keywords: ["재귀 함수 리버싱", "recursive validation", "재귀 호출 스
 aliases: ["재귀 크랙미 알아보기", "함수가 자기 자신을 호출함", "재귀 호출 스택 프레임 분석", "recursion 풀어내기"]
 symptom_keywords: ["함수 안에서 자기 자신의 주소를 call함", "스택이 함수 깊이만큼 계속 쌓임", "재귀 종료 조건을 못 찾겠음", "재귀 호출 인자가 계속 바뀜"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -167,6 +167,107 @@ print(check(b"testcase"), check_iter(b"testcase"))  # 둘 다 같은 결과
 ```
 
 재귀 버전과 반복문 버전이 항상 같은 결과를 낸다는 걸 여러 입력으로 교차 검증해두면, 이후 분석에서는 더 다루기 쉬운 반복문 버전만 사용해도 안전하다.
+
+### 완전한 예제 스크립트 1 — base case/recursive case를 확정하고 정답을 검증하기
+파이썬을 잘 몰라도 따라할 수 있도록 한 줄씩 주석을 달았다. 이 스크립트를 그대로 파일로 저장해서 `python3 파일이름.py`로 실행하면 바로 결과를 볼 수 있다.
+
+```python
+import sys  # 재귀 깊이 제한을 늘리기 위해 sys 모듈을 가져온다
+
+# 파이썬은 기본적으로 재귀를 1000번 정도까지만 허용한다.
+# 입력 문자열이 길어질 경우를 대비해 한도를 넉넉하게 늘려둔다.
+sys.setrecursionlimit(100000)
+
+
+def check(s: bytes, idx: int = 0, acc: int = 0) -> bool:
+    """
+    재귀적으로 정의된 검증 함수.
+    s   : 검사할 바이트 문자열(입력값)
+    idx : 지금 보고 있는 문자의 위치(처음 호출할 때는 0)
+    acc : 지금까지 누적된 해시 값(처음 호출할 때는 0)
+    """
+    # --- base case: 문자열의 끝에 도달하면 재귀를 멈추고 결과를 돌려준다 ---
+    if idx == len(s):
+        return acc == TARGET  # 누적값이 목표값과 같은지 비교해서 True/False 반환
+
+    # --- recursive case: 현재 문자로 누적값을 갱신하고, 다음 문자로 넘어가며 자기 자신을 호출 ---
+    acc = (acc * 131 + s[idx]) & 0xFFFFFFFF  # 다항식 해시 누적 (32비트로 마스킹)
+    return check(s, idx + 1, acc)            # idx를 1 늘리고 acc를 갱신해서 재귀 호출
+
+
+# 실제 바이너리를 GDB로 관찰해서 TARGET 값을 미리 알아냈다고 가정한다.
+# (아래 값은 "HelloCTF"라는 비밀번호를 위 알고리즘으로 직접 계산해서 얻은 실제 값이다)
+TARGET = 0x719F9B37
+
+print(check(b"HelloCTF"))   # 정답을 넣으면 -> True
+print(check(b"WrongPwd"))   # 오답을 넣으면 -> False
+
+# 꼬리 재귀이므로 반복문(while)으로 바꿔도 완전히 같은 결과가 나와야 한다.
+# 재귀 버전과 반복문 버전을 서로 대조해보면, 반복문으로 옮긴 것이 맞았는지 스스로 검증할 수 있다.
+def check_iter(s: bytes) -> bool:
+    acc = 0                         # 초기 누적값 (재귀 버전의 acc=0과 동일)
+    for idx in range(len(s)):       # idx가 0부터 len(s)-1까지 1씩 증가 (재귀의 idx+1과 동일)
+        acc = (acc * 131 + s[idx]) & 0xFFFFFFFF
+    return acc == TARGET            # base case에서 하던 비교를 루프가 끝난 뒤 한 번만 수행
+
+print(check_iter(b"HelloCTF") == check(b"HelloCTF"))  # 두 버전이 같은 결과인지 확인 -> True
+```
+
+실행하면 다음처럼 출력된다.
+```
+True
+False
+True
+```
+`check(b"HelloCTF")`가 `True`가 나오는 이유는 `TARGET = 0x719F9B37`이 정확히 `"HelloCTF"`를 이 알고리즘에 넣었을 때 나오는 값이기 때문이다. 다른 문자열(`b"WrongPwd"`)을 넣으면 당연히 다른 누적값이 나오므로 `False`가 된다.
+
+### 완전한 예제 스크립트 2 — 트리형 재귀와 메모이제이션 비교
+"한 호출에서 자기 자신을 두 번 이상 호출하는" 트리형 재귀가 실제로 얼마나 느려지는지, 그리고 메모이제이션으로 얼마나 빨라지는지 직접 시간을 측정해서 눈으로 확인해보자. (실전 크랙미의 트리형 재귀 검증 함수도 같은 원리로 느려지고, 같은 방법으로 빨라진다.)
+
+```python
+import time        # 실행 시간을 측정하기 위한 모듈
+import functools    # 메모이제이션(캐싱)을 자동으로 붙여주는 lru_cache를 쓰기 위한 모듈
+
+
+def tree_recursion(n: int) -> int:
+    """
+    한 번 호출될 때마다 자기 자신을 두 번 호출하는 전형적인 트리형 재귀.
+    (실전에서는 이런 이중 호출이 검증 로직 안에 숨어 있는 경우가 있다)
+    """
+    if n < 2:              # base case: n이 0 또는 1이면 그대로 n을 반환
+        return n
+    return tree_recursion(n - 1) + tree_recursion(n - 2)  # recursive case: 자기 자신을 두 번 호출
+
+
+@functools.lru_cache(maxsize=None)  # 이미 계산한 n에 대한 결과를 자동으로 저장해두는 데코레이터
+def tree_recursion_memo(n: int) -> int:
+    if n < 2:
+        return n
+    return tree_recursion_memo(n - 1) + tree_recursion_memo(n - 2)
+
+
+N = 30  # 테스트할 입력 크기
+
+start = time.perf_counter()          # 시작 시각 기록
+result_naive = tree_recursion(N)     # 메모이제이션 없는 버전 실행
+time_naive = time.perf_counter() - start  # 걸린 시간 계산
+
+start = time.perf_counter()
+result_memo = tree_recursion_memo(N)       # 메모이제이션 있는 버전 실행
+time_memo = time.perf_counter() - start
+
+print(f"결과값 (둘 다 같아야 함): naive={result_naive}, memo={result_memo}")
+print(f"naive 걸린 시간: {time_naive:.4f}초")
+print(f"memo  걸린 시간: {time_memo:.6f}초")
+```
+
+실제로 실행한 결과(환경에 따라 수치는 다를 수 있지만 비율은 비슷하게 나온다):
+```
+결과값 (둘 다 같아야 함): naive=832040, memo=832040
+naive 걸린 시간: 0.1849초
+memo  걸린 시간: 0.000036초
+```
+두 버전의 결과값(832040)은 완전히 같지만, 걸린 시간은 5000배 이상 차이가 난다. 이것이 바로 "같은 부분 문제를 반복 계산하고 있는지"가 트리형 재귀 분석에서 왜 그렇게 중요한지를 숫자로 보여주는 증거다 — 실전에서 검증 함수가 오래 걸리는 트리형 재귀라면, 로직을 통째로 바꾸지 않고 `@functools.lru_cache`만 붙여도 실행이 즉시 빨라지는 경우가 많다.
 
 ## 관련 글
 - REV-0198 — 문자별 for 루프 검증 패턴

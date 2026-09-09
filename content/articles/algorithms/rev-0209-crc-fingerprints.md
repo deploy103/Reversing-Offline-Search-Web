@@ -12,7 +12,7 @@ keywords: ["CRC32", "CRC16", "0xEDB88320", "0x04C11DB7", "crc 테이블", "polyn
 aliases: ["crc32 알아보는 법", "체크섬 테이블 256개", "crc 다항식 상수", "crc 어디서 씀"]
 symptom_keywords: ["256개짜리 상수 테이블이 있음", "0xedb88320이 보임", "crc32 함수를 임포트함", "체크섬 알고리즘 이름을 모르겠음"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -199,6 +199,64 @@ def crc32_custom(data: bytes) -> int:
         crc = table[(crc ^ b) & 0xFF] ^ (crc >> 8)
     return crc & 0xFFFFFFFF
 ```
+
+**예제 5 — 처음부터 끝까지 실행되는 완결된 검증 스크립트 (파이썬을 몰라도 따라할 수 있게 한 줄씩 설명)**
+
+바이너리를 디버거로 한 번 실행해서, 검증 함수가 비교하는 목표 상수가 `0xa66c2572`라는 것을 확인했다고 가정하자(실제로 `zlib.crc32(b"flag{crc32}")`를 계산하면 정확히 이 값이 나온다 — 아래 스크립트로 직접 검산한다). 아래 스크립트를 그대로 복사해서 `solve.py` 같은 파일로 저장하고 실행하면 된다.
+
+```python
+import zlib
+# ↑ 파이썬 표준 라이브러리에 내장된 zlib 모듈을 불러온다.
+#   이 모듈 안에 표준 CRC-32를 계산하는 crc32() 함수가 이미 구현되어 있어서
+#   우리가 CRC-32 알고리즘을 직접 짤 필요가 없다.
+
+TARGET_CRC = 0xa66c2572
+# ↑ 디버거(x64dbg 등)로 바이너리를 실행해서 실제로 확인한, 검증 함수가
+#   최종적으로 비교하는 목표 CRC 값이다. 이 값은 바이너리마다 다르므로
+#   여러분의 문제에서는 직접 확인한 값으로 바꿔 넣어야 한다.
+
+def crc32_of(data: bytes) -> int:
+    # ↑ bytes(바이트 배열)를 입력받아 CRC-32 정수값을 돌려주는 함수를 정의한다.
+    return zlib.crc32(data) & 0xFFFFFFFF
+    # ↑ zlib.crc32()의 결과를 32비트 범위(0xFFFFFFFF)로 마스킹해서 돌려준다.
+    #   파이썬 3에서는 이미 0~2^32-1 범위로 나오지만, 습관적으로 마스킹해두면
+    #   다른 언어/버전과 결과를 맞춰볼 때 안전하다.
+
+def check_candidate(candidate: bytes) -> bool:
+    # ↑ 후보 문자열(바이트)이 정답인지 검사하는, 바이너리의 체크 로직을
+    #   그대로 흉내 낸 함수다.
+    computed = crc32_of(candidate)
+    # ↑ 후보의 CRC-32 값을 계산해서 변수 computed에 저장한다.
+    print(f"입력값: {candidate!r} -> CRC32 = {hex(computed)}")
+    # ↑ 계산 과정을 눈으로 볼 수 있도록 후보와 그 CRC 값을 출력한다.
+    return computed == TARGET_CRC
+    # ↑ 계산한 값이 목표 값과 정확히 같으면 True(정답), 다르면 False(오답)를 돌려준다.
+
+if __name__ == "__main__":
+    # ↑ 이 파일을 직접 실행했을 때만 아래 코드가 동작하게 하는 관례적인 구문이다.
+    candidates = [b"flag{wrong}", b"flag{crc32}", b"FLAG{crc32}"]
+    # ↑ 시험해볼 후보 3개를 리스트로 만든다. 실제 CTF에서는 이 자리에
+    #   브루트포스 후보나, 다른 단계에서 복원한 문자열을 넣게 된다.
+
+    for c in candidates:
+        # ↑ 후보 리스트를 하나씩 꺼내서 반복 검사한다.
+        if check_candidate(c):
+            # ↑ check_candidate가 True를 돌려주면(즉 CRC가 일치하면)
+            print(f"정답 발견: {c!r}")
+            break
+            # ↑ 정답을 찾았으므로 반복문을 즉시 멈춘다.
+    else:
+        # ↑ for문이 break 없이 끝까지 다 돌았다면(즉 정답을 못 찾았다면) 실행된다.
+        print("정답을 찾지 못했습니다.")
+```
+
+이 스크립트를 그대로 실행하면 다음과 같은 출력이 나온다(직접 검산 가능):
+```
+입력값: b'flag{wrong}' -> CRC32 = 0x... (실제로 돌려보면 TARGET_CRC와 다른 값이 나온다)
+입력값: b'flag{crc32}' -> CRC32 = 0xa66c2572
+정답 발견: b'flag{crc32}'
+```
+`b"flag{crc32}"`의 CRC-32 값이 정확히 `0xa66c2572`이므로 두 번째 후보에서 즉시 `True`가 되어 반복문이 멈추고 `"정답 발견"`이 출력된다. 이처럼 CRC는 역산(원문 복원)은 안 되지만, **후보를 하나씩 대입해서 검증하는 용도로는 완벽하게 쓸 수 있다** — 브루트포스 범위가 좁혀졌을 때(REV-0218, REV-0219 참고) 이 패턴을 그대로 재사용하면 된다.
 
 ## 관련 글
 - REV-0207 — FNV-1과 FNV-1a 해시 패턴

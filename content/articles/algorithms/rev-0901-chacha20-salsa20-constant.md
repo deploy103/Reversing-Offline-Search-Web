@@ -12,7 +12,7 @@ keywords: ["ChaCha20", "Salsa20", "expand 32-byte k", "0x61707865", "0x3320646e"
 aliases: ["chacha20 상수", "salsa20 상수", "expand 32-byte k", "쿼터라운드", "chacha 흔적 찾기"]
 symptom_keywords: ["expa nd 3 2-by te k 문자열이 보임", "61707865 상수가 보임", "4x4 워드 배열을 다룸", "add xor rotate만 반복함", "expand 16-byte k 문자열이 보임"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -138,6 +138,50 @@ c = ChaCha20.new(key=key, nonce=nonce)
 print(c.encrypt(bytes(64)).hex())
 ```
 이 키스트림 결과가 바이너리에서 뽑은 값과 일치하면 키/논스까지 모두 확정된 것이다.
+
+### 심화 예제 — 상수를 문자열로 직접 디코딩하고 쿼터라운드를 손으로 계산해보기
+외부 암호 라이브러리 없이도 (1) 4개의 32비트 상수가 정말 `"expand 32-byte k"`가 되는지, (2) 쿼터라운드 연산이 실제로 값을 어떻게 뒤섞는지를 순수 파이썬으로 확인할 수 있다. 아래 스크립트는 RFC 8439 2.1.1절의 공식 테스트 벡터로 결과를 검증한다.
+```python
+import struct  # 32비트 정수 <-> 4바이트 변환에 사용
+
+def rotl32(x: int, n: int) -> int:
+    """32비트 정수를 왼쪽으로 n비트 순환 회전시킨다."""
+    x &= 0xFFFFFFFF                                  # 32비트로 마스킹
+    return ((x << n) | (x >> (32 - n))) & 0xFFFFFFFF  # 왼쪽으로 밀려나간 비트를 오른쪽에 채움
+
+def quarter_round(a: int, b: int, c: int, d: int):
+    """ChaCha20의 쿼터라운드 연산 4단계를 그대로 구현. 회전량 16,12,8,7이 지문이다."""
+    a = (a + b) & 0xFFFFFFFF; d ^= a; d = rotl32(d, 16)
+    c = (c + d) & 0xFFFFFFFF; b ^= c; b = rotl32(b, 12)
+    a = (a + b) & 0xFFFFFFFF; d ^= a; d = rotl32(d, 8)
+    c = (c + d) & 0xFFFFFFFF; b ^= c; b = rotl32(b, 7)
+    return a, b, c, d
+
+# --- 1) 고정 상수 4워드가 정말 "expand 32-byte k" 문자열이 되는지 직접 확인 ---
+constants = [0x61707865, 0x3320646e, 0x79622d32, 0x6b206574]
+raw = b"".join(struct.pack("<I", c) for c in constants)  # 리틀엔디안으로 4바이트씩 이어붙임
+print("상수를 리틀엔디안 바이트로 이어붙인 결과:", raw)
+assert raw == b"expand 32-byte k", "상수가 예상 문자열과 다름!"
+print("ChaCha20 고정 상수 -> 'expand 32-byte k' 확인됨")
+
+# --- 2) 쿼터라운드가 실제로 값을 어떻게 뒤섞는지 눈으로 확인 ---
+a, b, c, d = 0x11111111, 0x01020304, 0x9b8d6f43, 0x01234567  # RFC 8439 공식 예제 입력값
+a2, b2, c2, d2 = quarter_round(a, b, c, d)
+print(f"쿼터라운드 전: a={a:#x} b={b:#x} c={c:#x} d={d:#x}")
+print(f"쿼터라운드 후: a={a2:#x} b={b2:#x} c={c2:#x} d={d2:#x}")
+# RFC 8439 2.1.1절의 공식 테스트 벡터와 대조
+assert (a2, b2, c2, d2) == (0xea2a92f4, 0xcb1cf8ce, 0x4581472e, 0x5881c4bb)
+print("쿼터라운드 구현이 RFC 8439 공식 테스트 벡터와 일치")
+```
+실제로 실행하면 다음과 같이 나온다(실행 확인함):
+```text
+상수를 리틀엔디안 바이트로 이어붙인 결과: b'expand 32-byte k'
+ChaCha20 고정 상수 -> 'expand 32-byte k' 확인됨
+쿼터라운드 전: a=0x11111111 b=0x1020304 c=0x9b8d6f43 d=0x1234567
+쿼터라운드 후: a=0xea2a92f4 b=0xcb1cf8ce c=0x4581472e d=0x5881c4bb
+쿼터라운드 구현이 RFC 8439 공식 테스트 벡터와 일치
+```
+바이너리의 라운드 함수에서 뽑은 임의의 4개 32비트 값을 이 `quarter_round()`에 넣어 같은 결과가 나오는지 대조하면, 회전량까지 포함해 ChaCha20 구현이 정확히 일치하는지 스스로 검증할 수 있다.
 
 ## 관련 글
 - REV-0900 — RC4 알고리즘 흔적(KSA/PRGA) 알아보기

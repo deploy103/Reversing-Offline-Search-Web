@@ -134,8 +134,8 @@ GDB 콘솔에서 본 것과 동일한 내용이 `trace_run1.log` 파일에 그�
 - REV-0828 — 동적분석으로 검증 함수의 입출력만 계속 관찰하는 전략
 - REV-0832 — 동적분석 중 발견한 상수를 정적분석과 다시 대조하는 법
 - REV-0317 — Write-up을 읽기 전에 스스로 어디까지 풀었는지 기록하는 법
-- REV-0814 — x64dbg 스크립트(Script) 탭으로 자동화하기 (예정)
-- REV-0820 — GDB dprintf로 로그만 찍고 계속 실행하기 (예정)
+- REV-0814 — x64dbg 스크립트(Script) 탭으로 자동화하기
+- REV-0820 — GDB dprintf로 로그만 찍고 계속 실행하기
 
 ## 출처/검증
 - GDB `set logging file`, `set logging enabled`, `set logging overwrite`, `set logging redirect` 명령: GNU GDB 공식 매뉴얼("Logging Output") 기준.

@@ -12,7 +12,7 @@ keywords: ["hex encoding", "%02x", "0123456789abcdef", "nibble", "hex decode", "
 aliases: ["hex 상수", "%02x가 뭐임", "니블 분리 패턴", "16진수 문자열 변환"]
 symptom_keywords: ["문자열 길이가 정확히 2배로 늘어남", "0123456789abcdef 테이블이 보임", "shr 4 and f 패턴이 보임", "02x 포맷 문자열이 보임"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -171,6 +171,55 @@ int hex_val(char c) {
 }
 ```
 `cmp al, 39h`(`'9'`=0x39), `jg`로 숫자 범위를 벗어나면 다음 분기로 넘어가는 패턴이 바로 이 코드가 컴파일된 형태다. `hex_decode("666c6167")`을 실행하면 `b"flag"`가 정확히 나오는지 검증해서 이 판별 로직의 이해가 맞았는지 확인한다.
+
+**심화 예제 — 길이 검증부터 디코딩까지 이어지는 완결된 스크립트**
+
+바이너리 안에서 `char cipher[] = "666c61677b6865785f6f6b7d";`처럼 하드코딩된 문자열을 발견했다고 하자. 아래 스크립트는 이 문자열이 유효한 hex 문자열인지 먼저 검사한 뒤, 실제로 디코딩까지 수행하는 전체 과정을 보여준다.
+
+```python
+def is_valid_hex_string(s: str) -> bool:
+    # ↑ 문자열이 "짝수 길이" + "0-9,a-f,A-F로만 구성"이라는 두 조건을
+    #   모두 만족하는지 검사하는 함수를 정의한다.
+    if len(s) % 2 != 0:
+        # ↑ 길이를 2로 나눈 나머지가 0이 아니면(즉 홀수 길이면)
+        return False
+        # ↑ hex 인코딩은 항상 짝수 길이여야 하므로 여기서 바로 실패 처리한다.
+    allowed = set("0123456789abcdefABCDEF")
+    # ↑ hex 문자열에 등장할 수 있는 모든 문자를 집합(set)으로 만들어 둔다.
+    return all(ch in allowed for ch in s)
+    # ↑ 문자열의 모든 글자가 allowed 집합 안에 있는지 하나씩 검사하고,
+    #   전부 참이면 True, 하나라도 아니면 False를 돌려준다.
+
+def hex_decode(s: str) -> bytes:
+    # ↑ 검증을 통과한 hex 문자열을 실제 바이트로 변환하는 함수.
+    return bytes.fromhex(s)
+    # ↑ 파이썬 내장 함수로, 문자 두 개씩 묶어서 한 바이트로 해석해준다.
+
+if __name__ == "__main__":
+    # ↑ 이 파일을 직접 실행할 때만 아래 블록을 수행한다.
+    found_in_binary = "666c61677b6865785f6f6b7d"
+    # ↑ 바이너리의 .rodata에서 그대로 복사했다고 가정한 문자열.
+
+    if is_valid_hex_string(found_in_binary):
+        # ↑ 앞서 만든 검증 함수를 호출해서 유효한 hex 문자열인지 확인한다.
+        decoded = hex_decode(found_in_binary)
+        # ↑ 유효하다면 실제로 디코딩을 수행한다.
+        print("디코딩 결과(바이트):", decoded)
+        # ↑ 디코딩된 바이트 그대로를 출력한다.
+        print("디코딩 결과(문자열):", decoded.decode())
+        # ↑ ASCII로 다시 해석해서 사람이 읽는 문자열로도 출력한다.
+    else:
+        # ↑ 검증에 실패했다면(유효한 hex가 아니라면)
+        print("유효한 hex 문자열이 아닙니다. 다른 인코딩을 의심해야 합니다.")
+        # ↑ 다음으로 시도해볼 방향(Base64, 커스텀 인코딩 등)을 안내한다.
+```
+
+이 스크립트를 그대로 실행하면 다음과 같이 출력된다(직접 계산해서 검증한 값):
+```
+디코딩 결과(바이트): b'flag{hex_ok}'
+디코딩 결과(문자열): flag{hex_ok}
+```
+즉 바이너리에서 발견한 `"666c61677b6865785f6f6b7d"`라는 하드코딩된 문자열은 `b"flag{hex_ok}"`를 그대로 hex로 인코딩한 것이었다. `is_valid_hex_string`으로 먼저 형식을 검증하고 나서 디코딩하는 습관을 들이면, 실제로 hex가 아닌 값(예: 커스텀 인코딩이나 Base64)을 hex로 잘못 디코딩하려다 알아보기 힘든 에러 메시지에 시간을 낭비하는 일을 줄일 수 있다.
 
 ## 관련 글
 - [rev-0212-base64-pattern.md](./rev-0212-base64-pattern.md) — 6비트 단위로 확장한 인코딩

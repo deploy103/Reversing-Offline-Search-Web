@@ -12,7 +12,7 @@ keywords: ["unicorn hook_add", "UC_HOOK_CODE", "UC_HOOK_MEM_UNMAPPED", "unicorn 
 aliases: ["unicorn 심화 사용법", "unicorn 후킹", "unicorn 함수 호출 흉내내기", "unicorn 자동 테스트"]
 symptom_keywords: ["함수 안에서 라이브러리 호출이 있어서 에뮬레이션이 막힘", "unmapped memory 에러가 계속 남", "매 명령어마다 추적하고 싶음", "여러 테스트케이스를 자동으로 돌리고 싶음"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -224,6 +224,90 @@ print('result =', mu.reg_read(UC_X86_REG_EAX))  # table[5] = 10
 ```
 
 이 패턴은 함수가 참조하는 모든 전역 데이터를 사전에 일일이 찾아 매핑해두지 않고도, 실행 도중 필요한 순간에만 값을 채워 넣어 검증을 완성할 수 있게 해준다.
+
+## 실전 예시: UC_HOOK_MEM_WRITE로 결과가 메모리 버퍼에 쓰이는 과정 실시간 추적하기
+지금까지의 예시는 결과가 항상 `eax` 같은 레지스터에 남는 경우였다. 하지만 실제 암호화/인코딩 루틴은 결과를 레지스터가 아니라 **출력 버퍼(메모리)에 한 바이트씩 써 나가는** 경우가 훨씬 많다. 이럴 때는 `UC_HOOK_MEM_WRITE` 훅으로 메모리 쓰기가 일어나는 순간마다 콜백을 걸어두면, 최종 결과뿐 아니라 "한 글자씩 어떤 값이 계산되어 쓰였는지"까지 실시간으로 들여다볼 수 있다.
+
+아래 C 함수를 실제로 `gcc -O0`으로 컴파일해서 얻은(직접 컴파일하고 `objdump`로 확인한) 진짜 기계어 바이트를 그대로 사용한다.
+
+```c
+// xor_encode.c -- 실제로 컴파일해서 사용하는 대상 함수
+void xor_encode(unsigned char *out, unsigned char *in, int n, unsigned char key) {
+    for (int i = 0; i < n; i++) {
+        out[i] = in[i] ^ key;
+    }
+}
+```
+
+```bash
+# 실제 컴파일 및 함수 바이트 추출 절차 (참고용)
+gcc -O0 -fno-stack-protector -fno-pic -fno-asynchronous-unwind-tables -c xor_encode.c -o xor_encode.o
+objcopy -O binary --only-section=.text xor_encode.o xor_encode.bin
+```
+
+이렇게 뽑아낸 `xor_encode` 함수는 System V x64 호출 규약에 따라 `rdi=out`, `rsi=in`, `edx=n`, `ecx=key` 순서로 인자를 받는다(4번째 정수 인자이므로 `unsigned char key`도 `ecx` 레지스터로 전달된다). 이 바이트를 그대로 Unicorn에 올려서, 메모리 쓰기 훅으로 출력 버퍼에 값이 채워지는 과정을 한 바이트씩 추적한다.
+
+```python
+from unicorn import *
+from unicorn.x86_const import *
+
+# 위 절차로 실제 컴파일해서 얻은 xor_encode 함수의 원본 기계어 바이트(83바이트)
+CODE = bytes.fromhex(
+    'f30f1efa554889e548897de8488975e08955dc89c88845d8c745fc00000000eb26'
+    '8b45fc4863d0488b45e04801d00fb6008b55fc4863ca488b55e84801ca3245d888'
+    '028345fc018b45fc3b45dc7cd290905dc3'
+)
+
+BASE = 0x400000
+IN_ADDR = 0x500000    # 입력 버퍼
+OUT_ADDR = 0x501000     # 출력 버퍼
+STACK = 0x600000
+
+mu = Uc(UC_ARCH_X86, UC_MODE_64)
+mu.mem_map(BASE, 0x1000)
+mu.mem_write(BASE, CODE)
+mu.mem_map(IN_ADDR, 0x1000)
+mu.mem_map(OUT_ADDR, 0x1000)
+mu.mem_map(STACK, 0x10000)
+
+plaintext = b'HELLO'
+key = 0x13
+mu.mem_write(IN_ADDR, plaintext)          # 입력 버퍼에 평문을 미리 채워둔다
+
+mu.reg_write(UC_X86_REG_RSP, STACK + 0x8000)
+mu.reg_write(UC_X86_REG_RDI, OUT_ADDR)      # 첫째 인자: out
+mu.reg_write(UC_X86_REG_RSI, IN_ADDR)        # 둘째 인자: in
+mu.reg_write(UC_X86_REG_RDX, len(plaintext))  # 셋째 인자: n
+mu.reg_write(UC_X86_REG_RCX, key)             # 넷째 인자: key
+
+def on_write(mu, access, address, size, value, user_data):
+    # 출력 버퍼(OUT_ADDR) 범위에 쓰이는 값만 걸러서 보여준다(스택 등 다른 쓰기는 잡음이므로 무시)
+    if OUT_ADDR <= address < OUT_ADDR + len(plaintext):
+        offset = address - OUT_ADDR
+        print(f'  out[{offset}] <- 0x{value:02x}  (in[{offset}]=0x{plaintext[offset]:02x} ^ key=0x{key:02x})')
+    return True
+
+mu.hook_add(UC_HOOK_MEM_WRITE, on_write)
+
+RET_ADDR = BASE + 0x52   # 함수 끝의 ret 명령어 주소(objdump로 확인한 함수 크기 0x53 - 1)
+mu.emu_start(BASE, RET_ADDR)
+
+result = mu.mem_read(OUT_ADDR, len(plaintext))
+print('out buffer:', bytes(result))
+```
+
+이 스크립트를 그대로 실행하면 다음과 같은 실행 도중 추적 로그와 최종 결과가 정확히 출력된다(직접 gcc 컴파일 + Unicorn 2.x로 재현 검증됨).
+
+```text
+  out[0] <- 0x5b  (in[0]=0x48 ^ key=0x13)
+  out[1] <- 0x56  (in[1]=0x45 ^ key=0x13)
+  out[2] <- 0x5f  (in[2]=0x4c ^ key=0x13)
+  out[3] <- 0x5f  (in[3]=0x4c ^ key=0x13)
+  out[4] <- 0x5c  (in[4]=0x4f ^ key=0x13)
+out buffer: b'[V__\\'
+```
+
+`UC_HOOK_MEM_WRITE` 훅은 함수가 최종적으로 반환하기를 기다리지 않고, **루프가 한 바퀴 돌 때마다 실제로 메모리에 쓰이는 순간을 그 자리에서** 잡아낸다. 그래서 최종 결과(`out buffer`)만 보는 것보다 "몇 번째 반복에서 어떤 입력이 어떤 키와 XOR되어 어떤 값이 나왔는지"까지 한눈에 확인할 수 있다. 이 패턴은 실제 CTF의 인코딩 루프를 분석할 때, 중간값이 이상한 지점을 정확히 짚어내 디버깅 시간을 크게 줄여준다.
 
 ## 관련 글
 - REV-0273 — Unicorn으로 작은 검증 함수 에뮬레이션

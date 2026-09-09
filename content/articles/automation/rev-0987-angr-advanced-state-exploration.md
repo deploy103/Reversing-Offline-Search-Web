@@ -12,7 +12,7 @@ keywords: ["angr exploration technique", "LoopSeer", "Veritesting", "step_func",
 aliases: ["angr 고급 사용법", "angr 상태 탐색", "angr exploration techniques", "angr 실전 활용"]
 symptom_keywords: ["angr 탐색이 너무 오래 걸림", "angr 상태가 너무 많아짐", "angr에서 특정 경로만 우선 탐색하고 싶음", "angr stash 관리 어떻게 함"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -219,6 +219,33 @@ else:
 ```
 
 이렇게 `LoopSeer`와 모니터링용 `step_func`를 기본 세트로 함께 써두면, 이후 더 복잡한 반복 구조를 가진 바이너리를 만나더라도 같은 뼈대를 재사용해 빠르게 진단하고 대응할 수 있다.
+
+## 실전 예시: num_find로 정답이 여러 개인 경우 전부 찾기
+검증 로직이 헐거워서 "정답으로 인정되는 입력"이 하나가 아니라 여러 개 존재하는 경우가 있다(예: 대소문자를 구분하지 않는 검사, 또는 특정 자리 값은 아예 검사하지 않는 경우). `simgr.explore()`는 기본적으로 `find` 조건을 만족하는 상태를 **딱 하나** 찾으면 멈추는데, `num_find` 인자에 더 큰 값을 주면 그만큼 여러 개의 서로 다른 해를 한 번의 탐색으로 모두 모을 수 있다.
+
+```python
+import angr
+
+proj = angr.Project('./loosecheck', auto_load_libs=False)
+state = proj.factory.entry_state()
+simgr = proj.factory.simgr(state)
+
+FOUND_ADDR = 0x401300   # "Correct!" 출력 직전 주소
+AVOID_ADDR = 0x401320    # "Wrong" 출력 직전 주소
+
+# num_find=5: find 조건을 만족하는 상태를 최대 5개까지 모을 때까지 계속 탐색한다
+# (활성 상태가 먼저 다 소진되면 5개를 못 채워도 그 시점에서 멈춘다)
+simgr.explore(find=FOUND_ADDR, avoid=AVOID_ADDR, num_find=5)
+
+print(f'찾은 해의 개수: {len(simgr.found)}')
+for i, found_state in enumerate(simgr.found):
+    solution = found_state.posix.dumps(0)
+    print(f'  해 {i}: {solution}')
+```
+
+`simgr.found`는 리스트이므로, `num_find`를 1보다 크게 주면 `len(simgr.found)`가 1보다 커질 수 있다. 각 원소는 서로 다른 실행 경로에서 같은 목표 주소(`FOUND_ADDR`)에 도달한, 서로 다른 입력값에 대응하는 상태다. 이 값을 반복 출력해보면, 같은 목표 주소로 가는 길이 여러 개 있었다는 것을(즉 검증 로직에 허점이 여러 개 있었다는 것을) 코드 몇 줄로 한꺼번에 확인할 수 있다. 실제 CTF에서는 이 중 어느 것을 넣어도 "Correct!"가 나오므로, `posix.dumps(0)`으로 얻은 여러 후보 중 사람이 읽기 편한(예: 아스키 문자로만 이루어진) 것을 골라 제출하면 된다.
+
+주의할 점은 `num_find`를 무작정 크게 주면, REV-0987 앞부분에서 다룬 상태 폭발 문제와 똑같은 이유로 탐색이 오래 걸릴 수 있다는 것이다. 정말 여러 해가 필요한 상황이 아니라면 기본값(1)을 그대로 쓰는 것이 가장 빠르다.
 
 ## 관련 글
 - REV-0271 — angr 심볼릭 실행 기초

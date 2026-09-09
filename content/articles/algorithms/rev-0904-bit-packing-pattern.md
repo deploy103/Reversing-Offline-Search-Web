@@ -12,7 +12,7 @@ keywords: ["bit packing", "비트 필드", "bitfield", "shift and mask", "비트
 aliases: ["비트 패킹", "비트 압축 패턴", "여러 값 한 정수에 넣기", "비트필드 파싱"]
 symptom_keywords: ["한 정수에서 여러 값을 shift and mask로 뽑아냄", "구조체 필드가 비트 단위로 겹쳐있음", "값 하나가 0~15 같은 좁은 범위로 제한됨", "OR 연산으로 여러 값을 합침", "플래그가 비트별로 켜져 있음"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -151,6 +151,39 @@ packed = (version << 28) | (length << 24) | (flags << 16) | payload
 print(hex(packed))  # 0x45011337
 ```
 이 값을 프로그램에 입력하면 `check()` 함수를 통과한다는 것을 시프트/마스크 분석만으로 미리 알 수 있다.
+
+### 심화 예제 — 실제 네트워크 헤더(IPv4/TCP)의 비트 필드를 직접 파싱해보기
+이론에서 설명한 표준 프로토콜 예시를 실제로 동작하는 코드로 확인해본다. IPv4 헤더의 첫 바이트는 상위 4비트가 버전, 하위 4비트가 IHL(헤더 길이)이고, TCP 플래그 바이트는 6개의 1비트 플래그가 모여 있다.
+```python
+# IPv4 헤더의 첫 바이트: 상위 4비트=버전(Version), 하위 4비트=IHL(헤더 길이, 4바이트 단위)
+def parse_ipv4_first_byte(byte_val: int):
+    version = (byte_val >> 4) & 0xF   # 오른쪽으로 4비트 밀고 하위 4비트만 남김 = 상위 4비트값
+    ihl     = byte_val & 0xF          # 그대로 하위 4비트만 마스킹
+    return version, ihl
+
+first_byte = 0x45   # 흔히 보는 IPv4 헤더 시작 바이트 값 (버전 4, IHL 5 = 헤더 20바이트)
+version, ihl = parse_ipv4_first_byte(first_byte)
+print(f"version={version}, ihl={ihl} (헤더 길이 = {ihl * 4}바이트)")
+assert version == 4 and ihl == 5, "IPv4 첫 바이트 해석이 표준과 다름"
+
+# TCP 플래그 바이트: bit0=FIN, bit1=SYN, bit2=RST, bit3=PSH, bit4=ACK, bit5=URG (RFC 793)
+def decode_tcp_flags(flags: int) -> list:
+    """1비트씩 나뉜 플래그들을 순서대로 검사해서 켜진 플래그 이름만 리스트로 반환한다."""
+    names = ["FIN", "SYN", "RST", "PSH", "ACK", "URG"]   # 비트 위치 0~5에 대응하는 이름
+    return [name for i, name in enumerate(names) if (flags >> i) & 1]  # 각 비트를 1개씩 검사
+
+tcp_flags = 0x12  # 0b00010010 = ACK(bit4) + SYN(bit1) 켜짐 (SYN-ACK 패킷의 전형적인 값)
+print("TCP 플래그:", decode_tcp_flags(tcp_flags))
+assert decode_tcp_flags(tcp_flags) == ["SYN", "ACK"], "TCP 플래그 해석이 표준과 다름"
+print("IPv4 버전/IHL, TCP 플래그 비트 파싱 모두 정확함")
+```
+실제로 실행하면 다음과 같이 나온다(실행 확인함):
+```text
+version=4, ihl=5 (헤더 길이 = 20바이트)
+TCP 플래그: ['SYN', 'ACK']
+IPv4 버전/IHL, TCP 플래그 비트 파싱 모두 정확함
+```
+크랙미의 검증 함수가 이런 표준 프로토콜 헤더를 흉내낸 것이라면, RFC 문서의 필드 정의와 시프트/마스크 값을 이런 식으로 그대로 대조하는 것만으로 필드 이름까지 특정할 수 있다.
 
 ## 관련 글
 - [rev-0203-and-0xff-mask.md](./rev-0203-and-0xff-mask.md) — 단일 바이트 마스크 이해

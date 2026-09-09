@@ -12,7 +12,7 @@ keywords: ["알고리즘 복원 검증", "출력 불일치", "differential testi
 aliases: ["파이썬 재구현이 안 맞음", "복원한 알고리즘이 틀림", "출력이 원본과 다름", "재구현 결과 불일치"]
 symptom_keywords: ["파이썬으로 옮겼는데 값이 다르게 나옴", "재구현한 함수 결과가 바이너리와 안 맞음", "어디서부터 틀렸는지 모르겠음", "출력이 조금씩 다름"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -104,6 +104,78 @@ i=0: 바이너리 h=0x00000101   파이썬 h=0x00000101   (일치)
 i=1: 바이너리 h=0x00668fc5   파이썬 h=0x0002ff17   (불일치!)
 ```
 `i=0`까지는 일치하므로 초기값과 첫 바이트 처리는 맞다. `i=1`에서 갈라졌으므로 두 번째 반복에서 수행되는 연산(곱셈 상수, 시프트 폭)만 다시 대조하면 된다 — 실제로 확인해보니 파이썬 코드는 `h = h * 31 + b`였는데 바이너리는 `imul ecx, 101h` 즉 곱셈 상수가 `0x101`(257)이었다. 상수 하나가 원인이었던 사례다.
+
+### 완전한 예제 스크립트 — 이진 탐색 디버깅을 코드로 그대로 실행해보기
+GDB 없이도 이 워크플로우의 핵심(중간값을 나란히 비교해서 갈라지는 지점을 찾는 것)을 파이썬만으로 그대로 체험할 수 있다. 아래 스크립트는 "원본"(실제로는 곱셈 상수 `0x101`을 쓰는 함수)과 "재구현"(상수를 `31`로 잘못 옮긴 함수)을 나란히 실행하며 각 반복마다 값을 기록하고 비교한다.
+
+```python
+def original_check(s: bytes) -> int:
+    """실제 바이너리가 하는 일이라고 가정한다. 곱셈 상수가 0x101(257)이다."""
+    h = 0
+    for c in s:
+        h = (h * 0x101 + c) & 0xFFFFFFFF
+    return h
+
+
+def my_check_buggy(s: bytes) -> int:
+    """파이썬으로 재구현했는데, 곱셈 상수를 0x101이 아니라 31로 잘못 옮겨적은 버전."""
+    h = 0
+    for c in s:
+        h = (h * 31 + c) & 0xFFFFFFFF
+    return h
+
+
+def run_with_log(func, data: bytes):
+    """func을 한 바이트씩 실행하면서 매 반복 직후의 중간값을 리스트로 기록해서 돌려준다."""
+    h = 0
+    log = []
+    for c in data:
+        # func의 내부 연산을 그대로 흉내내되, 매 단계 값을 기록하기 위해 별도로 재구성한다.
+        # (실제로는 원본 바이너리는 GDB watch로, 재구현은 print()로 각각 값을 뽑아온다)
+        if func is original_check:
+            h = (h * 0x101 + c) & 0xFFFFFFFF
+        else:
+            h = (h * 31 + c) & 0xFFFFFFFF
+        log.append(h)
+    return log
+
+
+data = b"AB"   # 테스트에 쓸 알려진 입력
+
+log_original = run_with_log(original_check, data)   # "원본"의 반복별 중간값 로그
+log_mine = run_with_log(my_check_buggy, data)         # "재구현"의 반복별 중간값 로그
+
+print("원본 최종값:", hex(original_check(data)))
+print("재구현 최종값:", hex(my_check_buggy(data)))
+print()
+
+# 이진 탐색 디버깅의 핵심: 두 로그를 인덱스별로 나란히 비교해서 처음 갈라지는 지점을 찾는다
+first_mismatch = None
+for i, (a, b) in enumerate(zip(log_original, log_mine)):
+    status = "일치" if a == b else "불일치!"
+    print(f"i={i}: 원본={hex(a):10s} 재구현={hex(b):10s} {status}")
+    if a != b and first_mismatch is None:
+        first_mismatch = i
+
+if first_mismatch is not None:
+    print(f"\n첫 번째로 갈라지는 지점: i={first_mismatch}")
+    print("-> 이 인덱스에서 수행되는 연산(곱셈 상수 등)을 디스어셈블리와 다시 대조해야 한다.")
+else:
+    print("\n모든 지점이 일치함 -> 최종 반환값 비교 로직 자체를 의심해야 한다.")
+```
+
+실제로 실행한 결과:
+```
+원본 최종값: 0x4183
+재구현 최종값: 0x821
+
+i=0: 원본=0x41       재구현=0x41       일치
+i=1: 원본=0x4183     재구현=0x821      불일치!
+
+첫 번째로 갈라지는 지점: i=1
+-> 이 인덱스에서 수행되는 연산(곱셈 상수 등)을 디스어셈블리와 다시 대조해야 한다.
+```
+`i=0`(첫 번째 바이트 `'A'`, 아스키 코드 65 = 0x41)까지는 두 로그가 완전히 일치한다 — 이는 `h = 0*상수 + 'A' = 'A'`가 되어 곱셈 상수가 무엇이든 첫 반복에서는 영향이 없기 때문이다. `i=1`(두 번째 바이트 `'B'`)부터 값이 갈라지는데, 이는 이제야 곱셈 상수(`0x101` vs `31`)가 실제로 계산에 영향을 주기 시작했기 때문이다. 이렇게 로그를 나란히 찍어보면 "어디서부터 틀렸는지"를 감으로 추측하지 않고 정확한 인덱스로 특정할 수 있다 — 실제 GDB 세션에서도 `watch` 명령으로 이와 완전히 동일한 방식의 비교를 수행하면 된다.
 
 ## 관련 글
 - REV-0922 — XOR 키를 구했는데 일부만 맞을 때

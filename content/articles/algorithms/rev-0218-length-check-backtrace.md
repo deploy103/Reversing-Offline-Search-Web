@@ -12,7 +12,7 @@ keywords: ["strlen", "length check", "길이 검증", "prefix check", "suffix ch
 aliases: ["길이 체크부터 보기", "strlen 어디서 검증함", "flag 길이 어떻게 앎", "체크 함수 시작점 찾기"]
 symptom_keywords: ["어디부터 봐야할지 모르겠음", "알고리즘이 너무 복잡해서 못읽겠음", "flag 길이를 모르겠음", "체크 함수를 못찾겠음", "main이 너무 김"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -124,6 +124,68 @@ int check(char *input) {
 - 18바이트만 브루트포스: 95^18 ≈ 3.97×10^35
 
 95^24 ÷ 95^18 = 95^6 ≈ 7.35×10^11배 차이다. 즉 접두사/접미사 게이트를 찾아내는 것만으로 브루트포스 난이도를 **7,350억 배** 줄인 셈이다(구체적인 실현 가능성 판단은 [rev-0219-bruteforce-feasibility.md](./rev-0219-bruteforce-feasibility.md)에서 이어서 다룬다). 물론 18바이트도 여전히 브루트포스로는 불가능한 수준이므로, 다음 단계는 진짜 알고리즘이 역산 가능한지(REV-0221) 판단하는 것이다.
+
+**심화 예제 — 게이트 인벤토리를 코드로 자동화하는 완결된 스크립트**
+
+디컴파일 결과를 눈으로 읽고 손으로 계산하는 대신, 게이트 정보를 파이썬 딕셔너리로 정리해두면 "미지 바이트 수"와 "브루트포스 난이도 절감 배수"를 자동으로 계산할 수 있다.
+
+```python
+def analyze_gates(total_length: int, prefix: str, suffix: str, charset_size: int) -> dict:
+    # ↑ 전체 길이, 접두사 문자열, 접미사 문자열, 문자셋 크기를 받아서
+    #   게이트 인벤토리 분석 결과를 딕셔너리로 정리해 돌려주는 함수.
+    prefix_len = len(prefix)
+    # ↑ 접두사 문자열의 길이를 구한다(예: "flag{" -> 5).
+    suffix_len = len(suffix)
+    # ↑ 접미사 문자열의 길이를 구한다(예: "}" -> 1).
+    unknown_len = total_length - prefix_len - suffix_len
+    # ↑ 전체 길이에서 이미 알고 있는 부분(접두사+접미사)을 빼서
+    #   실제로 미지인 바이트 수를 구한다. 이 문서의 핵심 공식이다.
+
+    full_keyspace = charset_size ** total_length
+    # ↑ 게이트를 하나도 활용하지 않고 전체 길이를 통째로 브루트포스할 때의 공간.
+    reduced_keyspace = charset_size ** unknown_len
+    # ↑ 게이트로 좁힌 뒤, 미지 바이트만 브루트포스할 때의 공간.
+
+    return {
+        "unknown_len": unknown_len,
+        # ↑ 결과 딕셔너리에 미지 바이트 수를 담는다.
+        "full_keyspace": full_keyspace,
+        # ↑ 게이트를 활용하지 않았을 때의 전체 탐색 공간.
+        "reduced_keyspace": reduced_keyspace,
+        # ↑ 게이트로 좁힌 뒤의 탐색 공간.
+        "reduction_factor": full_keyspace // reduced_keyspace,
+        # ↑ 게이트를 찾아낸 것만으로 탐색 공간이 몇 배 줄었는지 나타내는 값.
+    }
+    # ↑ 이렇게 만든 딕셔너리를 함수 호출자에게 돌려준다.
+
+if __name__ == "__main__":
+    # ↑ 이 파일을 직접 실행할 때만 아래 블록을 수행한다.
+    result = analyze_gates(
+        total_length=24,      # 이 문서 미니 예제와 동일: strlen(input) != 24
+        prefix="flag{",       # memcmp(input, "flag{", 5)
+        suffix="}",           # input[23] != '}'
+        charset_size=95,      # 인쇄 가능 아스키 문자 전체
+    )
+    # ↑ 위에서 정의한 함수에 미니 예제와 똑같은 값을 넣어 호출한다.
+
+    print("미지 바이트 수:", result["unknown_len"])
+    # ↑ 게이트를 다 걷어내고 남은, 진짜로 몰라서 풀어야 하는 바이트 수를 출력한다.
+    print("게이트 무시 시 탐색 공간:", result["full_keyspace"])
+    # ↑ 게이트 정보를 전혀 활용하지 않았다면 얼마나 큰 공간을 뒤져야 했는지 출력한다.
+    print("게이트 활용 시 탐색 공간:", result["reduced_keyspace"])
+    # ↑ 게이트 정보를 활용한 뒤 실제로 뒤져야 하는 공간을 출력한다.
+    print("탐색 공간 절감 배수:", result["reduction_factor"])
+    # ↑ 게이트를 찾아낸 것만으로 얼마나 배수로 문제가 쉬워졌는지 출력한다.
+```
+
+이 스크립트를 그대로 실행하면 다음과 같이 출력된다(직접 계산해서 검증한 값):
+```
+미지 바이트 수: 18
+게이트 무시 시 탐색 공간: 291989024338772703273075537557661533355712890625
+게이트 활용 시 탐색 공간: 397214318458218542224277496337890625
+탐색 공간 절감 배수: 735091890625
+```
+파이썬은 임의 정밀도 정수를 지원하므로, `95**24`처럼 매우 큰 숫자도 근사 없이 정확한 정수로 계산해서 보여준다. `735091890625`는 이 문서 본문에서 "95^6 ≈ 7.35×10^11배"라고 설명한 숫자와 정확히 같은 값이며, `95**6`을 직접 계산해도 동일하게 나온다는 것을 스스로 검증할 수 있다. 실전에서는 `total_length`, `prefix`, `suffix`, `charset_size` 네 값만 실제 바이너리에서 확인한 값으로 바꿔 넣으면, 어떤 문제에도 이 스크립트를 그대로 재사용해서 미지 바이트 수를 즉시 계산할 수 있다.
 
 ## 관련 글
 - [rev-0219-bruteforce-feasibility.md](./rev-0219-bruteforce-feasibility.md) — Brute Force가 가능한 입력 공간 계산

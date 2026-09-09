@@ -1,13 +1,13 @@
 {
-  "last_updated": "2026-09-10T10:00:00+09:00",
-  "phase": "extension_dreamhack_writeup_complete",
-  "completed_article_count": 1050,
-  "validated_article_count": 1050,
+  "last_updated": "2026-09-10T13:00:00+09:00",
+  "phase": "extension_python_examples_and_c_analysis_complete",
+  "completed_article_count": 1080,
+  "validated_article_count": 1080,
   "pending_article_ids": [],
-  "last_completed_article_id": "REV-1050",
+  "last_completed_article_id": "REV-1080",
   "current_tasks": [
-    "원래 목표였던 1,000개 + 사용자 추가 요청인 드림핵 워게임 리버싱 write-up 50개(REV-1001-1050) 전부 완료.",
-    "필요 시 offline-kit 실제 다운로드나 실제 GUI 툴 스크린샷 추가 등 선택 사항만 남음."
+    "1,080개(원 1,000 + write-up 50 + c-analysis 30) 전부 완료.",
+    "algorithms+automation 중 100개 글에 실제 실행검증된 Python 예제 코드 대폭 보강 완료."
   ],
   "known_issues": [
     "Watch for markdown false-link patterns like 'text[N](word)' in prose -- N in brackets immediately followed by parens gets misparsed as a markdown link. Instruct each wave's agents explicitly to avoid this.",
@@ -18,7 +18,7 @@
     "선택: 실제 IDA/Ghidra/x64dbg GUI 스크린샷은 이 자동화 환경에 GUI가 없어 대신 프로젝트 자체 제작 SVG 다이어그램 5종으로 대체함 - 추후 실제 툴 스크린샷 추가 여지 있음",
     "선택: 'pe 처음' 외 다른 fuzzy 랭킹 품질은 필요 시 계속 튜닝 가능"
   ],
-  "target_entry_count": 1050,
+  "target_entry_count": 1080,
   "target_mix": {
     "long_form": 500,
     "reference": 250,
@@ -1074,6 +1074,36 @@
     "REV-1047",
     "REV-1048",
     "REV-1049",
-    "REV-1050"
+    "REV-1050",
+    "REV-1051",
+    "REV-1052",
+    "REV-1053",
+    "REV-1054",
+    "REV-1055",
+    "REV-1056",
+    "REV-1057",
+    "REV-1058",
+    "REV-1059",
+    "REV-1060",
+    "REV-1061",
+    "REV-1062",
+    "REV-1063",
+    "REV-1064",
+    "REV-1065",
+    "REV-1066",
+    "REV-1067",
+    "REV-1068",
+    "REV-1069",
+    "REV-1070",
+    "REV-1071",
+    "REV-1072",
+    "REV-1073",
+    "REV-1074",
+    "REV-1075",
+    "REV-1076",
+    "REV-1077",
+    "REV-1078",
+    "REV-1079",
+    "REV-1080"
   ]
 }

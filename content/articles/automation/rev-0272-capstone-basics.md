@@ -12,7 +12,7 @@ keywords: ["Capstone", "디스어셈블러 라이브러리", "CS_ARCH_X86", "CS_
 aliases: ["capstone 파이썬", "capstone 사용법", "디스어셈블 스크립팅", "capstone disasm 예제"]
 symptom_keywords: ["capstone 어떻게 씀", "바이너리 코드 자동으로 디스어셈블", "mnemonic 자동 추출", "명령어 목록 자동 분석", "capstone CS_ARCH CS_MODE 뭐임"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -181,6 +181,64 @@ ADDR      MNEMONIC  OPERANDS
 ```
 
 이렇게 사람이 읽을 수 있는 형태로 뽑아낸 명령어 목록은, 다음 단계로 REV-0273의 Unicorn에 그대로 넣어 실제 실행 결과(레지스터 값 변화)를 확인하는 흐름으로 자연스럽게 이어진다.
+
+## 실전 예시: 함수 하나를 통째로 분석해서 조건부 분기만 자동 수집하기
+실전에서는 명령어 하나하나를 눈으로 읽는 대신, "이 함수 안에 조건부 분기(`jg`, `je`, `jne` 등)가 어디에 있고 각각 어디로 뛰는지"만 스크립트로 자동 뽑아내는 경우가 많다. 아래는 `if (x > 10) return 1; else return 0;`을 컴파일한 것과 동일한 구조를 가진(직접 x64 바이트로 구성하고 Capstone으로 재현 검증한) 함수를 분석하는 예시다.
+
+```c
+// 원본 C: int check(int x) { if (x > 10) return 1; else return 0; }
+```
+
+```python
+from capstone import *
+
+# check(int x) 함수에 해당하는 x64 기계어 바이트열 (System V 호출 규약: 첫 인자는 edi)
+code = bytes([
+    0x55,                          # push rbp
+    0x48, 0x89, 0xe5,              # mov rbp, rsp
+    0x89, 0x7d, 0xfc,              # mov [rbp-4], edi      ; x를 지역변수에 저장
+    0x83, 0x7d, 0xfc, 0x0a,        # cmp dword [rbp-4], 0xa ; x와 10을 비교
+    0x7f, 0x07,                    # jg L1                   ; x > 10 이면 L1로 분기
+    0xb8, 0x00, 0x00, 0x00, 0x00,  # mov eax, 0               ; x <= 10 인 경우: 반환값 0
+    0xeb, 0x05,                    # jmp L2
+    0xb8, 0x01, 0x00, 0x00, 0x00,  # L1: mov eax, 1            ; x > 10 인 경우: 반환값 1
+    0xc3                            # L2: ret
+])
+
+md = Cs(CS_ARCH_X86, CS_MODE_64)
+md.detail = True
+
+BASE = 0x401000
+insns = list(md.disasm(code, BASE))
+
+for insn in insns:
+    print(f'0x{insn.address:x}:\t{insn.mnemonic}\t{insn.op_str}')
+
+# 조건부 분기 명령어(mnemonic이 j로 시작하되 무조건 분기인 jmp는 제외)만 자동으로 골라낸다
+print('\n--- 조건부 분기 목록 ---')
+for insn in insns:
+    if insn.mnemonic.startswith('j') and insn.mnemonic != 'jmp':
+        print(f'0x{insn.address:x}: {insn.mnemonic} {insn.op_str}')
+```
+
+이 스크립트를 실행하면 다음과 같은 디스어셈블 결과가 정확히 출력된다(실제 Capstone 6.x로 재현 검증됨).
+
+```text
+0x401000:      push    rbp
+0x401001:      mov     rbp, rsp
+0x401004:      mov     dword ptr [rbp - 4], edi
+0x401007:      cmp     dword ptr [rbp - 4], 0xa
+0x40100b:      jg      0x401014
+0x40100d:      mov     eax, 0
+0x401012:      jmp     0x401019
+0x401014:      mov     eax, 1
+0x401019:      ret
+
+--- 조건부 분기 목록 ---
+0x40100b: jg 0x401014
+```
+
+`jg 0x401014`의 목표 주소 `0x401014`가 정확히 `mov eax, 1`(반환값 1을 만드는 블록)을 가리키고 있다는 것을 코드 한 줄로 확인할 수 있다. 함수가 수십~수백 바이트로 커지면 이런 조건부 분기 목록을 자동으로 뽑아내는 스크립트가, "이 함수의 성공 경로가 정확히 어디인지"를 사람이 명령어를 하나씩 눈으로 훑는 것보다 훨씬 빠르게 찾아준다 — 그리고 이렇게 찾은 주소(`0x401014`)는 REV-0271의 `simgr.explore(find=...)`에 그대로 넣을 수 있는 후보가 된다.
 
 ## 관련 글
 - REV-0273 — Unicorn으로 작은 검증 함수 에뮬레이션

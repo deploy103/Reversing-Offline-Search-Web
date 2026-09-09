@@ -12,7 +12,7 @@ keywords: ["URL-safe Base64", "base64url", "JWT", "RFC 4648", "-_", "패딩 생�
 aliases: ["url safe base64", "base64url", "jwt 인코딩", "웹세이프 base64", "url 안전 인코딩"]
 symptom_keywords: ["플러스 대신 하이픈이 보임", "슬래시 대신 언더스코어가 보임", "등호 패딩이 아예 없음", "점(.) 세 부분으로 나뉜 문자열이 보임", "jwt 헤더가 보임"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -116,6 +116,75 @@ print(decode_part(header))   # b'{"alg":"HS256","typ":"JWT"}'
 print(decode_part(payload))  # b'{"user":"admin"}'
 ```
 헤더와 페이로드가 모두 정상 JSON으로 디코딩되므로, 이 문자열은 URL-safe Base64(패딩 생략)로 인코딩된 JWT임이 확정된다. 서명 부분은 REV-0898의 HMAC-SHA256 절차로 검증해야 한다.
+
+### 심화 예제 — base64 모듈 없이 URL-safe 인코딩/디코딩을 직접 구현하기
+비트 패킹 로직(6비트씩 4조각)을 표준 라이브러리에 맡기지 않고, 알파벳 테이블부터 직접 만들어서 인코딩과 디코딩을 모두 구현해본다. 표준 Base64와 다른 부분은 정말로 알파벳 마지막 두 글자(`-`, `_`)뿐이라는 것을 코드로 직접 확인할 수 있다.
+```python
+# 표준 Base64 알파벳 62,63번 문자만 +,/ 대신 -,_ 로 바꾼 URL-safe 알파벳을 직접 만든다
+ALPHABET = (
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    "abcdefghijklmnopqrstuvwxyz"
+    "0123456789-_"           # 표준은 '+' '/' 이지만 URL-safe는 마지막 두 글자가 '-' '_'
+)
+
+def urlsafe_b64encode_manual(data: bytes) -> str:
+    """3바이트(24비트)를 6비트씩 4조각으로 잘라 URL-safe 알파벳 문자로 바꾼다."""
+    out = []
+    for i in range(0, len(data), 3):           # 3바이트씩 묶어서 처리
+        chunk = data[i:i+3]
+        # 3바이트가 안 되면 부족한 자리를 0으로 채워서 24비트를 만든다(패딩 계산용)
+        n = int.from_bytes(chunk, "big") << (8 * (3 - len(chunk)))
+        # 24비트를 위쪽(상위 비트)부터 6비트씩 4번 뽑는다
+        idx = [(n >> 18) & 0x3F, (n >> 12) & 0x3F, (n >> 6) & 0x3F, n & 0x3F]
+        chars = [ALPHABET[x] for x in idx]
+        # 원래 바이트가 3개보다 부족했던 만큼 뒤쪽 글자를 '=' 패딩으로 덮어씌운다
+        missing = 3 - len(chunk)
+        if missing == 1:
+            chars[3] = "="
+        elif missing == 2:
+            chars[2] = chars[3] = "="
+        out.extend(chars)
+    return "".join(out)
+
+def urlsafe_b64decode_manual(s: str) -> bytes:
+    """인코딩의 역과정: 문자를 6비트 값으로 되돌리고 8비트씩 모아 바이트로 만든다."""
+    s = s.rstrip("=")                                  # 패딩 문자는 계산에 필요 없으므로 제거
+    rev = {c: i for i, c in enumerate(ALPHABET)}        # 문자 -> 6비트 값 역매핑 테이블
+    bits = 0
+    nbits = 0
+    out = bytearray()
+    for ch in s:
+        bits = (bits << 6) | rev[ch]     # 6비트씩 누적
+        nbits += 6
+        if nbits >= 8:                   # 8비트 이상 모이면 한 바이트를 뽑아낸다
+            nbits -= 8
+            out.append((bits >> nbits) & 0xFF)
+    return bytes(out)
+
+import base64  # 표준 라이브러리 결과와 대조하기 위해서만 사용
+
+sample = b'{"alg":"HS256","typ":"JWT"}'
+manual_enc = urlsafe_b64encode_manual(sample)
+standard_enc = base64.urlsafe_b64encode(sample).decode()
+print("직접 구현 인코딩 :", manual_enc)
+print("표준 라이브러리   :", standard_enc)
+assert manual_enc.rstrip("=") == standard_enc.rstrip("="), "인코딩 결과가 다름!"
+print("인코딩 일치 확인")
+
+decoded = urlsafe_b64decode_manual("eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9")
+print("직접 구현 디코딩 결과:", decoded)
+assert decoded == b'{"alg":"HS256","typ":"JWT"}'
+print("디코딩도 정확히 원문을 복원함")
+```
+실제로 실행하면 다음과 같이 나온다(실행 확인함):
+```text
+직접 구현 인코딩 : eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
+표준 라이브러리   : eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9
+인코딩 일치 확인
+직접 구현 디코딩 결과: b'{"alg":"HS256","typ":"JWT"}'
+디코딩도 정확히 원문을 복원함
+```
+이 코드에서 `ALPHABET` 문자열의 마지막 두 글자만 `+`/`/`로 바꾸면 그대로 표준 Base64 인코더/디코더가 된다는 점을 직접 눈으로 확인할 수 있다.
 
 ## 관련 글
 - [rev-0212-base64-pattern.md](./rev-0212-base64-pattern.md) — 표준 Base64의 비트 패킹 원리

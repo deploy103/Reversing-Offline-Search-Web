@@ -12,7 +12,7 @@ keywords: ["for 루프 검증", "문자별 비교", "언롤된 strcmp", "입력 
 aliases: ["strcmp 없는데 문자 비교함", "루프 안에 cmp jnz", "한 글자씩 비교", "언롤된 비교"]
 symptom_keywords: ["루프 안에서 계속 cmp함", "strcmp가 안 보이는데 문자열 비교하는 것 같음", "for문 조건이 이상함", "인덱스로 배열 접근하면서 비교"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -195,6 +195,43 @@ cmp ecx, 0x10
 jle loop1     ; i <= 16 이므로 실제로는 17번 반복(i=0..16)
 ```
 `jl`이 아니라 `jle`이므로 flag 길이는 16이 아니라 17임에 주의.
+
+**예제 5 — 처음부터 끝까지 실행되는 전체 스크립트 (반복 키 XOR 역산)**
+
+`for` 루프 안에서 `input[i] ^ key[i % keylen]`을 `expected[i]`와 비교하는 "변환 후 비교형" 검증 함수를 만났다고 가정하고, 길이·키·정답 배열을 모두 정적으로 덤프한 뒤 파이썬으로 통째로 역산하는 예제다.
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0198 실전 스크립트: "문자별 for 루프 + 반복 키 XOR" 검증 함수를 통째로 역산한다.
+
+from itertools import cycle
+
+# 1) IDA에서 루프 종료 조건(cmp ecx, 0Fh -> jl loop_start)을 확인해서 flag 길이를 먼저 적어둔다.
+#    0xF는 15이지만 "i < 15"이므로 실제로 15번 반복 -> flag 길이는 15바이트.
+flag_length = 15
+
+# 2) 키 배열(전역 변수, 4바이트)과 expected 배열(정답, 15바이트)을 각각 Hex View에서 그대로 복사한다.
+key = bytes.fromhex("4b455921")                               # 4바이트 키
+expected = bytes.fromhex("08111f5a392a354d222b3e59243724")    # 15바이트 암호문(=비교 대상)
+
+# 3) 길이가 실제로 맞는지 먼저 검증한다. 안 맞으면 hex를 잘못 복사했을 가능성이 크다.
+assert len(expected) == flag_length
+
+# 4) key[i % keylen]을 반복시키기 위해 itertools.cycle을 사용한다.
+#    XOR는 자기 역함수이므로 "암호화에 쓴 것과 똑같은 키로 다시 XOR"하면 원래 값이 돌아온다.
+flag_bytes = bytes(e ^ k for e, k in zip(expected, cycle(key)))
+
+# 5) bytes를 사람이 읽을 수 있는 문자열로 바꿔서 출력한다.
+flag = flag_bytes.decode()
+print("복원된 flag:", flag)
+# 실행 결과: 복원된 flag: CTF{rollingxor}
+
+# 6) keylen을 잘못 추정했다면 일부 바이트가 아스키 범위(0x20~0x7E)를 벗어난다.
+#    아래 assert로 "전부 정상적인 아스키인지"를 자동으로 검사해서 keylen 추정이 맞았는지 확인한다.
+assert all(0x20 <= b <= 0x7e for b in flag_bytes), "아스키 범위를 벗어남 -> keylen을 다시 확인해야 함"
+print("모든 바이트가 출력 가능한 아스키 -> keylen=4 추정이 맞다는 뜻")
+```
 
 ## 관련 글
 - REV-0196 — strcmp 기반 Flag 검증 패턴

@@ -12,7 +12,7 @@ keywords: ["lookup table", "LUT", "table lookup", "rodata table", "CRC32 table",
 aliases: ["LUT", "룩업 테이블", "테이블 참조", "미리 계산된 테이블"]
 symptom_keywords: ["고정 배열에서 값을 가져옴", "테이블 주소가 rodata에 있음", "테이블이 뭔지 모르겠음", "인덱스로 배열 접근하는 루프"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -143,6 +143,67 @@ print(transform(0))  # 0xA3
 print(transform(7))  # 0xD8
 ```
 테이블 크기가 8개뿐이라는 사실 자체가 "이 값은 바이트 전체가 아니라 0~7 범위의 작은 값(니블의 절반, enum, 3비트 필드 등)에 적용된다"는 중요한 단서다. 인덱스 범위를 테이블 크기와 대조하는 습관이 데이터의 성격을 파악하는 데 큰 도움이 된다.
+
+**심화 예제 — "재생성 가능한 테이블인가"부터 검증까지 이어지는 완결된 스크립트**
+
+`.rodata`에서 테이블을 발견했을 때, 어떤 알고리즘인지 판단하고 나서 실제로 값을 검증하는 전체 흐름을 하나의 스크립트로 정리한다.
+
+```python
+import zlib
+# ↑ CRC32를 표준 라이브러리로 계산하기 위해 zlib 모듈을 불러온다.
+
+def looks_like_standard_crc32(table_first_four_dwords: list[int]) -> bool:
+    # ↑ .rodata에서 읽은 테이블의 앞 4개 dword 값을 받아서,
+    #   표준 CRC-32(0xEDB88320 다항식) 테이블과 일치하는지 검사하는 함수.
+    known_crc32_prefix = [0x00000000, 0x77073096, 0xEE0E612C, 0x990951BA]
+    # ↑ 표준 CRC-32 테이블의 앞 4개 값(고정된, 잘 알려진 상수)이다.
+    return table_first_four_dwords == known_crc32_prefix
+    # ↑ 두 리스트가 완전히 같으면 True, 하나라도 다르면 False를 돌려준다.
+
+if __name__ == "__main__":
+    # ↑ 이 파일을 직접 실행할 때만 아래 블록을 수행한다.
+
+    # IDA Hex View에서 테이블 시작 주소부터 16바이트(=4개의 dword)를
+    # 리틀엔디안으로 읽어서 정리했다고 가정한 값들이다.
+    dumped_from_ida = [0x00000000, 0x77073096, 0xEE0E612C, 0x990951BA]
+
+    if looks_like_standard_crc32(dumped_from_ida):
+        # ↑ 앞서 만든 함수로 표준 CRC32인지 확인한다.
+        print("표준 CRC-32 테이블로 확정. zlib.crc32()로 대체 가능.")
+        # ↑ 일치한다면 테이블을 통째로 뽑아낼 필요 없이 표준 라이브러리로 넘어간다.
+
+        TARGET = 0x5a238679
+        # ↑ 바이너리를 실행해서 실제로 확인한, 검증 함수가 비교하는 목표 CRC 값.
+
+        candidate = b"lookup_table_demo"
+        # ↑ 검증해볼 후보 문자열(실전에서는 브루트포스 후보나 복원한 값이 들어간다).
+        computed = zlib.crc32(candidate) & 0xFFFFFFFF
+        # ↑ 후보의 CRC-32 값을 계산한다.
+
+        print(f"{candidate!r} -> {hex(computed)} (목표값: {hex(TARGET)})")
+        # ↑ 계산 결과와 목표값을 나란히 출력해서 눈으로 비교할 수 있게 한다.
+
+        if computed == TARGET:
+            # ↑ 계산값과 목표값이 정확히 같다면
+            print("일치! 이 후보가 정답이다.")
+            # ↑ 정답을 찾았다는 것을 알려준다.
+        else:
+            # ↑ 값이 다르다면
+            print("불일치. 다른 후보를 시도해야 한다.")
+            # ↑ 다음 후보를 시도해야 함을 알려준다.
+    else:
+        # ↑ 표준 CRC32와 일치하지 않는다면
+        print("표준 CRC32가 아님. 불투명 테이블일 가능성이 높음 -> 전체 바이트 추출 필요.")
+        # ↑ REV-0214에서 다룬 방식대로 테이블 전체를 그대로 뽑아야 한다는 것을 알려준다.
+```
+
+이 스크립트를 그대로 실행하면 다음과 같이 출력된다(직접 계산해서 검증한 값):
+```
+표준 CRC-32 테이블로 확정. zlib.crc32()로 대체 가능.
+b'lookup_table_demo' -> 0x5a238679 (목표값: 0x5a238679)
+일치! 이 후보가 정답이다.
+```
+즉 `.rodata`의 테이블이 표준 CRC-32 테이블임을 코드로 확정한 뒤에는, 256바이트를 손으로 옮겨 적는 작업을 완전히 생략하고 `zlib.crc32()` 한 줄로 전체 알고리즘을 대체할 수 있다. 이렇게 "이 테이블을 표준 라이브러리로 대체할 수 있는가"를 가장 먼저 코드로 확인하는 습관이, 불필요한 수작업 테이블 추출 시간을 크게 줄여준다.
 
 ## 관련 글
 - [REV-0208 — 16777619 상수가 보일 때 FNV 의심하기](./rev-0208-fnv-16777619.md)

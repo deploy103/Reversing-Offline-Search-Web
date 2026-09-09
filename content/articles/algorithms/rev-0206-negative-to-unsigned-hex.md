@@ -12,7 +12,7 @@ keywords: ["음수 상수", "2의 보수", "signed unsigned 변환", "음수 hex
 aliases: ["이상한 음수 상수", "디컴파일에 음수가 보임", "음수를 hex로", "signed 상수 변환"]
 symptom_keywords: ["값이 갑자기 음수로 보임", "디컴파일 코드에 이상한 음수가 있음", "곱셈 상수가 음수임", "add에 큰 음수가 더해짐"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -131,6 +131,55 @@ if (ret == -1)
 ```python
 val = -3819410105021120000  # 디컴파일러가 보여준 __int64 값
 print(hex(val & 0xFFFFFFFFFFFFFFFF))
+```
+
+**예제 4 — 처음부터 끝까지 실행되는 전체 스크립트 (여러 음수 상수를 한 번에 표로 대조)**
+
+디컴파일 코드에서 낯선 음수 상수를 여러 개 발견했을 때, 하나씩 손으로 계산하지 않고 표를 만들어 한 번에 대조하는 실전 스크립트다.
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0206 실전 스크립트: 디컴파일러가 보여준 이상한 음수 상수들을 전부 unsigned hex로 되돌려서
+# 알려진 해시/에러코드 상수와 대조한다.
+
+def to_u32(n: int) -> int:
+    # 32비트 signed 값을 32비트 unsigned 값으로 재해석한다(비트 패턴은 그대로, 해석만 바뀜).
+    return n & 0xFFFFFFFF
+
+def to_s32(n: int) -> int:
+    # 반대로 32비트 unsigned 값을 32비트 signed 값으로 재해석한다.
+    n &= 0xFFFFFFFF
+    return n - 0x100000000 if n >= 0x80000000 else n
+
+def to_u64(n: int) -> int:
+    # 64비트 버전. __int64/long long 변수에는 이 함수를 써야 한다(0xFFFFFFFF만 쓰면 상위 32비트가 날아간다).
+    return n & 0xFFFFFFFFFFFFFFFF
+
+# 알려진 상수표(각 알고리즘 공식 스펙 기준으로 미리 정리해둔 값)
+KNOWN = {
+    0x811C9DC5: "FNV-1/1a 32비트 offset basis",
+    0x01000193: "FNV-1/1a 32비트 prime",
+    0xEDB88320: "CRC-32(reflected) 다항식",
+    0xFFFFFFFF: "-1, 에러코드/EOF 센티널",
+}
+
+# 디컴파일러 창에서 그대로 복사해온 이상한 음수들
+samples = [-2128831035, -100, -1]
+
+for s in samples:
+    u = to_u32(s)
+    label = KNOWN.get(u, "알려진 표에 없음 -> 커스텀 상수로 취급")
+    print(f"{s:>12} -> {hex(u)}  ({label})")
+# 실행 결과:
+#   -2128831035 -> 0x811c9dc5  (FNV-1/1a 32비트 offset basis)
+#          -100 -> 0xffffff9c  (알려진 표에 없음 -> 커스텀 상수로 취급)
+#            -1 -> 0xffffffff  (-1, 에러코드/EOF 센티널)
+
+# 64비트 상수도 같은 방식으로 처리한다.
+val64 = -3819410105021120000
+print("64비트 예시:", hex(to_u64(val64)))
+# 실행 결과: 64비트 예시: 0xcafebabedeadc200
 ```
 
 ## 관련 글

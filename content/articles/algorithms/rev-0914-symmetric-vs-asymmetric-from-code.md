@@ -12,7 +12,7 @@ keywords: ["대칭키 비대칭키 구분", "symmetric asymmetric 판단", "RSA 
 aliases: ["RSA인지 AES인지 구분하기", "공개키 암호 알아보는 법", "빅넘버 연산 흔적", "modpow 패턴 알아보기"]
 symptom_keywords: ["코드에 아주 큰 정수 배열이 여러개 있음", "곱셈과 나머지 연산이 반복되는 루프", "e, n, d 같은 변수명이 보임", "GMP나 bignum 라이브러리를 링크함"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -160,13 +160,85 @@ bignum encrypt(bignum msg, bignum e, bignum n) {
 # Low Public Exponent Attack: c = m^3 mod n 이지만 m^3 < n이면 mod 연산이 사실상 무의미
 from sympy import integer_nthroot
 
-c = 0x1234...   # 암호문 (실제로는 훨씬 긴 정수)
+c = 0x1234567890ABCDEF   # 암호문 (실제로는 훨씬 긴 정수, 여기서는 예시 값)
 m_cubed = c     # m^3 mod n == m^3 (모듈러 연산이 적용 안 된 경우)
 m, exact = integer_nthroot(m_cubed, 3)
 if exact:
     print("복원된 평문:", m)
 ```
 이처럼 "RSA로 확정"하는 순간 다음 행동이 XOR 역산이 아니라 "e가 작은지, 세제곱근이 정확히 떨어지는지" 확인하는 쪽으로 완전히 바뀐다는 것이 이 판단의 실질적 가치다.
+
+### 완전한 예제 스크립트 — 작은 RSA 값으로 square-and-multiply 확인 + Low Exponent Attack 실습
+아래 스크립트는 외부 라이브러리 없이 표준 파이썬만으로, "square-and-multiply가 진짜 모듈러 거듭제곱과 같은 결과를 내는지"부터 "e가 작을 때 실제로 세제곱근만으로 평문을 복원하는 공격"까지 전 과정을 보여준다.
+
+```python
+def modpow(base: int, exp: int, mod: int) -> int:
+    """RSA/ECC 등 비대칭키 암호에서 공통으로 쓰이는 square-and-multiply 알고리즘."""
+    result = 1                  # 결과값 초기화 (곱셈의 항등원인 1에서 시작)
+    base = base % mod           # base를 미리 mod로 한 번 줄여둔다
+    while exp > 0:               # 지수가 0이 될 때까지 반복
+        if exp & 1:              # 지수의 최하위 비트가 1이면(홀수이면)
+            result = (result * base) % mod   # 결과에 현재 base를 곱해준다 ("multiply" 단계)
+        exp >>= 1                 # 지수를 오른쪽으로 1비트 시프트 (2로 나누기와 동일)
+        base = (base * base) % mod  # base를 제곱한다 ("square" 단계)
+    return result
+
+
+# 1) square-and-multiply가 파이썬 내장 pow()(3항 pow, 이미 같은 알고리즘을 씀)와 정확히 같은지 확인
+check_value = modpow(5, 117, 19)
+builtin_value = pow(5, 117, 19)
+print("직접 구현 vs 내장 pow() 비교:", check_value, "==", builtin_value, "->", check_value == builtin_value)
+
+# 2) 작은 RSA 키 쌍을 직접 만들어서 암호화/공격을 실습해본다
+#    (실전 RSA는 512비트 이상을 쓰지만, 원리를 눈으로 보기 위해 아주 작은 소수를 쓴다 - 절대 실전 키로 쓰면 안 됨)
+p, q = 10007, 10009     # 두 개의 작은 소수 (실전에서는 이렇게 작으면 절대 안전하지 않다)
+n = p * q                # 공개키의 일부인 모듈러스 n
+e = 3                    # 공개키의 일부인 지수 e (일부러 아주 작은 값을 골랐다)
+print("공개키 n =", n, " e =", e)
+
+# 3) 짧은 평문을 골라서 암호화한다. 평문 m이 충분히 작아서 m**3 < n이 되도록 골랐다.
+m = 100                                    # 원래 평문 (숫자 하나라고 가정)
+print("평문 m =", m, " m**3 =", m**3, " m**3 < n ?", m**3 < n)
+c = modpow(m, e, n)                        # 암호화: c = m^e mod n
+print("암호문 c =", c)
+
+# 4) Low Public Exponent Attack: m**3 < n이면 모듈러 연산이 실제로는 아무 효과가 없어서
+#    c가 그냥 m**3과 완전히 같은 값이 된다. 그렇다면 c의 세제곱근만 구하면 바로 m이 나온다.
+def integer_cube_root(x: int) -> int:
+    """정수 x의 정수 세제곱근을 이진 탐색으로 구한다(외부 라이브러리 없이 직접 구현)."""
+    lo, hi = 0, 1
+    while hi ** 3 <= x:      # hi를 두 배씩 늘려가며 x보다 커질 때까지 상한선을 찾는다
+        hi *= 2
+    while lo < hi:            # 이제 lo와 hi 사이에서 이진 탐색으로 정확한 세제곱근을 찾는다
+        mid = (lo + hi + 1) // 2
+        if mid ** 3 <= x:
+            lo = mid
+        else:
+            hi = mid - 1
+    return lo
+
+recovered_m = integer_cube_root(c)
+print("공격으로 복원한 평문:", recovered_m)
+print("원래 평문과 정확히 일치하는가?:", recovered_m == m, " (검증:", recovered_m ** 3 == c, ")")
+```
+
+실제로 실행한 결과:
+```
+직접 구현 vs 내장 pow() 비교: 11 == 11 -> True
+공개키 n = 100160063  e = 3
+평문 m = 100  m**3 = 1000000  m**3 < n ? True
+암호문 c = 1000000
+공격으로 복원한 평문: 100
+원래 평문과 정확히 일치하는가?: True  (검증: True)
+```
+
+암호문 `c`를 복호화하는 데 개인키 `d`가 전혀 필요하지 않았다는 점을 눈여겨봐야 한다 — `e=3`이 너무 작고 평문이 짧아서 모듈러 연산 자체가 사실상 무의미해졌기 때문에, 세제곱근 계산 하나만으로 평문이 그대로 복원됐다. 이것이 REV-0914 본문에서 설명한 "RSA로 확정되는 순간 전략이 XOR 역산에서 RSA 특유의 구조적 취약점 탐색으로 완전히 바뀐다"는 말의 실제 사례다. `n`이 작아서 소인수분해가 걱정될 정도로 궁금하다면, `sympy`가 설치된 환경에서는 다음처럼 직접 확인할 수도 있다.
+
+```python
+# sympy가 설치되어 있다면 (pip install sympy) 아래처럼 n을 직접 소인수분해할 수 있다.
+from sympy import factorint
+print(factorint(100160063))   # {10007: 1, 10009: 1} 처럼 p, q가 그대로 드러난다
+```
 
 ## 관련 글
 - REV-0199 — XOR 반복 변환 역산

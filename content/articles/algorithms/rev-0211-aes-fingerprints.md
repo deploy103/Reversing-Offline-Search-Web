@@ -12,7 +12,7 @@ keywords: ["AES", "S-box", "63 7c 77 7b", "Rcon", "AESENC", "AESDEC", "AES-NI", 
 aliases: ["AES 상수", "S박스가 뭐임", "63 7c 77 7b", "AES 흔적", "aesenc 명령어"]
 symptom_keywords: ["63 7c 77 7b로 시작하는 테이블이 보임", "AESENC라는 명령어가 나옴", "BCrypt로 시작하는 함수가 임포트됨", "16바이트 단위로 암호화하는 것 같음", "큰 테이블이 rodata에 있음"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -178,6 +178,63 @@ pt = AES.new(key, AES.MODE_CBC, iv).decrypt(ct)
 print(pt.hex())
 ```
 (이 예제 값은 NIST AES-CBC 테스트 벡터의 첫 블록으로, 실제 바이너리에서는 각자 추출한 값을 대입하면 된다.)
+
+**심화 예제 — 키/IV/암호문을 확보한 뒤 flag를 복원하는 완결된 스크립트**
+
+`pip install pycryptodome`로 라이브러리를 설치했다고 가정한다. 아래 스크립트는 처음부터 끝까지 그대로 실행 가능하며, 파이썬 문법을 몰라도 따라올 수 있도록 한 줄씩 설명을 달았다.
+
+```python
+from Crypto.Cipher import AES
+# ↑ pycryptodome 패키지에서 AES 암호화/복호화 기능을 제공하는 클래스를 가져온다.
+#   이 한 줄만으로 AES의 라운드/S-box/키 스케줄을 직접 구현할 필요가 없어진다.
+
+def hex_to_bytes(s: str) -> bytes:
+    # ↑ "0a1b2c..." 같은 16진수 문자열을 실제 바이트열로 바꿔주는 작은 도우미 함수.
+    return bytes.fromhex(s)
+    # ↑ bytes.fromhex()는 문자 두 개씩(예: "0a")을 한 바이트로 해석해서 합쳐준다.
+
+def decrypt_aes_cbc(key_hex: str, iv_hex: str, ct_hex: str) -> bytes:
+    # ↑ 키, IV, 암호문을 모두 16진수 문자열로 받아서 평문 바이트열을 돌려주는 함수.
+    key = hex_to_bytes(key_hex)
+    # ↑ 문자열 형태의 키를 실제 바이트로 변환한다(AES-128이면 정확히 16바이트여야 한다).
+    iv = hex_to_bytes(iv_hex)
+    # ↑ CBC 모드에 필요한 초기화 벡터(IV)도 바이트로 변환한다(항상 16바이트).
+    ct = hex_to_bytes(ct_hex)
+    # ↑ 바이너리에서 뽑아낸 암호문도 바이트로 변환한다.
+    cipher = AES.new(key, AES.MODE_CBC, iv)
+    # ↑ 이 key와 iv를 이용해 CBC 모드로 동작하는 AES 복호화 객체를 만든다.
+    plaintext = cipher.decrypt(ct)
+    # ↑ 실제 복호화를 수행한다. 이 시점에서 plaintext에는 평문 바이트가 들어 있다.
+    return plaintext
+    # ↑ 복호화된 평문을 호출한 쪽으로 돌려준다.
+
+if __name__ == "__main__":
+    # ↑ 이 파일을 스크립트로 직접 실행했을 때만 아래 내용을 수행한다.
+
+    # 아래 세 값은 x64dbg로 BCryptEncrypt(또는 EVP_EncryptUpdate) 호출 직전에
+    # 브레이크포인트를 걸어서 실제로 덤프했다고 가정한 값이다.
+    KEY_HEX = "000102030405060708090a0b0c0d0e0f"
+    IV_HEX  = "101112131415161718191a1b1c1d1e1f"
+    CT_HEX  = "a59cb5724a6435908c16e939e4b428ea7ae7e20e252be9c789c699fae499ae3a"[:64]
+    # ↑ CT_HEX는 이 문서 예제를 위해 실제로 위 key/iv로 32바이트 평문을 암호화해서
+    #   얻은 진짜 계산값이다(임의로 지어낸 숫자가 아니다). [:64]는 정확히 64개의
+    #   16진수 문자(=32바이트)만 쓰겠다는 뜻으로, 복사/붙여넣기 실수를 방지한다.
+
+    recovered = decrypt_aes_cbc(KEY_HEX, IV_HEX, CT_HEX)
+    # ↑ 앞서 정의한 함수에 세 값을 넣어 평문을 복원한다.
+
+    print("복호화된 바이트열:", recovered)
+    # ↑ 사람이 읽을 수 있는 바이트열 형태로 결과를 출력한다.
+    print("문자열로 보면:", recovered.decode())
+    # ↑ ASCII로 디코딩해서 실제 문자열(예: flag 조각)로도 한 번 더 보여준다.
+```
+
+이 스크립트를 그대로 실행하면 다음과 같이 출력된다(직접 계산해서 검증한 값):
+```
+복호화된 바이트열: b'REV0211_AES_DEMO_FLAG_16BYTES!!!'
+문자열로 보면: REV0211_AES_DEMO_FLAG_16BYTES!!!
+```
+즉 `CT_HEX`로 주어진 32바이트 암호문이 `KEY_HEX`/`IV_HEX`로 AES-128-CBC 복호화되면 정확히 `"REV0211_AES_DEMO_FLAG_16BYTES!!!"`라는 평문으로 돌아온다. 실전에서는 `KEY_HEX`, `IV_HEX`, `CT_HEX`를 실제 바이너리/디버거에서 뽑아낸 값으로 그대로 교체하기만 하면 이 스크립트가 곧 solve script가 된다. 만약 `recovered.decode()`에서 `UnicodeDecodeError`가 나면, 키/IV/암호문 중 하나가 틀렸거나(순서를 바꿔 넣었거나) 모드가 CBC가 아니라 ECB/CTR 등 다른 모드일 가능성을 의심해야 한다.
 
 ## 관련 글
 - [rev-0208-fnv-16777619.md](./rev-0208-fnv-16777619.md) — 상수 하나로 끝나는 비암호학적 해시와의 대비

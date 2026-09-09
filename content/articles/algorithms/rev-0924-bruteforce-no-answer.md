@@ -12,7 +12,7 @@ keywords: ["브루트포스 실패", "체크 함수 버그", "오라클 검증",
 aliases: ["브루트포스 돌렸는데 안 나옴", "브루트포스 다 돌았는데 실패", "체크 함수가 항상 False", "정답이 없다고 나옴"]
 symptom_keywords: ["브루트포스가 끝났는데 답을 못 찾음", "전수조사 했는데 매칭이 안 됨", "check 함수가 계속 False만 반환함", "브루트포스 오래 걸렸는데 결과 없음"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -108,6 +108,75 @@ def check(s: bytes) -> bool:
     return h != 0x1A2B3C4D   # 버그: 원본은 je(같으면 성공)인데 !=로 잘못 옮김
 ```
 이 오라클은 `h`가 목표값과 **다를 때** `True`를 반환하므로, 실제 정답(즉 `h == 0x1A2B3C4D`를 만드는 입력)을 브루트포스로 넣어도 오라클은 계속 `False`를 반환해 절대 찾을 수 없다. 디스어셈블리를 다시 보니 `cmp eax, 1A2B3C4Dh` 다음 `je correct`였으므로, "같으면 성공"이 맞는 논리다. `!=`를 `==`로 고치자 정답이 즉시 발견됐다 — 오라클 자체의 부호 반전이 원인이었던 전형적인 사례다.
+
+### 추가 예제 — sanity_check로 오라클 버그를 브루트포스보다 먼저 잡기
+아래는 실제로 실행 가능한 전체 스크립트로, "오라클을 먼저 검증하지 않고 브루트포스만 끝까지 돌리면 답이 안 나온다"는 것을 직접 보여준다. 목표 문자열은 `"AB"`(길이 2, 문자셋 `"AB"`)이고, 해시 함수는 `h = (h*31 + byte) & 0xFFFFFFFF`이다. 이 해시로 `"AB"`를 계산하면 `0x821`이 나온다는 것을 GDB로 미리 확인했다고 가정한다.
+
+```python
+import itertools  # 문자셋 조합을 전부 만들어내기 위한 표준 라이브러리
+
+
+def h(s: bytes) -> int:
+    # 아주 단순한 곱셈 기반 누산 해시 (실습용으로 축소한 모델)
+    v = 0
+    for b in s:               # 바이트를 하나씩 순회
+        v = (v * 31 + b) & 0xFFFFFFFF   # 32비트로 마스킹(REV-0926 참고)하며 누적
+    return v
+
+
+# GDB로 바이너리에 "AB"를 직접 입력해서 확인한 "알려진 정답 쌍"
+KNOWN_INPUT = b"AB"
+KNOWN_HASH = 0x821
+
+
+def oracle_buggy(s: bytes) -> bool:
+    # [틀린 코드] 디스어셈블리의 cmp 상수를 옮겨 적다가 자릿수를 바꿔 적음(0x821 -> 0x281)
+    WRONG_TARGET = 0x281
+    return h(s) == WRONG_TARGET
+
+
+def oracle_fixed(s: bytes) -> bool:
+    # [고친 코드] 상수를 정확히 옮긴 올바른 오라클
+    TARGET = 0x821
+    return h(s) == TARGET
+
+
+def sanity_check(oracle, known_good_input=None) -> None:
+    # 브루트포스를 돌리기 전에 오라클 자체가 알려진 정답에 True를 주는지 먼저 확인
+    if known_good_input is not None:
+        assert oracle(known_good_input), "오라클이 알려진 정답에도 False를 반환함 - 오라클 버그"
+
+
+# 1) 버그가 있는 오라클을 sanity_check로 먼저 점검 -> 브루트포스를 돌리기도 전에 바로 걸린다
+try:
+    sanity_check(oracle_buggy, KNOWN_INPUT)
+    print("오라클 정상")
+except AssertionError as e:
+    print("[틀린 오라클] 사전 점검에서 이미 실패:", e)
+
+# 2) 그래도 모르고 문자셋 "AB", 길이 2 전체(AA, AB, BA, BB)를 브루트포스로 끝까지 돌렸다고 가정
+found = None
+for combo in itertools.product("AB", repeat=2):
+    candidate = "".join(combo).encode()
+    if oracle_buggy(candidate):     # 버그 있는 오라클로 검사
+        found = candidate
+        break
+print("[틀린 오라클] 브루트포스 결과:", found)
+# 출력: [틀린 오라클] 브루트포스 결과: None
+# -> 탐색 공간(4가지 조합)을 전부 돌았는데도 단 하나도 True가 안 나옴
+
+# 3) 오라클을 고친 뒤 sanity_check와 브루트포스를 다시 수행
+sanity_check(oracle_fixed, KNOWN_INPUT)   # 이번엔 조용히 통과(에러 없음)
+found_fixed = None
+for combo in itertools.product("AB", repeat=2):
+    candidate = "".join(combo).encode()
+    if oracle_fixed(candidate):     # 고친 오라클로 검사
+        found_fixed = candidate
+        break
+print("[고친 오라클] 브루트포스 결과:", found_fixed)
+# 출력: [고친 오라클] 브루트포스 결과: b'AB'
+```
+`sanity_check`는 브루트포스 루프를 단 한 번도 돌리지 않고도 "이 오라클은 버그가 있다"는 사실을 즉시 알려준다. 실제로 상수 하나(`0x821` -> `0x281`)만 틀려도 4개뿐인 아주 작은 탐색 공간조차 전부 실패로 끝나며, 상수를 고치는 순간 첫 조합 검사에서 곧바로 `b'AB'`를 찾아낸다.
 
 ## 관련 글
 - REV-0219 — Brute Force가 가능한 입력 공간 계산

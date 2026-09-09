@@ -12,7 +12,7 @@ keywords: ["pwntools timeout", "recvuntil 무한대기", "pwntools 멈춤", "Pwn
 aliases: ["pwntools 타임아웃 원인", "recvuntil이 안 끝남", "pwntools 스크립트가 멈춰있음", "pwntools hang"]
 symptom_keywords: ["pwntools에서 계속 대기만 함", "recvuntil이 끝나지 않음", "스크립트가 멈춘 것처럼 보임", "pwntools TimeoutError가 반복됨"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -154,6 +154,57 @@ if data == b'':
     print(repr(p2.recv(timeout=2)))
 ```
 이렇게 `stdbuf`로 감싼 버전과 안 감싼 버전의 결과를 비교하면, 문제가 pwntools 자체가 아니라 대상 프로그램의 출력 버퍼링 방식이었다는 것을 직접 확인할 수 있다.
+
+### 에러를 재현하는 잘못된 코드 vs 고쳐서 정상 동작하는 코드
+이번에는 버퍼링이 아니라 **`recvuntil()` 구분자 불일치**로 타임아웃이 나는 상황을 재현한다. C 바이너리를 컴파일하지 않아도 되도록 파이썬 자신을 대상 프로세스로 사용하며, `pip install pwntools`만 되어 있으면 리눅스에서 그대로 실행된다. 무한정 멈추지 않도록 `timeout` 값을 짧게 줘서 안전하게 실패하도록 만든다.
+
+**잘못된 코드 — 실제 출력과 정확히 다른 구분자를 기다려서 타임아웃 발생**
+```python
+from pwn import *
+
+# 대상 프로세스: "Password:"를 콜론 뒤 공백 없이, 개행도 없이 출력한 뒤 입력을 기다림
+target_script = (
+    "import time\n"
+    "print('Password:', end='', flush=True)\n"   # 콜론 뒤 공백 없음, 줄바꿈도 없음
+    "time.sleep(0.2)\n"
+    "input()\n"
+    "print('done', flush=True)\n"
+)
+
+p = process(['python3', '-c', target_script])
+
+# *** 잘못된 부분: 실제 출력에는 없는 "콜론 뒤 공백"이 들어간 구분자를 기다림 ***
+try:
+    data = p.recvuntil(b'Password: ', timeout=2)   # 실제 출력은 'Password:'(공백 없음)라 절대 못 찾음
+    print('구분자 찾음:', data)
+except PwnlibException as e:
+    print('타임아웃 발생:', e)   # 2초 안에 구분자를 못 찾아서 실패
+```
+
+**고친 코드 — 구분자를 실제 출력과 정확히 맞추거나, 먼저 원본 바이트를 눈으로 확인**
+```python
+from pwn import *
+
+target_script = (
+    "import time\n"
+    "print('Password:', end='', flush=True)\n"
+    "time.sleep(0.2)\n"
+    "input()\n"
+    "print('done', flush=True)\n"
+)
+
+p = process(['python3', '-c', target_script])
+
+# 고친 방법 1: 실제 출력과 정확히 같은 구분자로 수정(콜론 뒤 공백 제거)
+data = p.recvuntil(b'Password:', timeout=2)
+print('받은 데이터:', repr(data))
+
+# 고친 방법 2: 구분자를 정확히 모를 때는 recv(timeout=N)으로 실제 바이트를 먼저 확인
+p2 = process(['python3', '-c', target_script])
+raw = p2.recv(timeout=1)
+print('실제로 온 원본 바이트:', repr(raw))   # repr로 보면 공백/개행 유무를 정확히 알 수 있다
+```
+`repr()`로 실제 수신 바이트를 먼저 확인한 뒤 그 값을 그대로 `recvuntil()` 구분자로 옮기는 습관을 들이면, 이런 종류의 타임아웃을 크게 줄일 수 있다.
 
 ## 관련 글
 - REV-0996 — pwntools 프로세스 연결이 EOFError로 끊길 때

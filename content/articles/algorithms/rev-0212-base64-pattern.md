@@ -12,7 +12,7 @@ keywords: ["Base64", "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz012345
 aliases: ["base64 상수", "이상한 64글자 문자열", "base64 테이블", "3바이트 4글자 인코딩"]
 symptom_keywords: ["64글자짜리 문자열이 rodata에 있음", "3바이트씩 4바이트로 늘어남", "shr 2 and 3f 패턴이 보임", "= 패딩 문자가 붙음"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -170,6 +170,59 @@ def b64_decode_custom(s: str, table: str) -> bytes:
 print(b64_decode_custom("wMFVy2E=", B64_SHUFFLED))
 ```
 즉 비트 패킹 로직(3바이트↔4글자, 6비트 마스크)은 절대 바뀌지 않고, 바뀌는 건 알파벳 매핑 테이블 하나뿐이라는 걸 기억하면 어떤 변형이 나와도 당황하지 않는다.
+
+**심화 예제 — 문자열 창에서 발견한 값을 그대로 디코딩하는 완결된 스크립트**
+
+IDA Strings 창(`Shift+F12`)에서 다음과 같은 수상한 문자열을 발견했다고 하자: `"ZmxhZ3tiNjRfb2t9"`. 아래 스크립트를 그대로 실행하면 이게 무엇인지 즉시 알 수 있다.
+
+```python
+import base64
+# ↑ 파이썬 표준 라이브러리에 내장된 base64 모듈을 불러온다.
+#   이 모듈에는 표준 Base64 인코딩/디코딩 함수가 이미 구현되어 있다.
+
+def try_base64_decode(s: str) -> bytes | None:
+    # ↑ 문자열 하나를 받아서, Base64로 디코딩이 되면 그 결과를,
+    #   디코딩이 실패하면 None(값이 없음)을 돌려주는 함수를 정의한다.
+    try:
+        # ↑ try 블록 안의 코드를 실행해보고, 에러가 나면 except로 넘어간다.
+        raw = base64.b64decode(s, validate=True)
+        # ↑ validate=True를 주면 Base64 알파벳에 맞지 않는 문자가 섞여 있을 때
+        #   조용히 무시하지 않고 확실하게 에러를 내도록 만든다.
+        return raw
+        # ↑ 디코딩에 성공했으면 원본 바이트를 돌려준다.
+    except Exception as e:
+        # ↑ 디코딩 과정에서 어떤 에러든 발생하면 이 블록이 실행된다.
+        print("디코딩 실패:", e)
+        # ↑ 왜 실패했는지 이유를 화면에 출력해서 디버깅에 도움을 준다.
+        return None
+        # ↑ 실패했다는 뜻으로 None을 돌려준다.
+
+if __name__ == "__main__":
+    # ↑ 이 파일을 직접 실행할 때만 아래 코드를 수행한다.
+    found_string = "ZmxhZ3tiNjRfb2t9"
+    # ↑ IDA Strings 창에서 실제로 발견했다고 가정한 문자열.
+
+    result = try_base64_decode(found_string)
+    # ↑ 앞서 만든 함수로 이 문자열을 디코딩해본다.
+
+    if result is not None:
+        # ↑ 디코딩이 성공해서 result가 None이 아니라면
+        print("디코딩 성공! 원본 바이트:", result)
+        # ↑ 디코딩된 바이트 그대로를 출력한다.
+        print("문자열로 보면:", result.decode())
+        # ↑ ASCII 문자열로 다시 해석해서 사람이 읽기 좋은 형태로 보여준다.
+    else:
+        # ↑ result가 None이라면(디코딩 실패)
+        print("이 문자열은 표준 Base64가 아닙니다.")
+        # ↑ 다른 인코딩(커스텀 알파벳 등)일 가능성을 알려준다.
+```
+
+이 스크립트를 그대로 실행하면 다음과 같이 출력된다(직접 계산해서 검증한 값):
+```
+디코딩 성공! 원본 바이트: b'flag{b64_ok}'
+문자열로 보면: flag{b64_ok}
+```
+즉 IDA에서 발견한 `"ZmxhZ3tiNjRfb2t9"`라는 정체불명의 문자열이, 사실은 `b"flag{b64_ok}"`를 표준 Base64로 인코딩한 결과였다는 것을 스크립트 실행 한 번으로 확인할 수 있다. 반대로 인코딩 쪽을 검증하려면 `base64.b64encode(b"flag{b64_ok}")`를 실행해서 같은 문자열이 나오는지 대조해보면 된다.
 
 ## 관련 글
 - [rev-0213-hex-encoding-pattern.md](./rev-0213-hex-encoding-pattern.md) — 더 단순한 1바이트↔2글자 인코딩

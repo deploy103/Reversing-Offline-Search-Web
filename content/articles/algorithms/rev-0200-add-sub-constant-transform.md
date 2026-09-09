@@ -12,7 +12,7 @@ keywords: ["add sub 변환", "caesar cipher", "시저 암호", "덧셈 뺄셈 �
 aliases: ["add로 문자 바뀜", "sub 반복문", "시저암호", "글자 밀기"]
 symptom_keywords: ["add al 이 반복됨", "문자가 몇 칸씩 밀린 것 같음", "sub로 값이 이상하게 나옴", "글자 하나씩 더하거나 뺌"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -161,6 +161,46 @@ for (i = 0; i < len; ++i)
 ```python
 expected = bytes.fromhex("...")
 flag = bytes((e - i) & 0xFF for i, e in enumerate(expected))
+```
+
+**예제 5 — 처음부터 끝까지 실행되는 전체 스크립트 (바이트 덧셈 역산 + 알파벳 시저 역산)**
+
+아래 스크립트는 실제로 계산해서 값이 정확한 것을 확인한 두 가지 케이스(순수 바이트 덧셈, 알파벳 한정 시저 암호)를 모두 담고 있다. 그대로 복사해서 실행하면 두 줄 다 올바른 평문이 출력된다.
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0200 실전 스크립트: ADD 상수 변환 역산 + 알파벳 한정 시저 암호 역산을 모두 다룬다.
+
+# ===== 케이스 1: 순수 바이트 덧셈(어셈블리에서 add al, 7 을 확인했다고 가정) =====
+expected1 = bytes.fromhex("4a5b4d82686b6b667a7c69663e84")
+N1 = 7
+
+# add al, 7의 역연산은 sub, 즉 7을 빼는 것이다.
+# 8비트 wraparound(255를 넘으면 0으로 돌아가는 현상)를 그대로 재현하려고 결과에 & 0xFF를 붙인다.
+flag1 = bytes((b - N1) & 0xFF for b in expected1)
+print("케이스1 복원 flag:", flag1.decode())
+# 실행 결과: 케이스1 복원 flag: CTF{add_sub_7}
+
+# ===== 케이스 2: 알파벳 한정 시저 암호(shift=3, 특수문자는 그대로 유지) =====
+def caesar_decrypt(cipher: str, shift: int) -> str:
+    out = []
+    for c in cipher:
+        if c.isupper():
+            # 대문자는 A(65)를 기준으로 shift만큼 되돌리고 26으로 나머지 연산해서 순환시킨다.
+            out.append(chr((ord(c) - ord('A') - shift) % 26 + ord('A')))
+        elif c.islower():
+            # 소문자는 a(97)를 기준으로 동일하게 처리한다.
+            out.append(chr((ord(c) - ord('a') - shift) % 26 + ord('a')))
+        else:
+            # 알파벳이 아닌 문자(_, 숫자, {, } 등)는 시저 암호의 영향을 받지 않으므로 그대로 둔다.
+            out.append(c)
+    return "".join(out)
+
+cipher2 = "Fdhvdu_flskhu"
+flag2 = caesar_decrypt(cipher2, 3)
+print("케이스2 복원 문자열:", flag2)
+# 실행 결과: 케이스2 복원 문자열: Caesar_cipher
 ```
 
 ## 관련 글

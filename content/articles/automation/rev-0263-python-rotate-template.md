@@ -12,7 +12,7 @@ keywords: ["python rol ror 구현", "python rotate left right", "비트 회전 �
 aliases: ["파이썬 rol ror 함수", "비트 로테이트 코드", "rotate left right python 템플릿"]
 symptom_keywords: ["rol ror 어떻게 역산", "비트 회전 파이썬으로 구현", "회전 명령어 역산 코드"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -141,6 +141,52 @@ original = ror(after_xor_removed, 5, 32)  # rol의 역은 같은 양만큼의 ro
 print(hex(original))
 ```
 이렇게 "마지막에 적용된 연산부터 역순으로" 하나씩 풀어나가는 것이 회전+XOR 조합 검증 로직을 역산하는 표준 절차다.
+
+### 실전 예제 2 — 회전과 "덧셈"이 함께 섞인 검증 로직 역산하기
+이번엔 XOR 대신 **덧셈**이 회전과 함께 쓰이는 경우를 다뤄본다. `check2(x) = rol(x, 11, 32) + 0xDEADBEEF (mod 2^32)`가 목표값 `0x12345678`이 되어야 통과하는 검증 함수라고 하자. 덧셈의 역연산은 뺄셈이라는 점만 빼면, 역산 절차는 앞의 예제와 동일하다.
+
+```python
+def rol(x: int, n: int, bits: int = 32) -> int:
+    # x를 bits 비트 폭에서 왼쪽으로 n비트 회전
+    mask = (1 << bits) - 1
+    x &= mask
+    n %= bits
+    return ((x << n) | (x >> (bits - n))) & mask
+
+
+def ror(x: int, n: int, bits: int = 32) -> int:
+    # x를 bits 비트 폭에서 오른쪽으로 n비트 회전 (rol의 역연산)
+    mask = (1 << bits) - 1
+    x &= mask
+    n %= bits
+    return ((x >> n) | (x << (bits - n))) & mask
+
+
+MASK32 = 0xFFFFFFFF
+
+
+def check2(x: int) -> int:
+    # 원본 검증 로직: 32비트 왼쪽 회전 11비트 후, 상수를 더하고 32비트로 마스킹
+    return (rol(x, 11, 32) + 0xDEADBEEF) & MASK32
+
+
+target = 0x12345678   # 검증을 통과하려면 check2(x)가 반드시 이 값이 되어야 한다
+
+# 1) 마지막에 적용된 연산(덧셈)부터 역순으로 되돌린다 -> 덧셈의 역연산은 뺄셈
+step1 = (target - 0xDEADBEEF) & MASK32    # 뺄셈 후 다시 32비트로 마스킹(음수 방지)
+print("덧셈을 되돌린 중간값:", hex(step1))
+
+# 2) 그 앞에 적용된 연산(rol 11비트)을 되돌린다 -> rol의 역연산은 같은 양만큼의 ror
+original = ror(step1, 11, 32)
+print("역산으로 복구한 원본 x:", hex(original))   # 0xf12670d2
+
+# 3) 검증: 복구한 x를 다시 정방향(check2)으로 계산해서 target과 정확히 같은지 확인
+recomputed = check2(original)
+print("정방향으로 재계산한 값:", hex(recomputed))   # 0x12345678
+assert recomputed == target, "역산이 잘못됐다면 여기서 AssertionError가 발생한다"
+print("역산 성공: 정방향 재계산 값이 target과 정확히 일치함")
+```
+회전 앞뒤에 XOR가 아니라 덧셈이 오더라도 원칙은 똑같다 — **마지막에 적용된 연산의 역연산을 먼저 적용하고, 그 앞의 연산을 순서대로 거슬러 올라가면** 된다. 여기서는 "덧셈 -> 뺄셈", "rol(11) -> ror(11)" 순으로 두 단계를 거꾸로 밟아 `0xf12670d2`라는 원본 값을 정확히 복구했고, 이 값을 다시 정방향으로 계산하면 정확히 `target`(`0x12345678`)이 나온다는 것으로 역산이 맞았음을 검증했다.
 
 ## 관련 글
 - REV-0262 — Python XOR 역산 템플릿

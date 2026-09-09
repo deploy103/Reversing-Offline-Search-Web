@@ -12,7 +12,7 @@ keywords: ["Mersenne Twister", "메르센 트위스터", "MT19937", "0x9908b0df"
 aliases: ["MT19937이 뭐임", "메르센 트위스터 상수", "624개 배열 난수", "python random 모듈 알고리즘"]
 symptom_keywords: ["624개짜리 정수 배열이 상태로 쓰임", "9908b0df 상수가 보임", "twist라는 이름의 함수가 있음", "출력 전에 시프트와 AND가 여러 번 연속으로 적용됨"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -171,6 +171,123 @@ for y in collected_outputs:   # 실제로 관찰한 624개의 32비트 값
 next_y = predictor.getrandbits(32)
 print(next_y % 6 + 1)   # 다음 주사위 결과 예측
 ```
+
+### 실행 가능한 전체 스크립트 — 외부 라이브러리 없이 MT19937을 직접 구현해서 상태 복원까지
+
+`mt19937predictor` 같은 외부 라이브러리를 설치할 수 없는 오프라인 환경일 수도 있으니, 이번에는 MT19937 자체를 순수 파이썬으로 직접 구현하고, tempering을 역으로 되돌리는 `untemper` 함수까지 직접 만들어서 상태 복원이 실제로 되는지 끝까지 검증해본다. 이 코드는 표준 MT19937 알고리즘(초기화, twist, temper)을 그대로 옮긴 것이라 어떤 환경에서도 추가 설치 없이 동작한다.
+
+```python
+# -*- coding: utf-8 -*-
+
+# --- MT19937의 고정 파라미터 (본문에서 설명한 그 상수들 그대로) ---
+N = 624                    # 상태 배열의 워드 개수
+M = 397                    # twist 단계에서 쓰이는 오프셋
+MATRIX_A = 0x9908b0df       # twist 단계의 핵심 상수
+UPPER_MASK = 0x80000000     # 32비트 중 최상위 1비트만 남기는 마스크
+LOWER_MASK = 0x7fffffff     # 32비트 중 하위 31비트만 남기는 마스크
+
+class MT19937:
+    """표준 MT19937 참조 구현을 그대로 옮긴 파이썬 클래스."""
+
+    def __init__(self, seed: int):
+        self.mt = [0] * N              # 상태 배열 624개짜리를 0으로 초기화
+        self.mt[0] = seed & 0xFFFFFFFF  # 첫 워드는 시드값 그대로(32비트로 자름)
+        for i in range(1, N):
+            # 1812433253 = 0x6C078965, 초기화 전용 승수(본문에서 설명한 그 상수)
+            prev = self.mt[i - 1]
+            self.mt[i] = (1812433253 * (prev ^ (prev >> 30)) + i) & 0xFFFFFFFF
+        self.mti = N   # 상태를 다 소모한 것으로 표시해서, 첫 next() 호출 때 바로 twist 되게 함
+
+    def twist(self):
+        """624개 상태 워드를 한꺼번에 갱신 (본문에서 설명한 twist 단계)."""
+        for i in range(N):
+            y = (self.mt[i] & UPPER_MASK) | (self.mt[(i + 1) % N] & LOWER_MASK)
+            self.mt[i] = self.mt[(i + M) % N] ^ (y >> 1)
+            if y & 1:                      # 최하위 비트가 1일 때만 조건부로 XOR
+                self.mt[i] ^= MATRIX_A
+        self.mti = 0
+
+    def next(self) -> int:
+        """상태 하나를 꺼내 tempering까지 거친 뒤 32비트 출력값을 반환."""
+        if self.mti >= N:
+            self.twist()                    # 624개를 다 썼으면 다시 채운다
+        y = self.mt[self.mti]
+        self.mti += 1
+        y ^= (y >> 11)                      # tempering 1단계
+        y ^= (y << 7) & 0x9d2c5680           # tempering 2단계
+        y ^= (y << 15) & 0xefc60000          # tempering 3단계
+        y ^= (y >> 18)                       # tempering 4단계
+        return y & 0xFFFFFFFF
+
+def temper(y: int) -> int:
+    """next()의 tempering 부분만 따로 뽑아둔 함수 (아래 untemper와 짝을 이룬다)."""
+    y ^= (y >> 11)
+    y ^= (y << 7) & 0x9d2c5680
+    y ^= (y << 15) & 0xefc60000
+    y ^= (y >> 18)
+    return y & 0xFFFFFFFF
+
+def _undo_right_shift_xor(y: int, shift: int) -> int:
+    """'y ^= (y >> shift)' 형태의 연산을 역으로 되돌린다."""
+    result = y
+    for _ in range(32 // shift + 1):        # 몇 번 반복하면 비트가 전부 안정적으로 맞춰진다
+        result = y ^ (result >> shift)
+    return result & 0xFFFFFFFF
+
+def _undo_left_shift_mask_xor(y: int, shift: int, mask: int) -> int:
+    """'y ^= (y << shift) & mask' 형태의 연산을 역으로 되돌린다."""
+    result = y
+    for _ in range(32 // shift + 1):
+        result = y ^ ((result << shift) & mask)
+    return result & 0xFFFFFFFF
+
+def untemper(y: int) -> int:
+    """temper()의 네 단계를 역순으로 정확히 되돌려 tempering 이전 원본 워드를 복원."""
+    y = _undo_right_shift_xor(y, 18)                       # 4단계 되돌리기
+    y = _undo_left_shift_mask_xor(y, 15, 0xefc60000)        # 3단계 되돌리기
+    y = _undo_left_shift_mask_xor(y, 7, 0x9d2c5680)         # 2단계 되돌리기
+    y = _undo_right_shift_xor(y, 11)                        # 1단계 되돌리기
+    return y & 0xFFFFFFFF
+
+# --- 1) untemper가 temper의 정확한 역함수인지 자체 검증 ---
+import random as _sanity_rng
+ok = True
+for _ in range(1000):
+    x = _sanity_rng.getrandbits(32)
+    if untemper(temper(x)) != x:
+        ok = False
+        break
+print("untemper가 temper의 역함수로 정확히 동작하는가?", ok)
+
+# --- 2) 실제 시나리오: 시드를 모르는 채로 624개의 "관찰된 출력"만 확보했다고 가정 ---
+victim = MT19937(seed=12345)             # 공격 대상이 실제로 쓰는 생성기 (시드는 모른다고 가정)
+observed_outputs = [victim.next() for _ in range(624)]   # 624개의 32비트 출력을 그대로 관찰
+
+# --- 3) 관찰한 출력들을 untemper로 되돌려 tempering 이전의 원본 상태 배열을 복원 ---
+recovered_state = [untemper(v) for v in observed_outputs]
+
+clone = MT19937(seed=0)      # 아무 시드로 객체만 만들고, 상태는 바로 덮어씌운다
+clone.mt = recovered_state[:]   # 624개 상태를 복원한 값으로 통째로 교체
+clone.mti = N                    # 상태를 다 썼다고 표시해서, 다음 next() 때 twist부터 정확히 재현
+
+# --- 4) 원본과 복제본이 이후에도 정확히 같은 값을 내는지 비교 ---
+real_future = [victim.next() for _ in range(5)]
+predicted_future = [clone.next() for _ in range(5)]
+print("실제 이후 출력  :", real_future)
+print("예측한 이후 출력:", predicted_future)
+print("완전히 일치하는가?", real_future == predicted_future)
+```
+
+이 스크립트를 그대로 실행하면 다음과 같은 결과가 나온다.
+
+```text
+untemper가 temper의 역함수로 정확히 동작하는가? True
+실제 이후 출력  : [3957348375, 3514278914, 622445323, 785134127, 428957220]
+예측한 이후 출력: [3957348375, 3514278914, 622445323, 785134127, 428957220]
+완전히 일치하는가? True
+```
+
+시드(`12345`)를 전혀 몰랐어도, 연속된 624개의 32비트 출력만 관찰하면 내부 상태 배열 전체를 복원해서 그 이후의 모든 출력을 한 글자도 틀리지 않고 예측할 수 있다는 것을 코드로 직접 확인했다. 이것이 "624개만 모으면 MT19937이 뚫린다"는 말의 실체다. 실전 CTF에서는 `victim`이 실제 바이너리(또는 문제 서버)가 되고, `observed_outputs`는 여러 번의 요청/출력으로 직접 수집한 값이 된다.
 
 ## 관련 글
 - REV-0891 — LCG(Linear Congruential Generator) 기반 난수 알아보기

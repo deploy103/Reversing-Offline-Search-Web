@@ -12,7 +12,7 @@ keywords: ["LCG", "Linear Congruential Generator", "선형 합동 생성기", "1
 aliases: ["LCG란", "선형 합동 난수 생성기", "state * a + c 패턴", "간단한 rand 구현"]
 symptom_keywords: ["state = state * A + B 형태의 연산이 반복됨", "난수 생성이 한 줄짜리 곱셈+덧셈+마스킹으로 끝남", "이전 출력값만으로 다음 출력값을 예측할 수 있을 것 같음", "시드값 하나로 전체 수열이 결정됨"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -151,6 +151,54 @@ def msvc_rand(seed, n):
 print(msvc_rand(12345, 5))
 ```
 이렇게 재현한 수열이 실제 프로그램의 출력과 일치하는지 확인하면, 이후의 "다음 값"을 미리 알고 문제를 풀 수 있다.
+
+### 실행 가능한 전체 스크립트 — 미래 예측과 과거 역추적을 모두 실제로 계산
+
+LCG의 진짜 무서운 점은 "다음 값 예측"뿐 아니라 "이전 상태 역추적"도 대수적으로 간단하다는 것이다. 아래 스크립트는 MSVC 스타일 LCG(`A=214013`, `C=2531011`, `M=2^32`)로 상태를 몇 단계 전진시킨 뒤, 모듈러 역원(REV-0887)을 이용해 그 상태를 다시 거꾸로 되돌려서 원래 시드가 정확히 복원되는지 검증한다.
+
+```python
+# -*- coding: utf-8 -*-
+
+A, C, M = 214013, 2531011, 2 ** 32   # MSVC 구형 CRT rand()의 상수 (표에서 그대로 가져옴)
+
+def lcg_next(state: int) -> int:
+    """다음 상태를 계산 (정방향 점화식). state가 32비트를 넘으면 % M 이 자동으로 잘라준다."""
+    return (A * state + C) % M
+
+def lcg_prev(state: int) -> int:
+    """이전 상태를 계산 (역방향 점화식). A의 모듈러 역원이 반드시 존재해야 한다."""
+    a_inv = pow(A, -1, M)          # 파이썬 3.8+ 내장 pow로 A의 모듈러 역원을 바로 계산
+    return ((state - C) * a_inv) % M
+
+def output_bits(state: int) -> int:
+    """MSVC rand()는 상태의 하위 16비트를 버리고 그 위 15비트만 반환한다."""
+    return (state >> 16) & 0x7fff
+
+# --- 1) 시드를 정하고, 몇 단계를 정방향으로 진행시켜 관찰값을 만든다 ---
+seed = 12345
+s1 = lcg_next(seed)
+s2 = lcg_next(s1)
+s3 = lcg_next(s2)
+print("정방향 상태:", seed, "->", s1, "->", s2, "->", s3)
+print("정방향 출력값:", output_bits(s1), output_bits(s2), output_bits(s3))
+
+# --- 2) 이제 "s2 값만 알고 있다"고 가정하고, 역방향으로 s1과 시드를 거꾸로 복원한다 ---
+recovered_s1 = lcg_prev(s2)
+recovered_seed = lcg_prev(recovered_s1)
+print("s2로부터 역추적한 s1:", recovered_s1, " (원래 s1과 같은가?", recovered_s1 == s1, ")")
+print("역추적한 시드:", recovered_seed, " (원래 시드와 같은가?", recovered_seed == seed, ")")
+```
+
+이 스크립트를 그대로 실행하면 다음과 같은 결과가 나온다.
+
+```text
+정방향 상태: 12345 -> 2644521496 -> 1255958651 -> 3837989202
+정방향 출력값: 7584 19164 25795
+s2로부터 역추적한 s1: 2644521496  (원래 s1과 같은가? True )
+역추적한 시드: 12345  (원래 시드와 같은가? True )
+```
+
+`s2`라는 값 하나만 놓고 시작했는데, 곱셈 계수 `A=214013`의 모듈러 역원을 구할 수 있었기 때문에 `s1`은 물론 최초의 `seed=12345`까지 정확히 거꾸로 계산해냈다. 이것이 바로 본문에서 설명한 "LCG는 예측뿐 아니라 역추적도 대수적으로 쉽게 풀린다"는 주장을 코드로 직접 확인한 것이다. 실전에서는 `output_bits()`처럼 상위 비트만 노출되는 경우가 많아 완전한 상태값을 바로 얻지 못할 수 있는데, 이런 경우 연속된 여러 출력값과 제약조건을 함께 사용해 하위 비트를 좁혀나가야 한다(본문의 "출력에서 상위 비트만 잘라내는 이유" 참고).
 
 ## 관련 글
 - REV-0892 — Mersenne Twister 흔적 알아보기

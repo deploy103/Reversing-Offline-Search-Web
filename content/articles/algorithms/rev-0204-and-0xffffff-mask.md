@@ -12,7 +12,7 @@ keywords: ["and 0xffffff", "24비트 마스크", "RGB 마스크", "상위 바이
 aliases: ["0xffffff 뭐임", "24비트가 뭐임", "and ffffff", "상위 1바이트만 지움"]
 symptom_keywords: ["0xffffff가 보임", "24비트 마스크 왜 씀", "상위 바이트만 날아감", "RGB 색상값 같음"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -129,6 +129,51 @@ print(hex(masked))  # 0xadbeef
 ```python
 argb = 0xFF3399CC        # 0xAA_RR_GG_BB 형태
 rgb = argb & 0xFFFFFF     # 0x3399CC — 알파(0xFF)만 잘라냄
+```
+
+**예제 3 — 처음부터 끝까지 실행되는 전체 스크립트 (24비트로 축소된 해시를 실제로 브루트포스)**
+
+32비트 해시(약 43억 가지)는 무식하게 다 돌려보기 어렵지만, 문제 출제자가 `& 0xFFFFFF`로 24비트(약 1677만 가지)로 줄여놨다면 짧은 입력에 한해 파이썬으로도 몇 초 안에 뚫을 수 있다. 아래 스크립트는 실제로 끝까지 실행해서 정답을 찾아내는 것까지 확인된 버전이다.
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0204 실전 스크립트: 32비트 해시를 24비트(0xFFFFFF)로 축소해둔 경우,
+# 축소된 목표값을 실제로 브루트포스로 뚫어서 원문을 찾아낸다.
+
+import itertools
+import string
+
+def fnv1a_32(data: bytes) -> int:
+    # FNV-1a 32비트 해시를 그대로 재현한다 (REV-0207/0208 참고).
+    h = 0x811C9DC5
+    for b in data:
+        h ^= b
+        h = (h * 0x01000193) & 0xFFFFFFFF
+    return h
+
+# 1) 바이너리에서 뽑은, 24비트로 축소된 목표값(and eax, 0FFFFFFh 뒤에 나온 비교 상수)이라고 가정한다.
+target = 0x2505CA
+
+# 2) 문제 조건상 입력이 소문자+숫자, 길이 1~2자리라고 가정하고 그 범위를 전부 시도한다.
+#    (실제 문제에서는 flag 길이나 문자셋 힌트에 맞춰 charset과 length 범위를 조정해야 한다)
+charset = string.ascii_lowercase + string.digits
+found = None
+for length in range(1, 3):
+    for combo in itertools.product(charset, repeat=length):
+        candidate = "".join(combo).encode()
+        # 계산한 32비트 해시를 24비트로 마스킹한 뒤에 목표값과 비교한다 — 원본 코드와 똑같은 순서.
+        if (fnv1a_32(candidate) & 0xFFFFFF) == target:
+            found = candidate
+            break
+    if found:
+        break
+
+print("찾아낸 원문:", found)
+# 실행 결과: 찾아낸 원문: b'ab'
+if found is not None:
+    print("검증:", hex(fnv1a_32(found) & 0xFFFFFF), "== 목표값", hex(target))
+    # 실행 결과: 검증: 0x2505ca == 목표값 0x2505ca
 ```
 
 ## 관련 글

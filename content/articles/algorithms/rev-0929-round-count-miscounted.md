@@ -12,7 +12,7 @@ keywords: ["라운드 수 오류", "AES 마지막 라운드", "TEA 라운드 vs 
 aliases: ["라운드 수를 잘못 셈", "루프 횟수가 틀림", "마지막 라운드 예외 처리 누락", "off-by-one 반복 횟수"]
 symptom_keywords: ["라운드를 하나 더 돌린 것 같음", "반복 횟수를 세는 방법이 헷갈림", "마지막 라운드에서만 결과가 다름", "루프 종료 조건이 헷갈림"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -124,6 +124,48 @@ delta = 0x9E3779B9
 print(hex((delta * 32) & 0xFFFFFFFF))   # 0xc6ef3720
 ```
 바이너리의 복호화 함수가 `sum`을 `0xC6EF3720`으로 초기화하고 있다면, 이는 32회 반복이 맞다는 산술적 증거이며, "64 rounds"라는 설명 문구를 무시하고 32회로 재구현해야 한다.
+
+### 추가 예제 — "마지막 라운드 예외 처리"를 빼먹었을 때 실제로 벌어지는 일
+AES의 "마지막 라운드만 MixColumns를 생략한다"는 규칙을 단순화한 토이(toy) 라운드 함수로 재현해본다. 진짜 AES 대신 `toy_round`(회전+키 XOR)와 `toy_mix`(간단한 곱셈)라는 가짜 연산을 쓰지만, "중간 라운드는 4단계, 마지막 라운드만 3단계"라는 구조적 패턴은 AES와 동일하다.
+
+```python
+def toy_round(state: int, round_key: int) -> int:
+    """SubBytes+ShiftRows를 흉내낸 간단한 회전 + 라운드 키 XOR (8비트로 축소)."""
+    state = ((state << 1) | (state >> 7)) & 0xFF   # 8비트 안에서 왼쪽으로 1비트 회전
+    state ^= round_key                              # 이번 라운드의 키와 XOR
+    return state
+
+
+def toy_mix(state: int) -> int:
+    """MixColumns를 흉내낸 간단한 곱셈 연산 (8비트로 축소)."""
+    return (state * 3) & 0xFF
+
+
+def encrypt_wrong(state: int, round_keys: list, Nr: int) -> int:
+    """[틀린 코드] 마지막 라운드에도 실수로 mix를 적용해버림."""
+    for r in range(1, Nr + 1):        # 1부터 Nr까지 총 Nr번 반복 (마지막 포함)
+        state = toy_round(state, round_keys[r])
+        state = toy_mix(state)         # 버그: 마지막 라운드(r == Nr)에도 mix 적용
+    return state
+
+
+def encrypt_right(state: int, round_keys: list, Nr: int) -> int:
+    """[고친 코드] 마지막 라운드에서는 mix를 생략."""
+    for r in range(1, Nr):            # 1부터 Nr-1까지, 즉 (Nr-1)번만 mix 포함 라운드 수행
+        state = toy_round(state, round_keys[r])
+        state = toy_mix(state)
+    state = toy_round(state, round_keys[Nr])   # 마지막(Nr번째) 라운드: mix 없이 키 XOR만
+    return state
+
+
+Nr = 4                                   # 총 4라운드짜리 토이 암호
+round_keys = [0x00, 0x11, 0x22, 0x33, 0x44]   # 인덱스 0은 사용 안 함, 1~4가 각 라운드 키
+state = 0xAB                             # 평문(1바이트로 축소)
+
+print("[틀린 코드] 결과:", hex(encrypt_wrong(state, round_keys, Nr)))   # 0x7c
+print("[고친 코드] 결과:", hex(encrypt_right(state, round_keys, Nr)))   # 0xd4
+```
+라운드 수(`Nr=4`)와 각 라운드 키는 완전히 동일한데, **딱 한 라운드(마지막 라운드)에서 `toy_mix` 호출 여부만 다를 뿐인데도 최종 결과가 `0x7c`에서 `0xd4`로 완전히 달라진다.** 이는 "처음 몇 라운드는 맞는데 마지막에서만 틀리는" 증상이 실제로는 로직 전체가 아니라 마지막 한 단계의 예외 처리 누락 때문일 수 있다는 것을 코드로 직접 증명한다.
 
 ## 관련 글
 - REV-0210 — TEA와 XTEA 상수 패턴

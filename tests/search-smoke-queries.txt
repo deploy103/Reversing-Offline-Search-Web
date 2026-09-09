@@ -127,3 +127,11 @@ dreamhack patch
 simple crack me
 collect me
 inject me
+for 루프 어셈블리
+switch 점프테이블
+구조체 필드 접근 어셈블리
+재귀 함수 스택
+포인터 역참조 어셈블리
+rsa 복호화 python
+lcg 역산
+xor 키 복원 python

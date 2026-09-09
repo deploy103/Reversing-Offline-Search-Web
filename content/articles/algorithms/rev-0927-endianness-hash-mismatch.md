@@ -12,7 +12,7 @@ keywords: ["해시 엔디안 실수", "4바이트 청크 패킹", "little endian
 aliases: ["해시 재구현 엔디안 실수", "청크 엔디안 틀림", "hex(h) 순서가 안 맞음", "워드 조립 순서"]
 symptom_keywords: ["같은 문자 반복 입력은 맞는데 다른 문자는 틀림", "4바이트씩 묶어서 처리하는 해시가 안 맞음", "struct pack 순서가 헷갈림", "청크 단위 해시 결과가 다름"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -137,6 +137,48 @@ print(hex(checksum_wrong(b"ABCD")), hex(checksum_right(b"ABCD")))
 # 0x41424344 0x44434241  -> 서로 다른 값! 여기서 비로소 버그가 드러남
 ```
 `"AAAA"`로만 테스트했다면 이 엔디안 버그를 영원히 못 찾았을 것이다. 서로 다른 바이트로 구성된 `"ABCD"`를 넣고서야 두 구현이 다른 값을 낸다는 게 드러나고, GDB로 확인한 실제 워드 값과 대조해서 `checksum_right`(리틀 엔디안)가 정답임을 확정할 수 있다.
+
+### 추가 예제 — XOR가 아니라 "덧셈"으로 워드를 누적하는 체크섬
+XOR 기반 체크섬은 엔디안이 틀려도 우연히 값이 맞아떨어지는 경우가 있다(비트 위치만 뒤섞일 뿐 XOR 자체는 순서에 덜 민감하기 때문). 덧셈으로 누적하는 체크섬에서는 엔디안 버그가 훨씬 더 확실하게 드러난다.
+
+```python
+import struct  # 바이트 <-> 정수 변환에 사용
+
+
+def wordsum_wrong(data: bytes) -> int:
+    """[틀린 코드] 4바이트 청크를 빅 엔디안으로 잘못 조립해서 더한다."""
+    total = 0                                  # 누산값 초기화
+    for i in range(0, len(data), 4):           # 4바이트씩 건너뛰며 순회
+        chunk = data[i:i + 4]                   # 이번 4바이트를 잘라낸다
+        word = struct.unpack(">I", chunk)[0]     # 버그: '>'는 빅 엔디안
+        total = (total + word) & 0xFFFFFFFF      # 32비트로 마스킹하며 누적
+    return total
+
+
+def wordsum_right(data: bytes) -> int:
+    """[고친 코드] 4바이트 청크를 리틀 엔디안(x86 기본)으로 조립해서 더한다."""
+    total = 0
+    for i in range(0, len(data), 4):
+        chunk = data[i:i + 4]
+        word = struct.unpack("<I", chunk)[0]     # 원본과 동일: '<'는 리틀 엔디안
+        total = (total + word) & 0xFFFFFFFF
+    return total
+
+
+# 서로 다른 바이트로 구성된 8바이트(2개의 워드) 테스트 데이터
+data = bytes.fromhex("0102030405060708")
+
+print("틀린 코드 결과:", hex(wordsum_wrong(data)))   # 0x6080a0c
+print("고친 코드 결과:", hex(wordsum_right(data)))   # 0xc0a0806
+print("같은 값인가?:", wordsum_wrong(data) == wordsum_right(data))   # False
+
+# 반복 문자로만 테스트하면 이 버그가 숨는다는 것도 함께 확인
+rep = b"\x11\x11\x11\x11\x22\x22\x22\x22"
+print("반복 문자 입력, 틀린 코드:", hex(wordsum_wrong(rep)))
+print("반복 문자 입력, 고친 코드:", hex(wordsum_right(rep)))
+print("반복 문자에서는 같은 값인가?:", wordsum_wrong(rep) == wordsum_right(rep))   # True (버그가 숨음!)
+```
+서로 다른 바이트(`0102030405060708`)를 넣으면 `wordsum_wrong`(`0x6080a0c`)과 `wordsum_right`(`0xc0a0806`)가 완전히 다른 값을 내지만, 반복 문자(`\x11\x11\x11\x11\x22\x22\x22\x22`)를 넣으면 두 함수가 똑같이 `0x33333333`을 반환한다 — 이 두 번째 실행 결과가 바로 "반복 문자 테스트만으로는 엔디안 버그를 절대 찾을 수 없다"는 것을 코드로 직접 증명해준다.
 
 ## 관련 글
 - REV-0023 — Little Endian과 Big Endian

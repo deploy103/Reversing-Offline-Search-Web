@@ -12,7 +12,7 @@ keywords: ["unit test", "유닛 테스트", "pytest 리버싱", "재구현 검�
 aliases: ["재구현한 알고리즘 테스트하기", "리버싱 결과 검증 방법론", "pytest로 크랙미 검증", "테스트 케이스로 확인하기"]
 symptom_keywords: ["재구현한 코드가 가끔 맞고 가끔 틀림", "엣지케이스에서만 결과가 다름", "빈 문자열이나 길이 1일 때 결과가 이상함", "테스트를 어떻게 짜야할지 모르겠음"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -150,6 +150,94 @@ def test_poly_hash(data, expected):
 ```
 
 이렇게 구성해두면 `poly_hash` 구현을 나중에 최적화하거나 다른 파이프라인 단계와 합치더라도, `pytest test_solve.py`를 실행하는 것만으로 이전에 확인했던 모든 케이스가 여전히 맞는지 몇 초 안에 확인할 수 있다.
+
+### 완전한 예제 스크립트 — pytest 설치 없이 표준 라이브러리 unittest로 바로 실행하기
+`pip install pytest`가 안 되는 오프라인 환경이라도, 파이썬에 기본으로 들어있는 `unittest` 모듈로 똑같은 효과를 낼 수 있다. 아래 스크립트는 파일 하나만으로 완결되며, `python3 파일이름.py`로 바로 실행된다.
+
+```python
+import unittest  # 파이썬 기본 내장 테스트 프레임워크 (별도 설치 불필요)
+
+
+def poly_hash(s: bytes, base: int = 31, mod: int = 2**32, init: int = 0) -> int:
+    """검증 대상 함수: 다항식 해시를 계산한다. (재구현한 알고리즘이라고 가정)"""
+    h = init                     # 초기 누적값
+    for c in s:                  # 문자열의 바이트를 하나씩 순서대로 꺼낸다
+        h = (h * base + c) % mod # 누적값을 base배 하고 현재 바이트를 더한 뒤 mod로 자른다
+    return h                     # 최종 누적값을 반환
+
+
+class TestPolyHash(unittest.TestCase):
+    """poly_hash 함수를 검증하는 테스트 모음. 메서드 이름이 test_로 시작해야 자동 인식된다."""
+
+    def test_empty_input(self):
+        # 경계값 1: 빈 문자열을 넣으면 루프가 0번 돌아서 초기값 그대로 나와야 한다
+        self.assertEqual(poly_hash(b""), 0)
+
+    def test_single_byte(self):
+        # 경계값 2: 길이 1인 입력 -> h = 0*31 + 97 = 97 ('a'의 아스키 코드는 97)
+        self.assertEqual(poly_hash(b"a"), 97)
+
+    def test_two_bytes(self):
+        # 정상 케이스: h = (97*31 + 98) = 3007 + 98 = 3105 ('b'의 아스키 코드는 98)
+        self.assertEqual(poly_hash(b"ab"), 3105)
+
+    def test_normal_word(self):
+        # 조금 더 긴 정상 케이스: 실제로 실행해서 얻은 값을 그대로 고정해둔 것
+        self.assertEqual(poly_hash(b"hello"), 99162322)
+
+    def test_non_ascii_byte(self):
+        # 경계값 3: 0x80 이상인 non-ASCII 바이트도 문제없이 처리되는지 확인
+        # h = 0*31 + 0xFF(255) = 255
+        self.assertEqual(poly_hash(b"\xff"), 255)
+
+    def test_max_byte_overflow_boundary(self):
+        # 경계값 4: 곱셈 결과가 32비트를 넘어가는 경우에도 mod 연산으로 올바르게 잘리는지 확인
+        # 아주 큰 수를 넣어 오버플로 처리가 되는지 간접적으로 확인한다
+        big_input = b"\xff" * 10  # 0xFF를 10번 반복
+        result = poly_hash(big_input)
+        self.assertTrue(0 <= result < 2**32)  # 결과가 항상 32비트 범위 안에 있어야 한다
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)  # verbosity=2로 각 테스트 이름과 통과 여부를 자세히 출력
+```
+
+이 파일을 그대로 실행하면 다음과 비슷한 결과가 출력된다(테스트 실행 순서는 알파벳순).
+```
+test_empty_input (__main__.TestPolyHash) ... ok
+test_max_byte_overflow_boundary (__main__.TestPolyHash) ... ok
+test_non_ascii_byte (__main__.TestPolyHash) ... ok
+test_normal_word (__main__.TestPolyHash) ... ok
+test_single_byte (__main__.TestPolyHash) ... ok
+test_two_bytes (__main__.TestPolyHash) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.001s
+
+OK
+```
+
+### 회귀(regression)가 실제로 잡히는 모습 보기
+이제 일부러 `poly_hash`의 곱셈 상수를 `31`에서 `33`으로 잘못 바꿔서(실제로 리버싱하다가 상수를 착각해서 옮기는 실수를 흉내낸 것), 같은 테스트를 다시 돌리면 무슨 일이 벌어지는지 확인해보자.
+
+```python
+def poly_hash_buggy(s: bytes, base: int = 33, mod: int = 2**32, init: int = 0) -> int:
+    # base를 31 -> 33으로 잘못 옮겨적은 "버그가 있는" 재구현
+    h = init
+    for c in s:
+        h = (h * base + c) % mod
+    return h
+
+# 기존 테스트 케이스로 버그가 있는 버전을 검증
+print(poly_hash_buggy(b"ab") == 3105)      # False가 나와야 정상 (버그를 잡아낸 것)
+print(poly_hash_buggy(b"hello") == 99162322)  # 이 역시 False
+```
+실행 결과:
+```
+False
+False
+```
+`base` 상수 하나만 잘못 옮겨도 이미 확보해둔 테스트 케이스들이 즉시 실패로 알려준다. 만약 테스트 없이 눈으로만 결과를 확인했다면, `poly_hash_buggy(b"hello")`가 우연히 `99162322`와 비슷한 숫자처럼 보여서 착각할 수도 있었겠지만, `assertEqual`은 정확히 일치하는지만 판단하므로 이런 실수를 절대 놓치지 않는다.
 
 ## 관련 글
 - REV-0906 — Polynomial Hash(다항식 해시) 패턴 알아보기

@@ -12,7 +12,7 @@ keywords: ["UnicodeDecodeError", "invalid start byte", "python bytes str 차이"
 aliases: ["파이썬 디코드 에러", "utf-8 codec can't decode byte", "python bytes to string 오류", "python 한글 깨짐"]
 symptom_keywords: ["UnicodeDecodeError가 남", "invalid start byte 에러", "python에서 바이너리 읽다가 에러남", "codec can't decode byte 0x.. in position"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -155,6 +155,67 @@ except UnicodeDecodeError as e:
 '\x89PNG\r\n\x1a\x00\x00\x00\rIHDR'
 ```
 PNG 시그니처처럼 첫 바이트부터 UTF-8 규칙에 맞지 않는 바이너리 매직 넘버는 애초에 디코드 대상이 아니라, `bytes` 그대로 `data[:8] == b'\x89PNG\r\n\x1a\n'` 같은 방식으로 비교해야 한다는 점을 보여준다.
+
+### 에러를 재현하는 잘못된 코드 vs 고쳐서 정상 동작하는 코드 (기계어 바이트를 디코드하려다 실패하는 경우)
+아래 두 스크립트는 별도 패키지 설치 없이 표준 파이썬 3만으로 그대로 실행된다. `b'\x55\x48\x89\xe5\x90\xc3'`는 x64 함수 프롤로그(`push rbp; mov rbp, rsp; nop; ret`)의 실제 기계어 바이트다.
+
+**잘못된 코드 — 기계어 바이트를 그냥 utf-8로 디코드하려다 예외로 스크립트 전체가 중단됨**
+```python
+# push rbp; mov rbp, rsp; nop; ret 에 해당하는 실제 x64 기계어 바이트 (텍스트가 아님)
+code_bytes = b'\x55\x48\x89\xe5\x90\xc3'
+
+# *** 잘못된 부분: 이 바이트가 사람이 읽는 텍스트인지 확인하지 않고 무조건 디코드 시도 ***
+text = code_bytes.decode('utf-8')   # 여기서 예외 발생 -> 아래 print는 실행되지 않음
+print('디코드 결과:', text)
+```
+실행하면 다음과 같은 예외가 그대로 발생한다.
+```text
+UnicodeDecodeError: 'utf-8' codec can't decode byte 0x89 in position 2: invalid start byte
+```
+세 번째 바이트(`0x89`, 0-based 인덱스로는 2번 위치)가 UTF-8에서 "이어지는 바이트"에만 쓰이는 비트 패턴(`10xxxxxx`)이라서, 문자의 시작 바이트로는 쓰일 수 없기 때문에 나는 오류다.
+
+**고친 코드 — 애초에 디코드가 필요 없는 데이터임을 인식하고 bytes 그대로 다룸**
+```python
+code_bytes = b'\x55\x48\x89\xe5\x90\xc3'
+
+# 고친 방법 1: 텍스트가 아니므로 decode()를 아예 호출하지 않고 bytes 그대로 비교한다
+if code_bytes[:1] == b'\x55':                 # 첫 바이트가 0x55(push)로 시작하는지 확인
+    print('push 명령으로 시작하는 함수 프롤로그로 보임')
+
+# 고친 방법 2: 화면에 16진수로 확인하고 싶을 뿐이라면 decode 대신 hex()를 쓴다
+print(code_bytes.hex())   # '554889e590c3' -- 예외 없이 항상 성공
+
+# 고친 방법 3: 그래도 문자(str) 형태가 꼭 필요하다면, 실패하지 않는 latin-1로 1:1 매핑한다
+safe_text = code_bytes.decode('latin-1')   # 0~255 모든 바이트값을 그대로 유니코드 코드포인트로 매핑
+print(repr(safe_text))   # 원본 바이트 정보가 손실 없이 그대로 보존됨
+```
+`latin-1`은 256개 바이트 값 전부를 예외 없이 1:1로 문자에 대응시키기 때문에, "어떤 값이 와도 절대 실패하지 않는 디코딩"이 필요할 때(원본 바이트를 보존해야 하는 경우) 자주 쓰인다.
+
+### 에러를 재현하는 잘못된 코드 vs 고친 코드 (bytes와 str을 비교하는 조용한 로직 버그)
+이번에는 예외가 아니라 **조용히 틀린 결과**가 나오는, 더 알아채기 어려운 형태의 버그를 재현한다.
+
+**잘못된 코드 — bytes와 str을 `==`로 비교해서 항상 False가 됨(예외 없음)**
+```python
+response = b'Correct!\n'   # pwntools 등에서 실제로 받는 데이터는 항상 bytes 타입
+
+# *** 잘못된 부분: 왼쪽은 bytes, 오른쪽은 str -- 타입이 달라 절대 같을 수 없다 ***
+if response == 'Correct!\n':
+    print('정답 처리됨')
+else:
+    print('오답으로 처리됨')   # 실제로는 정답인데도 타입 불일치 때문에 이 줄이 실행된다
+```
+이 코드는 예외를 전혀 던지지 않기 때문에, 실행 결과만 보고는 "정답인데 왜 오답으로 나오지?"라는 논리 버그를 눈치채기 매우 어렵다.
+
+**고친 코드 — 비교하는 양쪽을 bytes로 통일**
+```python
+response = b'Correct!\n'
+
+# 고친 부분: 오른쪽도 b'...' bytes 리터럴로 맞춰서 타입을 통일한다
+if response == b'Correct!\n':
+    print('정답 처리됨')   # 이제 정확히 True로 판정된다
+else:
+    print('오답으로 처리됨')
+```
 
 ## 관련 글
 - REV-0996 — pwntools 프로세스 연결이 EOFError로 끊길 때

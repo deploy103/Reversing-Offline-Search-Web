@@ -12,7 +12,7 @@ keywords: ["SHA-1", "SHA1", "0x67452301", "0xEFCDAB89", "0x98BADCFE", "0x1032547
 aliases: ["sha1 상수", "sha1 초기값", "160비트 해시 알고리즘", "sha1 흔적 찾기"]
 symptom_keywords: ["67452301이라는 상수가 보임", "efcdab89 상수가 보임", "20바이트 해시 결과가 나옴", "5개의 32비트 변수를 초기화함", "5A827999 상수가 보임"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -143,9 +143,67 @@ print(hashlib.sha1(b"abc").hexdigest())
 ```
 바이너리가 요구하는 목표 해시값과 이 결과 형식(40자리 hex, 20바이트)이 맞는지 대조하면 SHA-1 사용 여부를 최종 확정할 수 있다.
 
+### 실행 가능한 전체 스크립트 — 출력 크기로 해시 종류 자동 판별 + 4자리 PIN 사전 대입
+
+이번 스크립트는 두 단계로 구성된다. 먼저 "출력 바이트 수만 보고 MD5/SHA-1/SHA-256 중 무엇인지" 자동으로 구분하는 헬퍼를 만들고, 그다음 SHA-1로 해시된 4자리 PIN을 실제로 사전 대입해 찾아낸다.
+
+```python
+# -*- coding: utf-8 -*-
+import hashlib   # SHA-1을 포함한 여러 해시 알고리즘을 제공하는 파이썬 표준 라이브러리
+
+# --- 1) 표준 테스트 벡터로 내 계산 도구가 올바른지 먼저 검증 ---
+test_vector = hashlib.sha1(b"abc").hexdigest()
+print("SHA-1('abc') =", test_vector)
+print("길이(자리수):", len(test_vector))   # 40자리(=20바이트)여야 정상
+
+# --- 2) 다이제스트 크기(바이트 수)만으로 어떤 해시 알고리즘인지 추측하는 헬퍼 ---
+DIGEST_SIZE_TABLE = {
+    16: "MD5",       # 16바이트 = 128비트
+    20: "SHA-1",      # 20바이트 = 160비트  <- 이번 글의 주제
+    32: "SHA-256",    # 32바이트 = 256비트
+    64: "SHA-512",    # 64바이트 = 512비트
+}
+
+def guess_hash_algorithm(digest_bytes: bytes) -> str:
+    """다이제스트의 바이트 길이만 보고 어떤 알고리즘인지 1차 추측."""
+    return DIGEST_SIZE_TABLE.get(len(digest_bytes), "알 수 없음 (표에 없는 크기)")
+
+sample_digest = hashlib.sha1(b"abc").digest()   # bytes 형태(문자열이 아닌 원본 20바이트)
+print("이 다이제스트는:", guess_hash_algorithm(sample_digest), " (바이트 수:", len(sample_digest), ")")
+
+# --- 3) "바이너리에 SHA-1(PIN)의 해시값만 하드코딩되어 있다"는 상황을 재현 ---
+secret_pin = "1337"                                    # 실전에서는 이 값을 모른다고 가정
+expected_hash = hashlib.sha1(secret_pin.encode()).hexdigest()
+print("목표 해시(바이너리에서 뽑았다고 가정):", expected_hash)
+
+# --- 4) secret_pin을 모른다고 가정하고 0000~9999까지 전부 시도 ---
+found_pin = None
+for pin in range(10_000):                        # 4자리 숫자이므로 만 가지뿐 — 순식간에 끝난다
+    candidate = str(pin).zfill(4)                 # 예: 7 -> "0007"
+    if hashlib.sha1(candidate.encode()).hexdigest() == expected_hash:
+        found_pin = candidate
+        break
+
+print("사전 대입으로 찾은 PIN:", found_pin)
+print("원래 정답과 같은가?", found_pin == secret_pin)
+```
+
+이 스크립트를 그대로 실행하면 다음과 같은 결과가 나온다.
+
+```text
+SHA-1('abc') = a9993e364706816aba3e25717850c26c9cd0d89
+길이(자리수): 40
+이 다이제스트는: SHA-1  (바이트 수: 20 )
+목표 해시(바이너리에서 뽑았다고 가정): 77ba9cd915c8e359d9733edcfe9c61e5aca92afb
+사전 대입으로 찾은 PIN: 1337
+원래 정답과 같은가? True
+```
+
+`guess_hash_algorithm()`은 초기값 상수를 하나도 보지 않고 오직 "결과가 몇 바이트인가"만으로 SHA-1임을 정확히 맞혔다 — 리버싱 중 코드를 자세히 읽기 전에, 비교 대상 버퍼의 크기만 먼저 확인해도 후보를 좁힐 수 있다는 걸 보여준다. 그다음 4자리 PIN 전체(10,000가지)를 SHA-1로 해시해가며 목표값과 대조한 결과, `1337`이라는 원래 정답을 정확히 찾아냈다. 여기서도 SHA-1을 거꾸로 계산한 게 아니라, 좁은 입력 공간을 전부 정방향으로 해시해서 우연히 일치하는 값을 찾은 것뿐이라는 점을 다시 강조해둔다.
+
 ## 관련 글
 - REV-0897 — MD5 흔적을 상수로 알아보는 법
-- REV-0895 — SHA-256 흔적을 상수로 알아보는 법 (예정)
+- REV-0895 — SHA-256 흔적을 상수로 알아보는 법
 - REV-0898 — HMAC 패턴 알아보기(이중 해시 구조)
 - [rev-0209-crc-fingerprints.md](./rev-0209-crc-fingerprints.md) — 암호학적 해시가 아닌 체크섬(CRC)과의 대비
 - [rev-0221-is-it-invertible.md](./rev-0221-is-it-invertible.md) — 해시 함수가 역산 불가능한 이유

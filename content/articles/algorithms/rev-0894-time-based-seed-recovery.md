@@ -12,7 +12,7 @@ keywords: ["srand(time(NULL))", "시간 기반 시드", "타임스탬프 브루�
 aliases: ["srand time null 문제", "시드가 시간이라 못 맞출 때", "타임스탬프로 시드 복원", "time() 기반 rand 공략"]
 symptom_keywords: ["srand(time(NULL))이라는 코드가 보임", "실행할 때마다 결과가 다름", "시드가 초 단위 유닉스 타임인 것 같음", "파일 생성 시각으로 시드를 좁힐 수 있을 것 같음"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -180,6 +180,54 @@ for delta in range(-10, 11):   # 네트워크 지연을 고려해 앞뒤로 넉�
     print(seed, guess)
 ```
 정답으로 확인된 `guess`를 서버에 전송하면 시드를 정확히 몰라도, "실행 시각 근방"이라는 좁은 창만으로 문제를 풀 수 있다.
+
+### 실행 가능한 전체 스크립트 — 숨겨진 시드를 실제로 몰라도 시간 창 브루트포스로 찾아내기
+
+이번에는 "시드가 정확히 몇 초였는지 전혀 모른다"는 상황을 코드 안에서 그대로 재현해서, 시간 창 브루트포스가 실제로 정답을 찾아내는 과정을 끝까지 실행해본다. 이해를 돕기 위해 `hidden_seed`(공격자는 모른다고 가정하는 값)를 스크립트 안에 일부러 숨겨두고, 이후 코드는 그 값을 전혀 참조하지 않은 채로 순수하게 관찰된 `rand()` 출력값만으로 시드를 역추적한다.
+
+```python
+# -*- coding: utf-8 -*-
+import ctypes   # 실제 시스템 glibc를 그대로 호출하기 위한 표준 도구
+
+libc = ctypes.CDLL("libc.so.6")
+
+# --- 0) "피해자 프로그램"을 흉내내는 부분 — 실전에서는 이 값을 공격자가 모른다 ---
+now = 1893456000        # 예제를 재현 가능하게 만들기 위해 고정해둔 가상의 "현재 시각"(유닉스 타임)
+hidden_seed = now - 47   # 실제 프로그램이 47초 전에 srand(time(NULL))을 호출했다고 가정
+
+libc.srand(hidden_seed)                       # 피해자 프로그램의 시드 설정
+observed_outputs = [libc.rand() for _ in range(3)]   # 프로그램이 화면에 출력한 rand() 값 3개
+print("관찰된 출력값(공격자가 실제로 볼 수 있는 정보):", observed_outputs)
+
+# --- 1) 여기서부터는 hidden_seed를 전혀 모른다고 가정하고 공격을 시작한다 ---
+def try_seed(candidate_seed: int, expected_outputs: list) -> bool:
+    """후보 시드로 rand()를 몇 번 호출해서, 관찰된 값들과 전부 일치하는지 검사."""
+    libc.srand(candidate_seed)
+    generated = [libc.rand() for _ in range(len(expected_outputs))]
+    return generated == expected_outputs   # 값 하나가 아니라 여러 개를 모두 비교해 오탐 방지
+
+found_seed = None
+for delta in range(0, 121):        # "최대 120초 전에 실행됐다"고 가정하고 그 범위를 전부 시도
+    candidate = now - delta
+    if try_seed(candidate, observed_outputs):
+        found_seed = candidate
+        print(f"시드 발견! candidate={candidate} (지금으로부터 {delta}초 전)")
+        break
+
+print("복원한 시드:", found_seed)
+print("실제 hidden_seed와 일치하는가?", found_seed == hidden_seed)   # 검증용 — 실전에서는 이 줄이 없다
+```
+
+이 스크립트를 그대로 실행하면 다음과 같은 결과가 나온다.
+
+```text
+관찰된 출력값(공격자가 실제로 볼 수 있는 정보): [581708673, 656406014, 667518886]
+시드 발견! candidate=1893455953 (지금으로부터 47초 전)
+복원한 시드: 1893455953
+실제 hidden_seed와 일치하는가? True
+```
+
+공격자 입장에서 실제로 가진 정보는 `observed_outputs`(화면에 출력된 세 개의 숫자)와 "대략 120초 이내에 실행됐을 것"이라는 시간 창뿐이었는데, 그것만으로 121가지 후보를 전부 시도해 정확히 47초 전의 시드(`1893455953`)를 찾아냈다. 세 개의 출력값을 동시에 비교했기 때문에(`try_seed`에서 `expected_outputs` 전체를 검사) 우연히 한 값만 맞는 오탐 없이 정확한 시드 하나만 골라낼 수 있었다. 이 시드를 알았으니 이후 이 프로그램이 `rand()`를 몇 번을 더 호출하든 전부 미리 계산할 수 있다.
 
 ## 관련 글
 - REV-0893 — rand()/srand() 시드 기반 문제 접근법

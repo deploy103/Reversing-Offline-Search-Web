@@ -12,7 +12,7 @@ keywords: ["Caesar cipher", "시저 암호", "ROT13", "ROT47", "shift cipher", "
 aliases: ["시저 암호란", "ROT13이 뭐임", "알파벳 밀기 암호", "shift cipher 알아보기"]
 symptom_keywords: ["문자를 N칸씩 밀고 26으로 나머지 연산함", "ROT13 문자열이 보임", "알파벳 범위를 벗어나면 다시 돌아옴", "대문자 소문자를 따로 처리하면서 시프트함"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -150,6 +150,75 @@ print(codecs.decode(ciphertext, "rot13"))
 # 출력: flag{this_is_easy}
 ```
 만약 시프트값이 13이 아니라 알 수 없는 값이었다면, 앞서 소개한 `caesar_bruteforce()`로 26가지를 모두 출력해 `flag{`로 시작하는 줄을 눈으로 찾으면 된다.
+
+### 실행 가능한 전체 스크립트 — 시프트값을 몰라도 26줄 전수조사로 바로 찾기
+
+이번에는 시프트값이 13(ROT13)이 아니라 **완전히 임의의 값**이라고 가정하고, 오직 암호문만 가지고 26가지를 모두 출력해서 사람이 눈으로 정답을 고르는 과정을 그대로 실행해본다.
+
+```python
+# -*- coding: utf-8 -*-
+
+def caesar_encrypt(text: str, n: int) -> str:
+    """시저 암호 암호화. 대문자/소문자를 각각 따로 처리하고, 그 외 문자는 그대로 둔다."""
+    out = []
+    for c in text:
+        if c.isupper():                                      # 대문자인 경우
+            out.append(chr((ord(c) - ord('A') + n) % 26 + ord('A')))
+        elif c.islower():                                     # 소문자인 경우
+            out.append(chr((ord(c) - ord('a') + n) % 26 + ord('a')))
+        else:                                                  # 숫자/기호/공백은 그대로
+            out.append(c)
+    return "".join(out)
+
+# --- 1) 정답 역할을 할 평문과, 그 평문을 알 수 없는 시프트값으로 암호화한 결과를 만든다 ---
+plaintext = "flag{caesar_is_easy}"
+secret_shift = 19                       # "바이너리 안에 숨겨진, 아직 모른다고 가정할 시프트값"
+ciphertext = caesar_encrypt(plaintext, secret_shift)
+print("암호문:", ciphertext)            # 실행 결과: yetz{vtxltk_bl_xtlr}
+
+# --- 2) 여기서부터는 secret_shift를 전혀 모른다고 가정하고, 26가지를 모두 시도한다 ---
+def caesar_bruteforce(ciphertext: str):
+    """0부터 25까지 모든 시프트값으로 복호화를 시도해서 (시프트값, 결과) 목록을 반환."""
+    results = []
+    for n in range(26):   # 시저 암호의 키 공간은 26가지뿐이라 전부 시도해도 순식간에 끝난다
+        decoded = "".join(
+            chr((ord(c) - ord('A') - n) % 26 + ord('A')) if c.isupper() else
+            chr((ord(c) - ord('a') - n) % 26 + ord('a')) if c.islower() else c
+            for c in ciphertext
+        )
+        results.append((n, decoded))
+    return results
+
+print("\n--- 26가지 전수조사 결과 ---")
+found_shift = None
+for n, decoded in caesar_bruteforce(ciphertext):
+    marker = " <-- 이 줄이 flag{ 로 시작함!" if decoded.startswith("flag{") else ""
+    print(f"shift={n:2d}: {decoded}{marker}")
+    if decoded.startswith("flag{"):
+        found_shift = n
+
+print("\n정답 시프트값:", found_shift)
+```
+
+이 스크립트를 그대로 실행하면 다음과 같은 결과가 나온다(일부만 표시).
+
+```text
+암호문: yetz{vtxltk_bl_xtlr}
+
+--- 26가지 전수조사 결과 ---
+shift= 0: yetz{vtxltk_bl_xtlr}
+shift= 1: xdsy{uswksj_ak_wskq}
+...
+shift=18: gmbh{dbftbs_jt_fbtz}
+shift=19: flag{caesar_is_easy} <-- 이 줄이 flag{ 로 시작함!
+shift=20: ekzf{bzdrzq_hr_dzrx}
+...
+shift=25: zfua{wuymul_cm_yums}
+
+정답 시프트값: 19
+```
+
+26줄 중 정확히 `shift=19`일 때만 `flag{`로 시작하는 알아볼 수 있는 문장(`flag{caesar_is_easy}`)이 나온다. 코드에서 `decoded.startswith("flag{")` 조건으로 그 줄을 자동으로 표시하게 만들었으므로, 사람이 26줄을 일일이 눈으로 훑을 필요도 없이 정답 줄을 바로 골라낼 수 있다.
 
 ## 관련 글
 - REV-0888 — 간단한 치환 암호(substitution cipher) 알아보기

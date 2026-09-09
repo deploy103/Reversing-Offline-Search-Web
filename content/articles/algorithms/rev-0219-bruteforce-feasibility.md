@@ -12,7 +12,7 @@ keywords: ["brute force", "keyspace", "input space", "charset", "attempts per se
 aliases: ["브루트포스 가능한지", "무차별 대입 가능한지", "이거 그냥 다 돌려볼까", "키스페이스 계산"]
 symptom_keywords: ["다 돌려보면 되는거 아님", "브루트포스 며칠걸림", "얼마나 걸릴지 모르겠음", "그냥 다 해볼까 고민", "경우의 수가 너무 많음"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -179,6 +179,83 @@ print(ok)          # True (기본 예산 3600초=1시간 안에 끝남)
 ```
 
 2088초는 기본 예산으로 잡은 3600초(1시간) 안에 들어오므로 `ok`는 `True`가 나온다. 이렇게 함수 하나로 여러 가정(문자셋, 길이, 속도, 예산)을 바꿔가며 즉시 판단할 수 있다는 게 이 계산법의 핵심 가치다.
+
+**심화 예제 — 판단 계산부터 실제 브루트포스 실행까지 이어지는 완결된 스크립트**
+
+이번에는 계산만 하는 게 아니라, 실제로 작은 키스페이스를 브루트포스로 완전히 뒤져서 정답을 찾아내는 전체 과정을 보여준다. 파이썬을 몰라도 따라올 수 있도록 한 줄씩 설명한다.
+
+```python
+import zlib
+# ↑ 체크 로직을 흉내 내기 위해 CRC-32 계산 함수가 담긴 zlib 모듈을 불러온다.
+import itertools
+# ↑ 모든 후보 조합을 순서대로 만들어주는 product() 함수가 담긴 itertools 모듈을 불러온다.
+import time
+# ↑ 실제 걸린 시간을 재기 위한 time 모듈을 불러온다.
+
+def feasibility(charset_size: int, length: int, rate_per_sec: float, budget_sec: float = 3600) -> tuple:
+    # ↑ 문자셋 크기, 미지 길이, 초당 시도 속도, 시간 예산을 받아서
+    #   (탐색 공간, 예상 소요 시간, 예산 안에 끝나는지 여부)를 돌려주는 함수.
+    keyspace = charset_size ** length
+    # ↑ 탐색해야 할 전체 후보 개수를 계산한다.
+    seconds = keyspace / rate_per_sec
+    # ↑ 후보 개수를 초당 속도로 나눠서 예상 소요 시간을 구한다.
+    return keyspace, seconds, seconds <= budget_sec
+    # ↑ 세 값을 튜플로 묶어서 돌려준다. 마지막 값은 예산 안에 끝나면 True.
+
+if __name__ == "__main__":
+    # ↑ 이 파일을 직접 실행할 때만 아래 블록을 수행한다.
+
+    CHARSET = "abcdefghijklmnopqrstuvwxyz"
+    # ↑ 이번 예제에서 미지 바이트가 취할 수 있는 문자 종류(소문자 26개)로 좁혔다고 가정.
+    LENGTH = 3
+    # ↑ 게이트 인벤토리(REV-0218)로 좁힌 결과, 미지 바이트가 3개뿐이라고 가정.
+    SECRET = b"ctf"
+    # ↑ 검증용으로 우리가 미리 알고 있는 정답(실전에서는 모르는 값).
+    TARGET = zlib.crc32(SECRET)
+    # ↑ 바이너리가 비교하는 목표값. 실전에서는 이 값을 디버거로 직접 확인해서 넣는다.
+
+    ks, secs, ok = feasibility(len(CHARSET), LENGTH, rate_per_sec=1_000_000)
+    # ↑ 소문자 26종, 길이 3, 파이썬 순수 루프 기준(초당 100만 회)으로 실현 가능성을 미리 계산.
+    print(f"탐색 공간: {ks}개, 예상 소요 시간: {secs:.6f}초, 실현 가능: {ok}")
+    # ↑ 계산 결과를 미리 출력해서, 브루트포스를 실행하기 전에 감을 잡는다.
+
+    start = time.perf_counter()
+    # ↑ 실제 브루트포스를 시작하기 직전의 시각을 기록한다.
+    found = None
+    # ↑ 정답을 찾으면 여기에 저장할 변수. 아직 못 찾았으므로 None으로 시작.
+    tries = 0
+    # ↑ 지금까지 몇 번 시도했는지 세는 변수.
+
+    for combo in itertools.product(CHARSET, repeat=LENGTH):
+        # ↑ CHARSET에서 LENGTH개를 뽑는 모든 순서 있는 조합을 하나씩 만들어낸다.
+        #   예: ('a','a','a'), ('a','a','b'), ... 알파벳 순서대로 전부.
+        tries += 1
+        # ↑ 시도 횟수를 하나 늘린다.
+        candidate = "".join(combo).encode()
+        # ↑ 문자 튜플을 하나의 문자열로 합친 뒤, 바이트로 인코딩한다.
+        if zlib.crc32(candidate) == TARGET:
+            # ↑ 후보의 CRC32 값이 목표값과 정확히 같으면
+            found = candidate
+            # ↑ 이 후보를 정답으로 기록한다.
+            break
+            # ↑ 정답을 찾았으므로 더 이상 반복하지 않고 즉시 멈춘다.
+
+    elapsed = time.perf_counter() - start
+    # ↑ 브루트포스를 마친 시각에서 시작 시각을 빼서 실제 걸린 시간을 구한다.
+
+    print(f"찾은 정답: {found}")
+    # ↑ 실제로 찾아낸 정답 후보를 출력한다.
+    print(f"실제 시도 횟수: {tries}회, 실제 걸린 시간: {elapsed:.6f}초")
+    # ↑ 실제로 몇 번 시도했고 얼마나 걸렸는지 출력해서, 미리 계산한 예상치와 비교해본다.
+```
+
+이 스크립트를 그대로 실행하면 다음과 같이 출력된다(직접 실행해서 검증한 값, 실행 환경에 따라 걸린 시간은 조금씩 달라질 수 있다):
+```
+탐색 공간: 17576개, 예상 소요 시간: 0.017576초, 실현 가능: True
+찾은 정답: b'ctf'
+실제 시도 횟수: 1852회, 실제 걸린 시간: 0.000556초
+```
+`26**3 = 17,576`개의 전체 후보 중에서, 알파벳 순서로 하나씩 시도하다가 정확히 1,852번째 시도에서 `b"ctf"`를 찾아내고 즉시 멈춘다(`c`, `t`, `f`가 알파벳의 앞쪽에 있어서 상대적으로 빨리 발견된 것이다). 미리 계산한 예상 소요 시간(약 0.018초)과 실제 걸린 시간(약 0.0006초)이 같은 자릿수 안에 있다는 것도 확인할 수 있다 — 이렇게 "미리 계산 → 실제 실행 → 비교" 흐름을 스크립트 하나로 만들어두면, 훨씬 큰 키스페이스를 실행하기 전에 시간을 낭비하지 않고 미리 판단할 수 있다.
 
 ## 관련 글
 - [rev-0218-length-check-backtrace.md](./rev-0218-length-check-backtrace.md) — 길이 검증부터 역추적하는 법

@@ -12,7 +12,7 @@ keywords: ["Z3 BitVec 비트폭", "z3 sort mismatch", "Z3Exception sort", "z3 Ze
 aliases: ["z3 비트 폭 오류", "z3 sorts do not match", "z3 BitVec 크기 안 맞음", "z3 타입 에러"]
 symptom_keywords: ["z3에서 sort mismatch 에러가 남", "z3 코드가 sorts do not match 라고 함", "BitVec 크기가 달라서 에러", "z3 concat extract 에러"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -177,6 +177,46 @@ if s.check() == sat:
     print('key =', m[key].as_long())  # 100
 ```
 `ZeroExt(24, key)`로 폭을 8에서 32비트로 맞춘 뒤에야 32비트 상수 `700`과 곱셈/비교를 할 수 있었다는 점이 이 예제의 핵심이다.
+
+### 에러를 재현하는 잘못된 코드 vs 고쳐서 정상 동작하는 코드
+`unsigned short idx; unsigned int base; if (base + idx == 0x1000)`처럼 서로 다른 크기의 두 변수를 더하는 C 로직을 옮기는 상황이다. 두 스크립트 모두 `pip install z3-solver`만 되어 있으면 그대로 실행된다.
+
+**잘못된 코드 — 폭이 다른 두 BitVec을 변환 없이 그대로 더해서 Z3Exception 재현**
+```python
+from z3 import *
+
+# C 원본: unsigned short idx (16비트) + unsigned int base (32비트)
+idx = BitVec('idx', 16)     # unsigned short: 16비트
+base = BitVec('base', 32)   # unsigned int: 32비트
+
+s = Solver()
+try:
+    # *** 잘못된 부분: 16비트 idx와 32비트 base를 폭 변환 없이 그냥 더함 ***
+    s.add(base + idx == 0x1000)   # 두 BitVec의 sort(타입)가 서로 다름 -> 예외 발생
+    print(s.check())
+except Z3Exception as e:
+    print('에러 발생:', e)   # z3.z3types.Z3Exception: sort mismatch
+```
+
+**고친 코드 — `ZeroExt`로 폭을 먼저 맞춘 뒤 연산**
+```python
+from z3 import *
+
+idx = BitVec('idx', 16)
+base = BitVec('base', 32)
+
+s = Solver()
+# *** 고친 부분: idx(16비트)를 base와 같은 32비트로 먼저 확장한다 ***
+# unsigned short -> unsigned int 확장이므로, 부호 없는 확장인 ZeroExt를 쓴다.
+# ZeroExt의 첫 인자는 "추가로 늘릴 비트 수"이므로 32 - 16 = 16을 넘긴다.
+idx_32 = ZeroExt(32 - 16, idx)   # 16비트 -> 32비트로 확장 (상위 16비트를 0으로 채움)
+print('idx_32 폭:', idx_32.size())   # 32 (base와 동일한 폭)
+
+s.add(base + idx_32 == 0x1000)   # 이제 둘 다 32비트라서 정상적으로 연산 가능
+print(s.check())    # sat
+print(s.model())
+```
+`idx_32.size()`로 확장 후 폭이 정말 `base`와 같은 32비트가 됐는지 먼저 확인한 뒤 연산에 쓰는 습관을 들이면, `sort mismatch` 예외를 사전에 방지할 수 있다.
 
 ## 관련 글
 - REV-0993 — Z3에서 unsat이 떴는데 조건이 맞다고 생각될 때

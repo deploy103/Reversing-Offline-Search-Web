@@ -110,8 +110,8 @@ x64dbg: Ctrl+F2 (Restart)
 - REV-0826 — 디버거에서 분기 조건을 강제로 바꿔서 실험하기(Flag 조작)
 - REV-0827 — 루프를 건너뛰기 위해 RIP를 강제로 옮기는 법
 - REV-0576 — 가상머신 아티팩트(레지스트리/파일)로 VM 탐지하는 기법
-- REV-0821 — GDB reverse debugging 개념 소개(record/replay) (예정)
-- REV-0822 — Time Travel Debugging 개념 소개(WinDbg 참고) (예정)
+- REV-0821 — GDB reverse debugging 개념 소개(record/replay)
+- REV-0822 — Time Travel Debugging 개념 소개(WinDbg 참고)
 
 ## 출처/검증
 - VMware Workstation Snapshot/Revert 기능: VMware 공식 문서(Workstation Pro 사용 설명서, Snapshot 관리 절) 기준.

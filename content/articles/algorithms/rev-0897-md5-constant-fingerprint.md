@@ -12,7 +12,7 @@ keywords: ["MD5", "0x67452301", "0xefcdab89", "0x98badcfe", "0x10325476", "T[i]"
 aliases: ["md5 상수", "md5 초기값", "128비트 해시 알고리즘", "md5 흔적 찾기"]
 symptom_keywords: ["67452301 상수가 보임", "efcdab89 98badcfe 10325476 네 개만 보임", "16바이트 해시 결과가 나옴", "sin 함수로 만든 상수 테이블이 있음", "d76aa478 상수가 보임"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -142,9 +142,69 @@ print(hashlib.md5(b"").hexdigest())
 # d41d8cd98f00b204e9800998ecf8427e
 ```
 
+### 심화 예제 — T 테이블을 직접 계산하고 바이너리에서 상수 지문을 자동으로 찾기
+아래 스크립트는 (1) RFC 1321 공식으로 T[1]~T[4]를 실제로 계산해서 문서값과 대조하고, (2) 파일에서 읽은 바이트열 안에 MD5의 4개 초기값이 리틀엔디안으로 연속해서 있는지 자동으로 찾아주는 "지문 스캐너"까지 포함한 완결된 스크립트다. 그대로 복사해서 실행하면 된다.
+```python
+import math       # sin, floor 계산에 필요한 수학 모듈
+import hashlib     # 표준 MD5 계산 결과와 대조하기 위한 모듈
+
+def generate_md5_t_table():
+    """RFC 1321 공식 T[i] = floor(abs(sin(i)) * 2**32) (i=1..64)를 그대로 계산한다."""
+    table = []                         # 결과를 담을 리스트 (인덱스 0 = T[1])
+    for i in range(1, 65):             # i는 1부터 64까지 (라디안 단위로 사인 계산)
+        value = math.floor(abs(math.sin(i)) * (2 ** 32))  # 공식 그대로 계산
+        table.append(value & 0xFFFFFFFF)  # 32비트로 잘라서 저장(안전하게 마스킹)
+    return table
+
+t_table = generate_md5_t_table()      # 64개짜리 T 테이블을 실제로 만들어본다
+
+# RFC 1321에 적힌 첫 4개 값과 직접 계산한 값이 같은지 확인
+expected_first_four = [0xd76aa478, 0xe8c7b756, 0x242070db, 0xc1bdceee]
+print("계산된 T[1..4]:", [hex(v) for v in t_table[:4]])
+print("RFC 1321 문서값:", [hex(v) for v in expected_first_four])
+assert t_table[:4] == expected_first_four, "T 테이블 계산이 RFC 1321과 다름!"
+print("T 테이블 계산 검증 성공 - 이 배열이 바이너리에 있으면 MD5 확정")
+
+# ---- 여기부터는 "바이너리 안에서 MD5 지문을 자동으로 찾는" 실전 스캐너 ----
+def find_md5_fingerprint(blob: bytes) -> bool:
+    """blob(바이너리를 읽은 바이트열) 안에서 MD5 초기값 4개가
+    리틀엔디안으로 연속해서 나오는지 검사한다."""
+    # A, B, C, D를 리틀엔디안 4바이트씩 이어붙인 16바이트 패턴을 만든다
+    pattern = (
+        (0x67452301).to_bytes(4, "little") +
+        (0xefcdab89).to_bytes(4, "little") +
+        (0x98badcfe).to_bytes(4, "little") +
+        (0x10325476).to_bytes(4, "little")
+    )
+    return pattern in blob   # 이 16바이트가 blob 안에 그대로 있으면 MD5로 판단
+
+# 가상의 ".rodata" 덤프를 흉내낸 바이트열(실제로는 IDA에서 덤프한 바이트를 넣으면 된다)
+fake_rodata = (
+    b"\x90\x90"
+    + (0x67452301).to_bytes(4, "little")
+    + (0xefcdab89).to_bytes(4, "little")
+    + (0x98badcfe).to_bytes(4, "little")
+    + (0x10325476).to_bytes(4, "little")
+    + b"\x00\x00"
+)
+
+print("MD5 지문 발견 여부:", find_md5_fingerprint(fake_rodata))  # True가 나와야 정상
+
+# 마지막으로 표준 라이브러리 결과와 대조 (빈 문자열 테스트 벡터)
+print("hashlib.md5(b'') =", hashlib.md5(b"").hexdigest())
+```
+실행 결과는 다음과 같이 나온다(실제로 실행해 확인함):
+```text
+계산된 T[1..4]: ['0xd76aa478', '0xe8c7b756', '0x242070db', '0xc1bdceee']
+RFC 1321 문서값: ['0xd76aa478', '0xe8c7b756', '0x242070db', '0xc1bdceee']
+T 테이블 계산 검증 성공 - 이 배열이 바이너리에 있으면 MD5 확정
+MD5 지문 발견 여부: True
+hashlib.md5(b'') = d41d8cd98f00b204e9800998ecf8427e
+```
+
 ## 관련 글
 - REV-0896 — SHA-1 흔적을 상수로 알아보는 법
-- REV-0895 — SHA-256 흔적을 상수로 알아보는 법 (예정)
+- REV-0895 — SHA-256 흔적을 상수로 알아보는 법
 - REV-0898 — HMAC 패턴 알아보기(이중 해시 구조)
 - [rev-0209-crc-fingerprints.md](./rev-0209-crc-fingerprints.md) — 암호학적 해시가 아닌 체크섬(CRC)과의 대비
 - [rev-0221-is-it-invertible.md](./rev-0221-is-it-invertible.md) — 해시 함수가 역산 불가능한 이유

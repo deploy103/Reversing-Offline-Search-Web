@@ -12,7 +12,7 @@ keywords: ["파이썬 재구현", "check function port", "rol32", "ror32", "32�
 aliases: ["체크 함수 파이썬으로 옮기기", "어셈블리를 파이썬으로", "디스어셈블리 python 변환", "check 함수 재현"]
 symptom_keywords: ["파이썬으로 어떻게 옮기지", "레지스터를 변수로 바꾸는 법", "rol 파이썬 함수 없음", "값이 계속 달라짐 마스크"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -159,6 +159,63 @@ IDA: 루프 블록을 그래프뷰에서 선택 후 텍스트뷰(`Space`)로 전
 5. 오라클이 검증되면 브루트포스든 역연산이든 그 위에서 풀이를 진행한다.
 
 이 순서를 지키면, "알고리즘 이름이 뭔지 몰라서 못 풀겠다"는 상황 자체가 거의 발생하지 않는다 — 이름을 몰라도 명령어를 그대로 옮기면 정확히 동일하게 동작하는 파이썬 함수를 만들 수 있기 때문이다.
+
+### 실행 가능한 전체 스크립트 (파이썬 문법을 몰라도 따라할 수 있도록 한 줄씩 주석)
+
+아래 스크립트는 처음부터 끝까지 그대로 복사해서 실행하면 동작한다. 파이썬을 처음 접하는 사람도 각 줄의 주석만 읽으면 무슨 일이 벌어지는지 알 수 있게 적었다.
+
+```python
+# -*- coding: utf-8 -*-
+from itertools import product   # 문자 조합(순열)을 자동으로 만들어주는 표준 도구
+import string                   # 알파벳 문자 목록(a~z 등)을 손쉽게 가져오기 위한 표준 도구
+
+def rol32(x, n):
+    """32비트 정수 x를 왼쪽으로 n비트 회전시키는 함수 (어셈블리의 rol 명령어와 동일)."""
+    x &= 0xFFFFFFFF          # x를 32비트 범위(0~2^32-1)로 강제로 잘라낸다
+    n &= 31                  # 회전량도 0~31 범위로 정규화(32비트니까 32번 돌면 원점)
+    left_part = (x << n) & 0xFFFFFFFF     # 왼쪽으로 밀었을 때 남는 비트(넘친 비트는 잘림)
+    right_part = x >> (32 - n) if n else 0  # 넘쳐서 사라진 비트를 오른쪽 끝으로 감아 넣기 위한 계산
+    return (left_part | right_part) & 0xFFFFFFFF  # 두 부분을 합쳐 최종 32비트 결과 반환
+
+def compute_hash(input_bytes: bytes) -> int:
+    """바이너리의 check 함수를 그대로 옮긴 해시 계산 함수. 입력은 bytes(바이트 나열)."""
+    h = 0                        # ecx = 0 에 대응하는 누산 변수(해시값), 처음엔 0에서 시작
+    for b in input_bytes:        # 입력 바이트를 앞에서부터 하나씩 꺼낸다(어셈블리의 루프에 대응)
+        h = rol32(h, 3)          # 매 반복마다 먼저 3비트 왼쪽 회전 (rol ecx, 3)
+        h = (h + b) & 0xFFFFFFFF # 그 다음 현재 바이트를 더하고, 32비트로 마스킹 (add ecx, edx)
+    return h                     # 루프가 끝난 뒤 최종 해시값을 반환
+
+# --- 1) 정답(플래그) 역할을 할 가상의 문자열로 목표 해시값을 미리 만들어 둔다 ---
+# 실제 CTF에서는 이 값이 바이너리의 .rodata에 상수로 박혀 있어서 그대로 덤프하면 된다.
+SECRET_ANSWER = b"ctf"                 # 이번 예제에서 "정답"이라고 가정한 3글자 문자열
+TARGET = compute_hash(SECRET_ANSWER)   # 그 정답을 해시해서 목표값을 계산
+print("목표 해시값(16진수):", hex(TARGET))   # 실행하면 0x1cc6 이 출력된다
+
+# --- 2) 목표 해시값만 알고 있다고 가정하고, 소문자 3글자 이내를 모두 시도해 역으로 찾는다 ---
+CHARSET = string.ascii_lowercase   # 시도할 문자 집합: 소문자 a부터 z까지 26개
+found = None                       # 아직 못 찾았으므로 None으로 초기화
+for length in range(1, 4):                          # 길이 1, 2, 3을 순서대로 시도
+    for combo in product(CHARSET.encode(), repeat=length):  # 해당 길이의 모든 문자 조합을 생성
+        candidate = bytes(combo)                    # 조합을 실제 bytes 객체로 변환
+        if compute_hash(candidate) == TARGET:        # 이 후보의 해시가 목표값과 같은지 검사
+            found = candidate                        # 같으면 정답 후보로 저장
+            break                                    # 더 이상 찾을 필요 없으니 안쪽 루프 종료
+    if found:
+        break                                        # 바깥쪽 루프도 종료
+
+print("브루트포스로 찾은 입력:", found)   # 실행 결과: b'bzv'
+print("원래 정답과 같은가?", found == SECRET_ANSWER)  # 실행 결과: False
+```
+
+이 스크립트를 그대로 실행하면 다음과 같은 결과가 나온다.
+
+```text
+목표 해시값(16진수): 0x1cc6
+브루트포스로 찾은 입력: b'bzv'
+원래 정답과 같은가? False
+```
+
+여기서 중요한 교훈이 하나 있다 — 브루트포스가 찾아낸 `b'bzv'`는 원래 정답이었던 `b'ctf'`와 **다른 문자열**인데도 똑같은 해시값 `0x1cc6`을 만들어낸다. 이건 코드 실수가 아니라, 이 절차 앞부분에서 이미 설명한 "여러 입력이 같은 해시로 압축될 수 있다"는 사실을 직접 눈으로 확인한 것이다. 하지만 CTF의 체크 함수는 대부분 "해시가 일치하는지"만 검사하므로, `b'bzv'`를 입력해도 검증 로직은 통과한다 — 브루트포스 오라클의 목적은 "정확히 같은 원문"이 아니라 "검증을 통과하는 입력"을 찾는 것이기 때문이다.
 
 ## 관련 글
 - [rev-0218-length-check-backtrace.md](./rev-0218-length-check-backtrace.md) — 브루트포스 전에 입력 길이를 먼저 알아내는 법

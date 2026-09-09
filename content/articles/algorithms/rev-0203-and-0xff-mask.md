@@ -12,7 +12,7 @@ keywords: ["and 0xff", "하위 바이트 마스크", "byte 캐스팅", "체크�
 aliases: ["and 0xff 왜함", "and ff 뭐임", "하위 바이트만 남김", "체크섬 wraparound"]
 symptom_keywords: ["and eax 0xff가 계속 나옴", "왜 하위 바이트만 씀", "체크섬이 256 넘으면 이상해짐", "and로 값이 작아짐"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -104,6 +104,38 @@ print(hex(missing))
 int v = (unsigned char)signed_char_value;   // & 0xFF와 동일 효과
 ```
 `signed_char_value`가 `-1`(0xFF)이어도 `v`는 `-1`이 아니라 `255`가 된다 — `movzx` 계열과 동일한 의도.
+
+**예제 3 — 처음부터 끝까지 실행되는 전체 스크립트 (체크섬 방정식 역산 + 최종 재검증까지)**
+
+체크섬의 마지막 한 바이트가 자유도(내가 원하는 값을 골라도 되는 자리)라면, 나머지 부분의 체크섬을 미리 계산해두고 목표 체크섬에 맞는 마지막 바이트를 방정식으로 바로 구할 수 있다. 아래 스크립트는 값을 구한 뒤 실제로 다시 합쳐서 체크섬이 맞는지까지 재검증한다.
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0203 실전 스크립트: 체크섬(sum & 0xFF)의 마지막 자유 바이트를 방정식으로 역산한다.
+
+data_prefix = b"CTF{part"     # 이미 알고 있는 flag의 앞부분(디스어셈블리/문자열에서 확인)
+target_checksum = 0x42        # 바이너리에서 "이 값과 같아야 통과"라고 확인한 체크섬 목표값
+
+# 1) 알고 있는 부분의 체크섬을 먼저 구하고, and eax, 0xFF와 동일하게 8비트로 마스킹한다.
+partial = sum(data_prefix) & 0xFF
+print("알고 있는 부분의 체크섬:", hex(partial))
+# 실행 결과: 알고 있는 부분의 체크섬: 0xf
+
+# 2) (partial + missing) & 0xFF == target_checksum 이 성립하도록 missing을 방정식으로 구한다.
+#    뺄셈 후 다시 & 0xFF를 붙여서, 결과가 음수가 나오는 경우까지 0~255 범위로 자동 보정한다.
+missing = (target_checksum - partial) & 0xFF
+print("복원한 마지막 바이트:", hex(missing), repr(chr(missing)))
+# 실행 결과: 복원한 마지막 바이트: 0x33 '3'
+
+# 3) 구한 값이 정말 맞는지, 실제로 이어붙여서 체크섬을 처음부터 다시 계산해 재검증한다.
+full_data = data_prefix + bytes([missing])
+final_checksum = sum(full_data) & 0xFF
+print("완성된 데이터:", full_data)
+print("최종 체크섬:", hex(final_checksum), "목표와 일치?", final_checksum == target_checksum)
+# 실행 결과: 완성된 데이터: b'CTF{part3'
+# 실행 결과: 최종 체크섬: 0x42 목표와 일치? True
+```
 
 ## 관련 글
 - REV-0200 — ADD SUB 상수 기반 문자 변환

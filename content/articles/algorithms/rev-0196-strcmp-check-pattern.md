@@ -12,7 +12,7 @@ keywords: ["strcmp", "flag 검증", "문자열 비교", "call strcmp", "test eax
 aliases: ["strcmp 어디서 걸림", "strcmp 뭐임", "정답 문자열 어디", "flag 비교 함수"]
 symptom_keywords: ["strcmp 뒤에 test eax eax", "correct 문자열이 안 뜸", "정답이 어디 있는지 모르겠음", "함수 인자에 이상한 문자열이 있음"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -161,6 +161,50 @@ RCX = 0x0000000000401234  ->  "myguess123"
 RDX = 0x0000000000402050  ->  "CTF{dynamic_check_ok}"
 ```
 RDX 쪽이 사람이 읽을 수 있는 flag 형태이므로 이것이 정답이다.
+
+**예제 5 — 처음부터 끝까지 실행되는 전체 스크립트**
+
+아래 스크립트는 "IDA Hex View나 x64dbg 메모리 덤프에서 바이트를 그대로 복사해온 상황"을 가정하고, 그 값을 파이썬으로 옮겨 flag를 즉시 복원한 다음, 로컬에서 직접 만든 `my_strcmp` 함수로 "이 값이 정말 정답인지"까지 재확인한다. 파이썬을 처음 써보는 사람도 그대로 복사해서 실행해보면 된다.
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0196 실전 스크립트: strcmp 비교 대상 문자열을 바로 읽어서 flag를 복원한다.
+
+def my_strcmp(a: bytes, b: bytes) -> int:
+    # C 표준 라이브러리의 strcmp와 똑같이 동작하도록 직접 만든 함수다.
+    # 앞에서부터 한 바이트씩 비교하다가 다른 바이트가 나오면 그 차이를 반환하고,
+    # 끝까지 같으면(둘 다 끝났으면) 0을 반환한다 -> "0이면 일치"라는 규칙은 그대로 유지된다.
+    for x, y in zip(a, b):
+        if x != y:
+            return x - y          # 다른 바이트를 찾으면 그 차이를 바로 리턴
+    return len(a) - len(b)        # 여기까지 왔으면 길이 차이로 판정(둘 다 같으면 0)
+
+# 1) IDA Hex View(Alt+8)나 x64dbg의 "Follow in Dump"에서 RSI/RDX가 가리키는 주소를 보고
+#    화면에 나온 raw byte들을 그대로 옮겨적은 문자열이라고 가정한다.
+dumped_hex = "4354467b656173795f737472636d707d"  # 실제 문제에서는 여기에 덤프한 값을 넣는다
+
+# 2) bytes.fromhex()는 "16진수 두 글자 = 1바이트"로 해석해서 파이썬 bytes로 바꿔준다.
+answer = bytes.fromhex(dumped_hex)
+
+# 3) C 문자열은 항상 끝에 NUL(0x00)이 붙으므로, 혹시 덤프에 그 뒤 쓰레기 값까지 포함됐다면
+#    첫 번째 0x00에서 잘라내서 진짜 문자열 부분만 남긴다.
+answer = answer.split(b"\x00")[0]
+
+# 4) 사람이 읽을 수 있는 문자열(str)로 디코딩한다. 이게 곧 정답 flag다.
+flag = answer.decode()
+print("복원된 flag:", flag)
+# 실행 결과: 복원된 flag: CTF{easy_strcmp}
+
+# 5) 실전에서는 이 값을 진짜로 입력해도 되는지, 직접 만든 my_strcmp로 한 번 더 확인해볼 수 있다.
+my_guess = b"CTF{easy_strcmp}"   # 이 자리에 실제로 입력창에 쳐볼 문자열을 넣는다
+result = my_strcmp(my_guess, answer)
+if result == 0:
+    print("strcmp 결과 0 -> 일치! 이 값을 그대로 제출하면 된다.")
+else:
+    print("strcmp 결과", result, "-> 아직 불일치, 값을 다시 확인해야 한다.")
+# 실행 결과: strcmp 결과 0 -> 일치! 이 값을 그대로 제출하면 된다.
+```
 
 ## 관련 글
 - REV-0197 — memcmp 기반 Flag 검증 패턴

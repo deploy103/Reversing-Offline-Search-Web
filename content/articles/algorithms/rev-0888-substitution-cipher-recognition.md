@@ -12,7 +12,7 @@ keywords: ["substitution cipher", "치환 암호", "단일 문자 치환", "mono
 aliases: ["문자 치환 암호", "단순 치환", "monoalphabetic", "문자 하나씩 다른 문자로 바꾸는 암호"]
 symptom_keywords: ["문자 하나가 다른 문자 하나로 고정 매핑됨", "26바이트짜리 알파벳 배열이 있음", "빈도가 특이한 문자가 자주 등장함", "각 문자를 룩업 테이블에서 찾아 치환함"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -157,6 +157,73 @@ ciphertext = "YKQU{ATCG}"   # 예시 암호문
 print("".join(dec_map.get(c, c) for c in ciphertext))
 ```
 매핑표를 그대로 반영해 딕셔너리를 만들었으므로, 위 코드는 별도의 빈도 분석 없이 테이블 하나만으로 즉시 평문을 복원한다. 테이블을 확보하지 못한 경우에만 빈도 분석/known-plaintext 절차로 넘어가면 된다.
+
+### 실행 가능한 전체 스크립트 — 테이블을 모를 때 빈도 분석으로 실제로 풀어보기
+
+이번에는 룩업 테이블을 전혀 모른다고 가정하고, 오직 **암호문의 문자 빈도**만으로 매핑을 추측해 실제로 복호화까지 해보자. 아래 스크립트는 문장 하나를 치환 암호로 암호화한 뒤, 그 결과만 가지고 빈도 분석으로 되돌리는 과정을 그대로 보여준다.
+
+```python
+# -*- coding: utf-8 -*-
+from collections import Counter   # 문자별 등장 횟수를 세기 위한 표준 도구
+
+# --- 1) 정방향 치환 테이블(실전에서는 이 테이블을 모른다고 가정하는 것이 핵심) ---
+sub_table = "QWERTYUIOPASDFGHJKLZXCVBNM"    # A~Z가 각각 이 순서의 문자로 바뀐다
+alphabet  = "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+enc_map = dict(zip(alphabet, sub_table))     # {'A':'Q', 'B':'W', ...} 형태의 암호화용 딕셔너리
+
+# --- 2) 평문을 하나 만들고, 위 테이블로 암호화해서 "관찰된 암호문"을 만든다 ---
+plaintext = "THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG AND THE FLAG IS HERE"
+ciphertext = "".join(enc_map.get(c, c) for c in plaintext)   # 알파벳이 아닌 문자(공백)는 그대로 통과
+print("암호문:", ciphertext)
+
+# --- 3) 여기서부터는 "암호문만 주어졌다"고 가정하고 빈도 분석을 시작한다 ---
+letters = [c for c in ciphertext if c.isalpha()]   # 알파벳 문자만 골라낸다(공백/기호는 제외)
+counts = Counter(letters)                           # 각 문자가 몇 번 나왔는지 센다
+most_common = counts.most_common()                  # 빈도가 높은 순서로 정렬
+print("암호문 문자 빈도(상위 6개):", most_common[:6])
+
+# 영어 텍스트의 알려진 빈도 순서(높은 빈도부터). 이건 고정된 상식이므로 코드에 그대로 적어둔다.
+ENGLISH_FREQ_ORDER = "ETAOINSHRDLCUMWFGYPBVKJXQZ"
+
+# --- 4) "암호문에서 가장 흔한 문자 -> 영어에서 가장 흔한 문자"로 1차 매핑을 자동 생성 ---
+cipher_freq_order = [c for c, _ in most_common]   # 암호문에서 등장한 문자를 빈도 순서로 나열
+guessed_dec_map = {}
+for cipher_char, plain_char in zip(cipher_freq_order, ENGLISH_FREQ_ORDER):
+    guessed_dec_map[cipher_char] = plain_char
+
+def decrypt_with_guess(ciphertext, dec_map):
+    return "".join(dec_map.get(c, c) for c in ciphertext)
+
+first_guess = decrypt_with_guess(ciphertext, guessed_dec_map)
+print("빈도만으로 추측한 1차 복호화 결과:", first_guess)
+```
+
+이 스크립트를 그대로 실행하면 다음과 같은 결과가 나온다.
+
+```text
+암호문: ZIT JXOEA WKGVF YGB PXDHL GCTK ZIT SQMN RGU QFR ZIT YSQU OL ITKT
+암호문 문자 빈도(상위 6개): [('T', 6), ('I', 4), ('G', 4), ('Z', 3), ('K', 3), ('Q', 3)]
+빈도만으로 추측한 1차 복호화 결과: OTE WSHFG YIAPR DAB VSKJL AXEI OTE CNQZ UAM NRU OTE DCNM HL TEIE
+```
+
+실제로 실행해보면 `T`가 6번으로 가장 많이 등장했고, 영어에서 가장 흔한 문자는 `E`이므로 스크립트는 `T -> E`로 1차 추측한다. 결과를 보면 첫 단어가 `THE`가 아니라 `OTE`로 나오는 등 완벽하게 들어맞지는 않는다 — 이 예제 문장이 알파벳 64자로 통계적으로 신뢰하기엔 짧기 때문이다. 다음처럼 원래 정답 테이블로 복호화한 결과와 글자 단위로 직접 대조해보면 정확도를 숫자로 확인할 수 있다.
+
+```python
+dec_map_true = dict(zip(sub_table, alphabet))       # 원래 정답 역방향 테이블
+true_decryption = decrypt_with_guess(ciphertext, dec_map_true)
+print("정답 테이블로 복호화:", true_decryption)
+match_count = sum(1 for a, b in zip(first_guess, true_decryption) if a == b)
+print("1차 추측과 정답이 일치하는 글자 수:", match_count, "/", len(true_decryption))
+```
+
+이 부분을 실행하면 다음이 출력된다.
+
+```text
+정답 테이블로 복호화: THE QUICK BROWN FOX JUMPS OVER THE LAZY DOG AND THE FLAG IS HERE
+1차 추측과 정답이 일치하는 글자 수: 19 / 64
+```
+
+64글자(공백 포함) 중 19글자만 순수 빈도 분석 1회 시도로 정확히 맞았다는 뜻이다. 낮아 보이는 숫자이지만, 알파벳 자리 26개 중 상당수가 이미 맞았다는 의미이고, 사람이 `OTE`를 보고 `THE`로 교정하는 것처럼 흔한 단어 패턴 몇 개만 손으로 고쳐도 나머지 매핑이 도미노처럼 확정된다. 텍스트가 길어질수록(수백 자 이상) 이 1차 추측만으로도 정확도가 크게 올라간다 — 이것이 빈도 분석이 "완전 자동 해독기"가 아니라 "사람이 교정하는 초기 후보 생성기"로 쓰이는 이유다.
 
 ## 관련 글
 - REV-0889 — Vigenere류 반복 키 암호 알아보기

@@ -12,7 +12,7 @@ keywords: ["HMAC", "0x36", "0x5c", "ipad", "opad", "이중 해시", "RFC 2104", 
 aliases: ["hmac 패턴", "이중 해시 구조", "ipad opad 상수", "키 기반 해시 검증"]
 symptom_keywords: ["같은 해시 함수를 두 번 호출함", "0x36 상수로 XOR함", "0x5c 상수로 XOR함", "블록 길이만큼 0으로 패딩된 키가 보임", "해시 결과를 다시 해시에 넣음"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -126,10 +126,57 @@ print(hmac.new(key, msg, hashlib.sha256).hexdigest())
 ```
 이 값이 바이너리가 요구하는 목표값과 일치하면 HMAC-SHA256, 키, 메시지 형식까지 모두 확정된 것이다.
 
+### 심화 예제 — ipad/opad를 직접 XOR해서 HMAC-SHA256을 처음부터 구현하기
+표준 라이브러리 `hmac.new()`만 쓰면 "왜 결과가 그렇게 나오는지"가 안 보인다. 아래 스크립트는 RFC 2104 공식을 한 줄씩 그대로 옮겨서 `hmac` 모듈 없이 직접 구현하고, 마지막에만 표준 라이브러리와 비교해서 정확성을 확인한다.
+```python
+import hashlib   # 내부 해시 함수(SHA-256) 계산에 사용
+import hmac      # 마지막에 결과를 대조하기 위한 용도로만 사용(직접 구현과 비교)
+
+BLOCK_SIZE = 64   # SHA-256 계열의 블록 크기(바이트) - RFC 2104가 정의하는 값
+
+def my_hmac_sha256(key: bytes, message: bytes) -> bytes:
+    """RFC 2104 공식을 그대로 옮긴 HMAC-SHA256 구현: H((K^opad) || H((K^ipad) || msg))"""
+    # 1) 키가 블록 크기(64바이트)보다 길면 먼저 해시로 줄인다
+    if len(key) > BLOCK_SIZE:
+        key = hashlib.sha256(key).digest()
+    # 2) 키가 블록 크기보다 짧으면 뒤를 0x00으로 채운다 (이렇게 만든 값이 K')
+    key = key + b"\x00" * (BLOCK_SIZE - len(key))
+
+    # 3) ipad(0x36)와 opad(0x5C)를 키와 XOR한 두 블록을 각각 만든다
+    ipad_key = bytes(b ^ 0x36 for b in key)   # 내부(inner) 해시용 키
+    opad_key = bytes(b ^ 0x5C for b in key)   # 외부(outer) 해시용 키
+
+    # 4) 내부 해시: H((K xor ipad) || message)
+    inner_hash = hashlib.sha256(ipad_key + message).digest()
+
+    # 5) 외부 해시: H((K xor opad) || 내부 해시 결과) — 이것이 최종 HMAC 값
+    outer_hash = hashlib.sha256(opad_key + inner_hash).digest()
+
+    return outer_hash   # 32바이트(SHA-256 다이제스트 크기)
+
+key = b"key"
+msg = b"message"
+
+my_result = my_hmac_sha256(key, msg).hex()                       # 직접 구현한 결과
+lib_result = hmac.new(key, msg, hashlib.sha256).hexdigest()      # 표준 라이브러리 결과
+
+print("직접 구현 결과 :", my_result)
+print("표준 hmac 결과 :", lib_result)
+assert my_result == lib_result, "직접 구현이 표준 라이브러리와 다름!"
+print("두 결과가 일치 - ipad/opad 이중 해시 구현이 정확함")
+```
+실제로 실행하면 다음과 같이 두 결과가 완전히 같게 나온다(실행 확인함):
+```text
+직접 구현 결과 : 6e9ef29b75fffc5b7abae527d58fdadb2fe42e7219011976917343065f58ed4a
+표준 hmac 결과 : 6e9ef29b75fffc5b7abae527d58fdadb2fe42e7219011976917343065f58ed4a
+두 결과가 일치 - ipad/opad 이중 해시 구현이 정확함
+```
+바이너리에서 재구성한 `key`/`message`를 이 함수에 그대로 넣어보면, 표준 라이브러리 없이도 HMAC 결과가 목표값과 일치하는지 스스로 확인할 수 있다.
+
 ## 관련 글
 - REV-0896 — SHA-1 흔적을 상수로 알아보는 법
 - REV-0897 — MD5 흔적을 상수로 알아보는 법
-- REV-0895 — SHA-256 흔적을 상수로 알아보는 법 (예정)
+- REV-0895 — SHA-256 흔적을 상수로 알아보는 법
 - [rev-0221-is-it-invertible.md](./rev-0221-is-it-invertible.md) — 키 기반 인증 코드가 역산 불가능한 이유
 - [rev-0222-reimplement-in-python.md](./rev-0222-reimplement-in-python.md) — 검증 로직을 파이썬으로 재현하는 법
 

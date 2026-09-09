@@ -12,7 +12,7 @@ keywords: ["state machine", "상태 기계", "DFA", "유한 오토마톤", "stat
 aliases: ["상태 기계 크랙미", "DFA 기반 검증", "상태 전이 테이블 알아보기", "switch state 패턴"]
 symptom_keywords: ["변수 하나가 계속 상태값으로 갱신됨", "switch case 안에 case가 여러 개고 각 case가 다음 state를 정함", "문자마다 상태가 바뀌면서 검증함", "2차원 테이블에서 현재상태 다음문자로 다음상태를 찾음"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -154,6 +154,57 @@ result = find_accepting_strings(transition, start, accept, alphabet)
 print(result)  # 예: b'0a!' 같은 최단 통과 문자열
 ```
 실제 바이너리에서는 상태 개수가 5~20개, 전이 조건도 더 복잡하지만, 원리는 이 예제와 동일하다 — 전이 규칙을 정확히 표로 옮기고 BFS 한 번이면 통과하는 입력을 기계적으로 찾아낼 수 있다.
+
+### 심화 예제 — "4자리 숫자 PIN + 대문자 1개" 패턴을 다른 상태 기계로 재현하기
+위 예제와 다른 조건("숫자 4자리 뒤에 대문자 1개로 끝나야 함", 흔한 인증코드/시리얼 포맷)을 처음부터 끝까지 새로 만들어서 BFS 탐색이 실제로 조건에 맞는 문자열을 찾아내는지 확인한다. `find_accepting_strings` 함수는 위에서 정의한 것을 그대로 재사용한다.
+```python
+from collections import deque   # BFS 큐 구현에 쓰는 양방향 리스트
+
+def find_accepting_strings(transition, start, accept, alphabet, max_len=12):
+    """시작 상태에서 accept 상태로 가는 가장 짧은 경로(문자열)를 BFS로 하나 찾아 반환한다."""
+    queue = deque([(start, b"")])       # (현재 상태, 지금까지 소비한 문자열) 튜플을 큐에 넣는다
+    seen = {(start, 0)}                 # 이미 방문한 (상태, 경로 길이) 조합은 다시 안 본다
+    while queue:
+        state, path = queue.popleft()   # 큐 맨 앞(가장 먼저 넣은 것)을 꺼낸다 = 너비 우선
+        if state in accept and len(path) > 0:
+            return path                 # accept 상태에 도달했으면 그 경로가 정답
+        if len(path) >= max_len:
+            continue                    # 너무 길어지면 더 이상 뻗어나가지 않음(무한루프 방지)
+        for c in alphabet:               # 다음에 시도할 수 있는 모든 문자를 하나씩 시도
+            nxt = transition.get((state, c), None)   # 이 문자를 넣으면 갈 수 있는 다음 상태
+            if nxt is not None and nxt != -1 and (nxt, len(path) + 1) not in seen:
+                seen.add((nxt, len(path) + 1))
+                queue.append((nxt, path + bytes([c])))  # 문자를 이어붙여서 큐에 다시 넣음
+    return None                         # 끝까지 못 찾으면 None
+
+# "숫자 4자리 -> 대문자 1개로 끝남" 조건의 상태 기계
+# state 0: 시작(0번째 숫자 대기), state 1~3: 1~3번째 숫자를 받은 상태,
+# state 4: 숫자 4개를 다 받고 대문자를 기다리는 상태, state 5: accept(완료)
+transition = {}
+for c in range(256):
+    ch = chr(c) if 32 <= c < 127 else ""   # 출력 가능한 ASCII만 문자로 취급
+    if ch.isdigit():                        # 숫자가 들어오면 상태를 한 칸씩 진행
+        transition[(0, c)] = 1
+        transition[(1, c)] = 2
+        transition[(2, c)] = 3
+        transition[(3, c)] = 4
+    if ch.isupper():                        # state 4에서 대문자가 들어오면 곧바로 accept
+        transition[(4, c)] = 5
+
+start, accept = 0, {5}
+alphabet = bytes(range(32, 127))            # 출력 가능한 ASCII 문자 전체를 시도 후보로 사용
+result = find_accepting_strings(transition, start, accept, alphabet)
+print("이 상태 기계를 통과하는 최단 문자열:", result)
+assert result is not None and len(result) == 5
+assert result[:4].decode().isdigit() and chr(result[4]).isupper()
+print("숫자 4자리 + 대문자 1개 패턴이 정확히 재현됨")
+```
+실제로 실행하면 다음과 같이 나온다(실행 확인함):
+```text
+이 상태 기계를 통과하는 최단 문자열: b'0000A'
+숫자 4자리 + 대문자 1개 패턴이 정확히 재현됨
+```
+이렇게 전이표를 파이썬 딕셔너리로 옮기고 나면, 조건이 "숫자 4자리+영문자"든 "IPv4 형태 문자열"이든 상관없이 같은 BFS 함수 하나로 모든 상태 기계 크랙미의 통과 입력을 기계적으로 찾아낼 수 있다.
 
 ## 관련 글
 - REV-0196 — strcmp 기반 Flag 검증 패턴

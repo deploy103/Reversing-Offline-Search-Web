@@ -12,7 +12,7 @@ keywords: ["Keystone 어셈블러", "Ks(KS_ARCH_X86, KS_MODE_64)", "ks.asm", "�
 aliases: ["keystone 사용법", "keystone 파이썬", "capstone keystone 조합", "자동 패치 스크립트"]
 symptom_keywords: ["패치할 명령어를 기계어로 어떻게 바꿈", "패치 코드가 원본보다 길어서 안 들어감", "jmp로 다른 곳에 패치 붙이는 법", "keystone ks.asm 사용법"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -232,6 +232,80 @@ for insn in md.disasm(check, 0x401300):
 ```
 
 패치 직후 다시 Capstone으로 디스어셈블해서 의도한 명령어가 정확히 들어갔는지 확인하는 마지막 단계가, 실제로 대상 프로그램을 실행해보기 전에 실수를 잡아내는 가장 빠른 방법이다.
+
+### 에러를 재현하는 잘못된 코드 vs 고쳐서 정상 동작하는 코드
+아래 두 스크립트는 실제 바이너리 파일 없이도 그대로 복사해서 실행할 수 있도록, 파이썬 코드 안에서 `bytearray`로 "가짜 바이너리"를 직접 만들어 쓴다. 원본은 `test eax,eax`(2바이트) + `jz +2`(짧은 분기, 2바이트) = 총 4바이트이고, 그 뒤에 원래 흐름에서 실행돼야 하는 `nop; ret`가 이어진다고 가정한다.
+
+**잘못된 코드 — 새 코드 길이를 확인하지 않고 그냥 덮어써서 뒤쪽 명령어를 깨뜨림**
+```python
+from capstone import *   # 디스어셈블(바이트 -> 명령어)용 라이브러리
+from keystone import *   # 어셈블(명령어 -> 바이트)용 라이브러리
+
+# 실제 파일이 없어도 실행할 수 있도록 파이썬 바이트열로 "가짜 바이너리"를 하나 만든다.
+# 오프셋 0~1: test eax, eax   (85 c0)
+# 오프셋 2~3: jz +2           (74 02)   <- 여기까지가 패치 대상 4바이트
+# 오프셋 4:   nop             (90)      <- 패치 후에도 반드시 살아있어야 하는 부분
+# 오프셋 5:   ret             (c3)      <- 패치 후에도 반드시 살아있어야 하는 부분
+fake_binary = bytearray(b'\x85\xc0' + b'\x74\x02' + b'\x90\xc3')
+
+md = Cs(CS_ARCH_X86, CS_MODE_64)   # x64 디스어셈블 엔진 생성
+ks = Ks(KS_ARCH_X86, KS_MODE_64)   # x64 어셈블 엔진 생성
+
+print('--- 패치 전 ---')
+for insn in md.disasm(bytes(fake_binary), 0x0):
+    # insn.address: 명령어 주소, insn.mnemonic: 명령어 이름, insn.op_str: 오퍼랜드
+    print(f'0x{insn.address:x}: {insn.mnemonic} {insn.op_str}')
+
+# 새로 넣고 싶은 로직: eax를 0으로 만든 뒤 3번 증가시켜서 항상 3을 만들도록 patch (일부러 길게 작성한 실수 예시)
+new_asm = "xor eax, eax\ninc eax\ninc eax\ninc eax"
+encoding, count = ks.asm(new_asm)   # 어셈블리 텍스트 -> 기계어 바이트로 변환
+new_bytes = bytes(encoding)
+print('새 코드 바이트 수:', len(new_bytes))   # 원본 4바이트보다 커질 가능성이 높음 (보통 2+1+1+1=5바이트)
+
+# *** 잘못된 부분: 새 코드 길이가 원본(4바이트)보다 큰지 검사하지 않고 그냥 그 길이만큼 덮어씀 ***
+fake_binary[0:len(new_bytes)] = new_bytes   # new_bytes가 5바이트면 오프셋 4(nop)까지 새 코드로 밀려버림
+
+print('--- 잘못 패치한 후 (뒤쪽 nop/ret가 깨졌을 수 있음) ---')
+for insn in md.disasm(bytes(fake_binary), 0x0):
+    print(f'0x{insn.address:x}: {insn.mnemonic} {insn.op_str}')
+# 결과: 원래 5번 오프셋에 있어야 할 ret가 사라지거나, 마지막 남은 바이트 하나가
+# 명령어를 이루지 못해 Capstone이 그 지점에서 디스어셈블을 멈춰버린다(에러 없이 조용히 손상됨).
+```
+
+**고친 코드 — 길이를 먼저 비교하고, 넘치면 더 짧은 로직으로 다시 조립해서 NOP로 정확히 패딩**
+```python
+from capstone import *
+from keystone import *
+
+fake_binary = bytearray(b'\x85\xc0' + b'\x74\x02' + b'\x90\xc3')  # 잘못된 코드와 동일한 가짜 바이너리
+md = Cs(CS_ARCH_X86, CS_MODE_64)
+ks = Ks(KS_ARCH_X86, KS_MODE_64)
+
+ORIGINAL_SIZE = 4   # test eax,eax(2바이트) + jz +2(2바이트) = 4바이트, Capstone으로 미리 확인한 값
+
+new_asm = "xor eax, eax\ninc eax\ninc eax\ninc eax"
+encoding, count = ks.asm(new_asm)
+new_bytes = bytes(encoding)
+print('새 코드 바이트 수:', len(new_bytes), '/ 원본 크기:', ORIGINAL_SIZE)
+
+if len(new_bytes) > ORIGINAL_SIZE:
+    # *** 고친 부분: 넘치는 것을 미리 감지하면, 코드 동굴 대신 더 짧은 동일 효과 로직으로 교체한다 ***
+    print('새 코드가 원본보다 커서 그대로 못 넣음 -> 더 짧은 로직으로 다시 작성')
+    new_asm = "xor eax, eax\ninc eax"   # eax를 1로 만드는 더 짧은 버전(보통 2+1=3바이트)
+    encoding, count = ks.asm(new_asm)
+    new_bytes = bytes(encoding)
+
+# 남는 자리는 NOP(0x90)으로 정확히 패딩해서, 원본과 정확히 같은 크기만큼만 덮어쓴다
+padded = new_bytes + b'\x90' * (ORIGINAL_SIZE - len(new_bytes))
+assert len(padded) == ORIGINAL_SIZE, '패딩 후에도 크기가 안 맞으면 코드 동굴(jmp 리다이렉트) 방식을 써야 한다'
+
+fake_binary[0:ORIGINAL_SIZE] = padded   # 정확히 4바이트만 덮어써서 뒤의 nop/ret는 안전하게 보존됨
+
+print('--- 올바르게 패치한 후 (뒤쪽 nop/ret가 그대로 살아있음) ---')
+for insn in md.disasm(bytes(fake_binary), 0x0):
+    print(f'0x{insn.address:x}: {insn.mnemonic} {insn.op_str}')
+```
+두 스크립트를 나란히 실행해서 비교해보면, "길이 체크 없이 그냥 덮어쓰기"가 왜 위험한지, 그리고 그 위험이 파이썬 예외가 아니라 **조용한 바이너리 손상**으로 나타난다는 것을 직접 눈으로 확인할 수 있다.
 
 ## 관련 글
 - REV-0272 — Capstone으로 디스어셈블 자동화

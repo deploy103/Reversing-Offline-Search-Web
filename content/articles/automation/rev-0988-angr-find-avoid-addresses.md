@@ -12,7 +12,7 @@ keywords: ["angr find avoid", "angr CFGFast", "angr PIE base", "angr lambda find
 aliases: ["angr find 여러 주소", "angr avoid 여러 주소", "angr find 함수형 조건", "angr PIE 주소 계산"]
 symptom_keywords: ["find avoid에 정확히 뭘 넣어야 함", "PIE 바이너리 주소가 안 맞음", "find를 함수로 지정하고 싶음", "성공 지점이 여러 곳일 때 어떻게 함"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -190,6 +190,42 @@ else:
 ```
 
 `base`를 실제 로드 주소에서 자동으로 가져오기 때문에, 같은 스크립트를 PIE 여부가 다른 여러 바이너리에도 오프셋만 바꿔서 재사용할 수 있다.
+
+## 실전 예시: avoid도 콜백으로, find는 메모리 내용으로 판단하기
+지금까지 본 `avoid`는 항상 고정 주소나 주소 리스트였다. 하지만 실전에서는 "실패"가 특정 주소 하나가 아니라 **특정 레지스터 값이 에러 코드를 갖는 모든 경우**로 정의되는 경우도 있다. 이럴 때는 `avoid`에도 `find`처럼 콜백 함수를 그대로 쓸 수 있다. 또한 결과가 레지스터가 아니라 **메모리에 쓰인 값**(예: 전역 변수 `result`)으로 판정되는 함수도 있는데, 이 경우 `state.memory.load()`로 그 메모리 값을 직접 읽어 조건으로 삼는다.
+
+```python
+import angr, claripy
+
+proj = angr.Project('./chall', auto_load_libs=False)
+
+CHECK_FUNC_ADDR = 0x401100   # int check(char *input) 함수 주소
+RESULT_ADDR = 0x404040        # 전역 변수 int result; 가 위치한 주소(리버싱으로 확인)
+ERROR_EAX = 0xdead             # 함수가 내부 에러 시 eax에 남기는 특수 값(리버싱으로 확인)
+
+arg = claripy.BVS('arg', 8 * 16)   # 16바이트 문자열 인자를 표현하는 심볼릭 값
+state = proj.factory.call_state(CHECK_FUNC_ADDR, arg)
+simgr = proj.factory.simgr(state)
+
+def is_success(s):
+    # 성공 여부를 레지스터가 아니라 전역 변수 result의 메모리 값으로 판정한다
+    result_val = s.memory.load(RESULT_ADDR, 4)          # 4바이트(int) 읽어오기
+    return s.solver.eval(result_val) == 1                  # result == 1 이면 성공
+
+def is_error(s):
+    # 실패 조건을 "특정 주소"가 아니라 "eax가 에러 코드와 같은 모든 상태"로 정의한다
+    return s.solver.eval(s.regs.eax) == ERROR_EAX
+
+simgr.explore(find=is_success, avoid=is_error)
+
+if simgr.found:
+    solution = simgr.found[0].solver.eval(arg, cast_to=bytes)
+    print('input:', solution)
+else:
+    print('not found')
+```
+
+여기서 `avoid=is_error`는 프로그램 실행 중 `eax`가 `0xdead`가 되는 **모든 지점**을 회피 대상으로 삼는다 — 그 값이 코드의 몇 군데에서 만들어지든 주소를 일일이 찾아 나열할 필요가 없다는 뜻이다. 마찬가지로 `find=is_success`는 특정 명령어 주소가 아니라 "전역 변수 `result`가 1이 되었는가"라는, 프로그램의 관찰 가능한 상태 자체를 조건으로 쓴다. `s.regs.eax`나 `s.memory.load(...)`가 반환하는 값은 아직 구체적인 숫자가 아니라 심볼릭 표현식이므로, 반드시 `s.solver.eval(...)`로 평가한 뒤에 `==`로 비교해야 한다는 점은(앞서 "흔한 실수"에서 다룬 대로) 여기서도 그대로 적용된다.
 
 ## 관련 글
 - REV-0271 — angr 심볼릭 실행 기초

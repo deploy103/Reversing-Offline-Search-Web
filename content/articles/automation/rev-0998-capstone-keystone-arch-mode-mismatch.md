@@ -12,7 +12,7 @@ keywords: ["CS_ARCH CS_MODE 잘못됨", "KS_ARCH KS_MODE 잘못됨", "capstone �
 aliases: ["capstone 디스어셈블이 이상하게 나옴", "keystone asm 에러", "capstone 32비트 64비트 헷갈림", "keystone KsError"]
 symptom_keywords: ["capstone 결과가 전부 이상한 명령어로 나옴", "keystone에서 어셈블이 안 됨", "디스어셈블 결과가 원본과 다름", "keystone KsError가 남"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -173,6 +173,41 @@ for insn in md64.disasm(code, 0x1000):
 0x1003: ret
 ```
 동일한 바이트열인데도 모드 하나 때문에 명령어 개수, 의미, 심지어 주소 정렬까지 완전히 달라진다는 것을 확인할 수 있다. 이것이 바로 아키텍처/모드 확인을 가장 먼저 해야 하는 이유다.
+
+### 에러를 재현하는 잘못된 코드 vs 고쳐서 정상 동작하는 코드 (Keystone 쪽 KsError)
+앞의 Capstone 예시는 "에러 없이 조용히 틀린 결과"가 나오는 위험한 경우였다. 이번에는 반대로, Keystone에서 모드를 잘못 지정하면 **명확한 예외**가 나서 오히려 알아채기 쉬운 경우를 재현한다. `pip install keystone-engine`만 되어 있으면 그대로 실행된다.
+
+**잘못된 코드 — 64비트 전용 레지스터를 32비트 모드 엔진으로 어셈블 시도**
+```python
+from keystone import *
+
+# *** 잘못된 부분: 대상이 실제로는 64비트 바이너리인데 엔진을 32비트 모드로 생성함 ***
+ks_wrong = Ks(KS_ARCH_X86, KS_MODE_32)   # 잘못된 모드
+try:
+    # r8, rax는 64비트 전용 레지스터라서 32비트 모드 엔진은 이 이름 자체를 모른다
+    encoding, count = ks_wrong.asm("mov r8, rax")
+    print(bytes(encoding))
+except KsError as e:
+    print('어셈블 실패:', e)   # KsError: 32비트 모드에는 r8/rax 같은 64비트 레지스터가 없음
+```
+
+**고친 코드 — 대상 아키텍처를 먼저 확인하고 올바른 모드로 엔진 생성**
+```python
+from keystone import *
+
+# 리눅스라면 먼저 `file 대상바이너리`로 "x86-64"인지 "Intel 80386"인지 확인한 뒤 모드를 정한다.
+# 여기서는 대상이 64비트로 확인됐다고 가정한다.
+ks_fixed = Ks(KS_ARCH_X86, KS_MODE_64)   # 올바른 모드
+encoding, count = ks_fixed.asm("mov r8, rax")
+print('어셈블 성공, 바이트:', bytes(encoding).hex())   # 정상적으로 기계어 바이트가 생성됨
+
+# 왕복 검증: 방금 만든 바이트를 같은 모드의 Capstone으로 다시 디스어셈블해서 의도와 일치하는지 확인
+from capstone import *
+md = Cs(CS_ARCH_X86, CS_MODE_64)
+for insn in md.disasm(bytes(encoding), 0x0):
+    print(f'{insn.mnemonic} {insn.op_str}')   # mov r8, rax
+```
+잘못된 코드는 `KsError`라는 명시적인 예외로 실패를 즉시 알려주지만, 바로 앞의 Capstone 예시처럼 "모드가 틀렸는데도 예외 없이 그럴듯한 결과가 나오는" 경우가 훨씬 위험하다는 점을 함께 기억해야 한다.
 
 ## 관련 글
 - REV-0272 — Capstone으로 디스어셈블 자동화

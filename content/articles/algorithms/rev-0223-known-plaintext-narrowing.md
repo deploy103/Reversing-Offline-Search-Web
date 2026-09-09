@@ -12,7 +12,7 @@ keywords: ["known plaintext", "기지평문 공격", "flag 형식", "XOR 키 복
 aliases: ["플래그 형식으로 줄이기", "known plaintext attack", "flag 접두사 이용", "키 바로 구하기", "XOR 키 알아내기"]
 symptom_keywords: ["flag 형식 알면 뭐가 좋음", "키를 브루트포스 안 하고 구하는 법", "flag{ 로 시작하는 거 이용", "XOR 키 바로 계산"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -126,6 +126,51 @@ IDA: `.rodata` 배열 위에서 `Alt+B`(Hex View 이동), `D`(데이터로 변�
 **예제 3 — 두 기법을 합치는 최선의 경우**
 
 플래그 전체 길이가 20바이트로 확인됐고(REV-0218), 형식은 `flag{` + 알 수 없는 내용 14바이트 + `}`(5+14+1=20)라고 하자. 예제 1의 방식으로 앞 5바이트 `flag{`에서 반복 키 5바이트를 이미 복구했다면, 그 키를 나머지 14바이트에도 그대로 XOR 적용하면 된다 — 이 14바이트에 대해서는 브루트포스가 전혀 필요 없다. 이것이 기지평문 공격의 이상적인 결과다: 형식 힌트가 탐색 공간을 줄이는 데 그치지 않고, 변환이 바이트별 독립 연산이라면 탐색 자체를 완전히 제거해버린다.
+
+### 실행 가능한 전체 스크립트 (처음부터 끝까지 그대로 실행 가능, 한국어 주석 포함)
+
+앞의 예제 1~3에서 나온 숫자들을 실제로 이어 붙여서, "암호문만 놓고 시작해서 최종적으로 사람이 읽는 평문이 나오는" 완결된 흐름을 그대로 코드로 만들어보자.
+
+```python
+# -*- coding: utf-8 -*-
+
+# --- 1) 바이너리의 .rodata에서 그대로 덤프했다고 가정한 암호문(비교 대상 상수) ---
+# 실제로는 IDA/Ghidra의 Hex View에서 바이트를 복사해 여기에 붙여넣으면 된다.
+ciphertext_hex = "435c8e8bdb5d5f9db3cb4049b09ec5465f9989d24054b089c156598395dd"
+ciphertext = bytes.fromhex(ciphertext_hex)   # 16진수 문자열을 실제 바이트(bytes) 객체로 변환
+print("암호문 길이(바이트):", len(ciphertext))  # 실행 결과: 30
+
+# --- 2) 문제 설명에서 이미 알려진 평문의 시작 부분(known plaintext) ---
+known_plaintext = b"flag{"   # CTF 플래그는 거의 항상 이 형태로 시작한다고 가정
+
+# --- 3) 알려진 평문 길이만큼 암호문과 XOR해서 키 후보를 계산 ---
+# zip()은 두 목록을 앞에서부터 한 쌍씩 묶어주는 파이썬 표준 기능이다.
+key_guess = bytes(c ^ p for c, p in zip(ciphertext[:len(known_plaintext)], known_plaintext))
+print("복구한 키 후보(16진수):", key_guess.hex())   # 실행 결과: 2530efeca0
+
+# --- 4) 이 키가 정말 반복되는지 확인하기 위해, 이 키로 전체 암호문을 복호화해본다 ---
+def repeating_xor(data: bytes, key: bytes) -> bytes:
+    # i % len(key) : i가 키 길이를 넘어가면 다시 처음 위치로 돌아가서 순환 참조한다
+    return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+
+recovered_plaintext = repeating_xor(ciphertext, key_guess)
+print("복호화 결과:", recovered_plaintext)
+
+# --- 5) 결과가 사람이 읽을 수 있는 문자열인지 검사(모든 바이트가 출력 가능한 ASCII인지) ---
+is_printable = all(32 <= b <= 126 for b in recovered_plaintext)
+print("전체가 출력 가능한 문자로만 이루어져 있는가?", is_printable)
+```
+
+이 스크립트를 그대로 실행하면 다음과 같은 결과가 나온다.
+
+```text
+암호문 길이(바이트): 30
+복구한 키 후보(16진수): 2530efeca0
+복호화 결과: b'flag{xor_key_recovered_easily}'
+전체가 출력 가능한 문자로만 이루어져 있는가? True
+```
+
+5바이트짜리 알려진 평문(`flag{`)만으로 5바이트 키를 뽑아냈는데, 그 키를 나머지 25바이트에도 그대로 반복 적용했더니 전체가 깨지지 않고 `flag{xor_key_recovered_easily}`라는 완전한 문장으로 이어졌다. 이것이 바로 본문에서 말한 "키 길이 확인" 단계가 실제로 성공한 상태다 — 만약 키 길이를 잘못 짚었다면 5바이트 이후부터 결과가 알아볼 수 없는 문자로 깨져 나왔을 것이다.
 
 ## 관련 글
 - [rev-0218-length-check-backtrace.md](./rev-0218-length-check-backtrace.md) — 정확한 플래그 길이를 먼저 알아내는 법

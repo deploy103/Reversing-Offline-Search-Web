@@ -12,7 +12,7 @@ keywords: ["상수 오독", "immediate 값 잘림", "16진 10진 혼동", "알�
 aliases: ["상수를 잘못 옮김", "매직넘버 오타", "복사 붙여넣기 실수 상수", "알고리즘 복원 체크리스트"]
 symptom_keywords: ["상수 하나 때문에 전체가 안 맞음", "매직넘버가 이상함", "immediate 값이 잘려 보임", "16진수를 10진수로 착각함"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -115,6 +115,41 @@ if (hash == -1640531527) return SUCCESS;
 print(hex(-1640531527 & 0xFFFFFFFF))   # 0x9e3779b9
 ```
 `0x9E3779B9`는 TEA의 델타 상수(REV-0210)다. `hash`는 애초에 `unsigned int`로 선언된 변수인데 디컴파일러가 signed 10진수로 보여준 것뿐이었고, 이를 그대로(signed 그대로) 옮긴 것이 원인이었다. `hash == 0x9E3779B9`로 고치자 검증 로직이 원본과 정확히 일치했다.
+
+### 추가 예제 — 손으로 옮겨 적다가 한 자리를 잘못 옮긴 경우(타이핑 오타)
+이번엔 signed/unsigned 문제가 아니라, **긴 16진수 상수를 손으로 타이핑하다가 자릿수 하나를 잘못 옮긴** 아주 순수한 오타 사례를 재현해본다.
+
+```python
+def h(s: bytes) -> int:
+    """검증 로직에서 쓰는 단순 누산 해시 (실습용)."""
+    v = 0
+    for b in s:                       # 입력 바이트를 하나씩 처리
+        v = (v * 31 + b) & 0xFFFFFFFF  # 31을 곱하고 바이트를 더한 뒤 32비트로 마스킹
+    return v
+
+
+def check_wrong(s: bytes) -> bool:
+    """[틀린 코드] IDA 화면의 상수를 손으로 옮기다가 첫 자리 '2'를 '8'로 잘못 입력함."""
+    TARGET = 0x8325c2   # 원본은 0x2325c2인데 자릿수 하나를 잘못 옮김
+    return h(s) == TARGET
+
+
+def check_right(s: bytes) -> bool:
+    """[고친 코드] IDA에서 값을 직접 복사(Ctrl+C)해서 붙여넣은 정확한 상수."""
+    TARGET = 0x2325c2
+    return h(s) == TARGET
+
+
+answer = b"KEY!"   # 실제 정답이라고 가정한 입력
+
+print("[틀린 코드] 검증 결과:", check_wrong(answer))   # False (진짜 정답을 넣어도 실패)
+print("[고친 코드] 검증 결과:", check_right(answer))   # True
+
+# 상수 하나하나에 assert를 걸어두면 실행하는 순간 바로 어떤 상수가 문제인지 드러난다
+assert h(answer) == 0x2325c2, f"상수가 여전히 틀렸다: 실제 계산값 {hex(h(answer))}"
+print("상수 검증 통과 - 실제 계산값도", hex(h(answer)), "으로 일치")
+```
+`check_wrong`과 `check_right`는 로직(해시 계산 방식)이 완전히 동일하고 딱 하나, 목표 상수의 **첫 번째 16진수 자릿수(`2` vs `8`)** 만 다르다. 그런데도 진짜 정답(`b"KEY!"`)을 넣었을 때 결과가 `False`에서 `True`로 완전히 뒤바뀐다 — 이것이 바로 "로직은 완벽한데 상수 하나 때문에 전체가 안 맞는" 상황을 코드로 직접 보여주는 사례이며, `assert`를 상수마다 걸어두면 이런 오타를 실행 즉시 잡아낼 수 있다.
 
 ## 관련 글
 - REV-0206 — 음수 상수를 Unsigned Hex로 다시 읽기

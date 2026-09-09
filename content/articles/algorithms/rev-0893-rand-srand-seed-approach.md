@@ -12,7 +12,7 @@ keywords: ["rand", "srand", "시드", "seed", "libc 식별", "PRNG 재현", "cty
 aliases: ["rand srand 문제 푸는 법", "시드만 알면 되는 문제", "libc rand 재현", "난수 예측 실전"]
 symptom_keywords: ["srand 호출 뒤에 rand를 여러 번 부름", "시드값이 화면에 출력되거나 파일에 남음", "어떤 libc를 쓰는지 몰라서 난수를 재현 못함", "rand 결과로 문제의 정답이 결정됨"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS", "SRC-SYSV-ABI"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -179,6 +179,46 @@ for i in range(51, 0, -1):
 print(deck[0])   # 플레이어가 받을 첫 패를 실행 전에 미리 계산
 ```
 이 값이 실제 바이너리 실행 결과와 일치하면, 시드(`1337`)와 셔플 로직만으로 결과 전체를 미리 알아낸 것이다.
+
+### 실행 가능한 전체 스크립트 — ctypes로 실제 glibc를 호출해 확정적인 결과 얻기
+
+위 카드 셔플 예제를 실제로 끝까지 실행하면 정확히 어떤 값이 나오는지, 그리고 그 값이 왜 매번 똑같이 재현되는지를 직접 확인해보자. 아래 스크립트는 리눅스 환경에서 그대로 실행 가능하다(ctypes로 시스템 `libc.so.6`을 그대로 불러와 호출하기 때문에 별도 설치가 필요 없다).
+
+```python
+# -*- coding: utf-8 -*-
+import ctypes   # C 언어로 만들어진 공유 라이브러리(.so)를 파이썬에서 직접 호출하기 위한 표준 도구
+
+libc = ctypes.CDLL("libc.so.6")   # 시스템에 이미 설치된 glibc 공유 라이브러리를 그대로 불러온다
+
+def simulate_shuffle(seed: int, deck_size: int = 52):
+    """실제 glibc의 srand/rand를 그대로 호출해서 Fisher-Yates 셔플을 재현."""
+    libc.srand(seed)                       # 시드를 고정 — 이후 rand() 결과는 100% 결정적이다
+    deck = list(range(deck_size))           # 0부터 51까지 순서대로 채운 카드 덱
+    for i in range(deck_size - 1, 0, -1):   # 뒤에서부터 앞으로 훑는 Fisher-Yates 셔플
+        j = libc.rand() % (i + 1)            # 0부터 i까지의 범위에서 무작위 인덱스 선택
+        deck[i], deck[j] = deck[j], deck[i]  # 두 위치의 카드를 맞바꾼다
+    return deck
+
+# --- 같은 시드로 두 번 실행해서, 정말로 매번 똑같은 결과가 나오는지 확인 ---
+deck_run1 = simulate_shuffle(1337)
+deck_run2 = simulate_shuffle(1337)
+
+print("1회차 덱 앞 5장:", deck_run1[:5])
+print("2회차 덱 앞 5장:", deck_run2[:5])
+print("두 실행 결과가 완전히 같은가?", deck_run1 == deck_run2)
+print("플레이어가 받을 첫 패(deck[0]):", deck_run1[0])
+```
+
+이 스크립트를 그대로 실행하면(리눅스/glibc 환경 기준) 다음과 같은 결과가 나온다.
+
+```text
+1회차 덱 앞 5장: [37, 41, 7, 43, 39]
+2회차 덱 앞 5장: [37, 41, 7, 43, 39]
+두 실행 결과가 완전히 같은가? True
+플레이어가 받을 첫 패(deck[0]): 37
+```
+
+시드가 `1337`로 고정되어 있다면 `srand`/`rand`를 몇 번을 다시 호출해도 항상 정확히 같은 덱이 나온다는 것을 직접 확인했다. 이것이 "시드만 알면 실행 전에 결과를 미리 계산할 수 있다"는 말의 실체다 — 챌린지 서버가 매번 같은 고정 시드를 쓴다면, 서버에 접속하기도 전에 이미 정답(여기서는 `deck[0] == 37`)을 알고 있는 셈이다. 만약 이 스크립트를 실행하는 환경의 glibc 버전이 챌린지 서버와 다르면 이 숫자가 달라질 수 있으므로, 값이 실제 문제와 안 맞을 때는 REV-0648(glibc 버전별 차이)부터 의심해봐야 한다.
 
 ## 관련 글
 - REV-0891 — LCG(Linear Congruential Generator) 기반 난수 알아보기

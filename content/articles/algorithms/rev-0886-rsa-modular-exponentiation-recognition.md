@@ -12,7 +12,7 @@ keywords: ["RSA", "modular exponentiation", "모듈러 거듭제곱", "65537", "
 aliases: ["RSA 알고리즘", "모듈러 거듭제곱이 뭐임", "square and multiply 패턴", "n e d 상수", "RSA 암호화 코드"]
 symptom_keywords: ["엄청 큰 16진수 상수가 두 개 있음", "65537이라는 상수가 보임", "루프 안에서 계속 제곱하고 곱함", "mpz_powm 함수를 호출함", "GMP 라이브러리를 링크함"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -149,6 +149,86 @@ m = pow(c, e, n)   # 이 함수가 검증용이면 e가 아니라 실제로는 d
 print(m.to_bytes((m.bit_length() + 7) // 8, "big"))
 ```
 `e`가 아니라 개인 지수 `d`로 검증하는 구조라면(즉, 이 함수가 서버 측 복호화 검증이라면), `d`를 알아내려면 `n`을 인수분해해서 `p`, `q`를 구하고 `φ(n) = (p-1)(q-1)`, `d = modinv(e, φ(n))`을 계산해야 한다(REV-0887 참고).
+
+### 실행 가능한 전체 스크립트 — 작은 소수로 RSA 키 생성부터 암복호화까지 손으로 검증
+
+실제 RSA는 소수가 수백 비트라 손으로 계산할 수 없지만, 원리를 이해하려면 아주 작은 소수 두 개로 전체 과정을 직접 돌려보는 것이 가장 빠르다. 아래 스크립트는 교과서에서 자주 쓰는 작은 소수 `p=61`, `q=53`으로 키를 만들고, 평문을 암호화한 뒤 다시 복호화해서 원래 값이 나오는지 검증한다.
+
+```python
+# -*- coding: utf-8 -*-
+
+# --- 1) 작은 소수 두 개를 고른다 (실제 RSA는 이 자리에 수백 비트 소수가 들어간다) ---
+p = 61
+q = 53
+n = p * q                 # 모듈러스 n = p * q. 리버싱 중 바이너리에서 뽑아낸 그 거대한 상수가 바로 이 n이다.
+phi = (p - 1) * (q - 1)    # 오일러 파이 함수 φ(n) = (p-1)(q-1)
+print("n =", n, " phi(n) =", phi)   # 실행 결과: n = 3233  phi(n) = 3120
+
+# --- 2) 공개 지수 e를 고른다 (실전에서는 65537을 쓰지만, phi=3120보다 작아야 하므로
+#         이 작은 예제에서는 학습용으로 흔히 쓰는 17을 사용한다) ---
+e = 17
+
+# --- 3) 확장 유클리드 호제법으로 개인 지수 d = e의 phi(n)에 대한 모듈러 역원을 구한다 ---
+def ext_gcd(a, b):
+    old_r, r = a, b
+    old_s, s = 1, 0
+    while r != 0:
+        quotient = old_r // r
+        old_r, r = r, old_r - quotient * r
+        old_s, s = s, old_s - quotient * s
+    return old_r, old_s   # (gcd, x) : a*x + b*y = gcd 를 만족하는 x
+
+def modinv(a, m):
+    g, x = ext_gcd(a, m)
+    assert g == 1, "e와 phi(n)이 서로소가 아니라 역원이 존재하지 않음"
+    return x % m
+
+d = modinv(e, phi)         # d = e^-1 mod phi(n)
+print("개인 지수 d =", d)   # 실행 결과: d = 2753
+
+# --- 4) 평문을 하나 정해서 암호화(c = m^e mod n)한다 ---
+m = 65                      # 평문(숫자로 인코딩된 메시지, 여기서는 그냥 예시 정수)
+c = pow(m, e, n)             # 파이썬 내장 pow(밑, 지수, 모듈러스)가 square-and-multiply를 대신 해준다
+print("평문 m =", m, " -> 암호문 c =", c)   # 실행 결과: c = 2790
+
+# --- 5) 개인 지수 d로 복호화(m' = c^d mod n)해서 원래 값이 나오는지 확인 ---
+m_recovered = pow(c, d, n)
+print("복호화 결과 m' =", m_recovered)      # 실행 결과: m' = 65
+print("원본과 일치하는가?", m_recovered == m)  # 실행 결과: True
+
+# --- 6) CTF에서 훨씬 흔한 상황: n을 몰래 인수분해해서 개인키 없이 복호화하기 ---
+# n이 3233처럼 작으면(현실의 RSA는 1024비트 이상이라 이 방법이 안 통하지만,
+# 문제로 나오는 "취약한 RSA"는 종종 이렇게 작은 n을 쓴다) 그냥 순차 시도로도 인수분해된다.
+def factor_small_n(n):
+    i = 2
+    while i * i <= n:
+        if n % i == 0:
+            return i, n // i
+        i += 1
+    return None, None
+
+found_p, found_q = factor_small_n(n)
+print("n을 인수분해해서 찾은 p, q =", found_p, found_q)  # 실행 결과: 53 61
+
+# 인수분해에 성공했으니 개인키 없이도 d를 직접 재계산할 수 있다
+recovered_phi = (found_p - 1) * (found_q - 1)
+recovered_d = modinv(e, recovered_phi)
+print("인수분해로 복구한 d =", recovered_d, " (원래 d와 같은가?", recovered_d == d, ")")
+```
+
+이 스크립트를 그대로 실행하면 다음과 같은 결과가 나온다.
+
+```text
+n = 3233  phi(n) = 3120
+개인 지수 d = 2753
+평문 m = 65  -> 암호문 c = 2790
+복호화 결과 m' = 65
+원본과 일치하는가? True
+n을 인수분해해서 찾은 p, q = 53 61
+인수분해로 복구한 d = 2753  (원래 d와 같은가? True )
+```
+
+여기서 가장 중요한 부분은 6번 단계다 — 개인키 `d=2753`을 전혀 모르는 상태에서 시작했어도, 공개된 모듈러스 `n=3233`이 인수분해 가능할 만큼 작다면 `p`, `q`를 직접 찾아내 `d`를 처음부터 다시 계산할 수 있다. 실제 CTF의 "취약한 RSA" 문제 대부분이 바로 이 구조를 노린다 — `n`이 크면(1024비트 이상) `factor_small_n` 같은 단순 시도는 몇 조 년이 걸려 불가능하지만, 문제 출제자가 일부러 작거나 특수한 구조의 `n`을 준다면 이 6번 단계 하나로 문제가 끝난다.
 
 ## 관련 글
 - REV-0887 — 모듈러 역원(Modular Inverse)이 코드에 나타나는 패턴

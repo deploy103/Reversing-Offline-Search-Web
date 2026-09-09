@@ -12,7 +12,7 @@ keywords: ["DES", "3DES", "Triple DES", "S-box", "Feistel", "Initial Permutation
 aliases: ["des 상수", "3des 상수", "des s박스", "feistel 구조", "des 흔적 찾기"]
 symptom_keywords: ["8바이트 단위로 암호화함", "16라운드 반복문이 있음", "S1 S2 ... S8 테이블 8개가 보임", "58 50 42 34 순서의 테이블이 있음", "48비트 서브키를 생성함"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -144,6 +144,64 @@ ct = c.encrypt(b"ABCDEFGH")
 print(ct.hex())
 ```
 바이너리가 요구하는 목표 암호문과 이 결과가 일치하면 3DES-EDE 사용이 확정된다.
+
+### 심화 예제 — 외부 암호 라이브러리 없이 IP 테이블을 직접 적용해보기
+`pycryptodome` 같은 외부 라이브러리가 없는 환경(오프라인 대회 PC 등)에서도, DES의 Initial Permutation(IP)이 실제로 비트를 어떻게 재배열하는지 순수 파이썬으로 직접 확인할 수 있다. 아래 스크립트는 표준 DES 예제 평문에 IP를 적용한 뒤, 잘 알려진 참고서(Grabbe, "The DES Algorithm Illustrated")의 검증값과 대조한다.
+```python
+# DES의 Initial Permutation(IP) 테이블을 순수 파이썬으로 직접 구현해서
+# 8바이트 평문 블록의 비트를 실제로 재배열해본다 (외부 암호 라이브러리 불필요)
+
+IP_TABLE = [   # FIPS 46-3에 정의된 표준 IP 테이블(1-base 비트 위치)
+    58, 50, 42, 34, 26, 18, 10, 2,
+    60, 52, 44, 36, 28, 20, 12, 4,
+    62, 54, 46, 38, 30, 22, 14, 6,
+    64, 56, 48, 40, 32, 24, 16, 8,
+    57, 49, 41, 33, 25, 17, 9,  1,
+    59, 51, 43, 35, 27, 19, 11, 3,
+    61, 53, 45, 37, 29, 21, 13, 5,
+    63, 55, 47, 39, 31, 23, 15, 7,
+]
+
+def bytes_to_bitlist(data: bytes) -> list:
+    """8바이트(64비트)를 MSB부터 순서대로 담은 비트 리스트(길이 64)로 변환."""
+    bits = []
+    for byte in data:
+        for shift in range(7, -1, -1):     # 상위 비트부터 하나씩 뽑는다
+            bits.append((byte >> shift) & 1)
+    return bits
+
+def bitlist_to_bytes(bits: list) -> bytes:
+    """비트 리스트(길이 64)를 다시 8바이트로 조립."""
+    out = bytearray()
+    for i in range(0, len(bits), 8):
+        byte = 0
+        for b in bits[i:i+8]:
+            byte = (byte << 1) | b
+        out.append(byte)
+    return bytes(out)
+
+def apply_ip(block: bytes) -> bytes:
+    """IP 테이블 순서대로 비트를 재배열한다. 테이블 값 n은 '원본의 n번째(1-base) 비트'를 뜻한다."""
+    bits = bytes_to_bitlist(block)
+    permuted = [bits[pos - 1] for pos in IP_TABLE]   # 1-base이므로 pos-1로 인덱싱
+    return bitlist_to_bytes(permuted)
+
+sample_block = bytes.fromhex("0123456789ABCDEF")  # 표준 DES 예제에서 자주 쓰이는 평문 블록
+permuted = apply_ip(sample_block)
+
+print("원본 블록  :", sample_block.hex())
+print("IP 적용 후 :", permuted.hex())
+# 이 값을 L0/R0로 나누면 L0=CC00CCFF, R0=F0AAF0AA로, DES 교재의 표준 예제와 정확히 일치한다.
+assert permuted.hex().upper() == "CC00CCFFF0AAF0AA", "IP 구현이 표준과 다름!"
+print("IP 재현 결과가 표준 예제와 일치 - DES의 첫 단계(IP)를 직접 재현함")
+```
+실행하면 다음과 같이 나온다(실행 확인함):
+```text
+원본 블록  : 0123456789abcdef
+IP 적용 후 : cc00ccfff0aaf0aa
+IP 재현 결과가 표준 예제와 일치 - DES의 첫 단계(IP)를 직접 재현함
+```
+같은 방식으로 S-box 8개도 파이썬 리스트로 옮겨두면, 라운드 함수 `f(R, K)`까지 이어서 순수 파이썬으로 완전한 DES를 재구현할 수 있다.
 
 ## 관련 글
 - [rev-0211-aes-fingerprints.md](./rev-0211-aes-fingerprints.md) — 16바이트 블록 암호(AES)와의 대비

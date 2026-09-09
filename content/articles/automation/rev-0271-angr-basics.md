@@ -12,7 +12,7 @@ keywords: ["angr", "심볼릭 실행", "symbolic execution", "entry_state", "sim
 aliases: ["angr 사용법", "angr 기초", "심볼릭 실행 파이썬", "angr find avoid 예제"]
 symptom_keywords: ["angr 어떻게 씀", "심볼릭 실행이 뭔지 모르겠음", "find avoid 어떻게 지정함", "angr 결과 어떻게 꺼냄", "로직이 너무 복잡해서 z3로 못 옮기겠음"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -200,6 +200,40 @@ else:
 ```
 
 이렇게 얻은 표준입력 바이트열을 그대로 REV-0266의 `p.sendline(...)`에 넣으면 실제 바이너리에서도 "Correct!"가 나오는지 바로 검증할 수 있다.
+
+## 실전 예시: 심볼릭 입력에 미리 제약을 걸어 탐색을 좁히기
+기본 `entry_state()`는 표준입력 전체를 아무 제약 없는 심볼릭 값으로 취급한다. 그런데 입력이 "8바이트짜리 출력 가능 아스키 문자열"이라는 사실을 이미 리버싱으로 알고 있다면, 이 정보를 **탐색을 시작하기 전에 미리 제약조건으로 걸어두는 것**이 좋다. angr는 실행 도중 새로운 조건을 계속 쌓아가지만, 애초에 불가능한 값(제어문자, 널바이트 등)으로 가지 치는 경로를 미리 차단해두면 상태 공간이 그만큼 줄어들어 탐색이 더 빨리 끝난다.
+
+```python
+import angr, claripy
+
+proj = angr.Project('./chall', auto_load_libs=False)
+
+# 1) 표준입력에 대응할 심볼릭 바이트를 직접 만든다 (8바이트 = 64비트)
+input_bytes = [claripy.BVS(f'stdin_{i}', 8) for i in range(8)]
+# 2) 이 바이트들을 이어붙여 하나의 표준입력 스트림으로 만든다
+stdin_expr = claripy.Concat(*input_bytes)
+
+# 3) 이 심볼릭 스트림을 표준입력으로 사용하는 초기 상태를 만든다
+state = proj.factory.entry_state(
+    stdin=angr.SimFileStream(name='stdin', content=stdin_expr, has_end=True)
+)
+
+# 4) 탐색을 시작하기 전에, 이미 알고 있는 사실(출력 가능 문자)을 제약으로 미리 걸어둔다
+for b in input_bytes:
+    state.solver.add(b >= 0x20)   # 스페이스(0x20) 이상
+    state.solver.add(b <= 0x7e)   # 물결표(0x7e) 이하
+
+simgr = proj.factory.simgr(state)
+simgr.explore(find=0x401236, avoid=0x401250)
+
+if simgr.found:
+    print(simgr.found[0].posix.dumps(0))
+else:
+    print('not found')
+```
+
+`state.solver.add(...)`는 REV-0268~REV-0270에서 다룬 Z3 `Solver.add()`와 근본적으로 같은 역할을 한다 — angr의 각 상태(state)는 내부적으로 자기만의 제약조건 집합(그리고 Z3 백엔드)을 들고 있으며, `state.solver`가 바로 그 인터페이스다. 이렇게 탐색 시작 전에 제약을 걸어두면, 프로그램이 분기할 때마다 "이 바이트가 제어문자일 경우"의 경로까지 함께 갈라지는 낭비를 원천적으로 막을 수 있다. 이미 알고 있는 정보(문자 범위, 접두사, 고정된 헤더 값 등)를 탐색 도중이 아니라 **탐색을 시작하기 전에 최대한 많이 제약으로 걸어두는 습관**은, 뒤에 나올 REV-0987(상태 탐색 전략)에서 다루는 상태 폭발 문제를 예방하는 가장 손쉬운 첫걸음이다.
 
 ## 관련 글
 - REV-0268 — Z3 BitVec 기초

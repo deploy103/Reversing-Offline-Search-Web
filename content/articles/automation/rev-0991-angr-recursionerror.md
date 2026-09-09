@@ -12,7 +12,7 @@ keywords: ["angr RecursionError", "maximum recursion depth exceeded", "sys.setre
 aliases: ["angr 재귀 오류", "RecursionError angr", "angr maximum recursion depth", "angr claripy 오류"]
 symptom_keywords: ["RecursionError: maximum recursion depth exceeded", "angr 실행 중 재귀 오류로 죽음", "claripy 관련 재귀 오류", "탐색 중간에 파이썬 재귀 에러가 남"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -106,6 +106,54 @@ if simgr.found:
 ```
 
 이 경우처럼 반복 횟수 자체가 크고 매번 산술 연산이 누적되는 구조라면, `LoopSeer`로 반복을 적절히 제한하거나 아예 Z3로 `acc = x + 5000`이라는 최종 관계식을 직접 세워 푸는 것(REV-0268)이 훨씬 안전하고 빠르다.
+
+### 에러를 재현하는 잘못된 코드 vs 고쳐서 정상 동작하는 코드
+angr/claripy를 설치하지 않아도 `RecursionError`가 실제로 어떻게 발생하는지 직접 눈으로 볼 수 있도록, claripy 내부에서 표현식 트리를 재귀적으로 순회하는 상황을 순수 파이썬 함수 하나로 그대로 흉내낸다. 이 예제는 외부 라이브러리 없이 파이썬 3만 있으면 그대로 실행된다.
+
+**잘못된 코드 — 재귀 함수로 깊은 호출 스택을 쌓아서 RecursionError를 그대로 재현**
+```python
+import sys
+
+print('현재 파이썬 재귀 호출 한도:', sys.getrecursionlimit())  # 보통 1000 근처
+
+def build_expr_recursive(n):
+    """claripy가 'x + 1 + 1 + 1 + ...' 같은 반복 누적 표현식을,
+    내부적으로 재귀 함수를 이용해 트리 형태로 순회/처리하는 상황을 흉내낸 함수다.
+    n이 커질수록 자기 자신을 그만큼 더 깊이 호출하게 된다."""
+    if n == 0:
+        return 0
+    # 재귀 호출: 자기 자신을 다시 부르고, 그 결과가 돌아와야 +1을 계산할 수 있다.
+    # 이 호출이 끝나기 전까지 현재 호출은 계속 파이썬 호출 스택에 쌓여 있다.
+    return build_expr_recursive(n - 1) + 1
+
+# 검증 로직이 5000번 반복되는 검증 함수를 심볼릭 실행한 것과 비슷한 상황을 흉내낸다.
+# 5000 > sys.getrecursionlimit()(약 1000) 이므로 도중에 RecursionError가 발생한다.
+result = build_expr_recursive(5000)
+print('결과:', result)   # 이 줄까지 도달하지 못하고 예외로 스크립트가 중단된다
+```
+실행하면 다음과 비슷한 형태로 끝없이 이어지는 스택트레이스와 함께 오류가 난다.
+```text
+  File "...", line 10, in build_expr_recursive
+    return build_expr_recursive(n - 1) + 1
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  ... (같은 줄이 수백~수천 번 반복) ...
+RecursionError: maximum recursion depth exceeded
+```
+
+**고친 코드 — 재귀 대신 반복문(for)으로 바꿔서 호출 스택이 전혀 깊어지지 않게 함**
+```python
+def build_expr_iterative(n):
+    """재귀 호출 없이 for 반복문만으로 정확히 같은 값을 계산한다.
+    함수를 다시 호출하는 부분이 없으므로 파이썬 호출 스택이 전혀 깊어지지 않는다."""
+    result = 0
+    for _ in range(n):      # n번 반복하지만, 매번 새 함수 호출을 만들지 않고 그냥 값만 누적한다
+        result += 1
+    return result
+
+result = build_expr_iterative(5000)   # RecursionError 없이 즉시 끝까지 실행됨
+print('결과:', result)   # 5000
+```
+실제 angr/claripy 상황에서는 이렇게 직접 재귀 함수를 다시 짜서 고치는 게 아니라, 이 글의 "명령어/단축키" 절에 있는 `angr.exploration_techniques.LoopSeer(bound=N)`으로 반복문 자체의 심볼릭 실행 횟수를 제한해서 claripy 표현식 트리가 애초에 이렇게까지 깊어지지 않도록 막는 것이 정석이다. 위 두 파이썬 함수는 "왜 반복 횟수를 제한하면 RecursionError가 사라지는지"를 angr 없이도 가장 단순한 형태로 보여주기 위한 것이다.
 
 ## 관련 글
 - REV-0987 — angr 심볼릭 실행 심화(상태 탐색 전략)

@@ -12,7 +12,7 @@ keywords: ["polynomial hash", "다항식 해시", "rolling hash", "hash = hash *
 aliases: ["다항식 해시란", "hash*31+c 패턴", "rolling hash 알아보기", "문자열을 숫자 하나로 압축하는 루프"]
 symptom_keywords: ["루프 안에서 hash에 31을 곱함", "문자마다 hash = hash*a + c 형태 반복", "결과가 4바이트 정수 하나로 수렴함", "Java hashCode 같아 보임"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -152,6 +152,46 @@ for c in candidates:
         print("match:", c)
 ```
 길이가 짧고(4~8바이트) 문자셋이 좁다면(REV-0219 방식으로 계산) 이렇게 후보를 늘려 브루트포스로 프리이미지를 찾는 것이 현실적인 해법이다. 길이가 길면 애초에 유일한 원문 복원은 불가능하므로 다른 취약점(길이 검증 우회, 별도 백도어 문자열 등)을 찾아야 한다.
+
+### 심화 예제 — itertools로 전체 탐색해서 실제로 프리이미지를 찾아내기
+사전 단어 몇 개만 시도하는 대신, 문자셋과 길이를 고정하고 모든 조합을 실제로 다 돌려서 목표 해시를 만드는 입력을 끝까지 찾아내는 완전 탐색(exhaustive search) 스크립트다. 짧은 길이에서 브루트포스가 실제로 몇 번째 시도에 성공하는지까지 눈으로 확인할 수 있다.
+```python
+import itertools   # 문자셋의 모든 조합(product)을 순서대로 만들어주는 표준 모듈
+
+def poly_hash(s: bytes, base=31, mod=2**32) -> int:
+    """호너의 방법으로 다항식 해시를 계산 (Java String.hashCode()와 동일한 base=31)."""
+    h = 0
+    for c in s:
+        h = (h * base + c) % mod   # 한 문자씩 곱하고 더하는 것을 반복(자연 오버플로가 곧 mod)
+    return h
+
+# 목표 해시값을 미리 알고 있는 짧은 문자열로부터 만들어본다 (실전에서는 바이너리가 이 값을 알려줌)
+secret = b"ab12"                       # 리버서는 이 값을 모른다고 가정
+target = poly_hash(secret)             # 크랙미가 요구하는 목표 해시값이라고 가정
+print("목표 해시값:", hex(target))
+
+# 4글자, 소문자+숫자로 이루어진 모든 조합을 순서대로 만들어서 하나씩 대입해본다
+charset = "abcdefghijklmnopqrstuvwxyz0123456789"   # 문자 종류 36개
+found = None
+count = 0
+for combo in itertools.product(charset, repeat=4):  # 36^4 = 1,679,616가지 조합을 전부 생성
+    count += 1
+    candidate = "".join(combo).encode()
+    if poly_hash(candidate) == target:               # 목표 해시와 같은 값이 나오면 즉시 발견
+        found = candidate
+        break
+
+print(f"{count}번째 시도에서 발견:", found)
+assert found == secret, "브루트포스로 찾은 값이 원래 비밀값과 다름"
+print("전체 탐색으로 목표 해시를 만드는 입력을 실제로 찾아냄")
+```
+실제로 실행하면 다음과 같이 나온다(실행 확인함):
+```text
+목표 해시값: 0x2d8e02
+2297번째 시도에서 발견: b'ab12'
+전체 탐색으로 목표 해시를 만드는 입력을 실제로 찾아냄
+```
+길이 4, 문자셋 36개인 이 예제는 최악의 경우에도 168만 번 정도면 끝나서 순식간에 풀린다. 문자셋이나 길이가 커지면 REV-0219/REV-0920의 방식으로 먼저 전체 조합 수를 계산해, 이 방식이 몇 초 안에 끝날지 며칠이 걸릴지 미리 가늠하는 것이 중요하다.
 
 ## 관련 글
 - REV-0207 — FNV-1과 FNV-1a 해시 패턴

@@ -12,7 +12,7 @@ keywords: ["checksum", "Adler-32", "65521", "Fletcher checksum", "단순 합산 
 aliases: ["체크섬 검증", "단순 합계 검증", "adler32", "fletcher 체크섬", "무결성 검사 알아보기"]
 symptom_keywords: ["바이트를 전부 더한 값과 비교함", "65521로 나눈 나머지를 씀", "두 개의 16비트 합을 합쳐 32비트를 만듦", "숫자 하나씩 더하다가 특정 자리만 2배로 곱함", "단순 XOR 합계와 비교함"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-09"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -145,6 +145,74 @@ print(zlib.adler32(b"Wikipedia"))
 # 300286872
 ```
 바이너리에서 같은 입력에 대해 계산한 값이 `300286872`와 일치하면 Adler-32 사용이 최종 확정된다.
+
+### 심화 예제 — Adler-32를 직접 구현하고, 신용카드 번호로 Luhn 체크 숫자까지 계산하기
+`zlib.adler32`에만 의존하지 않고 이중 누적합 로직을 직접 구현해서 결과를 대조하고, 자릿수 기반 체크섬인 Luhn 알고리즘도 실제 유효한 테스트 카드번호로 검증/계산까지 해본다.
+```python
+import zlib
+
+MOD = 65521   # 2^16보다 작은 가장 큰 소수 - Adler-32의 핵심 지문 상수
+
+def my_adler32(data: bytes) -> int:
+    """Adler-32를 이중 누적합 정의 그대로 직접 구현."""
+    s1, s2 = 1, 0                      # RFC 1950: s1은 1에서, s2는 0에서 시작
+    for byte in data:
+        s1 = (s1 + byte) % MOD         # s1은 모든 바이트의 누적 합
+        s2 = (s2 + s1) % MOD           # s2는 매 단계의 s1을 다시 누적한 합
+    return (s2 << 16) | s1             # 상위 16비트=s2, 하위 16비트=s1로 합쳐서 32비트 완성
+
+sample = b"Wikipedia"
+mine = my_adler32(sample)
+std = zlib.adler32(sample)
+print("직접 구현:", mine, "/ zlib 표준:", std)
+assert mine == std, "Adler-32 직접 구현이 zlib과 다름!"
+print("Adler-32 직접 구현이 표준 zlib 결과와 일치")
+
+
+def luhn_is_valid(full_number: str) -> bool:
+    """Luhn 알고리즘: 뒤에서부터 세어 짝수 인덱스(0-base 홀수 자리)마다 2배로 곱하고,
+    두 자릿수가 되면 9를 뺀 뒤 전부 더해서 10으로 나누어떨어지는지 검사한다."""
+    digits = [int(d) for d in full_number]
+    total = 0
+    for i, d in enumerate(reversed(digits)):   # 맨 뒤 자리부터 인덱스 0으로 센다
+        if i % 2 == 1:                          # 뒤에서 짝수 번째 자리(1-base 기준)만 2배
+            d *= 2
+            if d > 9:
+                d -= 9                          # 두 자릿수면 각 자리 합과 같은 효과(9를 빼는 것과 동일)
+        total += d
+    return total % 10 == 0
+
+def luhn_checksum_digit(number_without_check: str) -> int:
+    """맨 마지막 체크 숫자를 제외한 번호로부터, 통과시킬 체크 숫자를 역산해서 계산한다."""
+    digits = [int(d) for d in number_without_check]
+    total = 0
+    for i, d in enumerate(reversed(digits)):
+        if i % 2 == 0:            # 체크 숫자를 아직 안 붙인 상태이므로 자리 기준이 한 칸씩 밀린다
+            d *= 2
+            if d > 9:
+                d -= 9
+        total += d
+    return (10 - (total % 10)) % 10
+
+test_card = "4532015112830366"   # 널리 알려진 유효한 Luhn 테스트 카드번호(실제 결제 불가, 검증용)
+print("Luhn 검증 결과:", luhn_is_valid(test_card))
+assert luhn_is_valid(test_card) is True
+
+partial = "453201511283036"                  # 마지막 체크 숫자를 뺀 15자리
+check_digit = luhn_checksum_digit(partial)
+print("계산된 체크 숫자:", check_digit)
+assert partial + str(check_digit) == test_card
+print("체크 숫자를 역산해서 원래 카드번호를 완전히 재구성함")
+```
+실제로 실행하면 다음과 같이 나온다(실행 확인함):
+```text
+직접 구현: 300286872 / zlib 표준: 300286872
+Adler-32 직접 구현이 표준 zlib 결과와 일치
+Luhn 검증 결과: True
+계산된 체크 숫자: 6
+체크 숫자를 역산해서 원래 카드번호를 완전히 재구성함
+```
+이 두 함수만 있으면, 바이너리가 "Adler-32 스타일" 또는 "Luhn 스타일" 체크섬을 검증할 때 원하는 값을 통과시키는 입력을 스스로 계산해서 만들어낼 수 있다.
 
 ## 관련 글
 - [rev-0209-crc-fingerprints.md](./rev-0209-crc-fingerprints.md) — 다항식 나눗셈 기반의 더 강력한 체크섬(CRC)과의 대비

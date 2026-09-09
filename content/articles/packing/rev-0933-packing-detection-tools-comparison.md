@@ -96,7 +96,7 @@ $ upx -l chall
 - REV-0225 — UPX인지 확인하는 법
 - REV-0096 — checksec 결과 읽는 법
 - REV-0931 — 흔한 패커 시그니처 빠른 참조표(UPX/ASPack/PECompact 등)
-- REV-0934 — Entropy 값 해석 기준 빠른 참조 (예정)
+- REV-0934 — Entropy 값 해석 기준 빠른 참조
 
 ## 출처/검증
 - Detect It Easy와 PE-bear의 기능 범위는 각 프로젝트 공식 저장소(github.com/horsicq/Detect-It-Easy, github.com/hasherezade/pe-bear) 설명을 기준으로 정리했다(2026-09-09 검증).

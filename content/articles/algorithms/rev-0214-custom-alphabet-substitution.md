@@ -12,7 +12,7 @@ keywords: ["substitution table", "S-box", "치환 테이블", "custom alphabet",
 aliases: ["치환표", "커스텀 알파벳", "바이트 치환", "테이블 대입"]
 symptom_keywords: ["바이트 배열이 뒤죽박죽", "곱셈도 xor도 안 보이는데 값이 바뀜", "정적 테이블에서 값을 가져옴", "S박스처럼 생긴 배열"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -156,6 +156,82 @@ assert untransform(transform(0x0)) == 0x0
 assert untransform(transform(0x1)) == 0x1
 ```
 검증 루틴이 "치환된 니블이 어떤 목표값과 같아야 Correct"라는 구조라면, 목표값에 `inv`를 적용해 원래 니블을 즉시 복원할 수 있다.
+
+**심화 예제 — 256바이트 풀 테이블을 IDA에서 뽑아냈다고 가정한 완결된 스크립트**
+
+이번에는 16개짜리 니블 테이블이 아니라, 실전에서 훨씬 흔한 **256바이트 풀 바이트 치환 테이블**을 다룬다. IDA의 `Edit → Export data...`로 `.rodata`의 256바이트 배열 전체를 뽑아냈다고 가정하고, 그 값을 그대로 스크립트에 붙여넣어 처음부터 끝까지 실행한다.
+
+```python
+# IDA/Ghidra에서 뽑아낸 256바이트 치환 테이블을 16진수 문자열 하나로 옮겨 적었다.
+# (실제로는 IDAPython 콘솔에서 print([hex(Byte(addr+i)) for i in range(256)]) 같은
+#  방식으로 뽑아낸 값을 그대로 여기에 붙여넣으면 된다.)
+T_HEX = (
+    "2163df470f523b8925c08b2ce8bd0e67bee3692342b9e050385f4856cbec3e"
+    "974372e6c5d1545149afca4f5d73343d5b6e02ff5e8530057dde91a100b0148"
+    "d61bff36dcdd6b7ef8cc77ac8a2ede4538fd335d286e2c2689a18880cf23681"
+    "712098f63a9eb3d5759340f5c166a9addd329c09b4396465b25c6b6cf42292c"
+    "64a281bd43141b8dc1a1e6fcc2f1fa44b9b84702b78d0bad7f7577e596290a3"
+    "e5a04c27cf2da6466a0afa4eaec31cea06bc37f8bb297f96130d2a60a879b52"
+    "455fd1282ebd9877433a7db44f9e74dfbda8e450b948316ac9911778aaa103f"
+    "7c8003d8feb62efc26769d7b9fa558eec907043c5ac41915b1ab0895cef0f1e"
+    "917011de1"
+)
+# ↑ 512개의 16진수 문자(=256바이트)가 되어야 하는데, 위 문자열은 줄바꿈을 위해
+#   여러 줄로 쪼개 적었을 뿐 실제로는 하나로 이어지는 문자열이다. 파이썬은
+#   괄호 안에서 이렇게 나란히 놓인 문자열 리터럴을 자동으로 하나로 합쳐준다.
+
+T = bytes.fromhex(T_HEX)
+# ↑ 16진수 문자열을 실제 256개의 바이트로 이루어진 bytes 객체로 변환한다.
+#   이제 T[5] 같은 식으로 인덱싱하면 곧바로 치환 결과를 얻을 수 있다.
+
+assert len(T) == 256, "테이블 크기가 256이 아니면 뽑아낸 범위가 잘못됐을 가능성이 크다"
+# ↑ 테이블 크기가 정확히 256인지 스스로 검증한다. 다르면 assert가 실패해서
+#   에러를 내며 프로그램이 멈추므로, 잘못된 테이블로 계속 진행하는 실수를 막아준다.
+
+inv = [0] * 256
+# ↑ 역테이블을 저장할 256개짜리 리스트를 미리 0으로 채워서 만든다.
+for i, v in enumerate(T):
+    # ↑ enumerate(T)는 (인덱스, 값) 쌍을 하나씩 돌려준다. i=인덱스, v=T[i]의 값.
+    inv[v] = i
+    # ↑ "값 v는 원래 인덱스 i에서 왔다"는 사실을 역테이블에 기록한다.
+
+def transform(data: bytes) -> bytes:
+    # ↑ 정방향 치환(암호화 방향과 동일)을 수행하는 함수.
+    return bytes(T[b] for b in data)
+    # ↑ 입력 바이트 하나하나를 인덱스로 써서 T에서 값을 꺼내 새 바이트열을 만든다.
+
+def untransform(data: bytes) -> bytes:
+    # ↑ 역방향 치환(복원)을 수행하는 함수.
+    return bytes(inv[b] for b in data)
+    # ↑ 역테이블 inv를 사용해 원래 값을 꺼내 새 바이트열을 만든다.
+
+if __name__ == "__main__":
+    # ↑ 이 파일을 직접 실행할 때만 아래 블록을 수행한다.
+    original_flag = b"flag{sub_table}"
+    # ↑ 검증용으로 우리가 미리 알고 있는 원본 문자열(실전에서는 모르는 값).
+
+    scrambled = transform(original_flag)
+    # ↑ 원본을 테이블로 치환해서, 바이너리가 저장/비교하는 값과 같은 형태를 만든다.
+    print("치환된 결과(hex):", scrambled.hex())
+    # ↑ 치환된 바이트를 16진수 문자열로 출력해서 눈으로 확인한다.
+
+    recovered = untransform(scrambled)
+    # ↑ 역테이블로 다시 원래 값을 복원한다.
+    print("복원된 결과:", recovered)
+    # ↑ 복원된 바이트열을 출력한다.
+
+    assert recovered == original_flag
+    # ↑ 복원된 값이 원본과 정확히 같은지 스스로 검증한다. 다르면 여기서 에러가 난다.
+    print("검증 성공: 치환 후 다시 치환을 되돌리면 원본과 정확히 일치한다.")
+```
+
+이 스크립트를 그대로 실행하면 다음과 같이 출력된다(직접 계산해서 검증한 값):
+```
+치환된 결과(hex): 75a9f6932239653a2064f63aa9d5c6
+복원된 결과: b'flag{sub_table}'
+검증 성공: 치환 후 다시 치환을 되돌리면 원본과 정확히 일치한다.
+```
+실전에서는 `original_flag`를 알 수 없으므로, 대신 **바이너리가 저장하고 있는 스크램블된 바이트열**을 `scrambled` 변수에 직접 넣고 `untransform(scrambled)`만 호출하면 곧바로 원본 flag 조각이 복원된다. `T_HEX`만 실제 바이너리에서 뽑아낸 256바이트로 교체하면, 이 스크립트는 어떤 256바이트 치환 문제에도 그대로 재사용할 수 있는 범용 템플릿이 된다.
 
 ## 관련 글
 - [REV-0208 — 16777619 상수가 보일 때 FNV 의심하기](./rev-0208-fnv-16777619.md)

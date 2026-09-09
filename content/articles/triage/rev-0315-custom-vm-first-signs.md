@@ -92,7 +92,7 @@ CTF에서 "커스텀 VM" 문제는 출제자가 직접 만든 가상의 명령�
 - REV-0310 — 리버싱 문제 난이도를 빠르게 가늠하는 체크포인트
 - REV-0312 — 시간이 부족할 때 부분점수를 노리는 전략
 - REV-0006 — Flag 검증 함수 찾는 가장 흔한 경로
-- REV-0441 — Switch문 점프 테이블(Jump Table) 완전 분석 (예정)
+- REV-0441 — Switch문 점프 테이블(Jump Table) 완전 분석
 - REV-0231 — Control Flow Flattening 기초
 
 ## 출처/검증

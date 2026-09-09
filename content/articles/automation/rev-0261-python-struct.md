@@ -12,7 +12,7 @@ keywords: ["python struct 모듈", "struct.pack", "struct.unpack", "struct 포�
 aliases: ["파이썬 struct 사용법", "struct pack unpack 치트시트", "python 바이너리 필드 파싱"]
 symptom_keywords: ["struct.error 발생", "unpack requires a buffer", "구조체 필드 파싱 어떻게", "C 구조체 파이썬으로 읽기"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -143,6 +143,40 @@ def recv_msg(sock) -> bytes:
     return data
 ```
 이 패턴은 CTF pwn/rev 문제의 네트워크 프로토콜 클라이언트를 작성할 때 그대로 재사용할 수 있는 뼈대다.
+
+### 실전 예제 2 — 이름 + 실수(float) + 정수가 섞인 레코드 배열 파싱
+소켓 프로토콜이 아니라, 여러 개의 고정 크기 레코드가 파일 안에 연달아 저장된 경우를 다뤄본다. 각 레코드는 `이름(4바이트 문자열) + 점수(4바이트 float) + 순위(2바이트 unsigned short)`로 구성된 C 구조체 `struct Record { char name[4]; float score; uint16_t rank; };`라고 하자.
+
+```python
+import struct  # pack/unpack/calcsize/iter_unpack을 모두 이 모듈에서 가져온다
+
+# 1) 포맷 문자열을 구조체 필드 순서대로 정확히 작성한다
+#    '<' = 리틀엔디안, '4s' = 4바이트 문자열, 'f' = float(4바이트), 'H' = unsigned short(2바이트)
+fmt = "<4sfH"
+
+# 2) calcsize로 레코드 하나의 정확한 바이트 크기를 미리 계산해둔다 (패딩 없이 4+4+2=10바이트)
+record_size = struct.calcsize(fmt)
+print("레코드 하나의 크기:", record_size)   # 10
+
+# 3) 레코드 3개를 이어붙여서 "파일에서 읽은 것"처럼 만든다
+records_bin = (
+    struct.pack(fmt, b"ANNA", 95.5, 1) +     # 이름 4바이트를 정확히 채움
+    struct.pack(fmt, b"BOB\x00", 88.0, 2) +  # 이름이 3글자면 '\x00'으로 채워서 4바이트를 맞춘다
+    struct.pack(fmt, b"CATE", 91.25, 3)
+)
+print("전체 바이트 길이:", len(records_bin))   # 30 (10바이트 x 3레코드)
+
+# 4) iter_unpack으로 레코드를 하나씩 순회하며 언패킹한다 (직접 슬라이싱할 필요가 없어 편리함)
+for name, score, rank in struct.iter_unpack(fmt, records_bin):
+    # name은 아직 b"ANNA"처럼 바이트열이므로, 사람이 읽을 문자열로 바꾸고 남는 '\x00'을 제거한다
+    clean_name = name.decode().rstrip("\x00")
+    print(f"이름={clean_name}, 점수={score}, 순위={rank}")
+# 출력:
+# 이름=ANNA, 점수=95.5, 순위=1
+# 이름=BOB, 점수=88.0, 순위=2
+# 이름=CATE, 점수=91.25, 순위=3
+```
+이렇게 `calcsize`로 레코드 크기를 미리 계산해두면, 파일 전체 크기를 레코드 크기로 나눠서 "레코드가 몇 개 들어있는지"도 바로 알 수 있고(`len(records_bin) // record_size`), `iter_unpack`을 쓰면 오프셋을 직접 계산하며 슬라이싱하는 반복문을 짤 필요 없이 고정 크기 레코드 배열 전체를 깔끔하게 순회할 수 있다.
 
 ## 관련 글
 - REV-0258 — 리버싱용 Python 숫자 변환 치트시트

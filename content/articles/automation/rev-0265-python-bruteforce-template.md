@@ -12,7 +12,7 @@ keywords: ["python 브루트포스 템플릿", "itertools.product 브루트포�
 aliases: ["파이썬 브루트포스 코드", "전수조사 템플릿", "itertools product 예제"]
 symptom_keywords: ["키 몇 자리인지 모름", "전수조사 코드 어떻게 짜지", "brute force 스크립트 필요"]
 source_ids: ["SRC-GENERAL-REVERSING"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -168,6 +168,51 @@ for tup in itertools.product(charset, repeat=length):
         break
 ```
 이 예제처럼 실행 전에 키스페이스를 출력해 "이 문제는 브루트포스가 맞는 전략인가"를 항상 먼저 확인하는 습관이 시간 낭비를 막는 가장 확실한 방법이다.
+
+## 실전 예시: 알고 있는 부분 정보로 키스페이스를 미리 줄이기
+실전에서는 검증 코드 전체를 몰라도, 리버싱이나 부채널(디버거 관찰, 타이밍 등)로 **일부 정보만 먼저 확보**하는 경우가 흔하다. 이럴 때는 브루트포스 루프를 돌리기 전에 그 부분 정보로 후보를 먼저 걸러내면 전체 탐색 시간을 극적으로 줄일 수 있다.
+
+아래는 5자리 코드가 "4자리 PIN + 1자리 체크섬(PIN 각 숫자의 합을 10으로 나눈 나머지)"으로 구성된 검증 로직을 가정한 예시다.
+
+```python
+import itertools
+
+def checksum_digit(pin4: str) -> str:
+    # PIN 네 자리 숫자를 각각 더한 뒤 10으로 나눈 나머지 한 자리를 체크섬으로 삼는다
+    return str(sum(int(d) for d in pin4) % 10)
+
+# 실제 정답이라고 가정한 값(공격자는 모른다) — 검증용으로만 사용
+REAL_PIN = "1359"
+REAL_CODE = REAL_PIN + checksum_digit(REAL_PIN)   # "13598"
+
+# 공격자가 리버싱/디버깅으로 미리 확보했다고 가정하는 정보: 마지막 체크섬 자리만 안다("8")
+leaked_checksum = REAL_CODE[4]
+print("leaked checksum digit:", leaked_checksum)   # 8
+
+# 1) 아무 정보도 없다면 전체 키스페이스는 10^5 = 100,000
+full_keyspace = 10 ** 5
+print(f"필터링 전 키스페이스: {full_keyspace:,}개")
+
+# 2) 체크섬 자리를 이미 알고 있으므로, PIN 4자리 조합 중 체크섬이 일치하는 것만 후보로 남긴다
+filtered_candidates = []
+for tup in itertools.product("0123456789", repeat=4):
+    pin4 = "".join(tup)
+    if checksum_digit(pin4) == leaked_checksum:   # 알고 있는 정보로 미리 걸러낸다
+        filtered_candidates.append(pin4)
+
+print(f"필터링 후 후보 PIN 개수: {len(filtered_candidates):,}개")   # 1,000개
+
+def check(pin4: str) -> bool:
+    # 실전에서는 이 자리에 실제 바이너리 호출(REV-0266의 process()/sendline())이 들어간다
+    return (pin4 + checksum_digit(pin4)) == REAL_CODE
+
+for pin4 in filtered_candidates:
+    if check(pin4):
+        print("PIN found:", pin4)   # PIN found: 1359
+        break
+```
+
+이 코드를 그대로 실행하면 필터링 전 10만 개였던 탐색 공간이 필터링 후 정확히 1,000개(10의 4자리 조합 중 체크섬이 일치하는 것은 정확히 10분의 1)로 줄어드는 것을 직접 확인할 수 있다. 리버싱에서 부분 정보(체크섬 자리, 앞/뒤 접두사, 특정 바이트 위치의 값 등)를 하나라도 확보했다면, 그 정보를 `check()` 함수 안이 아니라 **후보를 생성하는 단계에서 먼저 거르는 필터**로 활용하는 것이 브루트포스 속도를 높이는 가장 쉬운 방법이다. 키 길이가 길어질수록 이 필터링의 효과는 기하급수적으로 커진다.
 
 ## 관련 글
 - REV-0262 — Python XOR 역산 템플릿

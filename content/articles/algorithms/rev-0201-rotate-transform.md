@@ -12,7 +12,7 @@ keywords: ["rol", "ror", "비트 회전", "rotate 변환", "__ROL4__", "__ROR1__
 aliases: ["rol 반복문", "ror 반복문", "비트 회전 역산", "회전 암호"]
 symptom_keywords: ["rol이 뭔지 모르겠음", "ror 역산 어떻게 함", "비트가 순환하는 것 같음", "__ROL4__ 함수가 보임"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -191,6 +191,48 @@ for (i = 0; i < len; ++i)
 ```
 ```python
 flag = bytes(ror(e, i % 8, bits=8) for i, e in enumerate(expected))
+```
+
+**예제 5 — 처음부터 끝까지 실행되는 전체 스크립트 (8비트 rol 역산 + 32비트 dword rol 역산)**
+
+아래 스크립트는 실제로 회전시켜서 값이 맞아떨어지는 것을 확인한 두 케이스를 담고 있다: (1) 바이트 배열에 8비트 `rol 3`이 적용된 경우, (2) 하나의 32비트 dword에 `__ROL4__(x, 7)`이 적용된 경우.
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0201 실전 스크립트: 8비트 rol 3 바이트 배열 역산 + 32비트 __ROL4__ dword 역산을 함께 다룬다.
+
+def rol(val: int, n: int, bits: int = 8) -> int:
+    # val을 왼쪽으로 n비트 회전시킨다. bits는 전체 비트 폭(8/16/32/64)이다.
+    n %= bits                       # 회전량을 비트 폭으로 정규화(11비트 회전 = 3비트 회전과 동일 등)
+    mask = (1 << bits) - 1          # 결과를 bits폭 안으로 잘라내기 위한 마스크
+    return ((val << n) | (val >> (bits - n))) & mask
+
+def ror(val: int, n: int, bits: int = 8) -> int:
+    # val을 오른쪽으로 n비트 회전시킨다. rol의 정반대 방향 연산이다.
+    n %= bits
+    mask = (1 << bits) - 1
+    return ((val >> n) | (val << (bits - n))) & mask
+
+# ===== 케이스 1: 8비트 rol al, 3 (바이트 배열 전체에 반복 적용) =====
+expected1 = bytes.fromhex("1aa232db937b63fa937b93fa99eb")
+
+# 주의: 원본이 rol(왼쪽 회전)이었으므로 역산은 반대 방향인 ror(오른쪽 회전)을 적용해야 한다.
+flag1 = bytes(ror(b, 3, bits=8) for b in expected1)
+print("케이스1 복원 flag:", flag1.decode())
+# 실행 결과: 케이스1 복원 flag: CTF{rol_ror_3}
+
+# ===== 케이스 2: 32비트 __ROL4__(x, 7) 형태의 dword 회전 (IDA 디컴파일에서 발견) =====
+expected_dword = 0xD961EA50     # IDA에서 확인한 __ROL4__ 결과값(비교 대상 상수)
+
+# 원본이 32비트 rol 7 이었다면 역산은 32비트 ror 7 이다. bits=32를 반드시 명시해야 한다.
+flag_dword = ror(expected_dword, 7, bits=32)
+print("케이스2 복원 dword:", hex(flag_dword))
+# 실행 결과: 케이스2 복원 dword: 0xa1b2c3d4
+
+# 검증: 복원한 값을 다시 rol 7 시키면 원래의 expected_dword로 돌아와야 한다.
+assert rol(flag_dword, 7, bits=32) == expected_dword
+print("왕복 검증 통과 (rol 7 -> ror 7 -> rol 7 순서로 값이 그대로 유지됨)")
 ```
 
 ## 관련 글

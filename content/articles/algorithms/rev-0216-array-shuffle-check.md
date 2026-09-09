@@ -12,7 +12,7 @@ keywords: ["permutation", "shuffle", "순열", "인덱스 재배열", "scatter",
 aliases: ["셔플 검증", "순서 뒤섞기", "인덱스 배열", "위치 재배열"]
 symptom_keywords: ["값은 맞는데 순서가 이상함", "이중 인덱싱이 보임", "글자가 섞여 있음", "위치가 바뀐 것 같음"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -170,6 +170,65 @@ print(restored)                           # b"ABCDEFGH"
 assert restored == original
 ```
 검증 루틴이 "셔플된 입력이 목표 문자열과 같으면 Correct"라는 구조라면, 목표 문자열에 `unshuffle_scatter`를 적용해 원래 입력을 즉시 복원할 수 있다.
+
+**심화 예제 — Gather 형태를 완결된 스크립트로 구분하고 복원하기**
+
+앞의 예제는 scatter 형태였다. 이번에는 반대인 gather 형태(`out[i] = in[order[i]]`)를 만났을 때, 반드시 별도의 역순열을 만들어야 한다는 것을 실제 코드로 보여준다.
+
+```python
+def invert_permutation(order: list[int]) -> list[int]:
+    # ↑ 순열(순서 배열) order를 받아서, 그 역순열을 계산해 돌려주는 함수.
+    inv = [0] * len(order)
+    # ↑ order와 같은 길이의 리스트를 0으로 채워 미리 만들어 둔다.
+    for i, p in enumerate(order):
+        # ↑ order의 각 위치 i와 그 값 p를 하나씩 꺼낸다.
+        inv[p] = i
+        # ↑ "값 p는 원래 위치 i에서 왔다"는 사실을 역순열에 기록한다.
+    return inv
+    # ↑ 완성된 역순열을 돌려준다.
+
+def shuffle_gather(data: bytes, order: list[int]) -> bytes:
+    # ↑ 바이너리의 gather 로직(out[i] = in[order[i]])을 그대로 재현하는 함수.
+    return bytes(data[order[i]] for i in range(len(order)))
+    # ↑ 각 출력 위치 i마다, order[i]가 가리키는 입력 위치의 값을 가져와 모은다.
+
+def unshuffle_gather(data: bytes, order: list[int]) -> bytes:
+    # ↑ gather로 섞인 데이터를 원래대로 되돌리는 함수.
+    inv = invert_permutation(order)
+    # ↑ scatter와 달리, gather를 되돌릴 때는 order를 그대로 재사용하면 안 되고
+    #   반드시 역순열을 새로 만들어야 한다.
+    return bytes(data[inv[i]] for i in range(len(inv)))
+    # ↑ 역순열을 이용해서 각 위치의 원래 값을 다시 모은다.
+
+if __name__ == "__main__":
+    # ↑ 이 파일을 직접 실행할 때만 아래 블록을 수행한다.
+    order = [3, 1, 4, 0, 6, 2, 7, 5]
+    # ↑ 바이너리에서 뽑아낸 순서 배열(scatter 예제와 동일한 값을 재사용).
+    original = b"ABCDEFGH"
+    # ↑ 검증용 원본 데이터(실전에서는 모르는 값).
+
+    scrambled = shuffle_gather(original, order)
+    # ↑ 바이너리가 하는 것처럼 gather 방식으로 데이터를 섞는다.
+    print("gather로 섞은 결과:", scrambled)
+    # ↑ 섞인 결과를 출력해서 확인한다.
+
+    restored = unshuffle_gather(scrambled, order)
+    # ↑ 역순열을 이용해서 원래 데이터를 복원한다.
+    print("복원된 결과:", restored)
+    # ↑ 복원된 결과를 출력한다.
+
+    assert restored == original
+    # ↑ 복원 결과가 원본과 정확히 같은지 스스로 검증한다.
+    print("검증 성공: gather는 order가 아니라 역순열로 복원해야 한다.")
+```
+
+이 스크립트를 그대로 실행하면 다음과 같이 출력된다(직접 계산해서 검증한 값):
+```
+gather로 섞은 결과: b'DBEAGCHF'
+복원된 결과: b'ABCDEFGH'
+검증 성공: gather는 order가 아니라 역순열로 복원해야 한다.
+```
+같은 `order = [3, 1, 4, 0, 6, 2, 7, 5]`를 썼는데도, scatter 예제의 결과(`b"DBFACHEG"`)와 gather 예제의 결과(`b"DBEAGCHF"`)가 서로 다르다는 점에 주목한다. 이것이 바로 "scatter인지 gather인지부터 정확히 판단해야 한다"는 이 글의 핵심 경고가 실제 숫자로 드러나는 지점이다. 만약 gather로 섞인 데이터를 scatter 방식(`data[order[i]]`)으로 되돌리려 하면, 전혀 다른 엉뚱한 바이트 순서가 나오게 된다.
 
 ## 관련 글
 - [REV-0215 — Lookup Table 기반 변환](./rev-0215-lookup-table-transform.md)

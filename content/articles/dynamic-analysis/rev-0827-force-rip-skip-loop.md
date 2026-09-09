@@ -107,7 +107,7 @@ Breakpoint 1, 0x0000000000401255 in compute_hash ()
 - REV-0825 — 디버거에서 함수 인자를 실행 중 값으로 바꿔서 실험하기
 - REV-0184 — x64dbg CTF용 간단 패치와 저장
 - REV-0490 — 명령어 하나를 건너뛰고 실행되는 것처럼 보일 때
-- REV-0814 — x64dbg 스크립트(Script) 탭으로 자동화하기 (예정)
+- REV-0814 — x64dbg 스크립트(Script) 탭으로 자동화하기
 
 ## 출처/검증
 - RIP/EIP가 다음 실행 명령어 주소를 가리키는 기본 동작: Intel 64 and IA-32 Architectures Software Developer's Manual Volume 1 기준.

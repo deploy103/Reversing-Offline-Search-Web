@@ -12,7 +12,7 @@ keywords: ["modulo", "나머지 연산", "idiv", "magic number division", "정�
 aliases: ["mod 연산 역산", "나머지 검증", "idiv 이상한 상수", "매직넘버 나눗셈"]
 symptom_keywords: ["idiv 뒤에 이상한 곱셈이 있음", "나머지 연산이 이상한 상수로 최적화됨", "오버플로로 검증하는 것 같음", "mod로 값이 좁아짐"]
 source_ids: ["SRC-GENERAL-REVERSING", "SRC-CTF-WRITEUPS"]
-last_verified: "2026-09-08"
+last_verified: "2026-09-10"
 ---
 
 ## 한 줄 요약
@@ -160,6 +160,63 @@ for (i = 0; input[i]; i++)
 if (h != 0x9E3A21F0) return 0;
 ```
 곱셈 상수 131은 홀수이므로 모듈러 역원 존재 → 뒤에서부터 순서대로 역산 가능(각 단계에서 `h_prev = (h_cur - input[i]) * inverse(131) mod 2^32`).
+
+**예제 4 — 처음부터 끝까지 실행되는 전체 스크립트 (소수 모듈러스 체크섬 + 다항식 해시, 두 케이스 모두 역산)**
+
+나머지 연산은 여러 입력이 같은 결과를 만들 수 있는 다대일 연산이라, 방정식으로 구한 값을 "그대로" 믿으면 안 되고 반드시 아스키 범위 안에서 실제로 맞는 후보를 찾아야 한다. 아래 스크립트는 이 점까지 반영해서 실제로 검증된 값을 계산한다.
+
+```python
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0205 실전 스크립트: (A) 소수 모듈러스 체크섬의 자유 바이트 역산과
+# (B) 32비트 오버플로 다항식 해시의 마지막 바이트 역산을 모두 다룬다.
+
+# ===== (A) sum(data) % 97 == target 형태의 체크섬 =====
+mod = 97
+data_prefix_a = b"flag{mod_97"     # 이미 알고 있는 flag의 앞부분(마지막 한 글자만 모름)
+target_a = 21                      # 바이너리에서 확인한 "sum % 97 이어야 하는 값"
+
+partial_a = sum(data_prefix_a) % mod
+residue = (target_a - partial_a) % mod
+print("나머지 방정식으로 구한 residue:", residue)
+# 실행 결과: 나머지 방정식으로 구한 residue: 28
+
+# residue 자체가 곧 실제 바이트값이 아닐 수 있다(나머지 연산은 다대일이기 때문).
+# 그래서 "0~255 범위에서 mod 97한 나머지가 residue와 같고, 동시에 출력 가능한 아스키인" 값을
+# 전부 찾아서 그중에서 진짜 후보를 고른다.
+candidates = [x for x in range(256) if x % mod == residue and 32 <= x <= 126]
+print("아스키 범위의 후보들:", candidates, [chr(c) for c in candidates])
+# 실행 결과: 아스키 범위의 후보들: [125] ['}']  -> 후보가 딱 하나뿐이므로 이 값으로 확정한다.
+
+recovered_char = chr(candidates[0])
+print("복원한 마지막 문자:", recovered_char)
+# 실행 결과: 복원한 마지막 문자: }
+
+# ===== (B) h = h*131 + input[i] (mod 2**32) 형태의 다항식 해시 =====
+MOD = 1 << 32
+MULT = 131   # 홀수이므로 mod 2**32에서 곱셈의 역원이 항상 존재한다(짝수면 존재하지 않을 수 있음)
+
+def poly_hash(data: bytes, mult: int = MULT) -> int:
+    h = 0
+    for b in data:
+        h = (h * mult + b) & 0xFFFFFFFF     # 32비트 자동 오버플로를 & 0xFFFFFFFF로 그대로 재현
+    return h
+
+known_prefix_b = b"CTF{poly_hash"     # 마지막 '}' 한 글자를 제외한 나머지(이미 알고 있음)
+target_b = 0x291C4C06                  # 바이너리에서 확인한 최종 해시 목표값
+
+h_prefix = poly_hash(known_prefix_b)
+# target = h_prefix * MULT + x (mod 2**32) 라는 방정식을 x에 대해 풀면:
+# x = target - h_prefix * MULT (mod 2**32)
+x = (target_b - h_prefix * MULT) & 0xFFFFFFFF
+print("복원한 마지막 바이트:", x, repr(chr(x)) if x < 256 else "범위 밖")
+# 실행 결과: 복원한 마지막 바이트: 125 '}'
+
+# 실제로 이어붙여서 다시 해시를 계산해보고 목표값과 일치하는지 최종 재검증한다.
+full_b = known_prefix_b + bytes([x])
+print("최종 검증:", hex(poly_hash(full_b)), "== 목표값", hex(target_b))
+# 실행 결과: 최종 검증: 0x291c4c06 == 목표값 0x291c4c06
+```
 
 ## 관련 글
 - REV-0203 — AND 0xFF 마스크 이해

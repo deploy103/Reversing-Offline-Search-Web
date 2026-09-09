@@ -6,7 +6,7 @@
 
 ## 현재 상태
 
-**콘텐츠 1,050개 작성 완료** (원 계획 1,000개 + 드림핵 워게임 리버싱 write-up 50개 추가). 카테고리별 구성:
+**콘텐츠 1,080개 작성 완료** (원 계획 1,000개 + 드림핵 write-up 50개 + C 코드 분석 30개). 카테고리별 구성:
 
 | 카테고리 | 개수 |
 |---|---|
@@ -23,17 +23,20 @@
 | dotnet-android | 35 |
 | automation | 30 |
 | tools | 29 |
-| **합계** | **1,050** |
+| c-analysis (C 소스 ↔ 어셈블리 대조 30개) | 30 |
+| **합계** | **1,080** |
 
 `writeup` 카테고리는 `dreamhack.io` 워게임 리버싱 카테고리의 실제 Bronze~Silver 티어 문제 50개를 조사해서 만든 글이다. 원문 write-up을 그대로 복제하지 않고, 실제 조사(공식 챌린지 페이지 + 공개 블로그)로 확인한 "문제 해결 패턴"을 한국어로 새로 서술했으며, 참고한 출처는 각 글의 "출처/검증" 섹션에 남겨 두었다. 공개된 상세 풀이를 찾지 못한 일부 문제는 그 사실을 명시하고 일반적인 접근법만 제시한다.
+
+`c-analysis` 카테고리는 for/while/switch/구조체/포인터/재귀 등 흔한 C 코드 패턴이 실제 x86-64 어셈블리에서 어떻게 보이는지 C 소스와 손으로 작성한 정확한 어셈블리를 나란히 대조해서 보여준다. 또한 `algorithms`/`automation` 카테고리의 100개 글에는 실제로 실행해서 검증한 완결된 Python 3 예제 스크립트(주석 포함)를 대폭 보강했다 — 역연산/솔버 코드를 처음 짜보는 사람도 그대로 따라할 수 있는 것이 목표다.
 
 장문 가이드/레퍼런스/문제해결 유형이 섞여 있으며, x86/x64 어셈블리 니모닉은 mnemonic 하나만 검색해도 전용 글이 최상단에 뜨도록 설계되어 있습니다(Assembly Dictionary, `assembly` 카테고리).
 
 완료된 항목:
-- 콘텐츠 1,050개 (Phase 1~4 + 드림핵 write-up 확장)
+- 콘텐츠 1,080개 (Phase 1~4 + 드림핵 write-up + C 코드 분석 + Python 예제 보강)
 - 툴 오프라인 킷 매니페스트(`tools/manifest.json`, 49개 도구) + 다운로드 스크립트(Phase 5)
 - 프로젝트 자체 제작 SVG 다이어그램(Phase 6, `assets/images/diagrams/`)
-- 검색 스모크 테스트 129개 쿼리 자동화(Phase 7, `tests/`)
+- 검색 스모크 테스트 137개 쿼리 자동화(Phase 7, `tests/`)
 
 ## 빌드하기
 
@@ -51,7 +54,7 @@ python3 scripts/validate.py    # 중복/깨진 링크/frontmatter/placeholder/fi
 ## 검색 테스트
 
 ```bash
-node tests/run-smoke-test.js   # tests/search-smoke-queries.txt의 129개 쿼리를 실제 검색 엔진으로 실행
+node tests/run-smoke-test.js   # tests/search-smoke-queries.txt의 137개 쿼리를 실제 검색 엔진으로 실행
 ```
 
 Node.js의 `vm` 모듈로 빌드된 `dist/assets/search-index.js` + `assets/js/search.js`를 그대로 로드해서 실행하므로, 브라우저에서 `dist/index.html`을 열었을 때와 동일한 코드 경로를 검증합니다.
@@ -94,7 +97,7 @@ tools/manifest.json                     # 오프라인 툴킷 매니페스트 (�
 tools/verify-checksums.py               # 다운로드된 툴 파일 체크섬 검증
 research/sources.json                   # 리서치 출처 기록
 state/progress.json                     # 진행 상태 (다른 AI/작업자가 이어받기 위함)
-tests/search-smoke-queries.txt          # 검색 스모크 테스트 쿼리 목록 (129개)
+tests/search-smoke-queries.txt          # 검색 스모크 테스트 쿼리 목록 (137개)
 tests/run-smoke-test.js                 # 검색 스모크 테스트 실행 스크립트 (Node.js vm 샌드박스)
 dist/                                   # 빌드 산출물 (gitignore, 배포용)
 ```
