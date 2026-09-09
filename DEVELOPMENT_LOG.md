@@ -266,4 +266,30 @@ AI가 중단되더라도 다음 작업자가 이어서 개발할 수 있도록 �
 - 완료 후 Phase 5(tools/manifest.json + fetch 스크립트) → Phase 6(이미지) → Phase 7(최종 file:// 검증 + storage report + private GitHub push)
 
 ### Commit
+- 357e946
+
+## 2026-09-09 13:30 KST — Expansion 700 Wave 8(마지막) 완료 — **1,000/1,000 콘텐츠 달성**
+
+### 완료
+- **packing 카테고리(seed 18 + 확장 35 = 53개) 전체 완료**: 패커 시그니처/OEP 특징/언패킹 체크리스트/Entropy 해석 치트시트, ASPack/PECompact/MPRESS 기초, VMProtect·Themida 현실적 대응, 커스텀 패커 단서, IAT 수동 복구, 코드 가상화, 문자열/함수 암호화, Anti-Dump, ConfuserEx(.NET 패킹), 5분 판단 절차, UPX/OEP/IAT/Multi-layer/Anti-Dump troubleshooting 다수
+- **dotnet-android 카테고리(seed 16 + 확장 19 = 35개) 전체 완료**: smali opcode/dnSpyEx·ILSpy 단축키/JADX·apktool 옵션 치트시트, .NET 리플렉션 난독화/ConfuserEx 흔적/문자열 암호화, Android resources.arsc/ProGuard·R8, Frida 고급 후킹(Java+Native), JNI 시그니처, dnSpyEx/ILSpy/apktool/JADX/adb/Frida troubleshooting 다수
+- **automation 카테고리(seed 16 + 확장 14 = 30개) 전체 완료**: Z3/pwntools 함수 치트시트, angr 심화(상태탐색/find-avoid), Unicorn 부분실행 검증, Capstone+Keystone 자동 패치, angr RecursionError/State Explosion, Z3 unsat/비트폭 오류, Python UnicodeDecodeError, pwntools EOFError/TimeoutError, Capstone/Keystone 아키텍처 오설정 troubleshooting
+- **tools 카테고리(seed 27 + 확장 2 = 29개) 전체 완료**: WinDbg 기초 소개(GDB/x64dbg 대비 언제 쓰는지), YARA 규칙 기초(CONTENT_PLAN.md 1,000개 전체의 마지막 글)
+- 6개 병렬 에이전트로 작성. 관련 글 stale title 2건 발견해 수정(그 중 1건은 `(예정)` 태그 앞에 공백이 없어 validate.py 정규식이 잘못 파싱한 케이스 — 수동으로 직접 수정)
+
+### 검증
+- `python3 scripts/build.py` → **1,000개 전부 빌드 성공** (15초)
+- `python3 scripts/validate.py` → **PASS (오류 0, 경고 0)** (22초)
+- Node vm 스모크 테스트 38개 쿼리 전체 재실행 — MASTER_PROMPT가 명시한 모든 필수 쿼리 정확히 매칭 확인(no-result 0): call/ret/lea/mov/movzx/movsx/cmp/test/jnz/jz/jg/ja/sar/shr/xor/and(어셈블리 전체), `_libc_start_main`/`main 어디`→REV-0009, `ida f5`→REV-0146, `ida strings`→REV-0612, `ida xref`→REV-0145, `x64dbg string`→REV-0179, `positive sp value`→REV-0151, `2의 보수`→REV-0054, `0xffffff`→REV-0204, `16777619`→REV-0208, `pie breakpoint`→REV-0103, `aslr`→REV-0104, `upx`→REV-0225, `ptrace`→REV-0672, `IsDebuggerPresent`→REV-0235, `stripped elf`→REV-0038 등 전부 정답
+
+### 문제
+- `pe 처음` 쿼리가 REV-0402(LOOPE/LOOPZ)를 계속 1위로 반환하는 랭킹 이슈가 Wave 3부터 지속 — Phase 7 최종 검증에서 랭킹 튜닝 또는 전용 "PE 처음 보기" 글의 키워드/제목 보강 필요
+
+### 다음 작업
+- **1,000개 콘텐츠 작성 완료. Phase 4 전체 종료.**
+- Phase 5: `tools/manifest.json`, `scripts/fetch-tools.ps1`, `scripts/fetch-tools.sh`, `scripts/verify-checksums.py` 작성 — 공식 배포처 조사 후 IDA Free/Ghidra/x64dbg/GDB/Pwndbg/DIE/PE-bear/HxD/ImHex/binutils/checksec/ltrace/strace/UPX/Cutter·Rizin·radare2/dnSpyEx/ILSpy/JADX/apktool/adb/Frida/Python·pwntools/Z3/angr/Capstone/Keystone/Unicorn/WinDbg/YARA 등 manifest 채우기
+- Phase 6: 프로젝트 직접 캡처 이미지/다이어그램 확보 및 자산 메타데이터
+- Phase 7: file:// 스모크 테스트 100개로 확장 자동화, `scripts/storage-report.py` 실행, `pe 처음` 랭킹 이슈 수정, 최종 private GitHub push
+
+### Commit
 - (아래 커밋에서 기록)
