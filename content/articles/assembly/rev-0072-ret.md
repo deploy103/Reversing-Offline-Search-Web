@@ -66,6 +66,8 @@ RET:
 ```
 이건 정확히 `pop 임시값; jmp 임시값`과 같은 동작이다 — 다만 CPU가 이 두 단계를 하나의 명령어로 원자적으로 수행한다. [POP](./rev-0045-pop.md)과 완전히 같은 스택 규칙(먼저 읽고, 그 다음 RSP 증가)을 따르되, 목적지가 항상 RIP로 고정되어 있다는 점이 다르다.
 
+![CALL과 RET의 스택 변화 다이어그램: CALL이 push한 복귀 주소를 RET이 pop해서 RIP로 되돌리는 과정](/assets/images/diagrams/stack-call-diagram.svg)
+
 ### CALL과의 완벽한 대칭
 ```
 CALL target:

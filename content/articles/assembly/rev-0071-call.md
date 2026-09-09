@@ -79,6 +79,8 @@ last_verified: "2026-09-08"
 
 `RET`(함수가 끝날 때 실행하는 명령)는 정확히 반대로, 스택 맨 위에서 반환 주소를 POP해서 RIP에 넣는다. `CALL`과 `RET`는 항상 쌍으로 동작하는 짝이라고 생각하면 된다.
 
+![CALL 실행 전후 스택 변화 다이어그램: 복귀 주소가 push되고 RSP가 8만큼 감소하는 모습](/assets/images/diagrams/stack-call-diagram.svg)
+
 **JMP와의 차이**: `JMP`는 그냥 RIP만 바꾸고 스택에 아무것도 남기지 않는다. 그래서 JMP한 곳에서는 "돌아올 방법"이 없다(꼬리 호출/tail call 최적화에서 컴파일러가 CALL 대신 JMP를 쓰는 경우가 있는데, 이는 "돌아올 필요가 없는 마지막 호출"이기 때문이다).
 
 ### Direct Call vs Indirect Call

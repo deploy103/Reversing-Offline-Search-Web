@@ -143,6 +143,13 @@ def _inline_to_html(text):
 
     text = re.sub(r'`([^`]+)`', code_stash, text)
 
+    # Images ![alt](src) -- must run before the link regex below, since an
+    # unhandled image would otherwise be misparsed as '!' + a plain link.
+    def image_sub(m):
+        alt, src = m.group(1), m.group(2)
+        return '<img src="{}" alt="{}" loading="lazy" class="article-image">'.format(src, alt)
+    text = re.sub(r'!\[([^\]]*)\]\(([^)]+)\)', image_sub, text)
+
     # Links [text](url)
     def link_sub(m):
         label, url = m.group(1), m.group(2)
@@ -317,6 +324,7 @@ def markdown_to_plain_text(md_text):
         s = re.sub(r'^>\s?', '', s)                 # blockquote marker
         s = re.sub(r'\*\*([^*]+)\*\*', r'\1', s)    # bold
         s = re.sub(r'`([^`]+)`', r'\1', s)           # inline code
+        s = re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'\1', s)  # images -> alt text only
         s = re.sub(r'\[([^\]]+)\]\([^)]+\)', r'\1', s)  # links -> text only
         s = re.sub(r'\|', ' ', s)                    # table pipes
         if s.strip('-') == '' and s != '':

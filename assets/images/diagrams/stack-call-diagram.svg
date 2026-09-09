@@ -1,0 +1,46 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 760 420" font-family="Consolas, 'Courier New', monospace" font-size="14">
+  <rect x="0" y="0" width="760" height="420" fill="#ffffff" stroke="#d0d0d0"/>
+  <text x="20" y="28" font-size="17" font-weight="bold" fill="#111">CALL 전/후 스택 변화 (x86-64)</text>
+
+  <!-- BEFORE column -->
+  <text x="90" y="58" font-size="15" font-weight="bold" fill="#333">CALL 실행 전</text>
+  <rect x="30" y="70" width="220" height="40" fill="#eef3ff" stroke="#5577cc"/>
+  <text x="140" y="95" text-anchor="middle" fill="#222">caller의 지역 변수</text>
+  <rect x="30" y="110" width="220" height="40" fill="#f5f5f5" stroke="#999"/>
+  <text x="140" y="135" text-anchor="middle" fill="#222">(빈 공간)</text>
+  <line x1="20" y1="70" x2="20" y2="150" stroke="#555" stroke-width="2" marker-end="url(#arrow)"/>
+  <text x="8" y="165" font-size="12" fill="#555">주소 감소</text>
+  <text x="255" y="95" font-size="12" fill="#5577cc">← RSP</text>
+
+  <!-- arrow -->
+  <path d="M 290 110 L 340 110" stroke="#111" stroke-width="2" marker-end="url(#arrow2)"/>
+  <text x="295" y="98" font-size="13" fill="#111">CALL target</text>
+
+  <!-- AFTER column -->
+  <text x="450" y="58" font-size="15" font-weight="bold" fill="#333">CALL 실행 직후 (target 진입 시점)</text>
+  <rect x="380" y="70" width="220" height="40" fill="#eef3ff" stroke="#5577cc"/>
+  <text x="490" y="95" text-anchor="middle" fill="#222">caller의 지역 변수</text>
+  <rect x="380" y="110" width="220" height="40" fill="#ffe9e6" stroke="#cc5544"/>
+  <text x="490" y="135" text-anchor="middle" fill="#222">복귀 주소 (Return Address)</text>
+  <text x="605" y="135" font-size="12" fill="#cc5544">← RSP (새 값)</text>
+  <text x="490" y="160" text-anchor="middle" font-size="12" fill="#555">RSP가 8만큼 감소, [RSP]에 복귀주소 push됨</text>
+
+  <text x="30" y="220" font-size="13" fill="#333">1) CALL은 (다음 명령의 주소 = 복귀 주소)를 스택에 push한다 -&gt; RSP -= 8</text>
+  <text x="30" y="245" font-size="13" fill="#333">2) RIP를 target 함수의 시작 주소로 옮긴다 (실제 점프)</text>
+  <text x="30" y="270" font-size="13" fill="#333">3) target 함수 안에서 RET을 만나면 [RSP]에서 복귀 주소를 pop해서 RIP에 복원 -&gt; RSP += 8</text>
+  <text x="30" y="295" font-size="13" fill="#333">4) 그 결과 실행 흐름이 CALL 바로 다음 명령으로 돌아온다</text>
+
+  <rect x="30" y="320" width="700" height="70" fill="#f8f8f8" stroke="#ccc"/>
+  <text x="45" y="342" font-size="13" font-family="Consolas, monospace" fill="#222">call sub_401000      ; RSP -= 8, [RSP] = 다음 명령 주소, RIP = sub_401000</text>
+  <text x="45" y="364" font-size="13" font-family="Consolas, monospace" fill="#222">; ... sub_401000 내부 실행 ...</text>
+  <text x="45" y="384" font-size="13" font-family="Consolas, monospace" fill="#222">ret                  ; RIP = [RSP], RSP += 8  (여기로 되돌아옴)</text>
+
+  <defs>
+    <marker id="arrow" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#555"/>
+    </marker>
+    <marker id="arrow2" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#111"/>
+    </marker>
+  </defs>
+</svg>

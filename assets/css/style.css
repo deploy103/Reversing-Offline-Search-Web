@@ -433,6 +433,16 @@ article.article-body blockquote {
 }
 article.article-body blockquote p { margin: 0; }
 
+.article-image {
+  display: block;
+  max-width: 100%;
+  height: auto;
+  margin: 16px 0;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  background: #fff;
+}
+
 .related-articles {
   margin-top: 34px;
   padding-top: 14px;

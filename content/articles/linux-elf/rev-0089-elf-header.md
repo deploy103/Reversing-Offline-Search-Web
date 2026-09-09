@@ -77,6 +77,8 @@ typedef struct {
 ### e_phoff / e_shoff: 두 헤더 테이블의 위치
 ELF 헤더 자체에는 세그먼트/섹션의 상세 정보가 없다. 대신 "Program Header Table이 파일의 몇 바이트 지점에서 시작하는지"(`e_phoff`)와 "Section Header Table이 몇 바이트 지점에서 시작하는지"(`e_shoff`)만 가리킨다. 실제 세그먼트/섹션 목록은 그 오프셋으로 가서 별도로 읽어야 한다 — 이 둘의 차이는 REV-0090에서 자세히 다룬다.
 
+![ELF 파일 구조 다이어그램: ELF Header부터 섹션들, Section Header Table까지](/assets/images/diagrams/elf-structure.svg)
+
 ## 화면/코드에서 보이는 징후
 - hex editor로 파일을 열었을 때 첫 4바이트가 `7F 45 4C 46`
 - `readelf -h`, `file` 명령이 정상적으로 "ELF 64-bit ..." 형태의 정보를 출력함

@@ -34,6 +34,8 @@ last_verified: "2026-09-08"
 
 ### 정수/포인터 인자 전달 순서
 왼쪽부터 순서대로 다음 레지스터를 채운다:
+
+![SysV AMD64와 Microsoft x64 인자 전달 레지스터 비교 다이어그램](/assets/images/diagrams/calling-convention-x64.svg)
 ```
 1번째 인자: RDI
 2번째 인자: RSI

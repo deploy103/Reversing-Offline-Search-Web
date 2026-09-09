@@ -162,6 +162,20 @@ def rewrite_local_md_links(body_md, slug_to_article):
     return LOCAL_MD_LINK_RE.sub(repl, body_md)
 
 
+LOCAL_IMAGE_RE = re.compile(r'(!\[[^\]]*\]\()(/assets/images/[^)]+)(\))')
+
+
+def rewrite_local_image_paths(body_md):
+    """Rewrite author-written site-root-relative image paths
+    ('![alt](/assets/images/diagrams/foo.svg)') into the '../assets/images/...'
+    path that actually resolves from dist/article/<slug>.html (which always
+    lives exactly one directory below dist/).
+    """
+    def repl(m):
+        return m.group(1) + ".." + m.group(2) + m.group(3)
+    return LOCAL_IMAGE_RE.sub(repl, body_md)
+
+
 # --------------------------------------------------------------------------
 # HTML templating
 # --------------------------------------------------------------------------
@@ -234,6 +248,7 @@ def render_article_html(article, id_to_article, slug_to_article):
     fm = article["frontmatter"]
     body_md, related_ids = process_related_section(article["body_md"], fm["id"], id_to_article)
     body_md = rewrite_local_md_links(body_md, slug_to_article)
+    body_md = rewrite_local_image_paths(body_md)
     body_html = mdlib.markdown_to_html(body_md)
     tags_html = "".join('<span class="tag">{}</span>'.format(esc(t)) for t in tag_list_for(fm))
     page = ARTICLE_TEMPLATE.format(
@@ -361,6 +376,7 @@ def main():
     (DIST_DIR / "article").mkdir(parents=True)
     (DIST_DIR / "assets" / "css").mkdir(parents=True)
     (DIST_DIR / "assets" / "js").mkdir(parents=True)
+    (DIST_DIR / "assets" / "images").mkdir(parents=True)
 
     articles = discover_articles()
     if not articles:
@@ -389,6 +405,10 @@ def main():
         shutil.copy2(css_file, DIST_DIR / "assets" / "css" / Path(css_file).name)
     for js_file in sorted(glob.glob(str(ASSETS_SRC / "js" / "*.js"))):
         shutil.copy2(js_file, DIST_DIR / "assets" / "js" / Path(js_file).name)
+
+    images_src = ASSETS_SRC / "images"
+    if images_src.exists():
+        shutil.copytree(images_src, DIST_DIR / "assets" / "images", dirs_exist_ok=True)
 
     print("Built {} articles into {}".format(len(articles), DIST_DIR))
     for a in articles:

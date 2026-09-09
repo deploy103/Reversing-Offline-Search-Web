@@ -30,6 +30,8 @@ Windows x64(Microsoft x64 calling convention)는 정수/포인터 인자를 순�
 ### 정수/포인터 인자 전달 순서: RCX, RDX, R8, R9
 Microsoft x64 calling convention(공식 문서에서는 "x64 calling convention"이라 부르며, 이 위키에서는 SysV와 구분하기 위해 "Microsoft x64"라 표기한다)은 정수·포인터 인자를 왼쪽부터 순서대로 다음 네 레지스터에 담는다.
 
+![SysV AMD64와 Microsoft x64 인자 전달 레지스터 비교 다이어그램](/assets/images/diagrams/calling-convention-x64.svg)
+
 ```
 1번째 인자: RCX
 2번째 인자: RDX

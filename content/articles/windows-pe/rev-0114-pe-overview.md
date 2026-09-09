@@ -32,6 +32,8 @@ PE(Portable Executable)는 Windows NT 계열이 채택한 실행 파일 포맷�
 ### 전체 레이아웃을 순서대로 그려보면
 파일을 앞에서부터 순서대로 나열하면 다음과 같다.
 
+![PE 파일 구조 다이어그램: DOS Header부터 섹션들까지 순서대로](/assets/images/diagrams/pe-structure.svg)
+
 ```
 오프셋 0x00 ┌──────────────────────────────┐
             │ IMAGE_DOS_HEADER (64바이트)    │  "MZ" 매직으로 시작

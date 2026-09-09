@@ -54,6 +54,8 @@ last_verified: "2026-09-08"
 CMP dest, src
 ```
 - 내부적으로 `dest - src`를 계산하지만, **그 결과를 dest에 저장하지 않는다.** 오직 플래그만 갱신된다.
+
+![EFLAGS 레지스터의 주요 비트 다이어그램: CF/PF/ZF/SF/OF 등 CMP가 갱신하는 플래그 위치](/assets/images/diagrams/eflags-register.svg)
 - `dest`는 레지스터/메모리, `src`는 레지스터/메모리/즉시값. 메모리-메모리 조합 불가.
 - 예: `cmp eax, 10`, `cmp eax, ebx`, `cmp byte ptr [rbp-1], 0`.
 - "값을 바꾸지 않는 SUB"라는 표현 그대로, `SUB eax, ebx`와 똑같은 뺄셈을 하고 똑같은 플래그를 세팅하지만 `eax`는 원래 값 그대로 남는다.

@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 700 460" font-family="Consolas, 'Courier New', monospace" font-size="14">
+  <rect x="0" y="0" width="700" height="460" fill="#ffffff" stroke="#d0d0d0"/>
+  <text x="20" y="28" font-size="17" font-weight="bold" fill="#111">ELF(Executable and Linkable Format) 파일 구조 개요</text>
+
+  <g stroke="#888">
+    <rect x="60" y="45"  width="580" height="40" fill="#eef3ff"/>
+    <rect x="60" y="85"  width="580" height="40" fill="#e6f0ff"/>
+    <rect x="60" y="125" width="580" height="34" fill="#fff3e6"/>
+    <rect x="60" y="159" width="580" height="34" fill="#ffe9d1"/>
+    <rect x="60" y="193" width="580" height="34" fill="#ffe0bb"/>
+    <rect x="60" y="227" width="580" height="34" fill="#ffe0bb"/>
+    <rect x="60" y="261" width="580" height="34" fill="#ffe0bb"/>
+    <rect x="60" y="295" width="580" height="34" fill="#ffe0bb"/>
+    <rect x="60" y="329" width="580" height="40" fill="#e0ecff"/>
+  </g>
+  <g font-size="14" fill="#111">
+    <text x="75" y="70">ELF Header (매직 넘버 0x7F+"ELF", 클래스/엔디안, e_entry: 진입점, e_phoff/e_shoff)</text>
+    <text x="75" y="110">Program Header Table (실행 시 필요한 세그먼트 목록: LOAD, DYNAMIC, INTERP, TLS 등)</text>
+    <text x="75" y="147">.text 섹션 (실행 코드)</text>
+    <text x="75" y="181">.rodata 섹션 (읽기 전용 데이터, 문자열 리터럴)</text>
+    <text x="75" y="215">.data 섹션 (초기화된 전역 변수)</text>
+    <text x="75" y="249">.bss 섹션 (초기화 안 된 전역 변수, 파일에는 공간 차지 안 함)</text>
+    <text x="75" y="283">.dynamic / .dynsym / .got.plt (동적 링킹 정보, PLT/GOT)</text>
+    <text x="75" y="317">.symtab / .debug_info (심볼 테이블, strip 시 사라짐)</text>
+    <text x="75" y="354">Section Header Table (각 섹션 이름/타입/주소/크기 — strip해도 대부분 남음)</text>
+  </g>
+  <text x="20" y="400" font-size="12" fill="#555">실행 시에는 Program Header(세그먼트)만 사용되고, Section Header(섹션)는 링킹/디버깅용 메타데이터다.</text>
+  <text x="20" y="422" font-size="12" fill="#555">readelf -h/-l/-S, objdump -h로 각각 확인 가능 (REV-0089, REV-0090 참고).</text>
+</svg>
