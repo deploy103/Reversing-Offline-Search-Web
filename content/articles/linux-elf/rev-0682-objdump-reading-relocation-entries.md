@@ -1,0 +1,149 @@
+---
+id: REV-0682
+title: "objdump로 relocation 엔트리 읽는 법"
+slug: "rev-0682-objdump-reading-relocation-entries"
+category: "linux-elf"
+difficulty: "intermediate"
+platform: [linux]
+architecture: [x86, x64]
+format: [ELF]
+tools: [objdump, readelf]
+keywords: ["objdump -R", "relocation", "재배치", "R_X86_64_JUMP_SLOT", "R_X86_64_GLOB_DAT", "R_X86_64_RELATIVE"]
+aliases: ["objdump 재배치 엔트리 읽는 법", "R_X86_64_JUMP_SLOT이 뭔지", "relocation type 종류", "objdump -r과 -R 차이"]
+symptom_keywords: ["objdump -R 출력에 R_X86_64로 시작하는 이름이 잔뜩 나옴", "GOT 엔트리가 어떤 함수와 연결되는지 모르겠음", "relocation type마다 의미가 뭔지 모르겠음", "objdump -r과 -R 옵션 차이를 모르겠음"]
+source_ids: ["SRC-GENERAL-REVERSING", "SRC-SYSV-ABI"]
+last_verified: "2026-09-09"
+---
+
+## 한 줄 요약
+`objdump -R ./chall`(대문자 R)은 실행 파일에 남아있는 동적 재배치(relocation) 엔트리를 보여주는데, 각 줄은 "어느 메모리 주소를, 실행 시점에 어떤 방식으로(relocation type), 어떤 심볼 값을 이용해 채워 넣을지"를 나타내며, 이것을 읽을 줄 알면 GOT의 각 슬롯이 어느 함수와 연결되는지, PIE 바이너리의 어느 주소가 로드 시 재계산되는지를 정확히 추적할 수 있다.
+
+## 언제 검색해야 하나
+- `objdump -R ./chall` 출력에 `R_X86_64_JUMP_SLOT`, `R_X86_64_GLOB_DAT`, `R_X86_64_RELATIVE` 같은 이름이 나오는데 각각 뭘 뜻하는지 모를 때
+- GOT 특정 주소가 실행 시점에 어떤 함수로 채워지는지 소스 없이 확인하고 싶을 때
+- GOT overwrite 계열 익스플로잇(REV-0678)을 읽는데 "이 GOT 엔트리를 덮어쓴다"는 말이 실제로 어느 relocation과 연결되는지 감이 안 잡힐 때
+- PIE 바이너리에서 재배치가 필요한 주소가 정확히 몇 개, 어디에 있는지 확인하고 싶을 때
+
+## 핵심 개념
+
+### relocation이 필요한 이유
+컴파일러/링커는 최종 실행 파일을 만들 때 "이 함수가 정확히 몇 번지에 있을지"를 전부 알 수 없는 경우가 있다. 대표적으로 외부 공유 라이브러리 함수(`printf` 등)의 실제 주소는 그 라이브러리가 실제로 메모리 어디에 로드되는지가 정해져야 알 수 있고, PIE 실행 파일 자체의 로드 베이스도 실행할 때마다 달라진다(REV-0681). 이런 "링크 시점에는 모르지만 로드 시점에는 알 수 있는" 주소값을 나중에 채워 넣기 위한 예약된 자리와 그 채우는 규칙을 묶어서 relocation(재배치)이라고 부른다. 동적 로더(`ld-linux.so`, REV-0649)가 프로그램을 메모리에 올리면서 이 relocation 목록을 순서대로 처리해 GOT(REV-0100) 등의 빈 슬롯을 실제 주소로 채워 넣는다.
+
+### `objdump -r`과 `-R`의 차이
+- `objdump -r`(소문자): **재배치 가능 오브젝트 파일(`.o`)** 안의 relocation을 보여준다. 아직 링크되지 않은 중간 산출물에서 쓰는 옵션이라, 완성된 실행 파일/공유 라이브러리에는 보통 해당 사항이 없다.
+- `objdump -R`(대문자): **동적(dynamic) relocation**, 즉 실행 파일이나 공유 라이브러리가 런타임에 동적 로더의 처리를 필요로 하는 재배치 엔트리를 보여준다. CTF/리버싱에서 실제로 쓰이는 것은 거의 항상 이 대문자 `-R` 옵션이다.
+
+```bash
+objdump -R ./chall
+```
+
+`readelf -r ./chall`도 사실상 같은 정보를 보여주는 대체 명령이며, `readelf`는 대소문자 구분 없이 `-r` 하나로 동적 재배치까지 보여준다는 차이가 있다.
+
+### 자주 보이는 relocation type들 (x86-64)
+- `R_X86_64_JUMP_SLOT`: PLT를 통해 호출되는 함수(REV-0100)의 GOT 슬롯을 채우는 재배치. Lazy binding(지연 바인딩)이 적용된 경우, 이 슬롯은 처음에는 PLT stub의 다음 코드를 가리키고 있다가 함수가 실제로 처음 호출되는 순간 실제 함수 주소로 갱신된다(RELRO가 Full이 아닐 때는 그 이후에도 계속 덮어쓸 수 있음 — REV-0102, REV-0678).
+- `R_X86_64_GLOB_DAT`: 전역 데이터 심볼(함수가 아닌 변수, 예: `stdout`, `environ` 같은 libc 전역 변수)의 실제 주소를 GOT류 슬롯에 채우는 재배치. `JUMP_SLOT`과 달리 지연 바인딩 없이 로드 시점에 바로 채워진다.
+- `R_X86_64_RELATIVE`: 심볼 조회 없이, "이 바이너리 자신의 로드 베이스에 특정 오프셋만 더하면 되는" 내부 참조를 위한 재배치. PIE 바이너리에서 자기 자신의 함수/데이터를 가리키는 포인터(예: 함수 포인터 배열, vtable 등)를 초기화할 때 흔히 나타난다. 이 타입은 외부 심볼 이름이 없고 `Addend` 열에만 값이 있는 경우가 많다.
+- `R_X86_64_IRELATIVE`: IFUNC(REV-0679) 관련 재배치. 실제 주소를 결정하기 위해 리졸버 함수를 한 번 호출해야 하는 특수한 경우다.
+- `R_X86_64_COPY`: 실행 파일이 공유 라이브러리의 전역 변수를 자신의 BSS/데이터 영역으로 복사해와야 할 때 쓰인다(주로 실행 파일 쪽에서만 보임).
+
+### 출력 열 읽는 법 — OFFSET / TYPE / VALUE
+`objdump -R` 출력은 보통 세 개의 열로 구성된다.
+```
+OFFSET           TYPE              VALUE
+```
+- `OFFSET`: 재배치가 적용될, 즉 실제 값이 채워질 메모리 주소(대개 GOT 안의 한 슬롯 주소).
+- `TYPE`: 위에서 설명한 relocation type 이름.
+- `VALUE`: 그 값을 결정하는 데 쓰이는 심볼 이름(예: `printf`). `R_X86_64_RELATIVE`처럼 심볼이 필요 없는 타입은 이 열이 비어 있거나 `*ABS*+0x...` 형태로 표시될 수 있다.
+
+## 화면/코드에서 보이는 징후
+- `objdump -R ./chall` 출력에 여러 줄의 `OFFSET TYPE VALUE` 형태 표가 나옴
+- GOT 특정 주소를 GDB로 덤프했더니 초기 상태에서 PLT stub 주소가 들어있고, 함수 첫 호출 이후 실제 함수 주소로 바뀜(Lazy binding + JUMP_SLOT)
+- 소스 코드나 디컴파일 결과에 함수 포인터 배열, 전역 함수 포인터 변수가 보이는데 그 초기값이 재배치를 통해 채워짐
+
+## 가장 먼저 할 것
+`objdump -R ./chall`을 실행해 relocation 개수와 종류를 먼저 훑는다. `JUMP_SLOT`이 많으면 이 바이너리가 여러 외부 함수를 PLT/GOT 경유로 호출한다는 뜻이고, `RELATIVE`가 많으면 PIE 특유의 자기 참조 포인터가 많다는 뜻이다.
+
+## 단계별 절차
+1. `checksec --file=./chall`로 RELRO 레벨 확인(Full RELRO면 모든 relocation이 프로그램 시작 시 한 번에 다 처리되고 GOT가 read-only로 잠김 — REV-0102 참고)
+2. `objdump -R ./chall`로 전체 relocation 목록 확인
+3. 특정 함수의 GOT 슬롯 주소를 알고 싶으면:
+   ```bash
+   objdump -R ./chall | grep printf
+   ```
+4. 그 주소를 GDB로 실제 실행 중에 덤프해서 초기값(PLT stub 주소, Lazy binding인 경우) vs 첫 호출 이후 값(실제 printf 주소) 비교
+5. `R_X86_64_RELATIVE` 항목이 많으면 어떤 데이터 영역이 자기 참조를 하는지 `readelf -x`(섹션 헥사 덤프)로 해당 오프셋 내용 확인
+6. GOT overwrite 관련 취약점을 분석 중이라면, RELRO가 Partial 이하인지 다시 확인 후 어떤 `JUMP_SLOT` 슬롯이 쓰기 가능한 상태로 남는지 특정
+
+## 명령어/단축키
+```bash
+objdump -R ./chall                     # 동적 relocation 전체 (대문자 R)
+objdump -r ./file.o                    # 재배치 가능 오브젝트 파일의 relocation (소문자 r)
+readelf -r ./chall                     # objdump -R과 동등한 대체 명령
+objdump -R ./chall | grep JUMP_SLOT    # PLT/GOT 관련만 필터링
+objdump -R ./chall | grep RELATIVE     # 자기 참조 재배치만 필터링
+readelf -x .got.plt ./chall            # GOT 슬롯 실제 바이트 값 확인
+```
+
+## 출력 해석
+```
+$ objdump -R ./chall
+
+DYNAMIC RELOCATION RECORDS
+OFFSET           TYPE              VALUE
+0000000000403fd8 R_X86_64_GLOB_DAT  stdout@GLIBC_2.2.5
+0000000000403fe0 R_X86_64_JUMP_SLOT  printf@GLIBC_2.2.5
+0000000000403fe8 R_X86_64_JUMP_SLOT  strcmp@GLIBC_2.2.5
+0000000000403ff0 R_X86_64_JUMP_SLOT  puts@GLIBC_2.2.5
+0000000000404020 R_X86_64_RELATIVE  *ABS*+0x401136
+```
+- 첫 줄: 주소 `0x403fd8`은 `stdout`이라는 전역 데이터 심볼의 실제 주소가 채워질 자리다. 함수가 아니라 `GLOB_DAT` 타입이 붙은 것에 주의.
+- 둘째~넷째 줄: `0x403fe0`, `0x403fe8`, `0x403ff0`은 각각 `printf`, `strcmp`, `puts`의 GOT 슬롯 주소다. 실행 파일에서 이 함수들을 호출하는 코드는 결국 이 주소들을 거쳐 간접 호출(`call [GOT주소]` 계열, 실제로는 PLT를 경유)한다. GOT overwrite 공격은 바로 이 세 주소 중 하나에 원하는 주소를 덮어써서 그 함수가 호출될 때 다른 코드가 실행되게 만드는 기법이다.
+- 마지막 줄: `R_X86_64_RELATIVE` 타입이고 `VALUE`가 `*ABS*+0x401136`으로 나온다. 이는 심볼 이름이 필요 없고, 이 바이너리의 실제 로드 베이스에 `0x401136`을 더한 값을 그 주소(`0x404020`)에 채워 넣으라는 뜻이다. PIE 바이너리에서 함수 포인터를 담는 전역 변수를 초기화할 때 전형적으로 나타난다.
+
+## 흔한 실수
+- `objdump -r`(소문자)로 완성된 실행 파일을 봤는데 아무것도 안 나와서 "재배치가 없다"고 오해하는 것 — 완성된 실행 파일의 동적 재배치는 대문자 `-R`로 봐야 한다.
+- `JUMP_SLOT`과 `GLOB_DAT`을 구분하지 않고 둘 다 "함수 주소"라고 생각하는 것 — `GLOB_DAT`은 함수가 아닌 데이터(변수) 심볼에도 흔히 쓰인다.
+- `R_X86_64_RELATIVE`의 `VALUE` 열에 나오는 `*ABS*+오프셋`을 "심볼 이름이 `*ABS*`다"라고 착각하는 것 — 이는 objdump가 "심볼 없이 절대 오프셋만 있다"는 것을 표시하는 관례적 문구다.
+- Full RELRO 바이너리에서 GOT를 덮어쓰려고 시도하며 "왜 안 되지"라고 헤매는 것 — Full RELRO는 로더가 모든 relocation을 프로그램 시작 시 미리 처리한 뒤 GOT 전체를 read-only로 만들어버리므로(REV-0102) 애초에 런타임 쓰기가 불가능하다.
+- IFUNC 관련 `R_X86_64_IRELATIVE`를 일반 `RELATIVE`와 같은 것으로 착각해서 리졸버 호출 단계를 놓치는 것(REV-0679 참고).
+
+## 막혔을 때 다음 체크
+- GOT/PLT의 기본 동작 원리 자체가 헷갈리면 → REV-0100 PLT와 GOT 기초
+- RELRO 레벨(None/Partial/Full)에 따라 relocation 처리 시점과 쓰기 가능 여부가 어떻게 달라지는지 궁금하면 → REV-0102 RELRO가 리버싱에 의미하는 것
+- RELRO 미적용 바이너리에서 GOT overwrite가 실제로 어떻게 이루어지는지 궁금하면 → REV-0678 RELRO 미적용 바이너리에서 GOT Overwrite 패턴이 보이는 이유
+- `R_X86_64_IRELATIVE`가 나오는 IFUNC 개념 자체가 궁금하면 → REV-0679 IFUNC(Indirect Function)와 재배치 개념
+- 특정 함수 하나만 디스어셈블해서 GOT 접근 코드를 직접 보고 싶으면 → REV-0664 objdump -d로 특정 함수만 디스어셈블하기
+
+## 미니 예제
+```bash
+$ checksec --file=./chall
+RELRO           STACK CANARY      NX            PIE
+Partial RELRO   Canary found      NX enabled    PIE enabled
+
+$ objdump -R ./chall | grep -E "printf|strcmp"
+0000000000403fe0 R_X86_64_JUMP_SLOT  printf@GLIBC_2.2.5
+0000000000403fe8 R_X86_64_JUMP_SLOT  strcmp@GLIBC_2.2.5
+```
+```gdb
+(gdb) break main
+(gdb) run
+(gdb) x/gx 0x403fe0
+0x403fe0:  0x0000000000401030   # 아직 첫 호출 전: PLT stub 다음 코드 주소(Lazy binding)
+(gdb) continue    # printf가 한 번 호출된 이후
+(gdb) x/gx 0x403fe0
+0x403fe0:  0x00007ffff7c5a740   # 이제 실제 libc printf 주소로 갱신됨
+```
+`objdump -R`로 미리 찾아둔 `printf`의 GOT 주소(`0x403fe0`)를 GDB로 직접 관찰하면, `checksec` 결과가 `Partial RELRO`(즉 Lazy binding이 살아있음)이므로 첫 호출 전에는 PLT stub 주소가, 첫 호출 후에는 실제 `printf` 주소가 그 자리에 채워진다는 것을 눈으로 확인할 수 있다.
+
+## 관련 글
+- REV-0100 — PLT와 GOT 기초
+- REV-0102 — RELRO가 리버싱에 의미하는 것
+- REV-0678 — RELRO 미적용 바이너리에서 GOT Overwrite 패턴이 보이는 이유
+- REV-0679 — IFUNC(Indirect Function)와 재배치 개념
+- REV-0664 — objdump -d로 특정 함수만 디스어셈블하기
+- REV-0681 — Position Independent Executable과 Position Independent Code 차이
+
+## 출처/검증
+- `objdump -r`/`-R` 옵션 차이와 relocation 출력 형식: GNU binutils `objdump(1)` 공식 매뉴얼 페이지 기준.
+- `R_X86_64_JUMP_SLOT`, `R_X86_64_GLOB_DAT`, `R_X86_64_RELATIVE`, `R_X86_64_IRELATIVE`, `R_X86_64_COPY` relocation type 정의: System V AMD64 ABI(psABI) "Relocation" 챕터 기준.
+- Lazy binding 시 GOT 슬롯이 PLT stub 주소로 초기화되고 첫 호출 후 실제 주소로 갱신되는 동작: glibc 동적 로더 문서 및 실제 GDB 관찰 결과 기준 (2026-09-09 검증).

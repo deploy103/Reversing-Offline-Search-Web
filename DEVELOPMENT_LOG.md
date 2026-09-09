@@ -175,4 +175,29 @@ AI가 중단되더라도 다음 작업자가 이어서 개발할 수 있도록 �
 - 이후 static-analysis(85) → dynamic-analysis(70) → triage/binary-basics/algorithms(140) → packing/dotnet-android/automation/tools(70)
 
 ### Commit
-- (다음 로컬 커밋에서 기록, push는 전체 완료 후)
+- 47c5b4c (Wave 2까지 반영된 커밋; Wave 3 이후는 아래 새 커밋에서 기록)
+
+## 2026-09-09 08:10 KST — Expansion 700 Wave 3 완료(linux-elf), Wave 4 완료(triage+binary-basics) (누적 720개)
+
+### 완료
+- 중단 시점 복구: 이전 세션이 linux-elf 95개 중 68개만 작성한 채로 중단되어 있었음(REV-0653~0655, 0663~0665, 0673~0675, 0681~0685, 0692~0695, 0701~0705, 0712~0715 총 27개 공백). `git status`/`state/progress.json`/CONTENT_PLAN.md 대조로 정확한 공백 목록을 특정한 뒤 3개 병렬 에이전트로 나머지 27개 전부 작성 완료 — **linux-elf 카테고리(seed 25 + 확장 95 = 120개) 전체 완료**. libc 함수 사전(malloc/free~pthread_create), ELF Symbol Versioning/tcache·fastbin/glibc malloc 내부구조, GDB Python 스크립팅/finish/gdbserver, seccomp/Docker/multilib/PIE vs PIC, GDB·Pwndbg 계열 troubleshooting 다수(ptrace_scope, corrupted stack frame, backtrace ??, segfault 원인 특정, core dump, glibc 버전 불일치, musl 혼동, ASLR 베이스 변경 등)
+- **triage 카테고리(seed 18 + 확장 40 = 58개) 전체 완료**: 문제 우선순위/분류/서버형 문제 접근, IDA+x64dbg·Ghidra+GDB 등 툴 조합 워크플로, VM 기반 문제 첫 징후, 난독화 대응 전략, Pwnable/Crypto/웹 리버싱과의 구분, Dockerfile 힌트, Fat 바이너리, 레거시 컴파일러, 함수 개수 이상/무반응/논데터미니스틱 실행/서버 타임아웃 등 troubleshooting 다수
+- **binary-basics 카테고리(seed 20 + 확장 45 = 65개) 전체 완료**: 프롤로그/에필로그, 레지스터 서브레지스터, 정렬/패딩/캐시라인, IEEE 754/XMM, 함수포인터/콜백/다차원배열/union/비트필드, 재귀/varargs/인라인/Tail Call/레지스터 스필, 컴파일러별(MSVC/GCC/Clang) 차이, WOW64, 자료형/레지스터/ASCII/진법 치트시트(표 포함), 부호/오버플로/구조체 오프셋/부동소수점 비교/시프트 마스킹 등 troubleshooting 12개
+- 12개 병렬 에이전트(+이전 웨이브 누적)로 작성, 관련 글 stale title 14건을 자동 재작성 스크립트로 일괄 수정
+
+### 검증
+- `python3 scripts/build.py` → 720개 전부 빌드 성공(12초)
+- `python3 scripts/validate.py` → PASS (오류 0, 경고 0, 20초)
+- Node vm 스모크 테스트(`tests/search-smoke-queries.txt` 38개 쿼리) 전체 실행 — 전부 결과 반환(no-result 0), MASTER_PROMPT 필수 쿼리(call/ret/lea/cmp/test/jnz/xor/sar/_libc_start_main/positive sp value/0xffffff/16777619/ida strings/x64dbg string/pie breakpoint/ptrace/IsDebuggerPresent) 전부 정답 글 1위 매칭 확인
+
+### 문제
+- `pe 처음` 쿼리가 기대와 다른 글(REV-0402 LOOPE/LOOPZ)을 1위로 반환 — 2-gram 매칭 특성상 발생하는 랭킹 품질 이슈로 보이며, MASTER_PROMPT 필수 목록에는 없는 쿼리라 치명적이지 않음. 최종 검증(Phase 7) 단계에서 랭킹 튜닝 검토.
+- 병렬 웨이브마다 관련 글 stale title이 반복 발생 — 매 웨이브 종료 후 재작성 스크립트를 표준 절차로 고정.
+
+### 다음 작업
+- Expansion 700 Wave 5: static-analysis 85개(REV-0721~0805)
+- 이후 dynamic-analysis(70) → algorithms(55) → packing+dotnet-android+automation+tools(105)
+- 1,000개 완료 후 Phase 5(tools/manifest.json) → Phase 6(이미지) → Phase 7(최종 검증+storage report+private push)
+
+### Commit
+- (아래 커밋에서 기록)
