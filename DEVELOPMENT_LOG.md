@@ -245,4 +245,25 @@ AI가 중단되더라도 다음 작업자가 이어서 개발할 수 있도록 �
 - 1,000개 완료 후 Phase 5(tools/manifest.json) → Phase 6(이미지) → Phase 7(최종 검증+storage report+private push)
 
 ### Commit
+- 6660192
+
+## 2026-09-09 12:20 KST — Expansion 700 Wave 7 완료(algorithms) (누적 930개)
+
+### 완료
+- **algorithms 카테고리(seed 28 + 확장 55 = 83개) 전체 완료**: 해시/CRC/PRNG/RSA/AES 매직 상수 치트시트(전부 웹 검색 + Python 실행으로 값 검증), 알고리즘 유형 판별 체크리스트, RSA 모듈러 거듭제곱/모듈러 역원 코드 패턴, 치환·Vigenere·시저 암호, LCG/Mersenne Twister/rand-srand/시간 시드 역산, SHA-1/MD5/HMAC/DES/RC4/ChaCha20 흔적 알아보기, Base85/URL-safe Base64/Bit Packing/Checksum, Polynomial Hash/이중 테이블/State Machine/bytecode VM/재귀 검증함수, 알고리즘 복원 방법론(단위테스트 검증, known-plaintext 없이 역산 가능성 판단, 대칭/비대칭 구분, Z3 전처리, 바이트 단위 비교검증, 브루트포스 가능 여부 판단), 복원 troubleshooting 10개(출력 불일치/XOR 키 일부/Base64 실패/브루트포스 실패/Z3 unsat/오버플로/엔디안/패딩/라운드수/상수 오독)
+- 5개 병렬 에이전트로 작성. 상수값은 전부 웹 검색 후 Python으로 직접 계산해 실제 값과 대조 검증(예: RC4 테스트 벡터, Adler-32 체크섬, ChaCha20 "expand 32-byte k" 상수, glibc `rand()`가 단순 LCG가 아니라는 사실 확인 등)
+
+### 검증
+- `python3 scripts/build.py` → 930개 전부 빌드 성공
+- `python3 scripts/validate.py` → PASS (오류 0, 경고 0) — 이번 웨이브도 stale title 0건으로 한 번에 통과
+- Node vm 스모크 테스트 38개 쿼리 재실행 — 전부 정상 매칭 유지(no-result 0)
+
+### 문제
+- 없음
+
+### 다음 작업
+- Expansion 700 Wave 8(마지막): packing(35, REV-0931~0965) + dotnet-android(19, REV-0966~0984) + automation(14, REV-0985~0998) + tools(2, REV-0999~1000) = 70개 → 1,000/1,000 달성
+- 완료 후 Phase 5(tools/manifest.json + fetch 스크립트) → Phase 6(이미지) → Phase 7(최종 file:// 검증 + storage report + private GitHub push)
+
+### Commit
 - (아래 커밋에서 기록)

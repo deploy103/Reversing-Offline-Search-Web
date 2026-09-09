@@ -1,0 +1,151 @@
+---
+id: REV-0901
+title: "ChaCha20/Salsa20 상수(expand 32-byte k) 알아보기"
+slug: "rev-0901-chacha20-salsa20-constant"
+category: "algorithms"
+difficulty: "intermediate"
+platform: [windows, linux]
+architecture: [x86, x64]
+format: [PE, ELF]
+tools: [IDA, Ghidra, Python]
+keywords: ["ChaCha20", "Salsa20", "expand 32-byte k", "0x61707865", "0x3320646e", "0x79622d32", "0x6b206574", "quarter round", "4x4 행렬 상태"]
+aliases: ["chacha20 상수", "salsa20 상수", "expand 32-byte k", "쿼터라운드", "chacha 흔적 찾기"]
+symptom_keywords: ["expa nd 3 2-by te k 문자열이 보임", "61707865 상수가 보임", "4x4 워드 배열을 다룸", "add xor rotate만 반복함", "expand 16-byte k 문자열이 보임"]
+source_ids: ["SRC-GENERAL-REVERSING"]
+last_verified: "2026-09-09"
+---
+
+## 한 줄 요약
+16개의 32비트 워드로 이루어진 4×4 상태 행렬의 첫 4워드가 `0x61707865`, `0x3320646e`, `0x79622d32`, `0x6b206574`(ASCII로 리틀엔디안 해석 시 `"expand 32-byte k"`)로 고정되어 있고, 이후 덧셈·XOR·회전(add-rotate-XOR, ARX)만 반복하는 구조가 보이면 이는 ChaCha20 또는 그 조상인 Salsa20이며, RC4(REV-0900)와 달리 룩업 테이블이 전혀 없다는 점이 결정적 차이다.
+
+## 언제 검색해야 하나
+- 코드나 데이터 영역에서 문자열처럼 보이는 `"expand 32-byte k"` 또는 `"expand 16-byte k"`를 발견했을 때
+- 16개의 32비트 워드(총 64바이트)로 구성된 상태 배열을 다루는데, 그 안에 키·논스(nonce)·카운터로 보이는 값들이 섞여 있을 때
+- 함수 본문에 곱셈이나 룩업 테이블 없이 `ADD`, `XOR`, `ROL`(또는 `<< n | >> (32-n)` 조합)만 반복되는 라운드 함수가 있을 때
+- Import나 문자열에 `chacha20`, `salsa20`, `ChaCha20Poly1305`, `crypto_stream_chacha20`(libsodium) 같은 이름이 보일 때
+
+## 핵심 개념
+
+### ChaCha20/Salsa20이 무엇인가 — ARX 스트림 암호
+ChaCha20과 Salsa20은 모두 Daniel J. Bernstein이 설계한 스트림 암호로, RC4(REV-0900)와 마찬가지로 키스트림을 만들어 평문과 XOR하는 방식이지만 내부 구조가 완전히 다르다. RC4는 256바이트 순열 배열을 swap하며 섞는 반면, ChaCha20/Salsa20은 **16개의 32비트 워드로 이루어진 4×4 행렬 상태**를 덧셈(Add), XOR, 비트 회전(Rotate)만으로 섞는다 — 이런 설계를 ARX(Add-Rotate-XOR) 구조라고 부른다. 곱셈이나 S-box, 룩업 테이블이 전혀 없다는 점이 AES(REV-0211)나 RC4(REV-0900)와 뚜렷이 구분되는 특징이다.
+
+### 초기 상태 행렬 구성
+ChaCha20의 초기 4×4 상태는 다음과 같이 채워진다(각 칸은 32비트 워드):
+```
+[ 상수0  상수1  상수2  상수3 ]
+[ 키0    키1    키2    키3  ]
+[ 키4    키5    키6    키7  ]
+[ 카운터 논스0  논스1  논스2 ]
+```
+첫 번째 행 4워드가 바로 고정 상수이며, 표준 256비트(32바이트) 키를 쓸 때 다음 값으로 고정된다:
+```
+0x61707865  ("expa" 4바이트를 리틀엔디안 32비트로 읽은 값)
+0x3320646e  ("nd 3")
+0x79622d32  ("2-by")
+0x6b206574  ("te k")
+```
+이 네 값을 이어 붙여 리틀엔디안 바이트로 해석하면 `"expand 32-byte k"`라는 평문 그대로의 문자열이 나온다. 이는 암호학적으로 아무 의미가 없다는 걸 보여주기 위한 "nothing-up-my-sleeve" 상수이며, 정확히 이 네 값이 코드나 상수 풀에 있으면 ChaCha20(또는 Salsa20)으로 확정할 수 있다. 나머지 12워드는 256비트 키(8워드), 32비트 카운터(1워드), 96비트 논스(3워드)로 채워진다.
+
+### Salsa20과의 관계 — 같은 상수, 다른 레이아웃
+Salsa20은 ChaCha20의 전신으로, 같은 `"expand 32-byte k"` 상수를 쓰지만 4×4 행렬 안에서 상수/키/논스/카운터가 배치되는 위치가 다르고(Salsa20은 상수가 대각선 위치 0,5,10,15에 분산), 라운드에서 워드를 섞는 쿼터라운드 연산 순서도 다르다. 하지만 **첫 워드가 `0x61707865`로 시작하는 상수 자체는 동일**하므로, 이 상수 하나만으로 "ChaCha20 계열이다"까지는 확정할 수 있고, 그 이후 상수의 배치 위치와 쿼터라운드 연산 순서로 ChaCha20인지 Salsa20인지 세부 구분한다.
+
+### 16바이트(128비트) 키 변형 — "expand 16-byte k"
+키가 32바이트가 아니라 16바이트(128비트)인 경우, 표준은 16바이트 키를 두 번 반복해서 32바이트처럼 채우는 대신 상수 자체를 다르게 쓴다:
+```
+"expand 16-byte k"
+```
+이 문자열이 보이면 128비트 키 변형을 쓰고 있다는 뜻이며, 정상적인 256비트 키 변형(`"expand 32-byte k"`)과 구분되는 또 다른 지문이 된다.
+
+### 쿼터라운드(Quarter Round) — 반복되는 핵심 연산
+ChaCha20의 쿼터라운드는 네 개의 32비트 워드 a, b, c, d에 대해 다음을 순서대로 적용한다:
+```c
+a += b; d ^= a; d = rotl(d, 16);
+c += d; b ^= c; b = rotl(b, 12);
+a += b; d ^= a; d = rotl(d, 8);
+c += d; b ^= c; b = rotl(b, 7);
+```
+회전량 `16, 12, 8, 7`이 정확히 이 순서로 반복되는 것이 ChaCha20 특유의 지문이다(Salsa20은 회전량이 `7, 9, 13, 18`로 다르다). ChaCha20은 이 쿼터라운드를 한 라운드에 4번(행 방향+대각선 방향으로) 적용하고, 이를 총 10번 반복(라운드당 8회 쿼터라운드 = column round + diagonal round, 총 20라운드에 해당해서 "ChaCha20"이라는 이름이 붙음)해서 최종 키스트림 블록(64바이트)을 만든다.
+
+### 룩업 테이블이 없다는 것의 의미
+AES(REV-0211)는 S-box 256바이트 테이블을, RC4(REV-0900)는 256바이트 순열 배열을 필수로 쓰지만, ChaCha20/Salsa20은 **정적 데이터 테이블이 전혀 없다.** `.rodata`를 아무리 뒤져도 256바이트짜리 의심스러운 테이블이 안 보이는데 덧셈/XOR/회전만 반복하는 짧은 함수가 있다면, 오히려 그 자체가 ChaCha20/Salsa20 계열일 가능성을 높이는 힌트가 된다.
+
+### API/문자열 지문
+- **libsodium**: `crypto_stream_chacha20`, `crypto_stream_chacha20_xor`, `crypto_secretbox_xsalsa20poly1305`
+- **OpenSSL**: `EVP_chacha20`, `EVP_chacha20_poly1305`
+- **TLS 1.3 문맥**: cipher suite 이름에 `CHACHA20_POLY1305`가 그대로 노출되는 경우가 많음
+- **문자열**: `"expand 32-byte k"`, `"expand 16-byte k"`, `"chacha"`, `"salsa"`
+
+## 화면/코드에서 보이는 징후
+- 코드/데이터 영역에서 리틀엔디안으로 해석 시 `"expand 32-byte k"`가 되는 4개의 32비트 상수(`0x61707865`, `0x3320646e`, `0x79622d32`, `0x6b206574`)
+- 16워드(64바이트) 크기의 상태 배열을 다루는 함수
+- `add`, `xor`, `rol`(또는 `shl`+`shr`+`or` 조합) 세 종류 명령만 반복되는 짧은 내부 함수(쿼터라운드)
+- 회전량이 `16, 12, 8, 7` 순서로 반복(ChaCha20) 또는 `7, 9, 13, 18`(Salsa20)
+- Import/문자열에 `chacha20`, `salsa20`, `crypto_stream_chacha20`, `CHACHA20_POLY1305`
+
+## 가장 먼저 할 것
+`.rodata`나 코드 상수 풀에서 `0x61707865`(리틀엔디안 바이트로는 `65 78 70 61`)를 검색한다. 찾았다면 바로 뒤에 `0x3320646e`, `0x79622d32`, `0x6b206574`가 이어지는지 확인해 ChaCha20/Salsa20 계열로 확정한다.
+
+## 단계별 절차
+1. 문자열 뷰에서 `"expand 32-byte k"` 또는 `"expand 16-byte k"`를 직접 검색(컴파일러가 4개의 32비트 상수 대신 통짜 문자열로 남겨두는 경우도 있음)
+2. 없으면 IDA `Alt+B`(바이너리 검색)로 `65 78 70 61`(리틀엔디안 `0x61707865`) 바이트열 검색
+3. 16워드 상태 배열의 나머지 위치에 키(8워드)/논스(3워드)/카운터(1워드)로 보이는 값이 들어가는지 데이터 흐름 확인
+4. 내부 라운드 함수에서 회전량 `16,12,8,7` 순서(ChaCha20) 또는 `7,9,13,18` 순서(Salsa20)를 확인해 세부 알고리즘 구분
+5. 라운드 반복 횟수 확인 — ChaCha20은 20라운드(변형으로 ChaCha12/ChaCha8도 존재하니 실제 반복 횟수를 직접 센다)
+6. Python `PyNaCl`/`pycryptodome` 또는 직접 구현으로 알고 있는 키/논스를 넣어 바이너리 출력과 대조
+
+## 명령어/단축키
+```bash
+strings ./binary | grep -i "expand"
+objdump -d ./binary | grep -B2 -A2 "6170 7865\|65787061"
+python3 -c "
+from Crypto.Cipher import ChaCha20
+key = bytes(range(32))
+nonce = bytes(8)
+c = ChaCha20.new(key=key, nonce=nonce)
+print(c.encrypt(b'hello world').hex())
+"
+```
+IDA: `Alt+B`에 `65 78 70 61`(리틀엔디안) 검색. Ghidra: `Search → Memory`에서 같은 바이트열 Hex 검색.
+
+## 출력 해석
+- 상수 `0x61707865` 하나만 찾았다면 아직 ChaCha20인지 Salsa20인지 확정할 수 없다 — 반드시 이어지는 세 상수와 회전량 순서까지 확인해야 한다.
+- 재현한 키스트림이 바이너리 출력과 안 맞으면, 카운터 초기값(0 또는 1로 시작하는 구현 차이) 또는 논스 길이(64비트 vs 96비트 변형)를 다시 확인한다.
+- 32라운드/12라운드/8라운드처럼 표준(20라운드)과 다른 반복 횟수가 보이면 ChaCha8/ChaCha12 같은 경량 변형이므로 재현 코드의 라운드 수를 맞춰야 한다.
+
+## 흔한 실수
+- `0x61707865` 상수 하나만 보고 무조건 "ChaCha20"이라 단정하는 것 — Salsa20도 같은 상수를 공유하므로 회전량과 상수 배치 위치까지 확인해야 정확히 구분된다.
+- ChaCha20을 RC4(REV-0900)와 같은 스트림 암호라는 이유로 혼동해서 256바이트 순열 배열을 찾으려고 시간을 낭비하는 것 — ChaCha20/Salsa20은 정적 테이블이 전혀 없다.
+- 논스(nonce) 길이를 잘못 가정하는 것 — 원조 ChaCha20은 64비트 논스+64비트 카운터를 썼지만, RFC 8439(IETF 표준화 버전)는 96비트 논스+32비트 카운터를 쓴다. 라이브러리마다 기본값이 다르므로 반드시 실제 바이너리의 상태 배열 레이아웃을 확인해야 한다.
+- 라운드 횟수를 확인하지 않고 무조건 20라운드(ChaCha20)로 가정하는 것 — ChaCha8/ChaCha12 같은 축소 라운드 변형이 성능을 위해 쓰이는 경우가 있다.
+
+## 막혔을 때 다음 체크
+- 256바이트 순열 배열과 swap 연산이 보인다면 → REV-0900 RC4 알고리즘 흔적(KSA/PRGA) 알아보기
+- 16바이트 블록 암호(S-box, 라운드 키)라면 → [rev-0211-aes-fingerprints.md](./rev-0211-aes-fingerprints.md)
+- 이 스트림 암호가 Poly1305 MAC과 함께 쓰인다면(AEAD) 인증 태그 검증 로직이 별도로 있는지 확인
+- 검증 로직을 파이썬으로 재현하려면 → [rev-0222-reimplement-in-python.md](./rev-0222-reimplement-in-python.md)
+
+## 미니 예제
+IDA Hex View에서 다음 데이터를 발견했다:
+```
+65 78 70 61 6e 64 20 33 32 2d 62 79 74 65 20 6b
+```
+이 16바이트를 ASCII로 그대로 읽으면 `"expand 32-byte k"`이므로 ChaCha20 또는 Salsa20의 초기 상수임이 확실하다. 근처 함수에서 회전량이 `16, 12, 8, 7` 순서로 반복되는 것까지 확인해 ChaCha20으로 최종 확정했다. Python으로 검증:
+```python
+from Crypto.Cipher import ChaCha20
+key = bytes.fromhex("00" * 32)
+nonce = bytes.fromhex("00" * 12)
+c = ChaCha20.new(key=key, nonce=nonce)
+print(c.encrypt(bytes(64)).hex())
+```
+이 키스트림 결과가 바이너리에서 뽑은 값과 일치하면 키/논스까지 모두 확정된 것이다.
+
+## 관련 글
+- REV-0900 — RC4 알고리즘 흔적(KSA/PRGA) 알아보기
+- [rev-0211-aes-fingerprints.md](./rev-0211-aes-fingerprints.md) — 블록 암호(AES)와 ARX 스트림 암호의 대비
+- REV-0899 — DES/3DES 상수와 S-Box 흔적 알아보기
+- [rev-0222-reimplement-in-python.md](./rev-0222-reimplement-in-python.md) — 검증 로직을 파이썬으로 재현하는 법
+
+## 출처/검증
+- ChaCha20 상태 행렬 구성, `"expand 32-byte k"`/`"expand 16-byte k"` 상수, 쿼터라운드 회전량(16/12/8/7): Daniel J. Bernstein의 ChaCha 원논문 및 IETF RFC 8439("ChaCha20 and Poly1305 for IETF Protocols") 기준 (2026-09-09 검증).
+- Salsa20과 ChaCha20의 상수 공유 및 회전량 차이(Salsa20: 7/9/13/18): Daniel J. Bernstein의 Salsa20 사양 문서 기준 (2026-09-09 확인).
+- pycryptodome `ChaCha20` 모듈 동작 및 논스 길이 규약: PyCryptodome 공식 문서 기준 (2026-09-09).
