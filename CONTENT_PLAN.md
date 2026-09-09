@@ -1219,3 +1219,47 @@ category: "writeup". 각 글은 원문 write-up을 그대로 복제하지 않고
 - REV-1078 — printf 스타일 가변 인자 호출이 어셈블리에서 보이는 패턴
 - REV-1079 — 매크로/인라인 함수가 CALL 없이 전개되는 패턴
 - REV-1080 — 복합 대입 연산자(+=, -=, *= 등)가 어셈블리에서 보이는 패턴
+
+## Extension: Beyond x86/native CTF gaps 30 (REV-1081-REV-1110)
+
+2026-09-10 추가. 사용자가 "CTF 풀 때 필요한 걸 네가 생각해서 30개 추가하자"고 요청. 기존
+1,080개를 검토한 결과 x86/x64 네이티브(PE/ELF) 리버싱은 매우 두껍게 다뤄졌지만, 실제 CTF
+리버싱에서 자주 나오는 다음 영역이 전혀 없거나 얕음을 확인해 선정: PyInstaller/.pyc(매우 흔함),
+Go/Rust 바이너리, WebAssembly, ARM 기초(Android 카테고리는 있지만 ARM 어셈블리 자체는 없음),
+그리고 몇 가지 실전 툴/전략 팁.
+
+신규 category "other-targets" (25개, REV-1081-1105):
+
+- REV-1081 — PyInstaller로 패키징된 실행파일 식별하는 법
+- REV-1082 — pyinstxtractor로 PyInstaller 실행파일 추출하기
+- REV-1083 — .pyc 파일에서 Python 버전(매직 넘버) 확인하기
+- REV-1084 — uncompyle6/decompyle3로 .pyc 디컴파일하기
+- REV-1085 — Python 바이트코드(dis 모듈)를 직접 읽는 법
+- REV-1086 — PyArmor로 난독화된 Python 스크립트 알아보기
+- REV-1087 — Python 2 vs 3 바이트코드 차이가 리버싱에 미치는 영향
+- REV-1088 — Go 바이너리 식별하는 법(특징적인 심볼/문자열)
+- REV-1089 — Go 바이너리에서 함수 이름 복구하기(strip된 경우 포함)
+- REV-1090 — Go 바이너리의 문자열 구조(길이+포인터) 읽는 법
+- REV-1091 — Go 바이너리에서 goroutine/런타임 함수 걸러내기
+- REV-1092 — Go 바이너리 디컴파일 시 흔한 어려움과 대응(IDA/Ghidra)
+- REV-1093 — Rust 바이너리 식별하는 법
+- REV-1094 — Rust panic 메시지에서 소스 정보 추출하기
+- REV-1095 — Rust 이름 맹글링(v0 mangling) 해석하기
+- REV-1096 — Rust의 Option/Result 패턴이 어셈블리에서 보이는 방식
+- REV-1097 — WASM 바이너리 구조 기초(모듈/섹션)
+- REV-1098 — wasm2wat/wasm-decompile로 WASM을 텍스트로 바꾸기
+- REV-1099 — WASM에서 흔한 검증 로직 패턴 알아보기
+- REV-1100 — 브라우저 개발자도구로 WASM 디버깅하기
+- REV-1101 — ARM/ARM64 레지스터와 호출 규약 기초
+- REV-1102 — ARM Thumb 모드가 무엇이고 왜 헷갈리는지
+- REV-1103 — ARM에서 조건부 실행(비트) 읽는 법
+- REV-1104 — Ghidra/IDA에서 ARM 바이너리 아키텍처 설정하기
+- REV-1105 — QEMU user-mode로 다른 아키텍처 바이너리 실행하기(qemu-arm/qemu-mips)
+
+기존 category에 추가(5개):
+
+- REV-1106 — Binary Ninja 기초 소개(IDA/Ghidra 대비 언제 쓰는지) [category:tools]
+- REV-1107 — IDAPython으로 반복 작업 자동화하기 [category:tools]
+- REV-1108 — radare2 r2pipe로 스크립팅하기 [category:tools]
+- REV-1109 — 커스텀 VM 문제에서 opcode 테이블 자동 추출하기 [category:algorithms]
+- REV-1110 — 문제 파일에서 flag 형식을 미리 알고 탐색 범위를 좁히는 법 [category:triage]

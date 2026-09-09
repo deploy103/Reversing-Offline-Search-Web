@@ -387,4 +387,29 @@ AI가 중단되더라도 다음 작업자가 이어서 개발할 수 있도록 �
 - 없음(사용자 추가 요청까지 전부 완료). 최종 push 진행.
 
 ### Commit
+- 3bffd7b
+
+## 2026-09-10 14:30 KST — 사용자 추가 요청: "CTF 풀 때 필요한 것" 30개(REV-1081~1110) 완료
+
+### 배경
+사용자가 "네가 생각했을 때 CTF 풀 때 필요한 걸 30개 추가하자"고 요청. 기존 1,080개를 검토해 x86/x64 네이티브(PE/ELF)는 매우 두껍지만, 실제 CTF 리버싱에 자주 나오는 PyInstaller/.pyc, Go, Rust, WebAssembly, ARM 기초가 전혀 없다는 공백을 찾아 직접 주제를 선정.
+
+### 완료
+- **신규 category "other-targets"(25개, REV-1081~1105)**: PyInstaller 식별/pyinstxtractor 추출/.pyc 매직넘버/uncompyle6·decompyle3 디컴파일/dis 모듈/PyArmor/Python2·3 바이트코드 차이(7) + Go 바이너리 식별·함수명 복구·문자열 구조·goroutine 필터링·디컴파일 난점(5) + Rust 식별·panic 메시지·v0 맹글링·Option/Result 패턴(4) + WASM 모듈 구조·wasm2wat·검증로직 패턴·브라우저 디버깅(4) + ARM/ARM64 호출규약·Thumb 모드·조건부 실행·Ghidra/IDA 아키텍처 설정·QEMU user-mode(5)
+- **기존 카테고리에 5개 추가**: tools(Binary Ninja 소개, IDAPython 자동화, radare2 r2pipe), algorithms(커스텀 VM opcode 테이블 자동 추출), triage(flag 형식으로 탐색범위 좁히기)
+- 4개 병렬 에이전트가 WebSearch/WebFetch로 사실 확인 후 작성(Python 매직넘버 버전별 정확한 값, Go pclntab 메커니즘, Rust v0 mangling RFC, ARM AAPCS32/64 공식 스펙, QEMU user-mode 옵션 등을 공식 문서/소스 기준으로 검증). 한 에이전트는 세션 공유 WebSearch 예산 소진으로 WebFetch(공식 문서 직접 열람)로 전환해서 계속 진행.
+- `scripts/build.py` NAV_ITEMS에 "타 아키텍처/언어" 추가
+
+### 검증
+- `python3 scripts/build.py` → **1,110개 전부 빌드 성공**
+- `python3 scripts/validate.py` → 최초 14건 오류(에이전트들이 "출처/검증" 섹션에 출처 URL을 마크다운 링크 `[text](url)`로 써서 dist에 원격 `<a href>`가 생성됨 — file:// 규칙 위반, 그리고 REV-1098에 `fetch()` 문자열이 코드가 아닌 산문에 등장해 forbidden pattern으로 오탐) → 모든 마크다운 링크를 일반 텍스트로 치환하고 `fetch()` 표현을 풀어써서 수정 → **PASS (오류 0)**
+- `node tests/run-smoke-test.js` → 쿼리 137 → 145개로 확장(pyinstaller 추출, go 바이너리 리버싱, wasm2wat, arm thumb 모드, qemu-arm, binary ninja 등), **145/145 매칭**
+
+### 문제
+- 없음(과거 실수 재발 방지 목록에 새 항목 추가: "출처/검증 섹션은 URL을 마크다운 링크가 아니라 일반 텍스트로 써라"를 다음 웨이브 프롬프트에 명시할 것)
+
+### 다음 작업
+- 없음(사용자 추가 요청까지 전부 완료). 최종 push 진행.
+
+### Commit
 - (아래 커밋에서 기록)

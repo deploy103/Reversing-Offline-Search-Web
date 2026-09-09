@@ -1,13 +1,12 @@
 {
-  "last_updated": "2026-09-10T13:00:00+09:00",
-  "phase": "extension_python_examples_and_c_analysis_complete",
-  "completed_article_count": 1080,
-  "validated_article_count": 1080,
+  "last_updated": "2026-09-10T14:30:00+09:00",
+  "phase": "extension_other_targets_complete",
+  "completed_article_count": 1110,
+  "validated_article_count": 1110,
   "pending_article_ids": [],
-  "last_completed_article_id": "REV-1080",
+  "last_completed_article_id": "REV-1110",
   "current_tasks": [
-    "1,080개(원 1,000 + write-up 50 + c-analysis 30) 전부 완료.",
-    "algorithms+automation 중 100개 글에 실제 실행검증된 Python 예제 코드 대폭 보강 완료."
+    "1,110개(원 1,000 + write-up 50 + c-analysis 30 + other-targets/실전팁 30) 전부 완료."
   ],
   "known_issues": [
     "Watch for markdown false-link patterns like 'text[N](word)' in prose -- N in brackets immediately followed by parens gets misparsed as a markdown link. Instruct each wave's agents explicitly to avoid this.",
@@ -18,7 +17,7 @@
     "선택: 실제 IDA/Ghidra/x64dbg GUI 스크린샷은 이 자동화 환경에 GUI가 없어 대신 프로젝트 자체 제작 SVG 다이어그램 5종으로 대체함 - 추후 실제 툴 스크린샷 추가 여지 있음",
     "선택: 'pe 처음' 외 다른 fuzzy 랭킹 품질은 필요 시 계속 튜닝 가능"
   ],
-  "target_entry_count": 1080,
+  "target_entry_count": 1110,
   "target_mix": {
     "long_form": 500,
     "reference": 250,
@@ -1104,6 +1103,36 @@
     "REV-1077",
     "REV-1078",
     "REV-1079",
-    "REV-1080"
+    "REV-1080",
+    "REV-1081",
+    "REV-1082",
+    "REV-1083",
+    "REV-1084",
+    "REV-1085",
+    "REV-1086",
+    "REV-1087",
+    "REV-1088",
+    "REV-1089",
+    "REV-1090",
+    "REV-1091",
+    "REV-1092",
+    "REV-1093",
+    "REV-1094",
+    "REV-1095",
+    "REV-1096",
+    "REV-1097",
+    "REV-1098",
+    "REV-1099",
+    "REV-1100",
+    "REV-1101",
+    "REV-1102",
+    "REV-1103",
+    "REV-1104",
+    "REV-1105",
+    "REV-1106",
+    "REV-1107",
+    "REV-1108",
+    "REV-1109",
+    "REV-1110"
   ]
 }

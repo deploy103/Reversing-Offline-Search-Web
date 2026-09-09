@@ -56,6 +56,7 @@ NAV_ITEMS = [
     ("자동화 / Solver", "index.html?cat=automation"),
     ("Write-up (드림핵)", "index.html?cat=writeup"),
     ("C 코드 분석", "index.html?cat=c-analysis"),
+    ("타 아키텍처/언어", "index.html?cat=other-targets"),
 ]
 
 DIFFICULTY_LABEL = {"beginner": "입문", "basic": "기초", "intermediate": "중급"}

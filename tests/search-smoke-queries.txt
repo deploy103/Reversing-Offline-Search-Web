@@ -135,3 +135,11 @@ switch 점프테이블
 rsa 복호화 python
 lcg 역산
 xor 키 복원 python
+pyinstaller 추출
+pyc 디컴파일
+go 바이너리 리버싱
+rust panic
+wasm2wat
+arm thumb 모드
+qemu-arm
+binary ninja
