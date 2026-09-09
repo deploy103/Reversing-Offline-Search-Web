@@ -36,3 +36,87 @@ IsDebuggerPresent
 pe 처음
 elf 처음
 stripped elf
+스택 씨발
+스택 모르겠음
+rsp 뭐임
+함수 인자 어디
+call 뭐임
+f5 안됨
+디컴파일 개판
+음수 왜나옴
+and 왜함
+xor 반복문
+스택 카나리
+got overwrite
+plt got
+rva
+스택 프레임
+rop
+angr
+z3
+pwntools
+frida
+smali
+apk 분석
+dnspy
+confuserex
+windbg
+yara
+entropy
+vmprotect
+themida
+안티디버깅
+ptrace_scope
+aslr 우회
+rip relative
+switch문
+vtable
+rtti
+name mangling
+calling convention
+shadow space
+fastcall
+thiscall
+tls
+seh
+시그널
+coredump
+ltrace
+strace
+musl
+glibc 버전
+tcache
+fastbin
+format string
+integer overflow
+부호 확장
+엔디안
+readelf
+objdump
+checksec
+brute force
+해시 상수
+sha256
+md5
+base64
+rc4
+chacha20
+lcg
+mersenne twister
+난독화
+패킹 확인
+언패킹
+oep
+iat 복구
+adb
+apktool
+jadx
+ilspy
+capstone
+keystone
+unicorn
+recursion error
+state explosion
+unsat
+timeout error
+eoferror
