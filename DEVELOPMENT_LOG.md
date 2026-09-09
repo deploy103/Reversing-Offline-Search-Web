@@ -223,4 +223,26 @@ AI가 중단되더라도 다음 작업자가 이어서 개발할 수 있도록 �
 - 1,000개 완료 후 Phase 5~7
 
 ### Commit
+- fd19c4e
+
+## 2026-09-09 11:00 KST — Expansion 700 Wave 6 완료(dynamic-analysis) (누적 875개)
+
+### 완료
+- **dynamic-analysis 카테고리(seed 27 + 확장 70 = 97개) 전체 완료**: x64dbg/GDB 표현식 문법, 조건부 브레이크포인트 문법, GDB TUI, x64dbg 플러그인, Pwndbg 힙 명령, 디버거 간 레지스터/명령 대조표(GDB vs x64dbg vs WinDbg), x64dbg Script/Trace/Conditional Log/메모리·하드웨어 브레이크포인트, GDB condition/dprintf/reverse debugging, WinDbg Time Travel Debugging 개념, 멀티프로세스·멀티스레드 동시 디버깅, 런타임 인자/플래그 조작, RIP 강제 이동, 블랙박스 전략, 디버거 로그 파일화, VM 스냅샷 반복실험, 동적-정적 상수 교차검증, API 호출 순서 재구성, 브레이크포인트/스텝/attach/타임아웃/워치포인트/안티디버깅 관련 troubleshooting 다수(45건)
+- 6개 병렬 에이전트로 작성. 에이전트들이 기존 REV(예: REV-0658 gdbserver 기초, REV-0642 GDB watch/catch/tbreak, REV-0713 GDB 레지스터, REV-0847 gdbserver 연결실패 등)와의 중복을 스스로 발견해 각도를 차별화(예: REV-0836/0837은 기존 단일 플랫폼 심화글을 인용하며 GDB+x64dbg 통합 관점으로 작성)
+
+### 검증
+- `python3 scripts/build.py` → 875개 전부 빌드 성공
+- `python3 scripts/validate.py` → PASS (오류 0, 경고 0) — 이번 웨이브는 stale title 0건으로 한 번에 통과 (에이전트 프롬프트에 "기존 REV 인용 시 파일 확인 후 정확한 title 복사"를 강조한 효과로 보임)
+- Node vm 스모크 테스트 38개 쿼리 재실행 — 전부 정상 매칭 유지(no-result 0)
+
+### 문제
+- 없음
+
+### 다음 작업
+- Expansion 700 Wave 7: algorithms 55개(REV-0876~0930)
+- 이후 packing(35) → dotnet-android(19) → automation(14) → tools(2) = 마지막 105개
+- 1,000개 완료 후 Phase 5(tools/manifest.json) → Phase 6(이미지) → Phase 7(최종 검증+storage report+private push)
+
+### Commit
 - (아래 커밋에서 기록)
