@@ -200,4 +200,27 @@ AI가 중단되더라도 다음 작업자가 이어서 개발할 수 있도록 �
 - 1,000개 완료 후 Phase 5(tools/manifest.json) → Phase 6(이미지) → Phase 7(최종 검증+storage report+private push)
 
 ### Commit
+- 5300948
+
+## 2026-09-09 09:40 KST — Expansion 700 Wave 5 완료(static-analysis) (누적 805개)
+
+### 완료
+- **static-analysis 카테고리(seed 27 + 확장 85 = 112개) 전체 완료**: IDA/Ghidra 구조체·Enum·til·Local Types 빠른 참조, FLIRT 적용/커스텀 시그니처 제작, Hex-Rays 마이크로코드, IDA Patch Program/배치 리네임, Ghidra Data Type Manager/Version Tracking/P-code/Function Graph/Bookmarks/Patch Instruction, radare2(afl/axt)·비주얼 모드·Cutter, 도구 교차검증 전략, 문자열 상수로 알고리즘 추정, XREF 그래프/콜그래프/Data Xref, C++ 이름 맹글링/데맹글/클래스 계층 추정, IDA/Ghidra troubleshooting 다수(Auto Analysis 멈춤, Pseudocode 빈 화면, sub_/off_/unk_ 이름, 가상함수 Xref 실패, 인자/반환타입 오추론, LTO 함수 폭증, 32/64비트 로드 실수, FLIRT 미스매치, 정적→동적 전환 기준 등)
+- 8개 병렬 에이전트로 작성. 관련 글 stale title 1건 발견 즉시 재작성 스크립트로 수정
+- 에이전트들이 자체적으로 기존 글과의 중복을 발견하고 스코프를 조정한 사례 다수(REV-0794를 REV-0790과 차별화해 다중상속/RTTI 심화로 재작성, REV-0775/0776/0780을 개요+기존 심화글 안내로 재작성 등) — 병렬 웨이브가 늘어나도 중복 방지가 잘 작동함
+
+### 검증
+- `python3 scripts/build.py` → 805개 전부 빌드 성공
+- `python3 scripts/validate.py` → PASS (오류 0, 경고 0)
+- Node vm 스모크 테스트 38개 쿼리 재실행 — 전부 정상 매칭 유지(no-result 0)
+
+### 문제
+- 없음
+
+### 다음 작업
+- Expansion 700 Wave 6: dynamic-analysis 70개(REV-0806~0875)
+- 이후 algorithms(55) → packing+dotnet-android+automation+tools(105)
+- 1,000개 완료 후 Phase 5~7
+
+### Commit
 - (아래 커밋에서 기록)

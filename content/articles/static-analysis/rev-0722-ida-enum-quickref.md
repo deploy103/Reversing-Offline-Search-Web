@@ -1,0 +1,127 @@
+---
+id: REV-0722
+title: "IDA Enum 정의 빠른 참조"
+slug: "rev-0722-ida-enum-quickref"
+category: "static-analysis"
+difficulty: "basic"
+platform: [windows, linux]
+architecture: [x86, x64]
+format: [PE, ELF]
+tools: [IDA]
+keywords: ["IDA Enums", "Shift+F10", "IDA enum 정의", "symbolic constant", "IDA bitmask enum", "enum member 적용"]
+aliases: ["IDA enum 창", "IDA 열거형 만들기", "IDA 매직넘버 이름표", "IDA 상수 이름 붙이기"]
+symptom_keywords: ["0 1 2 3 같은 숫자가 반복되는데 의미를 모름", "switch case 숫자가 뭘 뜻하는지 모름", "매직넘버에 이름을 붙이고 싶음", "IDA에서 enum 만드는 법 모름", "플래그 비트마스크가 뭔지 헷갈림"]
+source_ids: ["SRC-HEXRAYS-DOCS", "SRC-GENERAL-REVERSING"]
+last_verified: "2026-09-09"
+---
+
+## 한 줄 요약
+`switch`문이나 `if` 비교에 `0`, `1`, `2`처럼 의미를 알 수 없는 작은 정수 상수가 반복되면, IDA의 **Enums** 서브뷰(`Shift+F10`)에서 그 값들에 이름을 붙인 열거형을 만들고 해당 오퍼랜드에 적용해서 `STATE_RUNNING`처럼 의미 있는 이름으로 바꿔 읽을 수 있다.
+
+## 언제 검색해야 하나
+- `switch(v1) { case 0: ... case 1: ... }`처럼 숫자만으로 각 case의 의미를 알기 어려울 때
+- 여러 곳에서 같은 매직넘버(`0x1`, `0x2`, `0x4`)가 OR로 조합되어 플래그처럼 쓰이는 걸 봤을 때
+- 상태 머신(state machine) 코드에서 상태 값이 정수로만 표시되어 흐름을 따라가기 어려울 때
+- 이미 REV-0149에서 다룬 숫자 표현 변경(`M` 키)으로 enum 표현을 적용하려 했는데 적용할 enum 자체가 아직 없을 때
+
+## 핵심 개념
+
+### Enums 서브뷰
+`Shift+F10`을 누르면 **Enums** 창이 열린다. 이 창에서 새 열거형을 만들고(`Ins`), 그 안에 멤버(이름=값 쌍)를 추가할 수 있다. 하나의 열거형은 여러 명명된 상수의 묶음이며, 나중에 디스어셈블리/Pseudocode의 특정 숫자 오퍼랜드에 "이 열거형의 어떤 멤버로 표시해라"라고 지정하는 데 쓰인다.
+
+### 일반 enum vs 비트마스크(bitmask) enum
+값이 서로 배타적인 상태 코드(0, 1, 2, 3 ...)라면 일반 enum으로 충분하다. 하지만 `flags = FLAG_A | FLAG_B`처럼 여러 값이 OR로 조합되는 경우(`0x1`, `0x2`, `0x4`, `0x8` ...)라면 Enums 창에서 해당 열거형을 **Bitmask** 옵션으로 만들어야 한다. 비트마스크로 지정하면 IDA가 조합된 값을 `FLAG_A | FLAG_C`처럼 OR로 분해해서 표시해준다.
+
+### 값에 enum 적용하기
+열거형을 만든 것만으로는 코드에 반영되지 않는다. 적용하려는 숫자 오퍼랜드 위에 커서를 두고, Pseudocode에서는 REV-0149에서 다룬 `M` 키(또는 우클릭 → enum 관련 메뉴)로 "어떤 열거형의 어떤 멤버로 표시할지" 선택해야 실제로 이름이 바뀐다. 디스어셈블리에서도 동일하게 우클릭 메뉴에서 "Enum member" 계열 항목으로 적용할 수 있다.
+
+### 값이 아직 없는 멤버는 즉석에서 추가 가능
+숫자 위에서 enum을 적용하려는 순간, 그 값과 일치하는 멤버가 아직 열거형에 없다면 IDA가 그 자리에서 새 멤버 이름을 입력해 즉시 추가할 수 있게 해주는 경우가 많다. 처음부터 모든 값을 다 채워 넣지 않고, 코드를 읽어가며 필요할 때마다 추가해도 된다.
+
+## 화면/코드에서 보이는 징후
+Pseudocode에 `if ( v1 == 2 )`, `switch ( state )` 뒤에 `case 0:`, `case 1:`, `case 2:`가 이어지거나, 플래그성 변수에 `& 4`, `| 8` 같은 비트 연산이 반복되면 enum/bitmask enum 후보다.
+
+## 가장 먼저 할 것
+`Shift+F10`으로 Enums 창을 열고, 코드에서 본 상태/플래그 값들의 의미를 먼저 문맥(문자열, 호출되는 함수 등)으로 추측해본다.
+
+## 단계별 절차
+
+**1) 값의 성격 파악**
+
+배타적 상태 값인지(일반 enum), OR로 조합되는 플래그인지(비트마스크 enum)를 먼저 구분한다.
+
+**2) 열거형 생성**
+
+`Shift+F10` → `Ins` → 이름 입력(예: `game_state_t`). 비트마스크라면 생성 시 해당 옵션을 선택한다.
+
+**3) 멤버 추가**
+
+열거형 안에서 `Ins`로 멤버를 추가하고, 이름과 값을 지정한다(예: `STATE_IDLE = 0`, `STATE_RUNNING = 1`).
+
+**4) 코드에 적용**
+
+Pseudocode나 디스어셈블리에서 해당 숫자 오퍼랜드에 커서를 두고 enum 적용 메뉴(또는 `M` 키)로 방금 만든 열거형의 멤버를 선택한다.
+
+**5) 반복 정리**
+
+`switch`문의 나머지 `case` 값들에도 같은 방식으로 적용해서 전체 상태 흐름을 이름만으로 읽을 수 있게 만든다.
+
+## 명령어/단축키
+| 단축키 | 위치 | 동작 |
+|---|---|---|
+| `Shift+F10` | 전역 | Enums 서브뷰 열기 |
+| `Ins` | Enums 창 | 새 열거형 추가, 열거형 안에서는 새 멤버 추가 |
+| `N` | Enums 창 | 열거형/멤버 이름 변경 |
+| `M` | Pseudocode | 선택한 숫자 값에 enum 멤버 표현 적용(REV-0149 참고) |
+| 우클릭 → Enum member | 디스어셈블리 | 숫자 오퍼랜드에 enum 멤버 적용 |
+
+## 출력 해석
+- 적용에 성공하면 `case 2:`가 `case STATE_RUNNING:`처럼 바뀐다.
+- 비트마스크 enum을 값에 적용했을 때 `FLAG_A|FLAG_C`처럼 여러 이름이 `|`로 이어져 표시되면 그 값이 두 플래그의 조합이라는 뜻이다.
+- 적용했는데 값이 그대로 숫자로 남아 있다면, 그 열거형에 해당 값과 정확히 일치하는 멤버가 없다는 뜻이다 — 값이 정확히 일치하지 않으면 IDA는 표현을 바꿔주지 않는다.
+
+## 흔한 실수
+- 플래그 조합 값에 일반 enum(비트마스크 아님)을 적용해서 조합이 분해되지 않고 엉뚱한 멤버 하나로만 표시되는 것.
+- 멤버 값을 잘못 입력해서 실제 코드의 값과 미묘하게 다른 enum이 만들어지는 것 — 반드시 디스어셈블리의 실제 상수 값과 대조한다.
+- enum 이름/멤버 이름을 `enum_1`, `item_0`처럼 방치해서 나중에 다시 봐도 의미를 알 수 없는 것.
+- 이미 있는 표준 상수(예: 잘 알려진 에러 코드, 프로토콜 상수)를 직접 새로 만들기 전에, 이미 til/헤더에 정의되어 있지 않은지 REV-0723을 통해 먼저 확인하지 않는 것.
+
+## 막혔을 때 다음 체크
+- 숫자 표현 전환 자체(`Q`/`H`/`B`/`M` 등 단축키)가 헷갈리면 → REV-0149 IDA 숫자 표현 Signed Unsigned Hex 바꾸기.
+- 이 값이 구조체 멤버의 필드로 쓰이는 상황이라면 → REV-0721 IDA 구조체(Structure) 정의 빠른 참조.
+- 표준 라이브러리/OS 헤더에 이미 정의된 enum을 가져오고 싶다면 → REV-0723 IDA 타입 라이브러리(til) 빠른 참조.
+- enum 적용 후에도 Pseudocode 흐름이 이상하면 → REV-0146 IDA F5 디컴파일과 Pseudocode 읽기.
+
+## 미니 예제
+```text
+관찰된 코드:
+  switch ( state )
+  {
+    case 0: idle_handler(); break;
+    case 1: running_handler(); break;
+    case 2: dead_handler(); break;
+  }
+
+Shift+F10 → Ins → "game_state_t"
+  Ins → STATE_IDLE = 0
+  Ins → STATE_RUNNING = 1
+  Ins → STATE_DEAD = 2
+
+각 case 숫자에 M(또는 우클릭 → enum member)으로 적용 후:
+  switch ( state )
+  {
+    case STATE_IDLE: idle_handler(); break;
+    case STATE_RUNNING: running_handler(); break;
+    case STATE_DEAD: dead_handler(); break;
+  }
+```
+
+## 관련 글
+- REV-0149 — IDA 숫자 표현 Signed Unsigned Hex 바꾸기
+- REV-0721 — IDA 구조체(Structure) 정의 빠른 참조
+- REV-0723 — IDA 타입 라이브러리(til) 빠른 참조
+- REV-0146 — IDA F5 디컴파일과 Pseudocode 읽기
+
+## 출처/검증
+- Enums 서브뷰(`Shift+F10`)와 멤버 추가(`Ins`), 비트마스크 옵션은 Hex-Rays 공식 문서(docs.hex-rays.com)의 단축키 레퍼런스 및 열거형 관리 관련 사용자 가이드 설명을 기준으로 정리했다(2026-09-09 검증).
+- Pseudocode에서 숫자 값에 enum 멤버를 적용하는 `M` 키 동작은 본 지식베이스 REV-0149에서 이미 검증한 내용과 일치시켰다. 정확한 메뉴 문구/키 배치는 버전에 따라 다를 수 있어 실제 우클릭 메뉴로 재확인할 것을 권장한다.

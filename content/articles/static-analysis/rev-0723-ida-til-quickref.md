@@ -1,0 +1,114 @@
+---
+id: REV-0723
+title: "IDA 타입 라이브러리(til) 빠른 참조"
+slug: "rev-0723-ida-til-quickref"
+category: "static-analysis"
+difficulty: "basic"
+platform: [windows, linux]
+architecture: [x86, x64]
+format: [PE, ELF]
+tools: [IDA]
+keywords: ["IDA til", "type library", "Local Types", "Shift+F11", "IDA Load type library", "parse C header", "mssdk gnulnx_x64"]
+aliases: ["IDA 타입 라이브러리", "IDA til 파일", "IDA 헤더 파싱", "IDA 표준 타입 불러오기"]
+symptom_keywords: ["구조체를 직접 다 만들기 귀찮음", "표준 라이브러리 구조체가 이미 있을 것 같음", "IDA Local Types가 뭔지 모름", "til 파일이 뭔지 모름", "헤더 파일을 IDA에 불러오고 싶음"]
+source_ids: ["SRC-HEXRAYS-DOCS", "SRC-GENERAL-REVERSING"]
+last_verified: "2026-09-09"
+---
+
+## 한 줄 요약
+`til`(Type Information Library)은 구조체·enum·typedef 같은 타입 정의를 모아 놓은 IDA 전용 데이터베이스 파일로, `File → Load file → Parse C header file`이나 `File → Load file → Type library`로 표준 라이브러리/OS 타입 묶음을 통째로 불러오면 `struct timeval`, `HANDLE` 같은 흔한 타입을 손으로 다시 만들 필요 없이 바로 적용할 수 있다.
+
+## 언제 검색해야 하나
+- 바이너리가 표준 C 라이브러리 함수나 Windows API를 많이 호출하는데, 그 함수들의 인자/리턴 타입이 `int`, `void *`처럼 뭉뚱그려져서 나올 때
+- REV-0721처럼 구조체를 손으로 매번 새로 만들기 전에, 이미 표준 헤더에 정의되어 있는 구조체가 아닌지 먼저 확인하고 싶을 때
+- 특정 라이브러리의 헤더 파일(`.h`)을 갖고 있고, 그 안의 타입 정의를 IDA에 그대로 반영하고 싶을 때
+- Pseudocode에서 함수 인자가 `a1`, `a2`처럼만 보이는데, 실제로는 잘 알려진 라이브러리 함수라서 원형이 이미 어딘가에 정의되어 있을 것 같을 때
+
+## 핵심 개념
+
+### til이란 무엇인가
+`til` 파일은 컴파일된 형태로 저장된 "타입 정의 묶음"이다. C 헤더 파일을 텍스트 그대로 파싱하는 대신, 미리 파싱해서 만들어둔 `.til` 파일을 불러오면 더 빠르고 안정적으로 대량의 표준 타입(구조체, enum, typedef, 함수 원형)을 IDA에 적용할 수 있다. IDA는 대상 플랫폼/컴파일러에 맞는 여러 til을 기본 제공한다(예: Windows SDK 계열, glibc/musl 계열 등 이름은 버전마다 다를 수 있다).
+
+### Local Types 서브뷰
+`Shift+F11`을 누르면 **Local Types** 창이 열린다. 이 창은 현재 IDB(분석 중인 데이터베이스)에 로드되어 있는 모든 타입 정의(구조체, enum, typedef 등)를 한 곳에서 보여준다. til을 불러오거나 C 헤더를 파싱하면 그 결과가 모두 이 Local Types 목록에 추가된다. REV-0721의 Structures 창(`Shift+F9`)이 "사용자가 새로 만드는 구조체 전용"이라면, Local Types는 "til/헤더에서 가져온 것 포함 전체 타입"을 보여주는 더 큰 그릇이라고 이해하면 된다.
+
+### 두 가지 불러오기 방법
+1. **Type library 불러오기**: `File → Load file → Type library` (또는 유사 메뉴)에서 이미 컴파일된 `.til` 파일을 선택해 통째로 불러온다. 가장 빠르고 안정적인 방법이다.
+2. **C 헤더 직접 파싱**: `File → Load file → Parse C header file`에서 실제 `.h` 텍스트 파일을 지정하면 IDA 내장 C 파서가 그 자리에서 파싱해 타입을 추가한다. CTF 문제가 자체 헤더(`chall.h` 등)를 공개했다면 이 방법으로 바로 반영할 수 있다.
+
+### 함수 원형에 적용하기
+til/헤더에서 가져온 함수 원형은 IDA가 임포트 함수 이름을 인식할 때 자동으로 매칭되어 인자 개수/타입이 채워지는 경우가 많다. 자동으로 안 됐다면, 함수 선언부에서 `Y`(Set type)를 누르고 원하는 함수 이름을 타이핑하면 Local Types에 등록된 원형이 자동완성되어 적용된다.
+
+## 화면/코드에서 보이는 징후
+Pseudocode에서 표준 라이브러리 함수(`memcpy`, `CreateFileA` 등)의 인자가 `a1`, `a2`, `(int)v3`처럼 원래 시그니처와 안 맞아 보이거나, `HANDLE`, `DWORD`, `struct timeval` 같은 흔한 타입이 전혀 인식되지 않고 기본 정수형으로만 보이면 til이 아직 로드되지 않았다는 신호다.
+
+## 가장 먼저 할 것
+`Shift+F11`로 Local Types 창을 열어 현재 어떤 타입들이 이미 로드되어 있는지 먼저 확인한다.
+
+## 단계별 절차
+
+**1) 현재 로드 상태 확인**
+
+`Shift+F11`로 Local Types를 열어 필요한 타입(예: `HANDLE`, `struct timeval`)이 이미 있는지 검색해본다.
+
+**2) 표준 til 불러오기**
+
+없다면 `File → Load file → Type library`에서 대상 플랫폼(Windows/Linux, 32/64비트)에 맞는 til을 선택해 불러온다.
+
+**3) 자체 헤더가 있다면 직접 파싱**
+
+CTF 문제 등에서 소스/헤더가 함께 제공된다면 `File → Load file → Parse C header file`로 그 `.h`를 직접 불러온다.
+
+**4) 함수/변수에 타입 재적용**
+
+til을 불러온 뒤, 이미 분석해둔 함수의 인자에 `Y`를 눌러 새로 로드된 타입 이름을 입력해 다시 지정한다. 자동으로 갱신되지 않은 기존 분석 결과는 수동으로 다시 적용해야 하는 경우가 많다.
+
+**5) 구조체와 연계**
+
+REV-0721에서 손으로 만든 구조체 안에 til에서 가져온 타입(예: `HANDLE` 멤버)을 그대로 멤버 타입으로 써서 조합할 수 있다.
+
+## 명령어/단축키
+| 단축키/메뉴 | 동작 |
+|---|---|
+| `Shift+F11` | Local Types 서브뷰 열기 |
+| `File → Load file → Type library` | 컴파일된 `.til` 파일 불러오기 |
+| `File → Load file → Parse C header file` | `.h` 텍스트 헤더 직접 파싱해서 불러오기 |
+| `Y` (함수/변수 위) | Local Types에 등록된 타입 이름으로 재지정(자동완성 지원) |
+| `Ins` (Local Types 창) | 타입을 직접 텍스트로 입력해 즉석 추가 |
+
+## 출력 해석
+- til을 불러온 직후에는 기존에 이미 분석되어 있던 함수의 표시가 자동으로 안 바뀔 수 있다 — 새 타입은 "이후 적용부터" 반영되는 경우가 많으므로, 중요한 함수는 `Y`로 다시 지정해줘야 한다.
+- `Parse C header file`을 실행했는데 에러가 뜨면, 그 헤더가 IDA의 C 파서가 이해하지 못하는 컴파일러 확장 문법(예: 특정 GCC/MSVC 전용 속성)을 쓰고 있을 가능성이 있다 — 문제되는 부분만 주석 처리하고 다시 시도해본다.
+- Local Types에 같은 이름의 타입이 이미 있는데 다시 불러오면 충돌 경고가 뜰 수 있다. 기존 정의를 유지할지 새 정의로 덮어쓸지 선택해야 한다.
+
+## 흔한 실수
+- til을 불러오기만 하고 실제 함수/변수에 `Y`로 재적용하지 않아서 "분명히 불러왔는데 왜 안 바뀌지"라고 헷갈리는 것.
+- 대상 바이너리의 플랫폼/비트폭과 맞지 않는 til(예: 32비트 바이너리에 64비트 전용 til)을 불러와서 타입 크기가 안 맞는 것.
+- 이미 til/헤더에 있는 표준 구조체를 모르고 REV-0721 방식으로 손으로 다시 만드는 것 — 표준 타입은 먼저 til에서 찾아보는 습관이 시간을 아껴준다.
+- 헤더 파싱 에러를 무시하고 넘어가서, 일부 타입만 반쪽으로 로드된 상태로 계속 작업하는 것.
+
+## 막혔을 때 다음 체크
+- CTF 문제 자체의 구조체를 새로 만들어야 한다면 → REV-0721 IDA 구조체(Structure) 정의 빠른 참조.
+- 상수 값에 이름을 붙이고 싶다면 → REV-0722 IDA Enum 정의 빠른 참조.
+- 함수 인자/리턴 타입을 최종적으로 어떻게 지정하는지 다시 확인하려면 → REV-0148 IDA Y로 타입 지정하기.
+- 적용 후 Pseudocode가 여전히 이상하면 → REV-0146 IDA F5 디컴파일과 Pseudocode 읽기.
+
+## 미니 예제
+```text
+1. Shift+F11 → Local Types 열기 → "HANDLE" 검색 → 없음 확인
+2. File → Load file → Type library → Windows SDK 계열 til 선택
+3. Local Types에서 다시 "HANDLE" 검색 → 이제 보임
+4. CreateFileA를 호출하는 함수의 리턴값 변수 위에서 Y
+   → 타입 이름에 "HANDLE" 입력 → 자동완성되어 적용
+5. Pseudocode의 (int)v1이 HANDLE v1으로 바뀜
+```
+
+## 관련 글
+- REV-0721 — IDA 구조체(Structure) 정의 빠른 참조
+- REV-0722 — IDA Enum 정의 빠른 참조
+- REV-0148 — IDA Y로 타입 지정하기
+- REV-0146 — IDA F5 디컴파일과 Pseudocode 읽기
+
+## 출처/검증
+- til(Type Information Library)의 개념, Local Types 서브뷰(`Shift+F11`), Load file 하위의 Type library/Parse C header file 메뉴 경로는 Hex-Rays 공식 문서(docs.hex-rays.com)의 타입 시스템 관련 사용자 가이드 설명을 기준으로 정리했다(2026-09-09 검증).
+- 실제로 제공되는 til 파일 이름과 목록은 IDA 버전/배포판에 따라 달라지므로, 정확한 파일 이름은 실제 설치본의 `File → Load file → Type library` 목록에서 재확인해야 한다.
