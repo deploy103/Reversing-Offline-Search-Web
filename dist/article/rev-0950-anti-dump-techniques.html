@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Anti-Dump 기법(덤프 방지) 개념 소개 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / packing</div>
+<article class="article-body">
+<h1>Anti-Dump 기법(덤프 방지) 개념 소개</h1>
+<div class="article-meta"><span class="tag">packing</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>Anti-Dump는 프로텍터가 OEP를 정확히 찾아도 메모리 덤프 자체가 정상적으로 되지 않도록 방해하는 기법군으로, PE 헤더 값을 실행 중에 의도적으로 훼손하거나, IAT/코드 섹션 크기를 실제와 다르게 위조하거나, 덤프 시도(예: 특정 메모리 접근 패턴)를 탐지해서 프로세스를 종료하는 방식으로 REV-0944~0946의 절차를 실패하게 만든다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>OEP는 정확히 찾은 것 같은데 Scylla의 Dump 버튼을 눌러도 결과 파일이 손상되어 있거나 실행이 안 될 때</li><li>덤프한 파일 크기가 원본 프로세스 메모리 사용량에 비해 비정상적으로 작을 때</li><li>덤프를 시도하는 순간 프로세스가 갑자기 종료되거나 디버거가 응답 없음 상태가 될 때</li><li>"안티덤프"라는 용어를 들었는데 안티 디버깅과 뭐가 다른지 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>안티 디버깅과의 차이</h3>
+<p>안티 디버깅(REV-0234~0240)은 "디버거가 붙어있는지 자체를 탐지해서 실행을 막거나 방해하는" 기법이다. 반면 안티 덤프는 디버거가 붙어있는 것은 허용하더라도(또는 이미 우회되었다는 전제 하에), "메모리를 파일로 떠내는 행위" 자체를 방해하거나, 떠낸 결과물이 쓸모없게 만드는 기법이다. 즉 목표하는 방해 시점이 다르다 — 안티 디버깅은 "관찰 자체"를, 안티 덤프는 "관찰 결과를 파일로 가져가는 것"을 막는다.</p>
+<h3>대표적인 안티 덤프 기법</h3>
+<ol><li><strong>PE 헤더 값 훼손</strong>: 프로세스가 실행되는 동안 메모리 상의 PE 헤더(예: <code>SizeOfImage</code>, 섹션 헤더의 <code>VirtualSize</code>/<code>SizeOfRawData</code>)를 정상 값과 다르게 바꿔놓는다. Scylla 같은 덤프 도구는 이 헤더 값을 참고해서 "얼마만큼의 메모리를 파일로 떠낼지" 계산하는데, 값이 위조되어 있으면 필요한 코드/데이터의 일부만 떠내거나 엉뚱한 범위를 떠내게 된다.</li><li><strong>섹션 크기/개수 위조</strong>: 실제로는 5개의 섹션이 있는데 헤더에는 3개만 있다고 기록해두면, 덤프 도구가 나머지 2개 섹션(중요한 코드가 들어있을 수 있는)을 아예 인식하지 못하고 건너뛴다.</li><li><strong>덤프 시도 탐지</strong>: 일부 프로텍터는 자신의 메모리 영역을 다른 프로세스(디버거)가 <code>ReadProcessMemory</code>로 읽어가려는 시도 자체를 감지해서(스레드로 주기적으로 자기 자신의 메모리 상태를 감시하거나, 특정 API 후킹으로) 그 순간 프로세스를 종료하거나 예외를 발생시킨다.</li><li><strong>코드 섹션 재암호화 타이밍 조작</strong>: REV-0949(함수 단위 암호화)와 결합해서, "지금 이 순간만 평문"인 코드 구간을 아주 짧게 유지하고 나머지 시간에는 항상 암호화 상태로 되돌려놓아, 덤프를 시도하는 그 짧은 순간을 노리기 어렵게 만든다.</li><li><strong>가짜 OEP 유도</strong>: 여러 개의 그럴듯한 <code>jmp</code> 지점을 만들어 리버서가 진짜 OEP가 아닌 곳에서 덤프를 시도하게 유도한다(REV-0944에서 언급한 "여러 OEP 후보" 문제의 악의적 버전).</li></ol>
+<h3>대응 전략</h3>
+<ul><li><strong>헤더 값을 신뢰하지 말고 직접 검증한다.</strong> Scylla가 자동으로 계산한 덤프 크기를 그대로 믿지 말고, Memory Map에서 실제 커밋된(committed) 메모리 영역의 크기를 직접 확인해서 비교한다.</li><li><strong>덤프 도구의 수동 옵션을 활용한다.</strong> Scylla는 "Dump" 시 이미지 크기를 수동으로 지정하는 옵션을 제공한다. 자동 계산값이 의심스럽다면 Memory Map에서 확인한 실제 크기로 직접 입력한다.</li><li><strong>여러 시점에서 덤프를 시도해본다.</strong> 한 번의 덤프가 손상되었다면, 재암호화 타이밍을 피해 살짝 다른 시점(같은 OEP 근처의 몇 명령 전/후)에서 다시 시도한다.</li><li><strong>덤프 탐지가 의심되면 우선 안티 디버깅 우회부터 강화한다.</strong> <code>ReadProcessMemory</code> 후킹 기반 탐지라면, 이는 사실상 프로세스 내부 API 후킹이므로 x64dbg의 API 브레이크포인트로 해당 후킹 지점을 먼저 무력화해야 할 수 있다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Scylla로 덤프한 파일을 PE-bear로 열면 섹션 헤더의 <code>VirtualSize</code>가 비정상적으로 작거나 0으로 표시됨</li><li>덤프 파일을 IDA에 열면 일부 섹션의 내용이 전부 0으로 채워져 있음(NULL 패딩)</li><li>덤프 시도 직후 프로세스가 곧바로 종료되거나 x64dbg가 "process terminated" 메시지를 표시</li><li>같은 OEP에서 여러 번 덤프를 시도했는데 매번 결과 파일 크기나 내용이 다르게 나옴</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>덤프가 실패했다고 판단되면, 먼저 Memory Map에서 프로세스의 실제 커밋된 메모리 영역과 각 섹션에 해당하는 크기를 직접 확인한다. Scylla가 계산한 덤프 크기와 실제 Memory Map 크기를 비교해서 차이가 있는지부터 확인하는 것이 우선이다.</p>
+<h2>단계별 절차</h2>
+<ol><li>OEP에서 정지한 상태에서 <code>Alt+M</code>(Memory Map)으로 이동</li><li>대상 프로세스의 각 메모리 영역(코드/데이터 섹션에 해당하는 영역)의 실제 크기 확인</li><li>Scylla의 Dump 옵션에서 자동 계산된 이미지 크기와 비교</li><li>차이가 있다면 Scylla의 수동 크기 입력 옵션으로 실제 크기를 직접 지정해 재덤프</li><li>덤프 결과 파일을 PE-bear로 열어 섹션별 <code>VirtualSize</code>/<code>SizeOfRawData</code>가 합리적인지 검증</li><li>여전히 손상된다면 OEP 근처의 다른 시점(몇 명령 전/후)에서 재시도</li><li>덤프 시도 자체가 프로세스 종료를 유발한다면 API 후킹 기반 탐지 여부를 REV-0239/REV-0240 개념으로 재확인</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>Alt+M</code>(Memory Map), 각 영역 우클릭 → <code>Dump Memory to File</code>(Scylla 없이 특정 영역만 수동으로 떠내는 대안)</li><li>Scylla: Dump 옵션 창의 이미지 크기 수동 입력 필드</li><li>PE-bear: 섹션 헤더 탭에서 <code>VirtualSize</code>, <code>SizeOfRawData</code> 값 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Memory Map에서 확인한 실제 크기가 Scylla 자동 계산값보다 크다면, 자동 계산이 위조된 헤더 값을 그대로 신뢰해서 일부를 누락시킨 것이다 — 수동으로 큰 값을 입력해 재시도한다.</li><li>덤프 파일의 특정 섹션이 전부 0으로 채워져 있다면, 그 섹션이 애초에 그 시점에 메모리에 올라와 있지 않았거나(다른 타이밍에 로드됨), 프로텍터가 의도적으로 그 구간만 비워둔 것이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Scylla가 자동으로 계산해준 값을 무조건 신뢰하고, 결과 파일이 깨져도 원인을 다른 곳(IAT 문제 등)에서만 찾는 것.</li><li>덤프 실패를 IAT 문제로 오해하고 REV-0945/REV-0946의 IAT 복구만 반복 시도하는 것 — 애초에 덤프된 코드/데이터 자체가 불완전하면 IAT를 아무리 잘 복구해도 실행이 안 된다.</li><li>한 번 덤프가 실패했다고 완전히 포기하는 것 — 같은 OEP 근처의 조금 다른 시점에서 재시도하면 성공하는 경우가 흔하다.</li><li>안티 덤프와 안티 디버깅을 같은 것으로 혼동해서 잘못된 우회 기법을 적용하려는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>IAT 자체 복구가 문제라면 → REV-0945/REV-0946</li><li>덤프 시도 자체가 프로세스 종료를 유발한다면 → REV-0239 예외 기반 Anti-Debug, REV-0240 디버거 갑작스런 종료 체크리스트</li><li>함수 단위 재암호화 타이밍이 문제라면 → REV-0949 함수 단위 암호화 개념</li><li>이 정도 방어가 결합된 수준이면 상용 프로텍터일 가능성이 높다 → REV-0942 상용 프로텍터를 만났을 때 현실적인 대응</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">정상 섹션 헤더(PE-bear로 확인해야 할 값):
+  .text   VirtualSize=0x00012000  SizeOfRawData=0x00012000
+
+위조된 섹션 헤더(프로텍터가 메모리 상에서 바꿔놓은 값):
+  .text   VirtualSize=0x00001000  SizeOfRawData=0x00001000  &lt;- 실제보다 훨씬 작게 위조
+
+Memory Map에서 직접 확인한 실제 커밋 크기: 0x00012000</code></pre>
+<p>Scylla 자동 계산은 위조된 <code>VirtualSize</code>(0x1000)만 믿고 그만큼만 떠내려 하지만, Memory Map에서 확인한 실제 크기(0x12000)로 수동 지정하면 나머지 코드까지 온전히 덤프할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0944-manual-oep-tracing-advanced.html">REV-0944 — 패킹된 바이너리에서 OEP를 수동으로 추적하는 절차 심화</a></li><li><a href="rev-0945-iat-reconstruction-concept.html">REV-0945 — 언패킹 후 IAT를 복구하는 개념(Import Reconstruction)</a></li><li><a href="rev-0949-function-encryption-intro.html">REV-0949 — 함수 단위 암호화(Function Encryption) 개념 소개</a></li><li><a href="rev-0942-commercial-protector-realistic-approach.html">REV-0942 — 상용 프로텍터(VMProtect/Themida)를 만났을 때 현실적인 대응</a></li><li><a href="rev-0240-debugger-sudden-exit-checklist.html">REV-0240 — 디버거에서 갑자기 종료될 때 체크리스트</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>PE 헤더 값 위조를 통한 안티 덤프 기법(SizeOfImage, VirtualSize 조작)은 다수의 공개 언패킹 튜토리얼 및 malware 분석 자료에서 공통적으로 설명하는 방식을 기준으로 정리했다.</li><li>Scylla의 자동 이미지 크기 계산 및 수동 크기 지정 옵션은 Scylla 공식 저장소(github.com/NtQuery/Scylla) 문서를 기준으로 확인했다(2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

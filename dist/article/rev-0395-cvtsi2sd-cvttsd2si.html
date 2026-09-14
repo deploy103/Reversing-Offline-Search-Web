@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CVTSI2SD와 CVTTSD2SI: 정수-실수 변환 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>CVTSI2SD와 CVTTSD2SI: 정수-실수 변환</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>CVTSI2SD</code>는 정수(GPR)를 double-precision float(XMM)로, <code>CVTTSD2SI</code>는 반대로 double을 정수(GPR)로 변환하는 SSE2 명령으로, C의 <code>(double)i</code>/<code>(int)d</code> 같은 명시적 형변환이 컴파일된 결과다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>int</code>를 <code>double</code>/<code>float</code>로, 또는 그 반대로 캐스팅하는 C 코드가 어셈블리로 어떻게 나타나는지 알고 싶을 때</li><li><code>cvtsi2sd</code>, <code>cvttsd2si</code> 같은 명령이 처음 나와서 이름이 무엇을 뜻하는지 헷갈릴 때</li><li><code>T</code>가 붙은 버전(<code>CVTT...</code>)과 안 붙은 버전(<code>CVT...</code>)의 반올림 방식 차이가 버그의 원인인지 확인해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>이름 구조로 방향과 타입 읽기</h3>
+<p>SSE 변환 명령의 이름은 <code>CVT[T] &lt;출발타입&gt;&lt;도착타입&gt;</code>구조를 따른다:</p>
+<ul><li><code>CVTSI2SD</code>: <strong>C</strong>on<strong>v</strong>er<strong>t</strong> <strong>S</strong>caler <strong>I</strong>nteger <strong>2</strong>(to) <strong>S</strong>caler <strong>D</strong>ouble → 정수 → double</li><li><code>CVTTSD2SI</code>: <strong>C</strong>on<strong>v</strong>er<strong>t</strong> <strong>T</strong>runcating <strong>S</strong>caler <strong>D</strong>ouble <strong>2</strong>(to) <strong>S</strong>caler <strong>I</strong>nteger → double → 정수 (버림)</li><li>같은 규칙으로 <code>CVTSI2SS</code>(정수→float), <code>CVTTSS2SI</code>(float→정수, 버림), <code>CVTSD2SI</code>(double→정수, 반올림) 등도 존재한다(본 문서는 double 계열을 중심으로 다룬다).</li></ul>
+<p><strong>핵심 암기법</strong>: 이름 안의 <code>2</code>는 화살표(→)이고, 그 앞이 출발, 뒤가 도착 타입이다.</p>
+<h3>CVTSI2SD — 정수를 double로</h3>
+<pre><code>CVTSI2SD xmm_dest, r/m32_src   ; 32비트 정수를 double로 변환해 xmm_dest[0]에 저장
+CVTSI2SD xmm_dest, r/m64_src   ; (REX.W 접두사 시) 64비트 정수를 double로 변환</code></pre>
+<ul><li>목적지 XMM의 <strong>하위 64비트(0번째 double)</strong> 에만 결과가 쓰이고, 상위 64비트는 그대로 보존된다(scalar 명령의 공통 규칙, <a href="rev-0390-addps-addss.html">REV-0390</a> 참고).</li><li>정수 → 부동소수점 변환은 IEEE 754 규칙에 따라 <strong>반올림(가장 가까운 값으로, round-to-nearest가 기본)</strong> 되지만, <code>int</code>/<code>long</code>이 표현할 수 있는 범위는 <code>double</code>의 53비트 가수부보다 작거나 비슷한 수준이라 실질적으로 대부분 정확히 표현된다.</li></ul>
+<h3>CVTTSD2SI — double을 정수로 (버림, Truncate)</h3>
+<pre><code>CVTTSD2SI r32_dest, xmm/m64_src   ; double을 32비트 정수로, 소수부를 0 방향으로 버림(truncate)
+CVTTSD2SI r64_dest, xmm/m64_src   ; (REX.W) 64비트 정수로 버림 변환</code></pre>
+<p>이름 중간의 <strong><code>T</code>(Truncating)</strong> 가 핵심이다: 이 명령은 소수부를 <strong>항상 0을 향해 잘라낸다</strong>(C의 <code>(int)d</code> 캐스팅과 동일한 동작 — <code>3.9</code>→<code>3</code>, <code>-3.9</code>→<code>-3</code>). 이는 C 언어의 <code>(int)</code> 캐스트가 "반올림이 아니라 버림"이라는 규칙과 정확히 일치하기 때문에, 컴파일러는 명시적 정수 캐스팅에 거의 항상 <code>T</code>가 붙은 버전을 쓴다.</p>
+<p><strong><code>T</code> 없는 버전(<code>CVTSD2SI</code>)과의 차이</strong>: <code>T</code>가 없는 <code>CVTSD2SI</code>는 현재 MXCSR의 반올림 모드(기본은 round-to-nearest-even)를 따라 반올림한다. 즉 <code>3.5</code>가 <code>CVTTSD2SI</code>로는 <code>3</code>(버림), <code>CVTSD2SI</code>로는 <code>4</code>(가장 가까운 짝수로 반올림, banker's rounding)가 될 수 있다. <strong>C의 <code>(int)</code> 캐스트를 흉내내려면 반드시 <code>T</code>가 붙은 버전이 필요</strong>하며, 컴파일러가 생성하는 캐스팅 코드는 거의 전부 <code>CVTT...</code> 계열이다.</p>
+<h3>변환 실패(범위 초과) 처리</h3>
+<p>정수로 표현 불가능한 값(너무 크거나 NaN)을 변환하려 하면, 결과로 <strong>정수 부호 있는 최솟값(예: 32비트라면 <code>0x80000000</code>, "integer indefinite" 값)</strong> 이 채워지고 MXCSR의 Invalid Operation 플래그가 세팅된다. 이는 예외를 던지지 않고 조용히 잘못된 값을 반환할 수 있다는 뜻이므로, 큰 double을 int로 캐스팅하는 코드에서 원인 불명의 이상값(<code>0x80000000</code> 근방)이 보이면 이 변환 실패를 의심해야 한다.</p>
+<h3>플래그 변화</h3>
+<p>정수 EFLAGS는 변경하지 않는다. 변환 결과의 정밀도/오류 상태는 MXCSR에 반영된다.</p>
+<h3>스택/RSP/RIP 변화</h3>
+<p>없음.</p>
+<h3>컴파일러 패턴</h3>
+<ul><li><code>double d = (double)i;</code> → <code>cvtsi2sd xmm0, edi</code>(또는 지역 변수 로드 후 변환)</li><li><code>int i = (int)d;</code> → <code>cvttsd2si eax, xmm0</code></li><li>정수 인덱스로 배열 접근 후 그 값을 실수 계산에 섞는 코드(<code>sum += (double)arr[i];</code>)에서 반복문 안에 이 변환이 반복적으로 나타나기도 한다.</li></ul>
+<h3>IDA/Ghidra 디컴파일</h3>
+<p><code>(double)</code>, <code>(int)</code> 같은 C 스타일 캐스트 연산자로 정확히 복원되는 경우가 많다 — 디컴파일러가 이 명령들의 의미를 잘 이해하기 때문에 원본 캐스팅 의도가 비교적 잘 드러나는 편이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>cvtsi2sd xmm0, eax</code> — 정수(EAX)를 double로 변환</li><li><code>cvttsd2si eax, xmm0</code> — double(XMM0)을 정수로 버림 변환</li><li>변환 직후 <code>cmp eax, 80000000h</code> 유사 비교 — 변환 실패(범위 초과) 검사 코드일 가능성</li><li>반복문 안에서 매 반복마다 <code>cvtsi2sd</code> — 정수 카운터를 실수 계산에 매번 캐스팅하는 비효율적 패턴(최적화 여지)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>이름에서 출발 타입과 도착 타입을 순서대로 읽는다(<code>SI2SD</code>= 정수→double).</li><li><code>T</code>가 붙어 있는지 확인해 버림(truncate)인지 반올림인지 구분한다.</li><li>변환 결과가 이후 어떻게 쓰이는지(배열 인덱스, 반환값 등) 추적한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) int → double 변환 인식</strong></p>
+<pre><code class="language-asm">mov    eax, [count]
+cvtsi2sd xmm0, eax     ; xmm0 = (double)count</code></pre>
+<p><strong>2) double → int 버림 변환 인식</strong></p>
+<pre><code class="language-asm">cvttsd2si eax, xmm0     ; eax = (int)xmm0, 소수부 버림</code></pre>
+<p><strong>3) 변환 실패 값 인지</strong> 결과가 <code>0x80000000</code>(32비트) 또는 <code>0x8000000000000000</code>(64비트)이면 원본 double이 범위를 초과했거나 NaN이었을 가능성을 의심한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg/GDB: 변환 전후로 GPR(정수)과 XMM(실수) 값을 각각 확인해 캐스팅 결과를 검증 (GDB: <code>p $eax</code>, <code>p $xmm0.v2_double</code>).</li><li>IDA F5: 대부분 <code>(double)</code>/<code>(int)</code> 캐스트로 정확히 복원되므로 디컴파일 결과를 우선 신뢰해도 무방하다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>cvtsi2sd</code> 결과 XMM의 하위 64비트만 바뀌고 상위 64비트는 그대로 유지된다 — 전체 128비트를 봤을 때 상위가 이전 값 그대로면 정상이다.</li><li><code>cvttsd2si</code>가 예상보다 항상 작은 정수를 낸다면(음수 방향 반올림처럼 보인다면) 실제로는 버림(0 방향)이 정상 동작임을 상기한다 — 버그가 아니라 명령의 기본 동작이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>CVTSI2SD</code>와 <code>CVTSI2SS</code>를 혼동하는 것 — 마지막 글자가 <code>D</code>(double)냐 <code>S</code>(single/float)냐로 목적지 정밀도가 갈린다.</li><li><code>T</code>가 붙은 버전과 안 붙은 버전을 같은 것으로 취급하는 것 — <code>CVTTSD2SI</code>(버림)와 <code>CVTSD2SI</code>(반올림)는 <code>3.5</code> 같은 값에서 결과가 다르게 나올 수 있다.</li><li>변환 결과가 <code>0x80000000</code> 근처로 나오는 걸 "정상적인 계산 결과"로 오해하는 것 — 이는 변환 실패(범위 초과/NaN)를 나타내는 특수값일 가능성이 높다.</li><li>이 명령들이 EFLAGS를 세팅한다고 가정하는 것 — 실제로는 정수 플래그에 영향이 없다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>변환 결과가 이상하면 → 원본 값이 정수/실수 표현 범위를 초과하지 않았는지 확인.</li><li>반올림/버림 차이로 결과가 하나 어긋나면 → <code>T</code> 접미사 유무를 다시 확인.</li><li>어느 레지스터가 정수이고 어느 게 실수인지 헷갈리면 → GPR(EAX 등)은 항상 정수, XMM은 항상 실수 오퍼랜드임을 기억.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — int를 double로 캐스팅</strong></p>
+<pre><code class="language-c">int count = 10;
+double avg = sum / (double)count;</code></pre>
+<pre><code class="language-asm">mov      eax, [count]
+cvtsi2sd xmm1, eax      ; (double)count
+divsd    xmm0, xmm1      ; sum / (double)count</code></pre>
+<p><strong>예제 2 — double을 int로 버림 캐스팅</strong></p>
+<pre><code class="language-c">double d = 3.99;
+int i = (int)d;   // i = 3 (버림)</code></pre>
+<pre><code class="language-asm">cvttsd2si eax, xmm0</code></pre>
+<p><strong>예제 3 — 배열 인덱스 계산에 쓰이는 실수→정수 변환</strong></p>
+<pre><code class="language-c">int idx = (int)(t * (double)(n - 1));</code></pre>
+<pre><code class="language-asm">cvtsi2sd xmm1, ecx        ; (double)(n-1)
+mulsd    xmm0, xmm1        ; t * (double)(n-1)
+cvttsd2si eax, xmm0         ; (int) 캐스트로 idx 확정</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0390-addps-addss.html">REV-0390 — ADDPS와 ADDSS: SIMD 병렬/단일 덧셈</a></li><li><a href="rev-0391-subps-mulps.html">REV-0391 — SUBPS와 MULPS: SIMD 뺄셈과 곱셈</a></li><li><a href="rev-0388-movapd-movupd.html">REV-0388 — MOVAPD와 MOVUPD: Double Precision SIMD 이동</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>CVTSI2SD</code>/<code>CVTTSD2SI</code> 명령어 동작과 반올림/버림 규칙: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "CVTSI2SD—Convert Doubleword Integer to Scalar Double-Precision Floating-Point Value" / "CVTTSD2SI—Convert with Truncation Scalar Double-Precision Floating-Point Value to Signed Integer" 섹션 기준 (2026-09-08 검증).</li><li>변환 실패 시 "integer indefinite" 값과 MXCSR Invalid Operation 플래그: Intel SDM Volume 1, "Floating-Point Exceptions" 챕터 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

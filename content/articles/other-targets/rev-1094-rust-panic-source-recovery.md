@@ -67,7 +67,7 @@ crash and burn
 ## 명령어/단축키
 ```bash
 strings ./chall | grep -E "\.rs$"
-strings ./chall | grep -v "^library/" 
+strings ./chall | grep -v "^library/"
 objdump -s -j .rodata ./chall | grep -B2 -A2 "src/main"
 ```
 IDA/Ghidra: 문자열 주소에서 `Ctrl+X`/References로 xref 확인, 구조체 뷰로 `Location`처럼 보이는 (포인터, 길이, i32, i32) 4필드 레이아웃을 수동으로 정의해두면 이후 같은 패턴이 반복될 때 빠르게 알아볼 수 있다.

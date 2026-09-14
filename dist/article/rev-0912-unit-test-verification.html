@@ -1,0 +1,194 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>알고리즘 복원 결과를 유닛 테스트로 검증하는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>알고리즘 복원 결과를 유닛 테스트로 검증하는 법</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>파이썬으로 재구현한 알고리즘이 "몇 개 입력을 넣어보니 맞더라"는 감으로 끝나면 나중에 엣지 케이스(빈 문자열, 최대 길이, 특수 바이트)에서 조용히 틀린 채로 넘어가기 쉬우므로, 실제 바이너리에서 뽑아낸 입출력 쌍을 <code>pytest</code> 테스트 케이스로 고정해두고 경계값·회귀 테스트까지 갖추는 습관이 재구현 신뢰도를 실질적으로 높인다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>재구현한 파이썬 함수가 "이번 입력은 맞는데 저번 입력은 틀렸다"처럼 일관성 없는 결과를 낼 때</li><li>REV-0911(다단계 파이프라인)처럼 여러 단계를 합친 재구현에서 어느 단계가 문제인지 빠르게 좁히고 싶을 때</li><li>재구현 코드를 수정한 뒤 "이전에 맞았던 케이스가 여전히 맞는지"를 매번 손으로 재확인하기 귀찮을 때</li><li>빈 입력, 길이 1, 최대 길이, non-ASCII 바이트 같은 경계 상황에서 재구현이 실제 바이너리와 같은 동작을 하는지 확신이 없을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 "한 번 맞으면 끝"이 위험한가</h3>
+<p>알고리즘 재구현에서 가장 흔한 실패 패턴은 평범한 입력(짧은 영문 소문자 문자열 등) 하나로만 검증하고 "재구현 완료"라고 결론짓는 것이다. 하지만 많은 버그가 다음과 같은 경계 조건에서만 드러난다.</p>
+<ul><li>빈 문자열(<code>b""</code>) — 루프가 0번 도는 경우 초기값 처리가 맞는지</li><li>길이 1인 입력 — 인덱스 <code>i-1</code>, <code>i+1</code>을 참조하는 코드에서 경계 밖 접근이 발생하는지</li><li>최대 길이 근처 — 버퍼 크기, 오버플로 처리 로직이 맞는지</li><li>non-ASCII 바이트(0x80 이상) — 부호 있는 <code>char</code>로 처리되어 음수로 확장되는 경우(REV-0206)를 재구현에서 놓쳤는지</li><li>알고리즘의 "특수 상수"에 해당하는 입력(예: 다항식 해시에서 곱셈 결과가 정확히 오버플로 경계에 걸리는 값)</li></ul>
+<p>이런 경계 조건은 우연히 고른 테스트 문자열 하나로는 절대 드러나지 않는다. 유닛 테스트로 이런 케이스를 명시적으로 나열해두면 재구현의 숨은 결함을 훨씬 빨리 찾을 수 있다.</p>
+<h3>테스트 케이스는 어디서 얻는가 — 실제 바이너리가 정답 오라클</h3>
+<p>재구현이 맞는지 판단하는 기준(oracle)은 항상 실제 바이너리 자신이다. GDB에서 검증 함수에 브레이크포인트를 걸고, 여러 입력에 대해 함수를 직접 호출(<code>call</code>) 하거나 자연스럽게 실행되도록 유도해 반환값을 기록하면, 이것이 곧 "정답이 확실한" 테스트 케이스가 된다. <code>gdb</code>의 <code>call</code> 명령이나 pwntools로 프로세스를 실행해 stdout을 캡처하는 방법 모두 가능하다.</p>
+<pre><code>(gdb) call (int)check("hello", 5)
+$1 = 0
+(gdb) call (int)check("flag{test}", 10)
+$2 = 1</code></pre>
+<p>이렇게 얻은 (입력, 예상 출력) 쌍을 pytest 테스트 함수로 고정해두면, 재구현 코드를 아무리 리팩터링해도 이 쌍들이 깨지지 않는 한 안전하다고 믿을 수 있다.</p>
+<h3>pytest로 구조화하기</h3>
+<p>파이썬 표준 테스트 프레임워크인 <code>pytest</code>(또는 표준 라이브러리 <code>unittest</code>)를 쓰면 여러 케이스를 짧고 명확하게 관리할 수 있다. CTF 리버싱처럼 일회성 스크립트가 많은 상황에서도, 재구현 함수 하나가 여러 단계로 복잡해지면 이 정도의 구조화는 시간을 절약해준다.</p>
+<pre><code class="language-python">import pytest
+from solve import check  # 재구현한 함수
+
+CASES = [
+    (b"", False),                     # 빈 입력 경계값
+    (b"a", False),                    # 길이 1 경계값
+    (b"flag{test}", True),            # 실제 바이너리에서 확인한 정상 케이스
+    (b"\xff\xfe\x00", False),         # non-ASCII / 널 바이트 포함
+]
+
+@pytest.mark.parametrize("data,expected", CASES)
+def test_check(data, expected):
+    assert check(data) == expected</code></pre>
+<p><code>pytest.mark.parametrize</code>를 쓰면 케이스 하나를 추가할 때마다 함수를 새로 안 써도 되고, 실패한 케이스만 명확히 리포트되어 어떤 입력에서 재구현이 틀렸는지 즉시 알 수 있다.</p>
+<h3>회귀 테스트로서의 가치</h3>
+<p>다단계 파이프라인(REV-0911)을 분석하다 보면 코드를 계속 수정하게 된다 — 처음엔 XOR인 줄 알았는데 나중에 룩업 테이블이었다는 걸 알게 되어 로직을 바꾸는 식이다. 이때 이미 확보해둔 테스트 케이스들을 다시 실행하기만 하면, 수정한 코드가 이전에 맞았던 케이스를 실수로 깨뜨렸는지(회귀, regression) 즉시 알 수 있다. 손으로 매번 재확인하는 것보다 훨씬 빠르고 안전하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>재구현 코드를 손으로 몇 번 테스트했는데 실행할 때마다 다른 결과가 나오거나, 코드를 수정할 때마다 이전에 맞았던 게 확실한지 불안한 상태</li><li>검증 함수가 여러 단계(REV-0911)로 이루어져 있어 어느 단계에서 결함이 생겼는지 특정하기 어려움</li><li>실제 바이너리를 GDB로 여러 번 실행해서 입출력을 얻었지만 이 결과들을 어디에도 기록해두지 않고 매번 다시 실행해서 눈으로 비교하는 중</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>GDB로 실제 검증 함수를 최소 5~10개의 서로 다른 입력(정상 케이스 몇 개, 경계값 몇 개)에 대해 실행해 (입력, 출력) 쌍을 확보한다. 이 쌍들을 파이썬 리스트나 pytest 파라미터 목록으로 즉시 코드에 옮겨 적는다.</p>
+<h2>단계별 절차</h2>
+<ol><li>재구현 대상 함수의 입력 형태(바이트 문자열, 정수, 구조체 등)와 출력 형태(bool, 정수 반환값 등)를 확정한다.</li><li>GDB <code>call</code> 명령이나 pwntools 자동화로 실제 바이너리에서 최소 5개 이상의 (입력, 출력) 쌍을 수집한다 — 정상 케이스뿐 아니라 빈 입력, 길이 1, 최대 길이, non-ASCII 바이트를 반드시 포함한다.</li><li>수집한 쌍을 <code>pytest.mark.parametrize</code> 목록으로 코드에 고정한다.</li><li>재구현 함수를 작성하고 <code>pytest -v</code>로 전체 테스트를 실행해 몇 개가 실패하는지 확인한다.</li><li>실패한 케이스가 있으면 그 입력만 따로 GDB로 다시 스텝 실행하며 재구현과 실제 동작이 어디서 갈라지는지 비교한다.</li><li>모든 테스트가 통과하면, 이후 코드를 리팩터링하거나 REV-0911처럼 파이프라인을 합칠 때도 같은 테스트 스위트를 반복 실행해 회귀를 방지한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">pip install pytest
+pytest -v test_solve.py
+pytest -v test_solve.py -k "boundary"   # 이름에 boundary가 들어간 케이스만 실행</code></pre>
+<pre><code># GDB에서 실제 검증 함수를 직접 호출해 정답 오라클 확보
+(gdb) break *0x&lt;check함수주소&gt;
+(gdb) run
+(gdb) call (int)check("candidate_string", 16)</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>pytest -v</code> 실행 결과 모든 케이스에 <code>PASSED</code>가 뜨면 재구현이 최소한 수집한 테스트 케이스 범위 안에서는 정확하다는 뜻이다.</li><li>특정 케이스만 <code>FAILED</code>가 뜨면 pytest가 자동으로 <code>assert</code> 좌우 값을 출력해주므로, 재구현 결과와 기대값이 정확히 어떻게 다른지 바로 확인할 수 있다.</li><li>경계값 케이스(빈 입력, 길이 1)에서만 실패한다면 루프 초기화나 인덱스 처리 부분에 결함이 있을 가능성이 크고, 정상 케이스에서도 실패한다면 핵심 변환 로직 자체(상수, 연산 순서)를 다시 봐야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>테스트 케이스를 정상적인 입력 한두 개로만 구성하고 "충분하다"고 판단하는 것 — 경계값을 포함하지 않으면 숨은 버그를 놓친다.</li><li>테스트 케이스의 기대값을 실제 바이너리가 아니라 재구현 코드 자신의 출력으로 채우는 것 — 이러면 재구현이 처음부터 틀렸어도 테스트가 항상 통과하는 무의미한 테스트가 된다. 기대값은 반드시 실제 바이너리 실행 결과에서 얻어야 한다.</li><li>테스트를 한 번 통과시켜 놓고 이후 코드를 수정할 때 테스트를 다시 안 돌려서 회귀를 놓치는 것.</li><li>모든 로직을 한 개의 거대한 <code>test_all()</code> 함수에 넣어 하나라도 실패하면 전체가 실패로 뭉뚱그려지는 것 — <code>parametrize</code>로 케이스별로 분리해야 어디가 실패했는지 바로 보인다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>재구현이 여러 단계로 나뉘어 있어 어느 단계 테스트부터 시작해야 할지 모르겠다면 → REV-0911 여러 알고리즘이 순차적으로 합성된 문제 풀어내기</li><li>테스트를 다 통과했는데도 최종적으로 원본과 완전히 동일한지 더 엄격하게 검증하고 싶다면 → REV-0919 알고리즘 복원 결과를 원본과 바이트 단위로 비교 검증하기</li><li>GDB에서 함수를 직접 호출하는 방법 자체가 익숙하지 않다면 → REV-0657 gdb finish로 반환값 확인하기, REV-0656 gdb python 스크립팅 기초</li><li>부호 있는 문자 확장 때문에 경계값에서 결과가 갈리는 것 같다면 → REV-0206 음수 상수를 Unsigned Hex로 다시 읽기</li></ul>
+<h2>미니 예제</h2>
+<p>REV-0906의 다항식 해시 재구현을 유닛 테스트로 감싸보자.</p>
+<pre><code class="language-python"># solve.py
+def poly_hash(s: bytes, base=31, mod=2**32, init=0) -&gt; int:
+    h = init
+    for c in s:
+        h = (h * base + c) % mod
+    return h</code></pre>
+<pre><code class="language-python"># test_solve.py
+import pytest
+from solve import poly_hash
+
+# GDB로 실제 바이너리에서 확보한 (입력, 기대 해시값) 쌍이라고 가정
+CASES = [
+    (b"", 0),                      # 빈 입력 -&gt; 초기값 그대로
+    (b"a", 97),                    # 길이 1 -&gt; h = 0*31+97 = 97
+    (b"ab", 3105),                 # 97*31+98 = 3007+98 = 3105
+    (b"hello", 99162322),          # 정상 케이스
+]
+
+@pytest.mark.parametrize("data,expected", CASES)
+def test_poly_hash(data, expected):
+    assert poly_hash(data) == expected</code></pre>
+<p>이렇게 구성해두면 <code>poly_hash</code> 구현을 나중에 최적화하거나 다른 파이프라인 단계와 합치더라도, <code>pytest test_solve.py</code>를 실행하는 것만으로 이전에 확인했던 모든 케이스가 여전히 맞는지 몇 초 안에 확인할 수 있다.</p>
+<h3>완전한 예제 스크립트 — pytest 설치 없이 표준 라이브러리 unittest로 바로 실행하기</h3>
+<p><code>pip install pytest</code>가 안 되는 오프라인 환경이라도, 파이썬에 기본으로 들어있는 <code>unittest</code> 모듈로 똑같은 효과를 낼 수 있다. 아래 스크립트는 파일 하나만으로 완결되며, <code>python3 파일이름.py</code>로 바로 실행된다.</p>
+<pre><code class="language-python">import unittest  # 파이썬 기본 내장 테스트 프레임워크 (별도 설치 불필요)
+
+
+def poly_hash(s: bytes, base: int = 31, mod: int = 2**32, init: int = 0) -&gt; int:
+    """검증 대상 함수: 다항식 해시를 계산한다. (재구현한 알고리즘이라고 가정)"""
+    h = init                     # 초기 누적값
+    for c in s:                  # 문자열의 바이트를 하나씩 순서대로 꺼낸다
+        h = (h * base + c) % mod # 누적값을 base배 하고 현재 바이트를 더한 뒤 mod로 자른다
+    return h                     # 최종 누적값을 반환
+
+
+class TestPolyHash(unittest.TestCase):
+    """poly_hash 함수를 검증하는 테스트 모음. 메서드 이름이 test_로 시작해야 자동 인식된다."""
+
+    def test_empty_input(self):
+        # 경계값 1: 빈 문자열을 넣으면 루프가 0번 돌아서 초기값 그대로 나와야 한다
+        self.assertEqual(poly_hash(b""), 0)
+
+    def test_single_byte(self):
+        # 경계값 2: 길이 1인 입력 -&gt; h = 0*31 + 97 = 97 ('a'의 아스키 코드는 97)
+        self.assertEqual(poly_hash(b"a"), 97)
+
+    def test_two_bytes(self):
+        # 정상 케이스: h = (97*31 + 98) = 3007 + 98 = 3105 ('b'의 아스키 코드는 98)
+        self.assertEqual(poly_hash(b"ab"), 3105)
+
+    def test_normal_word(self):
+        # 조금 더 긴 정상 케이스: 실제로 실행해서 얻은 값을 그대로 고정해둔 것
+        self.assertEqual(poly_hash(b"hello"), 99162322)
+
+    def test_non_ascii_byte(self):
+        # 경계값 3: 0x80 이상인 non-ASCII 바이트도 문제없이 처리되는지 확인
+        # h = 0*31 + 0xFF(255) = 255
+        self.assertEqual(poly_hash(b"\xff"), 255)
+
+    def test_max_byte_overflow_boundary(self):
+        # 경계값 4: 곱셈 결과가 32비트를 넘어가는 경우에도 mod 연산으로 올바르게 잘리는지 확인
+        # 아주 큰 수를 넣어 오버플로 처리가 되는지 간접적으로 확인한다
+        big_input = b"\xff" * 10  # 0xFF를 10번 반복
+        result = poly_hash(big_input)
+        self.assertTrue(0 &lt;= result &lt; 2**32)  # 결과가 항상 32비트 범위 안에 있어야 한다
+
+
+if __name__ == "__main__":
+    unittest.main(verbosity=2)  # verbosity=2로 각 테스트 이름과 통과 여부를 자세히 출력</code></pre>
+<p>이 파일을 그대로 실행하면 다음과 비슷한 결과가 출력된다(테스트 실행 순서는 알파벳순).</p>
+<pre><code>test_empty_input (__main__.TestPolyHash) ... ok
+test_max_byte_overflow_boundary (__main__.TestPolyHash) ... ok
+test_non_ascii_byte (__main__.TestPolyHash) ... ok
+test_normal_word (__main__.TestPolyHash) ... ok
+test_single_byte (__main__.TestPolyHash) ... ok
+test_two_bytes (__main__.TestPolyHash) ... ok
+
+----------------------------------------------------------------------
+Ran 6 tests in 0.001s
+
+OK</code></pre>
+<h3>회귀(regression)가 실제로 잡히는 모습 보기</h3>
+<p>이제 일부러 <code>poly_hash</code>의 곱셈 상수를 <code>31</code>에서 <code>33</code>으로 잘못 바꿔서(실제로 리버싱하다가 상수를 착각해서 옮기는 실수를 흉내낸 것), 같은 테스트를 다시 돌리면 무슨 일이 벌어지는지 확인해보자.</p>
+<pre><code class="language-python">def poly_hash_buggy(s: bytes, base: int = 33, mod: int = 2**32, init: int = 0) -&gt; int:
+    # base를 31 -&gt; 33으로 잘못 옮겨적은 "버그가 있는" 재구현
+    h = init
+    for c in s:
+        h = (h * base + c) % mod
+    return h
+
+# 기존 테스트 케이스로 버그가 있는 버전을 검증
+print(poly_hash_buggy(b"ab") == 3105)      # False가 나와야 정상 (버그를 잡아낸 것)
+print(poly_hash_buggy(b"hello") == 99162322)  # 이 역시 False</code></pre>
+<p>실행 결과:</p>
+<pre><code>False
+False</code></pre>
+<p><code>base</code> 상수 하나만 잘못 옮겨도 이미 확보해둔 테스트 케이스들이 즉시 실패로 알려준다. 만약 테스트 없이 눈으로만 결과를 확인했다면, <code>poly_hash_buggy(b"hello")</code>가 우연히 <code>99162322</code>와 비슷한 숫자처럼 보여서 착각할 수도 있었겠지만, <code>assertEqual</code>은 정확히 일치하는지만 판단하므로 이런 실수를 절대 놓치지 않는다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0906-polynomial-hash-pattern.html">REV-0906 — Polynomial Hash(다항식 해시) 패턴 알아보기</a></li><li><a href="rev-0911-chained-algorithm-composition.html">REV-0911 — 여러 알고리즘이 순차적으로 합성된 문제 풀어내기</a></li><li><a href="rev-0919-byte-level-diff-verification.html">REV-0919 — 알고리즘 복원 결과를 원본과 바이트 단위로 비교 검증하기</a></li><li><a href="rev-0657-gdb-finish-return-value.html">REV-0657 — GDB에서 함수 반환값을 finish로 확인하는 법</a></li><li><a href="rev-0656-gdb-python-scripting-basics.html">REV-0656 — GDB Python 스크립팅 기초(gdb.Breakpoint 등)</a></li><li><a href="rev-0206-negative-to-unsigned-hex.html">REV-0206 — 음수 상수를 Unsigned Hex로 다시 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>pytest.mark.parametrize</code>를 이용한 테스트 케이스 관리와 경계값 테스트(boundary value testing) 원칙: pytest 공식 문서 및 소프트웨어 테스팅의 표준 경계값 분석 기법 기준.</li><li>GDB <code>call</code> 명령으로 실행 중인 프로세스의 함수를 직접 호출해 결과를 얻는 방법: GDB 공식 문서(Calling Program Functions) 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

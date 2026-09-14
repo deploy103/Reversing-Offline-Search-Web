@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GDB attach가 permission denied로 실패할 때(ptrace_scope) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>GDB attach가 permission denied로 실패할 때(ptrace_scope)</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>gdb -p PID</code>나 GDB 안에서 <code>attach PID</code>를 실행했을 때 <code>ptrace: Operation not permitted</code>가 뜬다면, 대부분 프로세스 소유권 문제가 아니라 리눅스 Yama 보안 모듈의 <code>kernel.yama.ptrace_scope</code> 설정이 "자기 자신이 낳은 자식 프로세스에만 attach 허용"으로 걸려 있는 것이 원인이며, 값을 <code>0</code>으로 바꾸거나 <code>sudo</code>로 실행하면 해결된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>gdb -p 12345</code> 또는 GDB 안에서 <code>attach 12345</code>를 실행했는데 <code>ptrace: Operation not permitted</code>가 뜰 때</li><li>분명 내가 소유한(같은 사용자로 실행한) 프로세스인데도 attach가 거부될 때</li><li>root가 아닌 일반 사용자로 GDB를 쓰다가 이미 떠 있는 서버/데몬 프로세스에 붙으려 할 때</li><li>CTF 문제를 로컬에서 먼저 실행해두고 나중에 GDB로 붙여서 분석하려는데 이 오류를 만났을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>리눅스 커널의 Yama LSM(Linux Security Module)은 <code>/proc/sys/kernel/yama/ptrace_scope</code> 값으로 <code>ptrace</code> 허용 범위를 제한한다.</p>
+<pre><code class="language-text">0 = classic — 같은 사용자 권한이면 임의 프로세스에 attach 가능
+1 = restricted (기본값, 대부분의 데스크톱 배포판) — 오직 부모-자식 관계(직접 fork해서 만든 자식)만 attach 가능
+2 = admin-only — CAP_SYS_PTRACE 권한(root)이 있어야만 가능
+3 = no attach — 어떤 프로세스도 attach 불가(재부팅 전까지 되돌릴 수 없음)</code></pre>
+<p>Ubuntu 등 다수의 데스크톱/서버 배포판은 기본값이 <code>1</code>(restricted)이다. 이 값에서는 GDB로 <strong>이미 실행 중인 임의의 프로세스</strong>에 <code>attach</code>하는 것이 막힌다 — GDB가 그 프로세스를 직접 <code>fork</code>해서 낳은 자식이 아니기 때문이다. 반면 <code>gdb ./chall</code>로 GDB가 직접 프로세스를 새로 실행(<code>run</code>)하는 경우는 GDB 자신이 부모가 되므로 이 제한에 걸리지 않는다. 즉, "이미 떠 있는 프로세스에 나중에 붙는" 시나리오에서만 이 문제가 나타난다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-bash">$ gdb -p 12345
+Attaching to process 12345
+ptrace: Operation not permitted.</code></pre>
+<p>또는 GDB를 이미 실행한 상태에서:</p>
+<pre><code class="language-gdb">(gdb) attach 12345
+Attaching to process 12345
+ptrace: Operation not permitted.</code></pre>
+<p>자신이 소유한(같은 사용자로 실행한) 프로세스인데도 이 오류가 나서 당황하기 쉽다. 파일 권한(<code>chmod</code>)이나 sudo 여부와는 무관하게 이 메시지 그대로 발생한다.</p>
+<h2>가장 먼저 할 것</h2>
+<pre><code class="language-bash">cat /proc/sys/kernel/yama/ptrace_scope</code></pre>
+<p><code>1</code> 이상이 나오면 바로 이것이 원인이다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 임시로 값을 0으로 낮추기(가장 흔한 해결책, 재부팅 시 원복됨)</strong></p>
+<pre><code class="language-bash">sudo sysctl -w kernel.yama.ptrace_scope=0</code></pre>
+<p><strong>2) 영구 적용하려면 sysctl 설정 파일에 기록</strong></p>
+<pre><code class="language-bash">echo "kernel.yama.ptrace_scope = 0" | sudo tee /etc/sysctl.d/10-ptrace.conf
+sudo sysctl --system</code></pre>
+<p><strong>3) 설정을 바꾸고 싶지 않다면 root로 GDB 실행</strong></p>
+<pre><code class="language-bash">sudo gdb -p 12345</code></pre>
+<p><code>admin-only</code>(<code>2</code>) 단계까지는 root 권한(<code>CAP_SYS_PTRACE</code>)이면 attach가 가능하다. 단, <code>3</code>(no attach)로 설정되어 있으면 root라도 재부팅 전까지는 불가능하다.</p>
+<p><strong>4) 애초에 GDB로 직접 실행해서 부모-자식 관계를 만들기</strong> 가능한 상황이라면 이미 떠 있는 프로세스에 나중에 붙는 대신, 처음부터 <code>gdb ./chall</code> 후 <code>run</code>으로 실행하면 이 제한 자체를 우회할 수 있다.</p>
+<p><strong>5) CTF 문제풀이용 개인 VM/컨테이너라면 값을 0으로 낮추는 것이 가장 실용적이다.</strong> 프로덕션 서버라면 보안상 <code>ptrace_scope</code>를 함부로 낮추지 말고, 필요한 순간에만 <code>sudo gdb</code>로 접근하는 편이 안전하다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">cat /proc/sys/kernel/yama/ptrace_scope
+sudo sysctl -w kernel.yama.ptrace_scope=0
+sudo gdb -p PID</code></pre>
+<h2>출력 해석</h2>
+<p><code>cat /proc/sys/kernel/yama/ptrace_scope</code>가 <code>0</code>이면 attach 제한이 없는 상태, <code>1</code>이면 부모-자식 관계만 허용(현재 이 오류의 전형적 원인), <code>2</code>는 root만 가능, <code>3</code>은 재부팅 전까지 완전 차단이다. <code>sudo sysctl -w kernel.yama.ptrace_scope=0</code> 실행 후 같은 파일을 다시 <code>cat</code>했을 때 <code>0</code>으로 바뀌어 있으면 설정이 즉시 반영된 것이며, 이후 <code>gdb -p PID</code>가 곧바로 성공해야 정상이다.</p>
+<h2>흔한 실수</h2>
+<ul><li>오류 메시지만 보고 파일 권한(<code>chmod</code>) 문제로 오해해서 바이너리 실행 권한을 만지작거리는 것 — 이 오류는 파일 권한이 아니라 커널의 ptrace 정책 문제다.</li><li><code>ptrace_scope</code>를 <code>0</code>으로 낮춘 뒤 실수로 <code>3</code>(no attach)으로 잘못 설정해버려서 재부팅 전까지 root로도 attach가 안 되는 상황을 만드는 것.</li><li>Docker 컨테이너 안에서 이 오류가 나는데, 호스트의 sysctl 값이 아니라 컨테이너 자체의 <code>--cap-add=SYS_PTRACE</code>/<code>--privileged</code> 옵션이 필요한 경우와 혼동하는 것(컨테이너 안에서는 sysctl 값보다 컨테이너 실행 시 부여된 capability가 먼저 문제인 경우가 많다).</li><li>매번 이 문제를 겪으면서도 <code>/etc/sysctl.d/</code>에 영구 설정을 남기지 않아, 재부팅할 때마다 같은 오류를 반복해서 만나는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>값을 0으로 낮췄는데도 attach가 안 되면 seccomp 필터가 <code>ptrace</code> syscall 자체를 막고 있는지 확인 → REV-0673 seccomp가 걸린 바이너리를 만났을 때 알아채는 법</li><li>ptrace의 근본 동작 원리(TRACEME, PEEKTEXT 등)가 궁금하면 → REV-0672 ptrace 기반 자체 디버거 구현 개념 소개</li><li>Docker 컨테이너 안에서의 권한/ptrace 제약이 궁금하면 → REV-0674 컨테이너(Docker) 안에서 배포된 문제 바이너리 분석 시 주의점</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ gdb -p $(pgrep chall)
+Attaching to process 4821
+ptrace: Operation not permitted.
+
+$ cat /proc/sys/kernel/yama/ptrace_scope
+1
+
+$ sudo sysctl -w kernel.yama.ptrace_scope=0
+kernel.yama.ptrace_scope = 0
+
+$ gdb -p $(pgrep chall)
+Attaching to process 4821
+Reading symbols from /home/user/chall...
+0x00007f2b3a1b7d2e in read () from /lib/x86_64-linux-gnu/libc.so.6</code></pre>
+<p>값을 <code>0</code>으로 낮춘 뒤에는 같은 명령이 정상적으로 attach에 성공했다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0673-seccomp-detection.html">REV-0673 — seccomp가 걸린 바이너리를 만났을 때 알아채는 법</a></li><li><a href="rev-0672-ptrace-custom-debugger-concept.html">REV-0672 — ptrace 기반 자체 디버거 구현 개념 소개</a></li><li><a href="rev-0674-docker-container-analysis-caveats.html">REV-0674 — 컨테이너(Docker) 안에서 배포된 문제 바이너리 분석 시 주의점</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Yama LSM <code>ptrace_scope</code>의 4단계 값(<code>0</code>~<code>3</code>)과 각 단계의 의미: Linux 커널 공식 문서(Documentation/admin-guide/LSM/Yama.rst) 기준.</li><li><code>sysctl</code>을 통한 커널 파라미터 임시/영구 변경 절차: Linux <code>sysctl(8)</code>/<code>sysctl.d(5)</code> man page 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

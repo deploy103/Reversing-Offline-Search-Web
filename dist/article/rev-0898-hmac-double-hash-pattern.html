@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HMAC 패턴 알아보기(이중 해시 구조) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>HMAC 패턴 알아보기(이중 해시 구조)</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>같은 해시 함수(MD5/SHA-1/SHA-256 등)를 두 번 호출하되, 첫 번째 호출 전에는 키를 <code>0x36</code>(ipad)으로, 두 번째 호출 전에는 같은 키를 <code>0x5c</code>(opad)로 XOR한 블록을 붙이는 구조가 보이면 이는 HMAC(Hash-based Message Authentication Code)이며, "해시 함수 자체"가 아니라 "해시 함수를 감싸는 키 인증 껍데기"라는 점이 중요하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디컴파일 코드에서 SHA-1/SHA-256/MD5(REV-0896, REV-0897, REV-0895) 같은 이미 식별된 해시 함수가 <strong>정확히 두 번</strong> 호출되고, 두 번째 호출의 입력이 첫 번째 호출의 출력을 포함할 때</li><li>코드 어딘가에 <code>0x36</code>이 64번(또는 128번, 블록 크기만큼) 반복되거나, 키 버퍼에 <code>0x36</code>/<code>0x5C</code>를 XOR하는 루프가 있을 때</li><li>Import 목록에 <code>HMAC</code>, <code>CryptHashData</code>+<code>HMAC_INFO</code>, OpenSSL의 <code>HMAC()</code>/<code>HMAC_Init_ex()</code>, 또는 Python 코드/문자열에 <code>hmac.new(...)</code>가 보일 때</li><li>시크릿 키(비밀 값)와 메시지가 둘 다 입력으로 들어가는데 단순 <code>H(key || message)</code> 형태가 아니라 뭔가 더 복잡한 전처리가 있는 것 같을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>HMAC이 해시와 다른 점</h3>
+<p>SHA-1, SHA-256, MD5 같은 해시 함수는 "메시지 하나"를 입력받아 고정 크기 출력을 만든다. 반면 HMAC은 <strong>키(key)와 메시지(message) 두 개</strong>를 입력받아, 그 키를 아는 사람만 만들 수 있는 인증 코드(MAC)를 생성하는 <strong>구성 방식(construction)</strong>이다. HMAC 자체는 새로운 해시 알고리즘이 아니라, 기존 해시 함수(H)를 감싸는 표준화된 절차이며 RFC 2104로 정의되어 있다. 그래서 "HMAC-SHA256"처럼 내부에 어떤 해시를 쓰는지 항상 이름에 붙는다.</p>
+<h3>왜 단순히 H(key||message)로 안 하는가</h3>
+<p><code>H(key || message)</code>처럼 키와 메시지를 단순히 이어붙여 한 번만 해싱하면, MD5/SHA-1/SHA-256 같은 Merkle-Damgård 구조의 해시 함수에서 <strong>길이 확장 공격(length extension attack)</strong>이 가능해진다. 즉 원래 키를 몰라도 <code>H(key||message)</code>의 결과값만 알면 공격자가 <code>H(key||message||추가데이터)</code>를 계산할 수 있는 취약점이 생긴다. HMAC은 이 문제를 안쪽/바깥쪽 두 번의 해싱과 서로 다른 패딩 상수로 원천 차단한다.</p>
+<h3>핵심 구조 — 이중 해시와 ipad/opad</h3>
+<p>RFC 2104가 정의하는 HMAC의 계산 공식은 다음과 같다:</p>
+<pre><code>HMAC(K, m) = H( (K' XOR opad) || H( (K' XOR ipad) || m ) )</code></pre>
+<p>여기서 <code>K'</code>는 키를 해시 함수의 블록 크기(B, 대부분의 해시에서 64바이트)만큼 0으로 채우거나(짧으면 패딩), 블록 크기보다 길면 먼저 한 번 해시해서 줄인 값이다. 그리고:</p>
+<pre><code>ipad = 0x36을 B바이트만큼 반복
+opad = 0x5C를 B바이트만큼 반복</code></pre>
+<p>즉 <strong>내부 해시(inner hash)</strong>는 <code>H((K' XOR 0x36...0x36) || message)</code>를 계산하고, <strong>외부 해시(outer hash)</strong>는 그 결과를 다시 <code>H((K' XOR 0x5C...0x5C) || innerHash결과)</code>로 감싼다. 코드에서 이 구조는 "같은 해시 함수 호출이 두 번, 그 사이에 <code>0x36</code>과 <code>0x5C</code>로 키를 XOR하는 처리"로 나타난다.</p>
+<p><code>0x36</code>과 <code>0x5C</code>는 RFC 2104가 정의한 고정 상수이며, 두 값을 XOR하면 <code>0x6A</code>가 나오는 등 비트 패턴이 서로 크게 다르도록(좋은 비트 차이 특성) 선택된 nothing-up-my-sleeve 값이다. 이 두 상수가 정확히 이 값으로 코드에 등장하는 것이 HMAC을 식별하는 가장 확실한 방법이다.</p>
+<h3>블록 크기(B)와 내부 해시 알고리즘의 관계</h3>
+<table><thead><tr><th>내부 해시</th><th>블록 크기 B</th><th>출력 크기 L</th></tr></thead><tbody><tr><td>MD5</td><td>64바이트</td><td>16바이트</td></tr><tr><td>SHA-1</td><td>64바이트</td><td>20바이트</td></tr><tr><td>SHA-256</td><td>64바이트</td><td>32바이트</td></tr><tr><td>SHA-512</td><td>128바이트</td><td>64바이트</td></tr></tbody></table>
+<p><code>ipad</code>/<code>opad</code> 반복 길이가 64바이트인지 128바이트인지 보면 내부 해시가 SHA-512 계열인지(128바이트) 나머지(64바이트)인지 힌트를 얻을 수 있다. 키가 B바이트보다 길면 먼저 <code>H(key)</code>로 한 번 줄이고, 짧으면 나머지를 0x00으로 채운다는 점도 코드에서 확인할 포인트다.</p>
+<h3>API/문자열 지문</h3>
+<ul><li><strong>OpenSSL</strong>: <code>HMAC()</code> 원샷 함수, 또는 <code>HMAC_Init_ex</code>/<code>HMAC_Update</code>/<code>HMAC_Final</code> 저수준 API</li><li><strong>Windows CNG</strong>: <code>BCryptOpenAlgorithmProvider</code>에 <code>BCRYPT_ALG_HANDLE_HMAC_FLAG</code> 플래그와 함께 <code>L"SHA256"</code> 등 전달</li><li><strong>Python</strong>: <code>hmac.new(key, msg, hashlib.sha256).hexdigest()</code> — 재현 및 대조에 가장 빠른 방법</li><li><strong>JWT(JSON Web Token)</strong>: <code>alg: "HS256"</code> 헤더가 보이면 내부적으로 HMAC-SHA256을 쓴다는 뜻이므로, 토큰 위변조 문제에서 이 패턴이 자주 등장</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>동일한 해시 함수(SHA-1/SHA-256/MD5)가 코드 안에서 정확히 두 번 호출됨</li><li>키 버퍼에 <code>xor byte ptr [rax], 36h</code> 또는 <code>xor byte ptr [rax], 5Ch</code>가 64회(또는 128회) 반복되는 루프</li><li>첫 번째 해시 호출의 출력(16/20/32바이트)이 두 번째 해시 호출의 입력 뒷부분으로 그대로 들어감</li><li>Import에 <code>HMAC</code>, <code>HMAC_Init_ex</code>, 문자열 <code>"HS256"</code>/<code>"HS384"</code>/<code>"HS512"</code>(JWT 헤더)</li><li>키 길이가 블록 크기(64/128바이트)보다 짧으면 나머지가 0x00으로 채워지는 패턴</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>먼저 이미 알고 있는 해시 함수(REV-0895~0897)의 호출 위치를 코드에서 두 곳 찾는다. 그 사이에서 <code>0x36</code>과 <code>0x5C</code>로 키를 XOR하는 루프를 찾으면 HMAC으로 확정. Import에 <code>HMAC</code>이 있으면 이 과정 없이 바로 확정.</p>
+<h2>단계별 절차</h2>
+<ol><li>Import 목록과 문자열에서 <code>HMAC</code>, <code>HS256</code>, <code>HS384</code> 등을 먼저 검색</li><li>없으면 코드에서 같은 해시 함수가 두 번 호출되는 지점을 찾음(REV-0896/0897에서 배운 초기값 상수로 각 호출을 식별)</li><li>두 호출 사이 또는 직전에 <code>0x36</code>, <code>0x5C</code> 상수로 XOR하는 루프가 있는지 확인 — IDA <code>Alt+B</code>로 <code>36h</code>, <code>5Ch</code> 즉시값 검색</li><li>첫 번째(내부) 해시의 출력이 두 번째(외부) 해시 입력에 그대로 이어붙는지 데이터 흐름 추적</li><li>키 길이와 블록 크기(대부분 64바이트) 비교 로직 확인 — 길면 먼저 축약 해시, 짧으면 0 패딩</li><li>Python <code>hmac</code> 모듈로 알고 있는 키/메시지 조합을 넣어 바이너리의 목표값과 대조</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">strings ./binary | grep -iE "hmac|hs256|hs384|hs512"
+objdump -d ./binary | grep -E "36h|5ch|0x36|0x5c"
+python3 -c "import hmac, hashlib; print(hmac.new(b'key', b'msg', hashlib.sha256).hexdigest())"</code></pre>
+<p>IDA: <code>Alt+B</code>(바이너리 검색)에 <code>36</code> 반복 패턴 검색, 또는 즉시값 <code>36h</code>/<code>5Ch</code> 위에서 <code>Ctrl+X</code>(Xref)로 어디서 쓰이는지 추적.</p>
+<h2>출력 해석</h2>
+<ul><li>Python <code>hmac.new(b"key", b"The quick brown fox jumps over the lazy dog", hashlib.sha256).hexdigest()</code>는 <code>f7bc83f430538424b13298e6aa6fb143ef4d59a14946175997479dbc2d1a3cd</code>가 나온다 — 알려진 테스트 벡터로 재현 로직을 검증할 수 있다.</li><li>내부 해시 결과(20바이트 또는 32바이트)가 외부 해시 입력 뒷부분에 정확히 이어붙는지 바이트 단위로 확인해야 한다 — 순서나 길이가 하나라도 틀리면 완전히 다른 MAC이 나온다.</li><li>키가 블록 크기보다 긴 경우 축약 해시를 빠뜨리면 결과가 절대 일치하지 않으니, 키 길이 조건 분기를 놓치지 않았는지 재확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>HMAC을 "해시를 두 번 하는 것"으로만 이해하고, <code>H(H(key||message))</code>처럼 단순 이중 해시로 잘못 재현하는 것 — 반드시 <code>ipad</code>/<code>opad</code>로 키를 다르게 XOR한 뒤 각각 해싱해야 한다.</li><li>HMAC 내부에 어떤 해시가 쓰였는지 확인 안 하고 무조건 SHA-256으로 가정하는 것 — REV-0895~0897의 상수 지문으로 내부 해시 종류를 먼저 정확히 식별해야 한다.</li><li>JWT의 <code>alg: "none"</code> 취약점과 혼동해서, HMAC 서명 검증 자체를 우회할 수 있다고 착각하는 것 — HMAC 검증 로직 자체는 키를 모르면 위조가 불가능하며, 문제의 취약점은 대개 검증 코드의 구현 실수(타이밍 공격, alg 파라미터 조작 허용 등)에 있다.</li><li>키 길이가 블록 크기(64바이트)보다 긴 경우를 놓치고 그대로 0 패딩만 적용해 결과가 안 맞는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>내부 해시가 무엇인지 모르겠다면 → REV-0896 SHA-1 흔적을 상수로 알아보는 법, REV-0897 MD5 흔적을 상수로 알아보는 법, REV-0895 SHA-256 흔적을 상수로 알아보는 법 (예정)</li><li>JWT 토큰 구조 자체가 낯설다면 서명 부분이 바로 이 HMAC 패턴이라는 점을 기억하고 헤더의 <code>alg</code> 필드부터 확인</li><li>검증 로직을 파이썬으로 그대로 재현하려면 → <a href="rev-0222-reimplement-in-python.html">rev-0222-reimplement-in-python.md</a></li><li>이 구조가 역산 가능한지 헷갈리면 → <a href="rev-0221-is-it-invertible.html">rev-0221-is-it-invertible.md</a> (HMAC은 키를 모르면 역산도 위조도 불가능)</li></ul>
+<h2>미니 예제</h2>
+<p>디컴파일 코드에서 다음과 같은 흐름을 발견했다:</p>
+<pre><code class="language-c">memset(k_ipad, 0x36, 64);
+memset(k_opad, 0x5C, 64);
+for (i = 0; i &lt; key_len; i++) {
+    k_ipad[i] ^= key[i];
+    k_opad[i] ^= key[i];
+}
+sha256(inner_buf, k_ipad, 64, message, msg_len);   // 내부 해시
+sha256(outer_buf, k_opad, 64, inner_buf, 32);      // 외부 해시, 내부 결과(32바이트) 재사용</code></pre>
+<p><code>0x36</code>/<code>0x5C</code> 상수로 키를 XOR한 뒤 SHA-256을 두 번 호출하고, 첫 호출 결과(32바이트)를 두 번째 호출 입력에 붙이는 구조이므로 이는 HMAC-SHA256이다. Python으로 검증:</p>
+<pre><code class="language-python">import hmac, hashlib
+key = b"key"
+msg = b"message"
+print(hmac.new(key, msg, hashlib.sha256).hexdigest())</code></pre>
+<p>이 값이 바이너리가 요구하는 목표값과 일치하면 HMAC-SHA256, 키, 메시지 형식까지 모두 확정된 것이다.</p>
+<h3>심화 예제 — ipad/opad를 직접 XOR해서 HMAC-SHA256을 처음부터 구현하기</h3>
+<p>표준 라이브러리 <code>hmac.new()</code>만 쓰면 "왜 결과가 그렇게 나오는지"가 안 보인다. 아래 스크립트는 RFC 2104 공식을 한 줄씩 그대로 옮겨서 <code>hmac</code> 모듈 없이 직접 구현하고, 마지막에만 표준 라이브러리와 비교해서 정확성을 확인한다.</p>
+<pre><code class="language-python">import hashlib   # 내부 해시 함수(SHA-256) 계산에 사용
+import hmac      # 마지막에 결과를 대조하기 위한 용도로만 사용(직접 구현과 비교)
+
+BLOCK_SIZE = 64   # SHA-256 계열의 블록 크기(바이트) - RFC 2104가 정의하는 값
+
+def my_hmac_sha256(key: bytes, message: bytes) -&gt; bytes:
+    """RFC 2104 공식을 그대로 옮긴 HMAC-SHA256 구현: H((K^opad) || H((K^ipad) || msg))"""
+    # 1) 키가 블록 크기(64바이트)보다 길면 먼저 해시로 줄인다
+    if len(key) &gt; BLOCK_SIZE:
+        key = hashlib.sha256(key).digest()
+    # 2) 키가 블록 크기보다 짧으면 뒤를 0x00으로 채운다 (이렇게 만든 값이 K')
+    key = key + b"\x00" * (BLOCK_SIZE - len(key))
+
+    # 3) ipad(0x36)와 opad(0x5C)를 키와 XOR한 두 블록을 각각 만든다
+    ipad_key = bytes(b ^ 0x36 for b in key)   # 내부(inner) 해시용 키
+    opad_key = bytes(b ^ 0x5C for b in key)   # 외부(outer) 해시용 키
+
+    # 4) 내부 해시: H((K xor ipad) || message)
+    inner_hash = hashlib.sha256(ipad_key + message).digest()
+
+    # 5) 외부 해시: H((K xor opad) || 내부 해시 결과) — 이것이 최종 HMAC 값
+    outer_hash = hashlib.sha256(opad_key + inner_hash).digest()
+
+    return outer_hash   # 32바이트(SHA-256 다이제스트 크기)
+
+key = b"key"
+msg = b"message"
+
+my_result = my_hmac_sha256(key, msg).hex()                       # 직접 구현한 결과
+lib_result = hmac.new(key, msg, hashlib.sha256).hexdigest()      # 표준 라이브러리 결과
+
+print("직접 구현 결과 :", my_result)
+print("표준 hmac 결과 :", lib_result)
+assert my_result == lib_result, "직접 구현이 표준 라이브러리와 다름!"
+print("두 결과가 일치 - ipad/opad 이중 해시 구현이 정확함")</code></pre>
+<p>실제로 실행하면 다음과 같이 두 결과가 완전히 같게 나온다(실행 확인함):</p>
+<pre><code class="language-text">직접 구현 결과 : 6e9ef29b75fffc5b7abae527d58fdadb2fe42e7219011976917343065f58ed4a
+표준 hmac 결과 : 6e9ef29b75fffc5b7abae527d58fdadb2fe42e7219011976917343065f58ed4a
+두 결과가 일치 - ipad/opad 이중 해시 구현이 정확함</code></pre>
+<p>바이너리에서 재구성한 <code>key</code>/<code>message</code>를 이 함수에 그대로 넣어보면, 표준 라이브러리 없이도 HMAC 결과가 목표값과 일치하는지 스스로 확인할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0896-sha1-constant-fingerprint.html">REV-0896 — SHA-1 흔적을 상수로 알아보는 법</a></li><li><a href="rev-0897-md5-constant-fingerprint.html">REV-0897 — MD5 흔적을 상수로 알아보는 법</a></li><li><a href="rev-0895-sha256-fingerprints.html">REV-0895 — SHA-256 흔적을 상수로 알아보는 법</a></li><li><a href="rev-0221-is-it-invertible.html">rev-0221-is-it-invertible.md</a> — 키 기반 인증 코드가 역산 불가능한 이유</li><li><a href="rev-0222-reimplement-in-python.html">rev-0222-reimplement-in-python.md</a> — 검증 로직을 파이썬으로 재현하는 법</li></ul>
+<h2>출처/검증</h2>
+<ul><li>HMAC 구성 공식과 ipad(<code>0x36</code>)/opad(<code>0x5C</code>) 상수: IETF RFC 2104, "HMAC: Keyed-Hashing for Message Authentication" 원문 기준 (2026-09-09 검증).</li><li>HMAC-SHA256 표준 테스트 벡터: Python 공식 <code>hmac</code>/<code>hashlib</code> 모듈 실행 결과 기준 (2026-09-09 확인).</li><li>길이 확장 공격과 HMAC의 방어 메커니즘: RFC 2104 명세 및 일반적으로 알려진 Merkle-Damgård 구조의 취약점 설명 기준 (2026-09-09).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

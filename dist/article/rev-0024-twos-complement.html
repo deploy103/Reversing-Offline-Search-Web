@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2의 보수와 음수 표현 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>2의 보수와 음수 표현</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>CPU는 음수를 따로 표현하는 회로가 없고, <strong>모든 비트를 뒤집고 1을 더하는 "2의 보수"</strong> 방식으로 음수를 표현한다. 그래서 <code>0xFFFFFFFF</code>가 부호 있는 32비트로 보면 <code>-1</code>이 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA 디컴파일 결과에 <code>-1</code>, <code>-87097619</code>처럼 갑자기 음수가 나와서 당황했을 때</li><li>헥스값을 부호 있는(signed) 값으로 바꿔야 하는데 계산법을 모를 때</li><li><code>cmp eax, 0FFFFFFFFh</code>처럼 이상하게 큰 헥스값과 비교하는 코드를 만났을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>컴퓨터 메모리와 레지스터에는 그냥 0과 1 비트만 저장된다. <code>+</code>나 <code>-</code> 부호를 저장하는 별도 공간은 없다. 그런데도 우리는 <code>-5</code>, <code>-1</code> 같은 음수를 다뤄야 한다. 그 해법이 <strong>2의 보수(Two's Complement)</strong> 표현이다.</p>
+<p><strong>핵심 규칙</strong>: N비트 부호 있는 정수에서, 최상위 비트(MSB)가 1이면 음수로 해석한다. 어떤 양수 <code>x</code>의 음수 <code>-x</code>를 만들려면:</p>
+<ol><li><code>x</code>의 모든 비트를 뒤집는다 (0↔1, 이것을 1의 보수라 함)</li><li>결과에 1을 더한다</li></ol>
+<p><strong>왜 이 방식을 쓰는가</strong>: 2의 보수 표현을 쓰면 CPU가 덧셈 회로 하나만으로 뺄셈까지 처리할 수 있다(<code>a - b</code>를 <code>a + (-b)</code>로 계산). 별도의 뺄셈 전용 회로나 부호 처리 로직이 필요 없어서 하드웨어가 단순해진다.</p>
+<p><strong>8비트 예시</strong>: <code>5</code>는 <code>0000 0101</code>. <code>-5</code>를 만들려면:</p>
+<ul><li>비트 반전: <code>1111 1010</code></li><li>+1: <code>1111 1011</code> = <code>0xFB</code></li></ul>
+<p>즉 8비트에서 <code>-5</code>는 <code>0xFB</code>(십진수 251)로 저장된다. 부호 없는(unsigned) 관점에서 읽으면 251이고, 부호 있는(signed) 관점에서 읽으면 -5다. <strong>같은 비트 패턴이 해석 방식에 따라 다른 숫자로 보인다</strong>는 게 핵심이다.</p>
+<p><strong>전체 1비트가 모두 1인 값</strong>은 항상 -1이다: 8비트 <code>0xFF</code> = -1, 32비트 <code>0xFFFFFFFF</code> = -1, 64비트 <code>0xFFFFFFFFFFFFFFFF</code> = -1.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA 디컴파일 결과에 <code>if ( result == -1 )</code> 처럼 나오는데, 어셈블리에서는 <code>cmp eax, 0FFFFFFFFh</code>로 되어 있는 경우 — 둘은 완전히 같은 의미다.</li><li>변수 타입이 <code>int</code>(signed)인데 큰 양수를 넣었더니 음수로 출력되는 경우</li><li><code>unsigned int</code> 타입 변수에 음수 리터럴을 대입한 코드가 실제로는 매우 큰 양수로 동작하는 경우</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>IDA에서 이상한 음수가 보이면, 그 값을 <strong>부호 없는 헥스값으로 다시 계산</strong>해서 원래 의도를 파악한다. IDA 자체에서도 숫자를 우클릭 → "Hex" 또는 그냥 변수 타입을 unsigned로 바꿔서 보면 원래 헥스 패턴을 바로 확인할 수 있다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 음수를 헥스(비트 패턴)로 변환하기 — 손으로 계산</strong></p>
+<p>예: 32비트에서 <code>-87097619</code>를 헥스로 바꾸고 싶다.</p>
+<ol><li>절댓값을 헥스로: <code>87097619</code> → <code>0x0530_something</code>... (손으로 하기 번거로우면 아래 파이썬 방법 사용을 권장)</li></ol>
+<p><strong>2) 파이썬으로 변환하기 (실전에서 가장 빠른 방법)</strong></p>
+<pre><code class="language-python">&gt;&gt;&gt; x = -87097619
+&gt;&gt;&gt; x &amp; 0xFFFFFFFF          # 32비트 unsigned 값으로
+4207869677
+&gt;&gt;&gt; hex(x &amp; 0xFFFFFFFF)
+'0xfabc1ded'</code></pre>
+<p><code>&amp; 0xFFFFFFFF</code>(32비트 마스크)를 걸면 파이썬이 자동으로 2의 보수 변환을 해준다. 이 방법이 손으로 비트를 뒤집는 것보다 훨씬 빠르고 안전하다.</p>
+<p><strong>3) 반대로 헥스값을 signed로 해석하기</strong></p>
+<pre><code class="language-python">&gt;&gt;&gt; v = 0xFABC1DED
+&gt;&gt;&gt; if v &amp; 0x80000000:      # 최상위 비트(MSB)가 1이면 음수
+...     v -= 0x100000000    # 2^32을 빼면 signed 값이 나옴
+&gt;&gt;&gt; v
+-87097619</code></pre>
+<p>이 패턴(<code>if MSB set: value -= 2**bits</code>)은 어떤 비트폭에서도 그대로 적용된다.</p>
+<p><strong>4) IDA에서 직접 확인</strong></p>
+<p>숫자 리터럴 위에서 우클릭 → <strong>"Hex"</strong> 또는 숫자 표현 방식을 바꾸는 단축키(<code>H</code>)로 헥스/십진 전환이 가능하다. 변수의 타입을 signed↔unsigned로 바꾸고 싶으면 변수 선택 후 <strong>Y</strong>(Set type)로 <code>int</code>를 <code>unsigned int</code>로 바꿔본다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python"># 파이썬 치트시트
+signed_to_hex = lambda x, bits=32: hex(x &amp; ((1 &lt;&lt; bits) - 1))
+def hex_to_signed(v, bits=32):
+    if v &amp; (1 &lt;&lt; (bits - 1)):
+        v -= (1 &lt;&lt; bits)
+    return v</code></pre>
+<p>IDA: 숫자 리터럴에서 <code>H</code> (10진/16진 전환)</p>
+<h2>출력 해석</h2>
+<ul><li><code>0xFFFFFFFF</code> (32비트) → signed로 읽으면 <code>-1</code></li><li><code>0x80000000</code> (32비트) → signed로 읽으면 <code>-2147483648</code> (32비트 signed의 최솟값)</li><li><code>0x7FFFFFFF</code> (32비트) → signed로 읽으면 <code>2147483647</code> (32비트 signed의 최댓값, 여기서 1을 더하면 오버플로로 최솟값이 됨)</li><li>최상위 비트가 0이면 항상 양수, 1이면 항상 음수(2의 보수, N비트 signed 기준)</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>헥스값을 볼 때마다 "이건 그냥 큰 양수겠지"라고 단정하는 것 — 변수 타입이 signed라면 최상위 비트를 반드시 확인해야 한다.</li><li>32비트 마스크(<code>&amp; 0xFFFFFFFF</code>)를 안 걸고 파이썬에서 음수를 그대로 다뤄서, 64비트로 계산되어 결과가 어긋나는 것 — 파이썬 정수는 임의 정밀도라 비트폭을 명시하지 않으면 C와 다르게 동작한다.</li><li>1의 보수(비트만 반전)와 2의 보수(반전 후 +1)를 헷갈리는 것 — CPU와 C 언어는 2의 보수를 쓴다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>여러 비트폭(8/16/24/32/64비트)에서 마스크가 헷갈리면 → REV-0026(비트별 마스크)로 이동.</li><li><code>&amp; 0xFF</code>, <code>&amp; 0xFFFFFFFF</code> 같은 AND 연산의 의미가 궁금하면 → REV-0055(AND 명령어)로 이동.</li><li>오버플로가 왜 일어나는지 궁금하면 → REV-0027(정수 Overflow와 Wraparound, 예정)로 이동.</li></ul>
+<h2>미니 예제</h2>
+<p>IDA 디컴파일에서 다음 코드를 봤다고 하자:</p>
+<pre><code class="language-c">if ( v4 == -1 )
+    goto fail;</code></pre>
+<p>어셈블리로 내려가 보면:</p>
+<pre><code class="language-asm">cmp     eax, 0FFFFFFFFh
+je      fail</code></pre>
+<p><code>v4</code>가 <code>unsigned int</code>로 선언되어 있었다면 이 값은 <code>4294967295</code>(즉 <code>0xFFFFFFFF</code>)와 비교하는 것과 완전히 동일한 코드다. 디컴파일러가 변수 타입을 <code>int</code>(signed)로 추론해서 <code>-1</code>로 "예쁘게" 보여준 것뿐이다. 이럴 때는 "아, 이건 그냥 모든 비트가 1인 값(0xFFFFFFFF)을 검사하는 거구나"라고 해석하면 된다 — 예를 들어 함수가 실패 시 <code>-1</code>(즉 <code>0xFFFFFFFF</code>)을 반환하는 관례적 패턴이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0025-signed-unsigned.html">REV-0025 — Signed와 Unsigned 해석</a></li><li><a href="rev-0026-bit-masks.html">REV-0026 — 8비트 16비트 24비트 32비트 64비트 마스크</a></li><li><a href="rev-0027-integer-overflow.html">REV-0027 — 정수 Overflow와 Wraparound</a></li><li><a href="rev-0206-negative-to-unsigned-hex.html">REV-0206 — 음수 상수를 Unsigned Hex로 다시 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>2의 보수 정의: IEEE 및 대부분의 컴퓨터 구조 교과서 표준 정의(예: Patterson &amp; Hennessy, Computer Organization and Design) 기준 개념 설명 (2026-09-08 검증).</li><li>Python 정수의 임의 정밀도 특성: Python 공식 문서(<code>int</code> 타입 설명) 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

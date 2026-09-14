@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rust의 Option/Result 패턴이 어셈블리에서 보이는 방식 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / other-targets</div>
+<article class="article-body">
+<h1>Rust의 Option/Result 패턴이 어셈블리에서 보이는 방식</h1>
+<div class="article-meta"><span class="tag">other-targets</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>Rust 컴파일러는 <code>Option&lt;&amp;T&gt;</code>처럼 절대 특정 값(보통 널)을 가질 수 없는 타입을 감쌀 때 그 "있을 수 없는 값"을 <code>None</code>의 표현으로 재사용하는 니치 최적화(niche optimization, 흔히 null pointer optimization이라 불림)를 적용하므로, 어셈블리에서 별도의 구분 태그(discriminant) 필드 없이 포인터를 그냥 <code>0</code>과 비교하는 코드가 나오면 그것이 실제로는 <code>Option</code>/<code>Result</code> 분기 처리인 경우가 많다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Rust 바이너리를 IDA/Ghidra로 보는데 <code>Option&lt;T&gt;</code>나 <code>Result&lt;T, E&gt;</code>를 리턴하는 함수인데도 리턴값에 별도 태그 바이트가 안 보이고 크기가 원래 타입 <code>T</code>와 똑같을 때</li><li>포인터로 보이는 레지스터를 <code>0</code>(널)과 비교한 뒤 분기하는 코드가 있는데, 그 뒤로 이어지는 로직이 단순 널 체크치고는 복잡하게 갈라질 때</li><li><code>Result&lt;T, E&gt;</code>를 다루는 함수인데 태그 필드로 보이는 정수 값이 하나 있고 그 뒤에 <code>T</code> 또는 <code>E</code> 데이터가 겹쳐진 것처럼 레이아웃이 보일 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>니치(niche)란 무엇인가</h3>
+<p>어떤 타입이 표현 가능한 전체 비트 패턴 중 실제로는 절대 나오지 않는 "빈 자리"를 니치라고 한다. 예를 들어 레퍼런스(<code>&amp;T</code>)나 <code>Box&lt;T&gt;</code>는 언어 규칙상 절대 널이 될 수 없으므로, 전체 포인터 값 공간 중 <code>0</code>이라는 값은 이 타입이 실제로 가질 일이 없는 니치다. Rust 컴파일러는 <code>Option&lt;&amp;T&gt;</code>를 컴파일할 때 이 니치를 활용해 <code>None</code>을 그냥 널 포인터(<code>0</code>)로, <code>Some(&amp;T)</code>는 원래 포인터 값 그대로 표현한다. 그 결과 <code>Option&lt;&amp;T&gt;</code>는 별도의 태그 필드 없이 <code>&amp;T</code>와 정확히 같은 크기가 되며, 이는 완전히 공짜(zero-cost)로 이루어지는 최적화다.</p>
+<h3>니치가 없는 타입은 태그가 필요하다</h3>
+<p>반대로 일반 정수(<code>i32</code> 등)는 <code>0</code>을 포함한 모든 비트 패턴을 실제 값으로 사용하므로 재사용할 빈 자리(니치)가 없다. 이런 타입을 <code>Option</code>으로 감싸려면 컴파일러가 별도의 태그 필드를 추가해야 하고, 그만큼 타입 크기가 커진다. 이 문제를 피하려고 표준 라이브러리는 <code>NonZeroU32</code> 같은 "0이 될 수 없음이 타입 시스템으로 보장된" 타입을 제공하며, <code>Option&lt;NonZeroU32&gt;</code>는 <code>0</code>을 니치로 재사용해 <code>u32</code>와 똑같은 크기를 유지한다. <code>Result&lt;NonZeroU32, ()&gt;</code>처럼 <code>Result</code>에도 같은 원리가 적용될 수 있다.</p>
+<h3>니치 최적화의 확장 — 데이터를 가진 변형들도 가능</h3>
+<p>니치 최적화는 단순 unit 변형(<code>None</code>처럼 데이터가 없는 경우)에만 국한되지 않고, 데이터를 가진 여러 변형(variant)이 있어도 그 변형들의 니치 앞뒤로 다른 변형이 들어맞기만 하면 계속 적용될 수 있도록 컴파일러가 확장되어 왔다(rust-lang/rust 이슈 #46213에서 다뤄진 개선 사항). 즉 겉보기에 복잡한 enum이라도 니치 최적화 덕분에 예상보다 작은 크기로 컴파일될 수 있다.</p>
+<h3>니치가 없을 때 실제 어셈블리 레이아웃</h3>
+<p>니치를 활용할 수 없는 경우(예: <code>Result&lt;i64, CustomErrorEnum&gt;</code>처럼 양쪽 다 모든 비트 패턴을 쓸 수 있는 경우) 컴파일러는 어쩔 수 없이 태그 필드 하나를 추가한다. Check Point Research의 Rust 바이너리 분석 시리즈에 따르면 이런 경우 레이아웃은 "어떤 변형인지 나타내는 태그 필드 + 그 뒤에 <code>i64</code> 값 또는 에러 enum 값이 오는" 형태로 구성된다. IDA 8.2 기준 분석 사례에서, 이런 태그 검사 코드는 C/C++ 리버서에게 익숙한 vtable/루프/전역변수 패턴과 다르게 낯설게 느껴질 수 있다고 지적한다.</p>
+<h3>실전에서 알아보는 규칙</h3>
+<ul><li>포인터/참조 값을 다루는 코드에서 <code>0</code>과 비교 후 분기하면, 이는 단순 널 체크가 아니라 <code>Option&lt;&amp;T&gt;</code> 또는 <code>Option&lt;Box&lt;T&gt;&gt;</code>의 <code>None</code>/<code>Some</code> 분기일 가능성이 높다.</li><li>정수를 다루는 코드에서 별도의 작은 정수 필드(예: 0, 1 등 몇 개의 고정값) 하나를 먼저 읽고 그 값에 따라 나머지 데이터 해석 방식이 바뀐다면, 이는 태그 기반 enum(니치를 못 쓴 경우의 <code>Option</code>/<code>Result</code> 혹은 일반 enum)이다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>함수가 <code>Option&lt;&amp;T&gt;</code>를 리턴하는데 리턴 레지스터가 딱 하나(포인터 하나)뿐이고, 그 값이 <code>0</code>인지 아닌지로 분기하는 코드가 바로 이어짐</li><li><code>Result&lt;T, E&gt;</code>를 다루는데 스택/구조체에 정수 하나(태그)와 그 뒤에 유니온처럼 겹쳐진 데이터 영역이 함께 있음</li><li>디컴파일러 의사코드에서 명시적인 enum 타입 없이 그냥 <code>if (ptr == 0)</code> 같은 조건문만 보이는데, 그 분기 양쪽에서 서로 다른 방식으로 메모리를 해석하는 코드가 실행됨</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>분기 조건이 포인터를 <code>0</code>과 비교하는 형태인지, 아니면 작은 정수 필드를 특정 값과 비교하는 형태인지부터 구분한다. 전자는 니치 최적화된 <code>Option</code>/<code>Result</code>일 가능성이 높고, 후자는 태그 필드를 쓰는 일반 enum(니치가 없는 경우)일 가능성이 높다.</p>
+<h2>단계별 절차</h2>
+<ol><li>문제 함수의 리턴 타입/지역 변수 크기를 확인 — 포인터 하나 크기(8바이트, 64비트 기준)인지, 포인터+추가 필드인지 본다</li><li>크기가 원래 내부 타입과 완전히 같다면 니치 최적화 후보로 표시</li><li>해당 값을 사용하는 분기 조건이 <code>0</code>과의 비교인지 확인</li><li><code>0</code>과 같을 때의 분기와 아닐 때의 분기에서 각각 어떤 코드가 실행되는지 비교 — <code>None</code>/<code>Some</code> 경로로 자연스럽게 대응되는지 확인</li><li>니치가 아닌 태그 방식이 의심되면, 값이 저장되는 첫 필드가 몇 가지 값만 취하는지(0, 1, 2 등) 확인하고 각 값에 따라 이후 필드 해석이 어떻게 달라지는지 정리</li><li>소스 경로 문자열(REV-1094)이나 함수 이름(REV-1095 디맹글 결과)에서 <code>Option</code>/<code>Result</code>/<code>unwrap</code> 관련 힌트가 있는지 교차 확인</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">objdump -d ./chall | grep -B3 -A5 "cmp.*0x0"
+nm ./chall | rustfilt | grep -iE "option|result|unwrap"</code></pre>
+<p>IDA/Ghidra: 의심되는 지역 변수에 커서를 놓고 타입을 수동으로 <code>Option&lt;T&gt;</code> 형태의 구조체(있다면 실제 필드 레이아웃 기준)로 재정의하면 이후 같은 패턴이 반복될 때 훨씬 읽기 쉬워진다.</p>
+<h2>출력 해석</h2>
+<ul><li>포인터를 <code>0</code>과 비교하는 코드 다음에 널 분기 쪽에서 별다른 처리 없이 바로 리턴/에러 처리로 빠진다면, 이는 전형적인 <code>None</code>/<code>Err</code> 조기 반환(early return) 패턴이다.</li><li>태그 필드가 3개 이상의 값을 가진다면 이는 단순 <code>Option</code>(대개 0/1 두 값)이 아니라 필드가 더 많은 일반 enum일 가능성이 높다.</li><li><code>unwrap()</code>이 실패하는 코드 경로는 보통 <code>core::option::unwrap_failed</code> 또는 <code>core::result::unwrap_failed</code> 같은 패닉 헬퍼 호출로 이어지므로, 이 호출이 보이면 그 직전 조건문이 <code>Option</code>/<code>Result</code> 검사였다는 강력한 증거가 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>포인터의 널 체크를 항상 "그냥 널 포인터 방어 코드"로만 해석해서, 실제로는 <code>Option&lt;&amp;T&gt;</code> 분기 로직이라는 것을 못 알아채는 것.</li><li>니치 최적화 때문에 <code>Option</code>이 원래 타입과 크기가 같다는 것을 모르고, <code>Option</code>이면 항상 별도 태그 바이트가 있어야 한다고 가정해 구조체 레이아웃을 잘못 짜는 것.</li><li>태그 기반 enum을 봤을 때 C의 일반 <code>union</code>+<code>enum</code> 패턴과 똑같다고 단정해서, Rust 특유의 니치 압축(태그가 아예 없어지는 경우)을 놓치는 것.</li><li><code>Result&lt;T, E&gt;</code>의 <code>E</code> 쪽 크기가 <code>T</code>보다 훨씬 클 때 전체 구조체 크기가 커지는 이유를 모르고 잘못된 오프셋으로 필드를 읽는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>이 바이너리가 Rust인지부터 확실히 하고 싶으면 → REV-1093 Rust 바이너리 식별하는 법</li><li><code>unwrap()</code> 실패 등 패닉 발생 지점의 소스 위치를 더 파고들고 싶으면 → REV-1094 Rust panic 메시지에서 소스 정보 추출하기</li><li>함수 이름이 복잡해서 이게 어떤 제네릭 <code>Option</code>/<code>Result</code> 인스턴스인지 확인하고 싶으면 → REV-1095 Rust 이름 맹글링(v0 mangling) 해석하기</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-asm">; Option&lt;&amp;T&gt;를 리턴하는 함수를 호출한 뒤
+call    mycrate_find_entry
+test    rax, rax        ; rax == 0 이면 None
+jz      .no_entry
+; rax != 0 : Some(&amp;T), rax 자체가 T의 포인터
+mov     rcx, [rax]
+...
+.no_entry:
+; None 처리 — 별도 태그 바이트를 읽는 코드가 전혀 없음</code></pre>
+<p>리턴값이 레지스터 하나(<code>rax</code>)뿐이고, <code>test rax, rax</code> / <code>jz</code>만으로 <code>None</code>/<code>Some</code>이 갈린다. 태그 필드를 읽는 추가 명령어가 없다는 점이 니치 최적화의 특징이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-1093-rust-binary-identification.html">REV-1093 — Rust 바이너리 식별하는 법</a></li><li><a href="rev-1094-rust-panic-source-recovery.html">REV-1094 — Rust panic 메시지에서 소스 정보 추출하기</a></li><li><a href="rev-1095-rust-v0-name-mangling.html">REV-1095 — Rust 이름 맹글링(v0 mangling) 해석하기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>니치(niche)/null pointer optimization의 정의와 <code>Option&lt;&amp;T&gt;</code>가 원래 타입과 동일한 크기가 되는 zero-cost 특성, <code>NonZeroU32</code> 등을 통한 정수 타입의 니치 확보: Rust 공식 문서 및 커뮤니티 자료(0xAtticus "Niche optimizations in Rust", Rust 사용자 포럼 "Niche optimization, NonZero and improper_ctypes" 스레드) 기준.</li><li>데이터가 있는 변형에도 니치 최적화를 확장 적용하는 컴파일러 개선: rust-lang/rust GitHub 이슈 #46213 기준.</li><li>니치가 없을 때 태그 필드 + 데이터로 구성되는 실제 레이아웃과 IDA에서의 분석 난이도: Check Point Research "Rust Binary Analysis, Feature by Feature" 기준 (2026-09-10 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

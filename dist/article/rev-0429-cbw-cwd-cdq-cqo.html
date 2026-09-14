@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CBW CWD CDQ CQO: 부호 확장 전용 명령 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>CBW CWD CDQ CQO: 부호 확장 전용 명령</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>CBW</code>/<code>CWD</code>/<code>CDQ</code>/<code>CQO</code>는 오퍼랜드 없이 <strong>정해진 누산기 레지스터(AL/AX/EAX/RAX)의 값을 부호 확장해서 더 넓은 레지스터 쌍(AX, DX:AX, EDX:EAX, RDX:RAX)에 채워 넣는</strong> 전용 명령으로, 대부분 <code>IDIV</code>(부호 있는 나눗셈) 직전에 피제수를 준비하기 위해 나타난다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>idiv</code> 바로 앞에 항상 붙어 있는 <code>cdq</code>(또는 <code>cwd</code>, <code>cqo</code>)가 무슨 일을 하는지 모를 때</li><li><code>cdq</code> 대신 <code>xor edx, edx</code>가 나오는 코드와 차이가 뭔지 궁금할 때 — 원본 변수가 <code>int</code>였는지 <code>unsigned int</code>였는지 구분하는 단서를 찾고 있을 때</li><li><code>movsx</code>/<code>movzx</code>와 <code>cdq</code> 계열이 어떻게 다른지 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>네 명령의 공통점: 오퍼랜드가 없다</h3>
+<p>이 네 명령은 모두 <strong>피연산자를 전혀 받지 않는다.</strong> 소스와 목적지가 모두 고정된 누산기 레지스터로 CPU 안에 내장되어 있다. 어셈블리 코드에도 <code>cdq</code> 한 단어만 덩그러니 나온다.</p>
+<h3>각각이 하는 일</h3>
+<table><thead><tr><th>명령</th><th>소스</th><th>목적지</th><th>폭</th></tr></thead><tbody><tr><td><code>CBW</code> (Convert Byte to Word)</td><td><code>AL</code></td><td><code>AX</code></td><td>8비트 → 16비트</td></tr><tr><td><code>CWD</code> (Convert Word to Doubleword)</td><td><code>AX</code></td><td><code>DX:AX</code></td><td>16비트 → 32비트(두 레지스터에 분리)</td></tr><tr><td><code>CDQ</code> (Convert Doubleword to Quadword)</td><td><code>EAX</code></td><td><code>EDX:EAX</code></td><td>32비트 → 64비트(두 레지스터에 분리)</td></tr><tr><td><code>CQO</code> (Convert Quadword to Octaword)</td><td><code>RAX</code></td><td><code>RDX:RAX</code></td><td>64비트 → 128비트(두 레지스터에 분리), x64 전용</td></tr></tbody></table>
+<p><code>CBW</code>만 결과가 레지스터 하나(<code>AX</code>)에 온전히 들어가고, 나머지 셋(<code>CWD</code>/<code>CDQ</code>/<code>CQO</code>)은 결과가 원래 폭의 두 배이므로 레지스터 두 개(<code>DX:AX</code>, <code>EDX:EAX</code>, <code>RDX:RAX</code>)로 나눠 담긴다. 이때 상위 레지스터(<code>DX</code>/<code>EDX</code>/<code>RDX</code>)에는 하위 레지스터 값의 <strong>부호 비트를 그대로 전체 비트에 복사한 값</strong>, 즉 <code>0x00000000</code>(양수/0일 때) 또는 <code>0xFFFFFFFF</code>(음수일 때)가 들어간다.</p>
+<h3>왜 IDIV 앞에 오는가</h3>
+<p><code>IDIV</code>(부호 있는 나눗셈, <a href="rev-0053-idiv.html">REV-0053</a>)는 32비트 나눗셈이라면 <code>EDX:EAX</code>(64비트짜리 피제수)를 나누는 명령으로 정의되어 있다. <code>int a, b; int q = a / b;</code>처럼 32비트끼리 나누고 싶어도, CPU 명령 자체는 항상 그 두 배 폭의 피제수를 요구한다. 이때 <code>EAX</code>에 들어있는 32비트 값을 부호를 유지한 채 64비트로 확장해서 <code>EDX:EAX</code>를 채워주는 것이 <code>CDQ</code>의 역할이다. <code>EDX</code>를 그냥 <code>0</code>으로 채우면 음수일 때 완전히 틀린 값이 되므로, 반드시 부호에 맞게(음수면 <code>0xFFFFFFFF</code>) 채워야 한다.</p>
+<h3>왜 CDQ 대신 XOR EDX, EDX가 나오기도 하는가</h3>
+<p><code>DIV</code>(부호 없는 나눗셈, <a href="rev-0052-div.html">REV-0052</a>)는 애초에 음수 개념이 없으므로 상위 레지스터를 그냥 <code>0</code>으로 클리어하기만 하면 된다. 그래서 컴파일러는 unsigned 나눗셈 앞에는 <code>xor edx, edx</code>(EDX=0)를 넣고, signed 나눗셈 앞에는 <code>cdq</code>(부호 확장)를 넣는다. <strong>이 차이가 바로 스트립된 바이너리에서 원본 변수가 <code>int</code>였는지 <code>unsigned int</code>였는지 역추론하는 핵심 단서다.</strong></p>
+<h3>플래그 변화</h3>
+<p><code>CBW</code>/<code>CWD</code>/<code>CDQ</code>/<code>CQO</code>는 <strong>어떤 플래그도 바꾸지 않는다.</strong> 순수하게 레지스터 값만 채우는 명령이다.</p>
+<h3>스택/RSP/RIP 변화</h3>
+<p>스택에는 영향이 없다. <code>RIP</code>는 명령 길이(1바이트, prefix 포함해도 짧음)만큼만 이동한다.</p>
+<h3>MOVSX/MOVSXD와의 차이</h3>
+<p><a href="rev-0041-movsx-movsxd.html">REV-0041 — MOVSX/MOVSXD</a>는 <strong>임의의</strong> 레지스터/메모리 값을 <strong>임의의</strong> 더 넓은 레지스터로 명시적인 오퍼랜드를 지정해 부호 확장하는 범용 명령이다. 반면 <code>CBW</code>/<code>CWD</code>/<code>CDQ</code>/<code>CQO</code>는 오퍼랜드가 없고 오직 누산기(AL/AX/EAX/RAX → AX/DX:AX/EDX:EAX/RDX:RAX)만을 대상으로 하는 특수 목적 명령이다. 용도가 겹치는 것처럼 보이지만 실제로는 거의 항상 <code>CDQ</code>/<code>CQO</code>는 나눗셈 직전에만, <code>MOVSX</code>는 그 외 일반적인 타입 확장 대입에 쓰인다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>cdq</code> 바로 다음 줄에 <code>idiv ecx</code>(또는 다른 32비트 레지스터/메모리) — signed 32비트 나눗셈</li><li><code>cqo</code> 바로 다음 줄에 <code>idiv rcx</code> — signed 64비트 나눗셈</li><li><code>xor edx, edx</code> 다음 <code>div ecx</code> — unsigned 나눗셈(비교 대상으로 함께 기억해두면 좋음)</li><li><code>cwd</code> 다음 <code>idiv cx</code> — 흔치 않지만 16비트 signed 나눗셈에서 등장</li><li><code>cbw</code>는 최신 x64 코드에서는 매우 드묾(8비트 signed 나눗셈 자체가 드물기 때문)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>cdq</code>/<code>cqo</code>/<code>cwd</code>/<code>cbw</code> 바로 다음 명령이 <code>idiv</code>인지 확인한다 — 거의 항상 그렇다.</li><li><code>idiv</code>의 오퍼랜드(나누는 값)를 확인해서 <code>EAX / operand</code> 형태의 signed 나눗셈으로 해석한다.</li><li>이 명령이 없이 <code>xor edx, edx</code>만 있다면 원본이 unsigned 타입이었다고 추론한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 32비트 signed 나눗셈 패턴 인식</strong></p>
+<pre><code class="language-asm">mov  eax, [rbp-4]   ; 피제수(예: a)
+cdq                  ; EDX:EAX = sign_extend(EAX)
+idiv dword ptr [rbp-8]   ; EAX = EDX:EAX / [rbp-8], EDX = 나머지</code></pre>
+<p>→ <code>int a, b; int q = a / b; int r = a % b;</code>로 해석한다(몫은 EAX, 나머지는 EDX).</p>
+<p><strong>2) 64비트 signed 나눗셈 패턴 인식</strong></p>
+<pre><code class="language-asm">mov  rax, [rbp-8]
+cqo                  ; RDX:RAX = sign_extend(RAX)
+idiv rcx</code></pre>
+<p><strong>3) unsigned 버전과 비교해서 부호 여부 역추론</strong></p>
+<pre><code class="language-asm">xor  edx, edx        ; EDX = 0 (unsigned니까 부호 확장 불필요)
+div  ecx</code></pre>
+<p>같은 위치에 <code>cdq</code>가 아니라 <code>xor edx, edx</code>가 있다면 원본 변수가 <code>unsigned int</code>였다는 뜻이다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: F5로 디컴파일하면 대개 <code>cdq</code>+<code>idiv</code> 조합이 그냥 <code>a / b</code>(signed) 표현식으로 깔끔하게 사라져서 보인다.</li><li>x64dbg/GDB: <code>cdq</code>/<code>cqo</code> 실행 전후로 EDX/RDX 레지스터 값이 <code>0x00000000</code>에서 <code>0xFFFFFFFF</code>(또는 그 반대)로 바뀌는지 F7/stepi로 직접 관찰하면 이해가 빠르다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>CDQ</code> 실행 후 <code>EDX == 0</code>이면 EAX가 양수(또는 0)였다는 뜻이고, <code>EDX == 0xFFFFFFFF</code>면 EAX가 음수였다는 뜻이다.</li><li><code>IDIV</code> 실행 후 몫은 항상 EAX(또는 32비트 나눗셈 기준), 나머지는 항상 EDX에 남는다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>CDQ</code>가 무언가를 "계산"하는 산술 명령이라고 착각하는 것 — 사실은 순수하게 EAX의 부호 비트를 EDX 전체로 복사만 하는 명령이다.</li><li><code>CWD</code>(16비트)와 <code>CDQ</code>(32비트)를 헷갈려서 잘못된 레지스터 폭으로 해석하는 것.</li><li><code>CDQ</code>가 항상 나온다고 가정해서, <code>EDX</code>를 그냥 <code>0</code>으로 만든 <code>xor edx, edx</code> 뒤에 오는 <code>div</code>(unsigned)까지 signed로 잘못 해석하는 것.</li><li><code>IDIV</code>의 나머지가 <code>EAX</code>에 남는다고 착각하는 것 — 나머지는 <code>EDX</code>, 몫은 <code>EAX</code>다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>cdq</code>/<code>cqo</code>가 왜 나왔는지 확신이 안 서면 → 바로 다음 명령이 <code>idiv</code>/<code>div</code>인지부터 확인한다. 거의 예외가 없다.</li><li>signed인지 unsigned인지 헷갈리면 → <code>cdq</code>(또는 <code>cqo</code>, <code>cwd</code>) vs <code>xor edx, edx</code>(또는 <code>xor rdx, rdx</code>) 중 어느 쪽이 나오는지로 판단한다.</li><li>나눗셈 자체의 자세한 동작이 궁금하면 → <a href="rev-0052-div.html">REV-0052 DIV</a>, <a href="rev-0053-idiv.html">REV-0053 IDIV</a>로 이동한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — signed 32비트 나눗셈</strong></p>
+<pre><code class="language-c">int div_signed(int a, int b) { return a / b; }</code></pre>
+<pre><code class="language-asm">mov  eax, edi     ; a (System V 첫 인자)
+cdq                ; EDX:EAX = sign_extend(EAX)
+idiv esi           ; b로 나눔
+; 결과: EAX = 몫</code></pre>
+<p><strong>예제 2 — unsigned 32비트 나눗셈과의 대조</strong></p>
+<pre><code class="language-c">unsigned int div_unsigned(unsigned int a, unsigned int b) { return a / b; }</code></pre>
+<pre><code class="language-asm">mov  eax, edi
+xor  edx, edx      ; CDQ 대신 EDX를 단순히 0으로
+div  esi</code></pre>
+<p><strong>예제 3 — 64비트 signed 나눗셈(CQO)</strong></p>
+<pre><code class="language-c">long long div64(long long a, long long b) { return a / b; }</code></pre>
+<pre><code class="language-asm">mov  rax, rdi
+cqo                 ; RDX:RAX = sign_extend(RAX)
+idiv rsi</code></pre>
+<p><strong>예제 4 — CBW로 8비트를 16비트로 확장</strong></p>
+<pre><code class="language-asm">mov  al, [byte_val]   ; AL = 부호 있는 8비트 값
+cbw                     ; AX = sign_extend(AL)</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0053-idiv.html">REV-0053 — IDIV: Signed 나눗셈</a></li><li><a href="rev-0052-div.html">REV-0052 — DIV: Unsigned 나눗셈</a></li><li><a href="rev-0041-movsx-movsxd.html">REV-0041 — MOVSX와 MOVSXD: Sign Extension 이해</a></li><li><a href="rev-0040-movzx.html">REV-0040 — MOVZX: Zero Extension 이해</a></li><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>CBW</code>/<code>CWD</code>/<code>CDQ</code>/<code>CQO</code>의 정의와 대상 레지스터: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "CBW/CWDE/CDQE—Convert Byte to Word/Convert Word to Doubleword/Convert Doubleword to Quadword" 및 "CWD/CDQ/CQO—Convert Word to Doubleword/Convert Doubleword to Quadword" 섹션 기준 (2026-09-08 검증).</li><li><code>IDIV</code> 직전 부호 확장 관용구, <code>DIV</code> 직전 <code>xor edx,edx</code> 관용구: GCC/Clang/MSVC 컴파일러 출력에서 공통적으로 관찰되는 표준 코드 생성 패턴 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

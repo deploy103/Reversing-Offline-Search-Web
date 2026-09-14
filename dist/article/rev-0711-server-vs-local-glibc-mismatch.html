@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>서버 환경 glibc와 로컬 glibc가 달라 분석이 안 맞을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>서버 환경 glibc와 로컬 glibc가 달라 분석이 안 맞을 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">patchelf</span><span class="tag">pwninit</span></div>
+<h2>한 줄 요약</h2>
+<p>로컬에서 분석/익스플로잇이 잘 되는데 원격 서버에서만 실패한다면 가장 먼저 의심할 것은 <strong>로컬 시스템 glibc와 서버(또는 문제 배포 Docker 이미지)의 glibc 버전이 다르다는 것</strong>이며, CTF pwn 문제는 거의 항상 정확한 <code>libc.so.6</code>(그리고 필요하면 <code>ld-linux.so</code>)을 함께 배포하므로 반드시 그 파일을 <code>LD_LIBRARY_PATH</code>나 <code>patchelf</code>로 강제 지정해서 로컬 재현 환경을 서버와 동일하게 맞춰야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>로컬 <code>./chall</code>에서는 <code>system("/bin/sh")</code>가 잘 떨어지는데 원격(<code>nc host port</code>)에서는 크래시만 나거나 아무 반응이 없을 때</li><li><code>one_gadget</code>로 뽑은 주소를 썼는데 서버에서는 <code>execve</code> 조건(레지스터 값)이 안 맞아 실패할 때</li><li>pwntools <code>libc.symbols['system']</code> 오프셋을 로컬 <code>/lib/x86_64-linux-gnu/libc.so.6</code> 기준으로 계산했는데 서버에서 안 맞을 때</li><li>힙 익스플로잇에서 tcache/fastbin 동작이 로컬과 서버에서 다르게 나타날 때(glibc 버전에 따라 malloc 내부 구조/보호 기법이 다름)</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 로컬과 서버 glibc가 다를 수 있는가</h3>
+<p>CTF 문제 서버는 특정 Docker 이미지(예: <code>ubuntu:20.04</code>, glibc 2.31)로 배포되는 경우가 많은데, 참가자의 로컬 시스템은 그보다 최신이거나 다른 배포판(예: Ubuntu 24.04, glibc 2.39)일 가능성이 높다. glibc는 배포판/버전마다 다음이 달라진다.</p>
+<ul><li>libc 함수들의 <strong>정확한 메모리 오프셋</strong>(<code>system</code>, <code>execve</code>, <code>/bin/sh</code> 문자열, <code>one_gadget</code> 후보 주소)</li><li>malloc 내부 구조(tcache 도입 여부, tcache <code>key</code> 필드의 안전성 검사, safe-linking 포인터 난독화 등)</li><li>일부 함수의 시그니처/동작 자체(예: <code>printf</code> 계열의 포맷 문자열 처리 방식 변화)</li></ul>
+<p>즉 로컬 시스템 libc로 오프셋을 계산해서 만든 익스플로잇 페이로드는, 서버가 다른 버전의 libc를 쓰는 순간 전혀 다른 코드 주소를 가리키게 되어 크래시하거나 아예 반응이 없어진다.</p>
+<h3>문제 배포 파일이 곧 "정답 환경"이다</h3>
+<p>정상적으로 출제된 pwn 문제는 서버와 <strong>완전히 동일한</strong> <code>libc.so.6</code>(그리고 종종 <code>ld-2.xx.so</code> 또는 <code>ld-linux-x86-64.so.2</code>)을 첨부 파일로 함께 제공한다. 이 파일이 서버 환경의 100% 정확한 사본이라고 가정하고, 로컬 분석/익스플로잇 개발은 반드시 이 libc를 강제로 사용하도록 맞춰야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>로컬 <code>python3 exploit.py LOCAL</code>은 성공, <code>python3 exploit.py REMOTE</code>는 실패</li><li>GDB로 로컬에서 본 <code>system</code> 주소와 pwntools가 원격 연결에서 계산한 <code>system</code> 주소가 다름</li><li><code>checksec</code>이나 <code>file</code> 결과에서 로컬 시스템 libc와 배포된 <code>libc.so.6</code>의 버전 문자열이 다름</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>문제 zip/tar 안에 <code>libc.so.6</code>(또는 <code>libc-2.xx.so</code>)이 포함되어 있는지 확인한다. 없다면 <code>strings ./chall | grep -i "GLIBC_"</code>나 바이너리에 링크된 버전 문자열, 또는 서버 배너/Dockerfile에서 배포판 버전을 확인한다.</li><li><code>strings libc.so.6 | grep "GNU C Library"</code>로 정확한 버전 문자열을 확인한다.</li><li>로컬 실행/디버깅을 반드시 이 <code>libc.so.6</code>로 강제한 뒤 오프셋을 뽑는다 — 시스템 기본 libc로 계산한 오프셋은 서버에서 의미가 없다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 배포된 libc 버전 정확히 확인</strong></p>
+<pre><code class="language-bash">$ strings libc.so.6 | grep "GNU C Library"
+GNU C Library (Ubuntu GLIBC 2.31-0ubuntu9.16) stable release version 2.31.</code></pre>
+<p><strong>2) 인터프리터(ld)도 같이 배포됐는지 확인</strong></p>
+<pre><code class="language-bash">$ ls
+chall  libc.so.6  ld-2.31.so</code></pre>
+<p><code>ld-2.31.so</code>(인터프리터)까지 있다면 glibc 버전 자체가 시스템과 크게 달라 <code>LD_LIBRARY_PATH</code>만으로는 안 맞는 경우다(예: 시스템은 이미 glibc 2.39라 예전 <code>ld.so</code>와 심볼 버전 요구사항이 안 맞을 수 있음).</p>
+<p><strong>3) pwninit / patchelf로 로컬 실행 환경을 서버와 동일하게 패치 (실전에서 가장 흔한 방법)</strong></p>
+<pre><code class="language-bash">$ pwninit</code></pre>
+<p><code>pwninit</code>은 <code>chall</code>, <code>libc.so.6</code>, <code>ld-*.so</code>를 자동으로 인식해서 <code>patchelf --set-interpreter</code>와 <code>--set-rpath</code>를 적용한 <code>chall_patched</code>를 만들어준다. 수동으로 하면:</p>
+<pre><code class="language-bash">$ patchelf --set-interpreter ./ld-2.31.so ./chall
+$ patchelf --set-rpath . ./chall</code></pre>
+<p><strong>4) pwntools에서 정확한 libc로 오프셋 계산</strong></p>
+<pre><code class="language-python">from pwn import *
+
+elf = context.binary = ELF('./chall_patched')
+libc = ELF('./libc.so.6')
+
+# 로컬 테스트
+p = process([elf.path])
+# 원격 테스트
+# p = remote('host', 1337)
+
+leak = ...  # leak된 libc 주소
+libc.address = leak - libc.symbols['puts']
+system = libc.symbols['system']
+binsh = next(libc.search(b'/bin/sh\x00'))</code></pre>
+<p><code>ELF('./libc.so.6')</code> 객체를 <strong>배포된 파일 그대로</strong> 사용해야 한다. 시스템 <code>/lib/x86_64-linux-gnu/libc.so.6</code>를 실수로 참조하면 오프셋이 전부 어긋난다.</p>
+<p><strong>5) GDB로 로컬 재현할 때도 동일한 libc 강제</strong></p>
+<pre><code class="language-bash">$ LD_PRELOAD=./libc.so.6 gdb ./chall_patched</code></pre>
+<p>또는 patchelf로 이미 인터프리터/rpath를 패치했다면 그냥 <code>gdb ./chall_patched</code>만으로도 올바른 libc가 로드된다. <code>info sharedlibrary</code>로 실제 로드된 libc 경로가 배포 파일과 일치하는지 항상 재확인한다.</p>
+<p><strong>6) one_gadget도 반드시 그 libc 버전 기준으로 다시 계산</strong></p>
+<pre><code class="language-bash">$ one_gadget ./libc.so.6
+0xe3afe execve("/bin/sh", r15, r12)
+constraints:
+  [r15] == NULL || r15 == NULL
+  [r12] == NULL || r12 == NULL</code></pre>
+<p>버전이 다르면 gadget 오프셋뿐 아니라 제약 조건(어떤 레지스터가 NULL이어야 하는지)도 달라진다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">strings libc.so.6 | grep "GNU C Library"   # 정확한 버전 확인
+pwninit                                     # 자동 패치 도구
+patchelf --set-interpreter &lt;ld경로&gt; &lt;바이너리&gt;
+patchelf --set-rpath &lt;디렉터리&gt; &lt;바이너리&gt;
+one_gadget ./libc.so.6                      # 해당 libc 기준 gadget 재계산</code></pre>
+<pre><code class="language-python">libc = ELF('./libc.so.6')          # 반드시 배포 파일 경로
+libc.symbols['system']             # 정확한 오프셋</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>patchelf</code> 적용 후 <code>ldd ./chall_patched</code> 결과에서 <code>libc.so.6 =&gt; ./libc.so.6</code>처럼 로컬 상대 경로로 뜨면 성공적으로 강제된 것이다.</li><li>pwntools <code>libc.address</code> 계산 후 <code>libc.symbols['system']</code>으로 나온 절대 주소가 GDB <code>p system</code>으로 확인한 값과 정확히 일치해야 한다. 다르면 아직 다른 libc가 로드되고 있다는 뜻이다.</li><li>원격 서버 응답에서 leak한 주소로 역산한 libc 베이스의 하위 12비트(페이지 정렬, <code>&amp; 0xfff</code>)가 항상 <code>0</code>이어야 한다. <code>0</code>이 아니면 오프셋 계산 자체가 잘못됐다는 강한 신호다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>로컬 디버깅에서만 시스템 libc를 쓰고 실제 exploit 페이로드는 배포된 libc 오프셋으로 만들어서, "로컬 디버깅은 이상한데 익스플로잇은 서버에서 될 것"이라고 착각하는 것 — 디버깅과 오프셋 계산에 쓰는 libc는 항상 하나로 통일해야 한다.</li><li><code>patchelf</code>로 원본 파일을 직접 수정해서 원본 바이너리를 잃어버리는 것 — 항상 복사본에 적용한다.</li><li>심볼 버전(<code>GLIBC_2.34</code>처럼 symbol versioning, REV-0653 참고) 요구사항이 다른 <code>ld.so</code>와 <code>libc.so.6</code>을 섞어 써서 <code>version GLIBC_2.xx not found</code> 에러가 나는 것 — <code>ld</code>와 <code>libc</code>는 반드시 같은 배포 세트로 맞춰야 한다.</li><li>서버가 ASLR을 쓰는데 leak 없이 바로 하드코딩한 로컬 주소를 원격에 쏘는 것 — 이는 glibc 버전 문제와 별개로 ASLR 문제이므로 REV-0714를 함께 참고한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>애초에 <code>.so</code>를 못 찾아 실행 자체가 안 된다면 → REV-0706(공유 라이브러리를 못 찾아서 error while loading shared libraries가 뜰 때)</li><li>glibc 버전 차이로 실행 자체가 거부된다면 → REV-0705(glibc 버전이 안 맞아서 바이너리가 실행이 안 될 때)</li><li>Pwndbg 힙 명령이 이 libc 버전을 인식 못 한다면 → REV-0709(Pwndbg에서 heap 명령이 이 glibc 버전에서 지원 안 된다고 할 때)</li><li>ASLR로 인해 매번 주소가 달라지는 것까지 겹쳐 있다면 → REV-0714(동적분석 중 ASLR 때문에 라이브러리 베이스 주소가 계속 바뀔 때)</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ ls
+chall  libc.so.6  ld-2.31.so
+$ pwninit
+libc: ./libc.so.6
+ld: ./ld-2.31.so
+bin: ./chall
+Executable set to executable.
+Patching bin...
+Removing existing patched file... skipping
+Setting rpath...
+Set rpath: ./
+Patching interpreter: ./ld-2.31.so
+$ ./chall_patched
+Welcome!</code></pre>
+<p><code>pwninit</code>으로 인터프리터와 rpath를 한 번에 맞춰 로컬 환경이 서버와 동일한 glibc를 쓰도록 강제했다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0706-shared-library-not-found.html">REV-0706 — 공유 라이브러리를 못 찾아서 error while loading shared libraries가 뜰 때</a></li><li><a href="rev-0709-pwndbg-heap-not-supported.html">REV-0709 — Pwndbg에서 heap 명령이 이 glibc 버전에서 지원 안 된다고 할 때</a></li><li><a href="rev-0714-aslr-library-base-keeps-changing.html">REV-0714 — 동적분석 중 ASLR 때문에 라이브러리 베이스 주소가 계속 바뀔 때</a></li><li><a href="rev-0712-musl-assumed-glibc-confusion.html">REV-0712 — musl 바이너리를 glibc 전제로 분석해서 헷갈릴 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>glibc 버전별 malloc/tcache 구조 및 심볼 오프셋 차이: glibc 공식 NEWS 파일 및 소스 변경 이력 기준.</li><li><code>patchelf</code>를 이용한 인터프리터/rpath 강제 지정: patchelf 공식 저장소(NixOS/patchelf) 사용법 기준.</li><li><code>pwninit</code> 도구의 동작(인터프리터/rpath 자동 패치): pwninit 공식 GitHub 저장소(io12/pwninit) README 기준.</li><li><code>one_gadget</code>을 특정 libc 파일 기준으로 재계산해야 하는 이유: one_gadget 공식 GitHub 저장소(david942j/one_gadget) 사용법 기준 (2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

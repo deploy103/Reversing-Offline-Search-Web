@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghidra에서 문자열이 인식되지 않을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>Ghidra에서 문자열이 인식되지 않을 때</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>Ghidra의 <code>Window → Defined Strings</code> 창이 비어 있거나 실제로 존재하는 문자열이 목록에 안 보이는 것은 대부분 <strong>ASCII Strings Analyzer가 아직 안 돌았거나, 최소 길이 설정보다 문자열이 짧거나, 그 영역이 Undefined 바이트/다른 데이터 타입으로 이미 잘못 정의되어 있기 때문</strong>이며, 해당 주소를 직접 <code>String</code> 타입으로 재정의하면 대부분 해결된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Hex 뷰나 <code>strings</code> 결과에서는 분명히 텍스트가 보이는데 Ghidra <code>Defined Strings</code> 창에는 없을 때</li><li>특정 주소로 XREF를 따라갔더니 문자열이 <code>db 48h,65h,6ch...</code> 같은 원시 바이트로만 보일 때</li><li>짧은 문자열(1~3글자)이나 유니코드(UTF-16) 문자열이 목록에서 누락된 것 같을 때</li><li>문자열은 보이는데 그 문자열을 참조하는 XREF가 안 잡힐 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Ghidra에서 "문자열이 인식된다"는 것은 그 메모리 영역이 <strong>String 계열 Data Type(예: <code>string</code>, <code>unicode</code>, <code>TerminatedCString</code>)으로 정의되어 있다</strong>는 뜻이다. 이 정의는 자동으로 되는 게 아니라 Auto Analysis의 <strong>ASCII Strings</strong> Analyzer가 스캔해서 만들어주는 것이며, 다음과 같은 이유로 누락될 수 있다.</p>
+<ol><li><strong>최소 길이 미달</strong>: ASCII Strings Analyzer는 기본적으로 일정 길이(기본값은 버전에 따라 다르며 보통 4~5바이트 이상) 이상인 시퀀스만 문자열로 인식한다. <code>"OK"</code>, <code>"A"</code>처럼 아주 짧은 문자열은 걸러진다.</li><li><strong>아직 분석이 실행되지 않음</strong>: Auto Analysis를 건너뛰었거나 옵션에서 ASCII Strings를 꺼둔 채로 Analyze한 경우.</li><li><strong>이미 다른 타입으로 정의되어 있음</strong>: 그 영역이 이미 <code>undefined4</code> 배열이나 다른 구조체로 정의되어 있으면, Analyzer가 기존 정의를 덮어쓰지 않고 건너뛴다.</li><li><strong>인코딩 불일치</strong>: UTF-16(유니코드) 문자열인데 ASCII로만 스캔되었거나, 반대로 ASCII 문자열 영역이 유니코드로 오인된 경우.</li><li><strong>참조되지 않는 문자열</strong>: 코드에서 직접 주소로 참조하지 않고 오프셋 계산이나 룩업 테이블을 거쳐 간접 참조하는 문자열은 애초에 코드 흐름 분석 단계에서 발견되지 못해 문자열 스캔 대상에서도 놓칠 수 있다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>Window → Defined Strings</code> 창을 열었을 때 목록이 비어 있거나 기대한 문자열이 없다.</li><li>Listing에서 해당 주소가 <code>??</code> (Undefined) 또는 <code>db</code> 계열 바이트로만 표시된다.</li><li>Hex 뷰(REV-0162)에는 사람이 읽을 수 있는 ASCII/유니코드 텍스트가 분명히 보인다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문자열이 있어야 할 주소로 직접 이동(<code>G</code>)해서 그 영역이 실제로 어떤 상태(Undefined/다른 데이터 타입)로 정의되어 있는지부터 확인한다. 그다음 필요하면 수동으로 String 타입으로 재정의한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 대상 주소로 직접 이동</strong></p>
+<p><code>strings</code> 결과나 Hex 뷰에서 확인한 오프셋을 파일 기준 주소로 변환해 <code>G</code>(Go To)로 이동한다.</p>
+<p><strong>2) 현재 정의 상태 확인</strong></p>
+<p>Listing에서 그 위치가 Undefined(회색 <code>??</code>)인지, 이미 다른 데이터 타입으로 정의되어 있는지 본다.</p>
+<p><strong>3) Undefined라면 재정의 안 된 상태로 되돌리기</strong></p>
+<p>이미 잘못된 타입으로 정의되어 있다면 시작 주소에 커서를 놓고 <code>C</code>(Clear Code Bytes)로 Undefined 상태로 되돌린다.</p>
+<p><strong>4) String 타입으로 수동 지정</strong></p>
+<p>시작 주소에 커서를 놓고 우클릭 → <strong>Data → Choose Data Type...</strong>(또는 단축키 <code>T</code> 이후 타입 검색)에서 <code>string</code>(ASCII, null-terminated) 또는 <code>unicode</code>를 선택한다. 길이를 자동으로 잡지 못하면 원하는 범위를 먼저 드래그로 선택한 뒤 같은 메뉴를 실행한다.</p>
+<p><strong>5) ASCII Strings Analyzer 다시 돌리기</strong></p>
+<p>개별 수동 정의 대신 전체를 다시 스캔하고 싶다면 <strong>Analysis → Auto Analyze '&lt;파일명&gt;'...</strong>에서 <strong>ASCII Strings</strong>만 체크한 채로 재분석하거나, Analysis 메뉴의 One Shot 항목에서 ASCII Strings를 즉시 재실행한다.</p>
+<p><strong>6) 최소 길이 설정 확인</strong></p>
+<p>ASCII Strings Analyzer 옵션(Analysis Options 창에서 ASCII Strings 항목 클릭 시 우측에 나오는 세부 옵션)에서 최소 문자열 길이(minimum string length) 값을 확인하고, 짧은 문자열도 잡고 싶다면 값을 낮춘 뒤 재분석한다.</p>
+<p><strong>7) 문자열 정의 후 XREF 재확인</strong></p>
+<p>문자열을 정의한 뒤에는 <code>X</code>(Cross-references)로 그 문자열을 참조하는 코드가 있는지 확인한다. XREF가 여전히 없다면 참조 방식이 직접 주소 참조가 아니라 계산된 주소(간접 참조)일 수 있다(REV-0790 참고).</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">G                              Go To — 주소로 이동
+C                              Clear Code Bytes — 기존 정의 해제
+T 또는 우클릭 → Data → Choose Data Type...   문자열/데이터 타입 수동 지정
+Analysis → Auto Analyze ...    ASCII Strings 재실행(One Shot 포함)
+X                              Cross-references — 문자열 참조 확인
+Window → Defined Strings       전체 문자열 목록 창</code></pre>
+<h2>출력 해석</h2>
+<ul><li>수동으로 <code>string</code> 타입을 지정한 뒤 Listing에 <code>"S3cr3t_P4ss"</code>처럼 실제 텍스트가 보이면 정의에 성공한 것이다.</li><li>지정했는데도 이상한 글자가 섞여 나오면 인코딩(ASCII vs 유니코드)을 잘못 골랐을 가능성이 크므로 <code>unicode</code> 타입으로 다시 시도한다.</li><li>Defined Strings 창에 새로 나타난 문자열의 XREF 컬럼이 0이면, 코드에서 이 문자열의 주소를 직접 쓰지 않는다는 뜻 — 오프셋 계산이나 테이블을 통해 간접적으로 쓰일 가능성을 염두에 둔다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Defined Strings 창이 비어 있다고 해서 바이너리에 문자열이 없다고 단정하는 것 — Hex 뷰로 먼저 실제 존재 여부를 확인해야 한다.</li><li>이미 다른 타입(예: 배열)으로 정의된 영역 위에 바로 String 타입을 지정하려다 실패하는 것 — 먼저 <code>C</code>로 정의를 해제해야 한다.</li><li>유니코드(UTF-16) 문자열에 ASCII 타입을 지정해서 글자 사이에 널 바이트가 섞여 이상하게 보이는 것.</li><li>최소 길이 설정 때문에 짧은 문자열이 원래부터 안 잡힌다는 사실을 모르고 계속 재분석만 반복하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>문자열은 찾았는데 그 문자열을 쓰는 검증 함수로 어떻게 가는지 모르겠다면 → REV-0163.</li><li>문자열 XREF가 하나도 안 잡히는데 실제로는 간접 참조로 쓰이는 것 같다면 → REV-0790.</li><li>문자열 주변 바이트 자체가 이상하게 보이면 Hex 뷰로 먼저 원본을 확인 → REV-0162.</li><li>문자열뿐 아니라 함수/코드 인식 전반이 이상하면 → REV-0781(Auto Analysis).</li></ul>
+<h2>미니 예제</h2>
+<p><code>strings</code> 명령으로 바이너리에서 <code>"Login_Success_Key"</code>라는 문자열을 확인했지만, Ghidra <code>Defined Strings</code> 창에는 안 보이는 상황이다.</p>
+<ol><li>Hex 뷰나 파일 오프셋 계산으로 해당 텍스트의 가상 주소(예: <code>0x00403010</code>)를 구한다.</li><li><code>G</code> → <code>0x00403010</code> 입력해 이동. Listing에 회색 <code>??</code> Undefined 바이트로 보인다.</li><li>시작 주소에 커서를 놓고 우클릭 → Data → Choose Data Type... → <code>string</code> 선택.</li><li>Listing에 <code>"Login_Success_Key"</code>가 정의된 문자열로 표시된다.</li><li><code>X</code>로 참조를 확인하니 <code>check_license</code> 함수에서 이 문자열을 비교에 사용하는 것을 발견한다.</li></ol>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0163-strings-to-check-function.html">REV-0163 — 문자열에서 검증 함수로 이동하는 정적 분석</a></li><li><a href="rev-0790-xref-missing-indirect-call.html">REV-0790 — 함수가 어디서 호출되는지 Xref로 안 잡힐 때(간접 호출)</a></li><li><a href="rev-0162-hex-view-verification.html">REV-0162 — Hex View로 디컴파일 결과 검증하기</a></li><li><a href="rev-0157-ghidra-auto-analysis.html">REV-0157 — Ghidra Auto Analysis 옵션</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>ASCII Strings Analyzer의 동작(길이 임계값, 기존 정의 위 미실행), <code>Defined Strings</code> 창, 수동 <code>Choose Data Type</code>을 통한 string/unicode 지정: Ghidra 공식 Help 문서(ASCII Strings Analyzer, Defined String View 토픽) 기준.</li><li>라이브 환경에서 모든 인코딩 케이스를 직접 재현 검증하지는 않았으며, 공식 문서와 통상적인 사용 경험을 기준으로 정리했다. 최소 길이 기본값은 Ghidra 버전에 따라 다를 수 있다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

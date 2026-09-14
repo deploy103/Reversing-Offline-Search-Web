@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>브레이크포인트가 안 걸릴 때 확인할 것들 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>브레이크포인트가 안 걸릴 때 확인할 것들</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>브레이크포인트가 안 걸리는 원인은 x64dbg/GDB 어느 쪽이든 대부분 다섯 가지 범주(주소 계산 오류, 아직 로드 안 된 모듈, 비활성화 상태, 조건식/스코프 문제, 안티디버깅·자기수정 코드)로 좁혀지므로, 무작정 다시 걸어보기 전에 이 다섯 가지를 순서대로 소거하는 것이 가장 빠르다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA/Ghidra에서 확인한 주소로 x64dbg에 <code>bp</code> 또는 GDB에 <code>break *0x주소</code>를 걸었는데 실행해도 전혀 멈추지 않을 때</li><li>어제까지는 잘 걸리던 브레이크포인트가 오늘 다시 실행하니 안 걸릴 때</li><li>DLL/공유 라이브러리 안의 함수에 건 브레이크포인트가 계속 무시될 때</li><li>조건부 브레이크포인트를 걸었는데 조건이 한 번도 만족되지 않는 것 같을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>범주 1 — 주소가 실제 실행 위치와 다름(재배치)</h3>
+<p>Windows PE는 ASLR로, Linux PIE(ET_DYN) 실행 파일은 ASLR/PIE로 매 실행마다 로드 베이스가 바뀐다. 정적 분석에서 얻은 주소는 <code>ImageBase+RVA</code>(PE) 또는 오프셋(ELF PIE) 기준이라, 실제 런타임 베이스가 다르면 그 절대 주소는 전혀 다른 위치를 가리킨다. x64dbg 쪽 상세 사례는 REV-0622, GDB/PIE 쪽 상세 사례는 REV-0194, 파일 오프셋 자체가 VA와 안 맞는 근본 원리는 REV-0840에서 다룬다.</p>
+<h3>범주 2 — 대상 모듈/함수가 아직 메모리에 없음</h3>
+<p>DLL이나 <code>.so</code>가 지연 로드(delay-load)되거나 <code>dlopen</code>으로 나중에 로드되는 경우, 그 안의 함수에 절대 주소로 건 브레이크포인트는 로드 시점 전까지 의미 없는 메모리를 가리킨다. 이름 기반 브레이크포인트(<code>bp 모듈.dll:함수</code>, GDB <code>break 함수이름</code>)를 쓰면 대부분 자동 처리된다.</p>
+<h3>범주 3 — 비활성화/삭제/충돌 상태</h3>
+<p>x64dbg Breakpoints 탭에서 회색(Disable)으로 표시되어 있거나, GDB <code>info breakpoints</code>에서 이미 <code>tbreak</code>가 한 번 걸리고 자동 삭제된 경우(REV-0708 참고)가 흔하다. 하드웨어 브레이크포인트는 CPU 디버그 레지스터 슬롯이 보통 4개뿐이라 5번째부터는 무시되거나 소프트웨어로 자동 전환된다.</p>
+<h3>범주 4 — 조건식/스코프가 실제로 참이 되지 않음</h3>
+<p>조건부 브레이크포인트(x64dbg 조건식, GDB <code>condition</code>)의 표현식 자체가 논리적으로 참이 될 수 없는 경우, 또는 GDB에서 로컬 변수를 감시하다가 함수를 벗어나 워치포인트가 자동 삭제된 경우(REV-0708)도 "안 걸린다"로 오인되기 쉽다.</p>
+<h3>범주 5 — 안티디버깅/자기수정 코드가 방해함</h3>
+<p>프로그램이 코드 섹션 체크섬으로 소프트웨어 브레이크포인트(0xCC)를 탐지하거나(REV-0537, REV-0841), 패커/자기수정 코드가 실행 직전에 원본 바이트를 다시 덮어써서 INT3 패치 자체가 사라지는 경우(REV-0230)도 "브레이크포인트가 무효화된다"는 증상으로 나타난다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>x64dbg Breakpoints 탭 항목이 빨간 점이 아니라 회색이거나 목록에서 아예 사라짐</li><li>GDB <code>info breakpoints</code>가 <code>No breakpoints or watchpoints.</code>를 출력</li><li>Memory Map/<code>info proc mappings</code>에서 확인한 실제 로드 베이스가 정적 분석 때 가정한 베이스와 다름</li><li><code>run</code>/<code>continue</code>를 눌러도 프로그램이 끝까지 실행되거나 그냥 종료됨</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>가능하면 절대 주소 대신 <strong>심볼/함수 이름으로 다시 건다</strong>(x64dbg <code>bp CreateFileW</code>, GDB <code>break main</code>). 이것만으로 재배치 관련 원인의 대부분이 즉시 해결된다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>info breakpoints</code>(GDB) 또는 Breakpoints 탭(x64dbg)으로 지금 걸려 있는 목록과 활성 상태를 확인한다.</li><li>이름으로 다시 걸어본다. 안 되면 대상 모듈이 로드됐는지(Memory Map/<code>info proc mappings</code>) 확인한다.</li><li>PIE/ASLR 여부를 <code>checksec</code>(Linux)이나 PE-bear의 <code>DYNAMIC_BASE</code>(Windows)로 확인하고, 필요하면 로드 후 베이스+오프셋으로 재계산한다.</li><li>조건부 브레이크포인트라면 조건 없이 먼저 걸어서 그 지점 자체에 도달하는지부터 확인한 뒤 조건을 하나씩 추가한다.</li><li>위 네 가지를 모두 소거했는데도 안 걸리면, 코드 체크섬/자기수정 코드로 인한 무력화를 의심하고 하드웨어 브레이크포인트로 바꿔본다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">x64dbg: bp &lt;함수명|모듈:오프셋&gt;, ba x 1 &lt;주소&gt;(하드웨어), Alt+M(Memory Map)</code></pre>
+<pre><code class="language-gdb">info breakpoints
+break FUNC
+condition N EXPR
+info proc mappings</code></pre>
+<h2>출력 해석</h2>
+<p>Memory Map/<code>info proc mappings</code>의 실제 베이스와 정적 분석 때 가정한 베이스가 다르면 그 차이만큼 주소를 보정해야 한다. <code>info breakpoints</code>에서 항목 자체가 안 보이면 이미 삭제(<code>tbreak</code> 소진, 수동 <code>delete</code>)된 것이다.</p>
+<h2>흔한 실수</h2>
+<ul><li>재배치 가능성을 고려하지 않고 절대 주소를 그대로 재사용하는 것.</li><li>하드웨어 브레이크포인트 슬롯(4개)이 이미 다 찼는지 확인하지 않고 계속 새로 거는 것.</li><li>조건부 브레이크포인트의 조건식만 의심하고, 애초에 그 지점에 도달하는지 자체를 확인하지 않는 것.</li><li>"안 걸린다"를 무조건 안티디버깅으로 단정하고 다른 네 가지 범주를 먼저 소거하지 않는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>x64dbg에서 이 증상을 자세히 겪고 있다면 → REV-0622 브레이크포인트를 걸었는데 한 번도 안 걸릴 때(x64dbg)</li><li>GDB에서 PIE 바이너리라서 주소가 매번 다르다면 → REV-0194 PIE 바이너리 GDB 브레이크포인트 잡기</li><li>파일 오프셋과 실제 메모리 주소가 근본적으로 왜 다른지 궁금하다면 → REV-0840 브레이크포인트를 파일 오프셋으로 걸었는데 실제 메모리 주소랑 안 맞을 때</li><li>안티디버깅이 확실히 의심된다면 → REV-0841 소프트웨어 브레이크포인트가 안티디버깅에 걸릴 때</li></ul>
+<h2>미니 예제</h2>
+<p>IDA에서 <code>sub_401500</code>을 확인하고 x64dbg에 <code>bp 0x401500</code>을 걸었지만 실행해도 멈추지 않았다. Memory Map을 확인하니 실제 로드 베이스가 <code>0x00460000</code>(ImageBase는 <code>0x00400000</code>으로 가정)이어서 <code>0x60000</code>만큼 어긋나 있었다. <code>bp target.exe:1500</code>(모듈 기준 오프셋)으로 다시 걸자 정확히 멈췄다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0622-breakpoint-never-hits.html">REV-0622 — 브레이크포인트를 걸었는데 한 번도 안 걸릴 때(x64dbg)</a></li><li><a href="rev-0194-gdb-pie-breakpoints.html">REV-0194 — PIE 바이너리 GDB 브레이크포인트 잡기</a></li><li><a href="rev-0708-tbreak-watch-timing-issue.html">REV-0708 — GDB에서 tbreak/watch가 예상과 다른 시점에 걸릴 때</a></li><li><a href="rev-0840-file-offset-vs-memory-address-mismatch.html">REV-0840 — 브레이크포인트를 파일 오프셋으로 걸었는데 실제 메모리 주소랑 안 맞을 때</a></li><li><a href="rev-0841-software-breakpoint-detected-by-antidebug.html">REV-0841 — 소프트웨어 브레이크포인트가 안티디버깅에 걸릴 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>소프트웨어/하드웨어 브레이크포인트의 동작 방식(INT3 바이트 치환, CPU 디버그 레지스터)은 Intel 64 and IA-32 Architectures Software Developer's Manual 기준.</li><li>x64dbg의 브레이크포인트 활성/비활성 및 심볼 기반 설정은 x64dbg 공식 문서 기준.</li><li>GDB의 <code>break</code>/<code>condition</code>/<code>info breakpoints</code> 동작은 GDB 공식 매뉴얼("Breakpoints, Watchpoints, and Catchpoints" 챕터) 기준(2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

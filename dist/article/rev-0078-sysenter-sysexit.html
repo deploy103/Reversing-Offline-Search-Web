@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SYSENTER와 SYSEXIT 기초 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>SYSENTER와 SYSEXIT 기초</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>SYSENTER</code>/<code>SYSEXIT</code>는 인텔이 만든 오래된(주로 32비트에서 쓰이는) "빠른 시스템 콜" 명령어 쌍이다 — <code>SYSENTER</code>는 유저 모드에서 커널이 정한 고정 진입점으로 전환하고, <code>SYSEXIT</code>는 반대로 유저 모드로 복귀한다. AMD의 <code>SYSCALL</code>/<code>SYSRET</code>(<a href="rev-0077-syscall.html">SYSCALL: x86-64 시스템 콜</a> 참고)과 목적은 같지만 세부 동작이 다르다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>32비트 Windows 바이너리의 <code>ntdll.dll</code>을 디스어셈블해봤는데 <code>KiFastSystemCall</code> 같은 함수 안에 <code>sysenter</code>가 보일 때</li><li>32비트 리눅스 바이너리에서 <code>__kernel_vsyscall</code>이라는 이름과 함께 <code>sysenter</code>가 나올 때</li><li>WOW64(64비트 윈도우에서 32비트 프로그램 실행)로 동작하는 바이너리를 분석하는데 낯선 진입 코드가 보일 때</li><li>SYSCALL과 SYSENTER가 뭐가 다른지 헷갈릴 때 ("sysenter syscall 차이")</li><li>안티후킹/안티디버깅 기법 조사 중 <code>sysenter</code>를 직접 호출하는 코드를 만났을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>이 글의 위치: 레거시/32비트 자료</h3>
+<p>이 명령어 쌍은 <a href="rev-0077-syscall.html">REV-0077 SYSCALL</a>이 다루는 현대적인 64비트 방식과 대비되는 <strong>레거시/32비트 관련 자료</strong>다. 실무에서 마주치는 경로는 대략 세 가지다.</p>
+<ul><li><strong>32비트 Windows / ntdll</strong>: Windows XP/2003 이후 오랫동안 <code>ntdll.dll</code>의 <code>Nt*</code>/<code>Zw*</code> API 진입점(<code>KiFastSystemCall</code>)이 <code>SYSENTER</code>를 사용했다.</li><li><strong>32비트 리눅스 / vDSO</strong>: 커널이 프로세스 주소공간에 매핑해주는 <code>__kernel_vsyscall</code>이 <code>INT 0x80</code>의 빠른 대안으로 <code>SYSENTER</code> 기반 경로를 지원했다.</li><li><strong>WOW64</strong>: 64비트 Windows에서 32비트 프로그램을 돌릴 때, 그 32비트 코드 내부에는 여전히 이런 레거시 진입 패턴이 남아있을 수 있다.</li></ul>
+<p><strong>핵심 판단 기준</strong>: 진짜 64비트 코드라면 <code>sysenter</code>가 아니라 <code>syscall</code>(REV-0077)을 기대해야 한다. <code>sysenter</code>가 보인다는 것 자체가 "이 코드는 32비트이거나 32비트 호환 경로"라는 신호다.</p>
+<h3>Intel 문법</h3>
+<p><code>SYSENTER</code>와 <code>SYSEXIT</code> 둘 다 <strong>오퍼랜드가 전혀 없다</strong>. SYSCALL과 마찬가지로 모든 "인자"는 레지스터를 통해 암묵적으로 전달된다.</p>
+<h3>SYSENTER가 하는 일</h3>
+<p><code>SYSENTER</code>는 IA32_SYSENTER_CS, IA32_SYSENTER_EIP, IA32_SYSENTER_ESP라는 MSR(모델 지정 레지스터)에서 CS:EIP와 SS:ESP를 읽어와 로드하고 Ring 0로 전환한다. MSR 이름을 외울 필요는 없고, "부팅 시 커널이 정해둔 고정 주소로 간다"는 사실만 기억하면 된다.</p>
+<p><strong>SYSCALL과의 결정적인 차이</strong>: <code>SYSENTER</code>는 <strong>호출자의 반환 EIP나 ESP를 어디에도 자동으로 저장하지 않는다.</strong> SYSCALL이 하드웨어적으로 RCX/R11에 저장해주는 것과 완전히 다르다. 그래서 이 정보를 저장하는 일은 순전히 <strong>소프트웨어 규약</strong>으로 해결해야 한다. Windows ntdll과 Linux vDSO가 공통으로 쓰는 관례는:</p>
+<ul><li><strong>EDX</strong>에 복귀할 주소(반환 EIP)를 넣는다.</li><li><strong>ECX</strong>에 복귀할 때 쓸 유저 모드 스택 포인터(ESP)를 넣는다.</li></ul>
+<p>이렇게 해두면, 이 규약을 아는 커널 핸들러가 나중에 <code>SYSEXIT</code>를 실행할 때 EDX→EIP, ECX→ESP로 정확히 복귀시켜줄 수 있다.</p>
+<h3>SYSEXIT가 하는 일</h3>
+<p><code>SYSENTER</code>의 반대 동작이다. MSR에서 파생된 셀렉터와 <strong>EDX</strong>(호출자가 넣어둔 반환 주소)로 CS:EIP를 설정하고, <strong>ECX</strong>(호출자가 넣어둔 스택 포인터)로 SS:ESP를 설정한 뒤 Ring 3로 복귀한다.</p>
+<h3>플래그: SYSCALL보다 덜 자동화되어 있음</h3>
+<p>SYSCALL은 R11/FMASK를 통해 RFLAGS 저장·마스킹을 명령어 차원에서 처리해준다. 반면 <strong>SYSENTER/SYSEXIT는 EFLAGS를 자동으로 저장·복원하지 않는다.</strong> 이 역시 OS의 fast-syscall 스텁 코드가 직접 챙겨야 하는 부분이다 — SYSCALL보다 "덜 자동화된" 명령어 쌍이라고 이해하면 된다.</p>
+<h3>레지스터 효과</h3>
+<p>EDX와 ECX는 SYSENTER 규약상 반환 주소/반환 스택 포인터 저장용으로 소모된다. 이건 SYSCALL의 RCX/R11 클로버링과 비슷한 결과(그 레지스터를 인자로 자유롭게 못 씀)를 낳지만, 성격은 다르다 — <strong>SYSCALL의 RCX/R11 소모는 하드웨어가 강제하는 것이고, SYSENTER의 EDX/ECX 소모는 순전히 소프트웨어 관례일 뿐 하드웨어가 강제하는 게 아니다.</strong></p>
+<h3>스택과 RIP 변화</h3>
+<p>RIP는 커널이 정한 고정 핸들러로 점프한다. SYSCALL과 마찬가지로 <strong>SYSENTER도 스택에 반환 주소를 push하지 않는다</strong> — 대신 위에서 설명한 대로 EDX/ECX 관례를 통해 복귀 정보를 넘긴다.</p>
+<h3>흔한 패턴: Windows KiFastSystemCall</h3>
+<p>과거 32비트 Windows에서 <code>ntdll.dll</code>의 시스템 콜 진입부는 대략 이런 모양이었다:</p>
+<pre><code class="language-asm">KiFastSystemCall:
+    mov     edx, esp        ; edx = 현재 사용자 스택 포인터(인자들이 스택에 쌓여있음) -&gt; 커널이 인자 위치를 알기 위함
+    sysenter                ; 커널 진입, 실제로는 커널이 다시 sysexit로 복귀시켜줌</code></pre>
+<p>여기서 인자 자체는 스택에 쌓여 있고, EDX는 그 스택 포인터(즉 인자 위치)를 커널에 알려주는 역할을 겸한다.</p>
+<p>리눅스의 <code>__kernel_vsyscall</code>도 개념적으로 동일하게 SYSENTER 전에 EDX/ECX를 세팅한다. 이때 syscall 번호는 여전히 EAX, 인자는 EBX/ECX/EDX/ESI/EDI/EBP로 <code>INT 0x80</code>과 비슷한 배치를 쓰는데, ECX가 복귀 스택 포인터 트릭에 재사용되기 때문에 커널의 vsyscall 페이지가 내부적으로 값을 조심스럽게 섞어(shuffle) 처리한다. 이 저수준 디테일까지 외울 필요는 없고, "이런 패턴이 있다" 정도만 알아두면 된다.</p>
+<h3>컴파일러/OS 패턴</h3>
+<p>일반 C 컴파일러가 애플리케이션 코드에서 <code>SYSENTER</code>를 직접 뱉는 일은 사실상 없다. SYSCALL처럼 이 명령어는 OS가 제공하는 시스템 콜 스텁 함수 내부(Windows의 <code>Nt*</code>/<code>Zw*</code> 함수, 리눅스의 vDSO)에만 등장하고, 애플리케이션 코드는 그 스텁을 평범하게 <code>CALL</code>로 호출할 뿐이다.</p>
+<p>따라서 <code>sysenter</code>가 보인다는 것은 "지금 시스템 콜 스텁 아주 깊숙한 곳을 보고 있다"는 뜻이지, 일반적인 CTF crackme 로직에서 직접 나올 일은 거의 없다. 예외적으로, <strong>유저모드 API 후킹(예: EDR/보안 제품의 ntdll 후킹)을 우회하기 위해 <code>sysenter</code>/<code>syscall</code>을 직접 호출하는 기법은 안티후킹/안티디버깅 기법 중 하나로 알려져 있다</strong> — 높은 레벨의 <code>Nt*</code> 래퍼 함수에 걸린 후킹을 건너뛰고 곧바로 커널로 진입하려는 목적이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>ntdll.dll</code>의 <code>Nt*</code>/<code>Zw*</code> 함수 내부에 <code>mov edx, esp</code> 다음 <code>sysenter</code>가 나오는 패턴</li><li><code>__kernel_vsyscall</code>이라는 이름의 작은 함수, 그 안에 <code>sysenter</code></li><li>32비트(x86) 바이너리인데 자체적으로 <code>sysenter</code>를 직접 호출하는 코드 — 안티후킹 의심</li><li>64비트 바이너리에서는 이 패턴이 거의 안 보임 (SYSCALL을 기대해야 함)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>sysenter</code>/<code>sysexit</code>를 만나면:</p>
+<ol><li>바이너리가 32비트인지(또는 WOW64인지) 확인 — 64비트라면 이 패턴 자체가 이례적</li><li>그 코드가 <code>ntdll.dll</code>/vDSO 내부의 정상적인 syscall 스텁인지, 아니면 애플리케이션 코드가 직접 호출하는 이례적 위치인지 확인</li><li>EDX/ECX에 어떤 값이 세팅되는지 확인 (반환 주소/스택 포인터 관례)</li><li>애플리케이션 코드가 직접 호출하는 경우라면 안티후킹/안티디버깅 목적일 가능성을 의심</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) KiFastSystemCall류 패턴 식별</strong></p>
+<pre><code class="language-asm">mov     edx, esp
+sysenter</code></pre>
+<p>이 두 줄만 보여도 "SYSENTER 기반 syscall 스텁"이라고 판단할 수 있다.</p>
+<p><strong>2) 어떤 syscall인지 확인</strong> 스텁 함수 시작 부분에서 <code>mov eax, N</code> (Windows의 경우 시스템 콜 번호, 버전마다 값이 다름)을 찾는다. 정적 분석만으로는 번호와 실제 <code>Nt*</code> 함수 대응이 버전마다 다를 수 있으므로, 심볼이 있는 <code>ntdll.dll</code> 함수 이름을 그대로 참고하는 편이 실용적이다.</p>
+<p><strong>3) 애플리케이션 코드가 직접 sysenter/syscall을 호출하는지 확인</strong> 정상적인 프로그램은 <code>Nt*</code> 함수를 <code>CALL</code>로 부르지, <code>sysenter</code>를 직접 인라인으로 넣지 않는다. 애플리케이션 코드 한가운데 <code>sysenter</code>가 인라인되어 있다면 후킹 우회 목적을 의심하고 주변 코드를 자세히 본다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA/Ghidra: <code>ntdll.dll</code> 내 <code>Nt*</code>/<code>Zw*</code> 함수를 검색해 <code>sysenter</code> 존재 확인, X(Xrefs to)로 누가 이 스텁을 직접 호출하는지 추적</li><li>x64dbg/x32dbg: 32비트 타겟에서 <code>sysenter</code> 명령에 브레이크포인트를 걸어 EDX/ECX 값 확인</li><li>GDB: 32비트 프로세스에서 <code>info registers edx ecx</code> 로 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>디버거에서 <code>sysenter</code> 실행 직전 EDX/ECX 값을 확인하면, 그것이 곧 커널이 복귀에 사용할 반환 주소/스택 포인터다.</li><li>IDA 디컴파일은 SYSCALL과 마찬가지로 SYSENTER의 암묵적 인자 전달을 깔끔한 이름 있는 함수 호출로 잘 모델링하지 못한다 — <code>mov edx, esp</code> / <code>sysenter</code> 조합 자체를 지문(fingerprint)으로 인식하는 게 더 실용적이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>SYSENTER/SYSEXIT가 SYSCALL/SYSRET와 완전히 똑같이 자동으로 반환 주소를 저장해준다고 착각하는 것 — SYSCALL은 하드웨어가 RCX/R11에 자동 저장하지만, SYSENTER는 EDX/ECX를 <strong>수동으로(소프트웨어 관례로)</strong> 세팅해야 한다. 이 차이를 헷갈리면 안 된다.</li><li>현대 64비트 전용 바이너리에서도 이 패턴을 기대하는 것 — 64비트 코드에서는 SYSENTER 대신 SYSCALL(REV-0077)을 봐야 정상이다.</li><li>인텔 전용 명령어라고 AMD CPU에서 못 쓴다고 생각하는 것 — 오늘날 인텔/AMD CPU 모두 호환을 위해 두 명령어 쌍(SYSCALL/SYSRET, SYSENTER/SYSEXIT)을 다 지원한다. 실제로 어떤 걸 쓰는지는 OS/바이너리의 설계에 달려 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>64비트 바이너리인데 <code>sysenter</code>가 보여서 당황스럽다면 → WOW64(32비트 프로세스가 64비트 윈도우 위에서 도는 경우)인지, 아니면 실제로 32비트 모듈을 보고 있는 건 아닌지 모듈 비트수부터 재확인한다.</li><li>어떤 <code>Nt*</code>/<code>Zw*</code> 함수인지 특정이 안 되면 → 심볼이 있는 <code>ntdll.dll</code> 원본과 오프셋/이름을 대조하거나, 같은 버전의 참조용 ntdll을 나란히 열어 비교한다.</li><li>애플리케이션 코드가 왜 <code>sysenter</code>를 직접 호출하는지 이해가 안 되면 → 그 함수를 호출하는 곳들을 X(Xrefs to)로 추적해서 이 코드가 후킹 탐지/우회 목적의 별도 모듈(락커, 안티치트, EDR 등)인지 문맥을 넓혀서 본다.</li><li>EDX/ECX 관례가 실제로 지켜지는지 확신이 안 서면 → 디버거로 <code>sysenter</code> 직전에 멈춰서 두 레지스터 값이 실제로 "복귀할 만한" 코드 주소/스택 주소처럼 보이는지 눈으로 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — Windows KiFastSystemCall 스타일</strong></p>
+<pre><code class="language-asm">KiFastSystemCall:
+    mov     edx, esp        ; edx = 사용자 스택 포인터 (인자 위치를 커널에 전달)
+    sysenter                ; 커널 진입
+    ; 커널이 sysexit로 복귀시켜주면 여기로 돌아옴
+    ret</code></pre>
+<p><strong>예제 2 — 개념적인 SYSENTER/SYSEXIT 핸드셰이크</strong></p>
+<pre><code class="language-asm">; 유저 모드 스텁
+user_stub:
+    mov     edx, return_here   ; 복귀할 EIP를 EDX에
+    mov     ecx, esp           ; 복귀할 ESP를 ECX에
+    sysenter
+return_here:
+    ; 커널이 SYSEXIT로 여기까지 복귀시켜줌
+    ret
+
+; (커널 내부, 개념 설명용 — 실제로는 OS 소스에 존재)
+kernel_handler:
+    ; ... 시스템 콜 처리 ...
+    sysexit                    ; edx -&gt; eip, ecx -&gt; esp 로 유저 모드 복귀</code></pre>
+<h2>관련 C 코드</h2>
+<p>SYSCALL과 마찬가지로 일반 C 코드는 <code>sysenter</code>를 직접 만들어내지 않는다. 이건 순전히 OS가 제공하는 syscall 스텁 내부의 일이며, 평범한 <code>write()</code>/<code>read()</code>류 C 코드는 그냥 OS가 제공한 스텁 함수를 보통의 <code>CALL</code>로 부를 뿐이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0077-syscall.html">SYSCALL: x86-64 시스템 콜</a> — 현대 64비트에서 이 명령어 쌍을 대체한 카운터파트</li><li><a href="rev-0071-call.html">CALL: 함수 호출, 반환 주소, 인자 추적</a></li><li><a href="rev-0088-flags-overview.html">FLAGS 레지스터 개요</a></li><li><a href="rev-0072-ret.html">REV-0072 — RET: 함수 반환과 스택 변화</a></li><li><a href="rev-0079-int-0x80.html">REV-0079 — INT와 INT 0x80: 인터럽트 기반 시스템 콜</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>SYSENTER/SYSEXIT 동작(MSR 기반 진입, EDX/ECX 관례, 플래그 비자동 저장): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "SYSENTER—Fast System Call" / "SYSEXIT—Fast Return from Fast System Call" 섹션 기준 (2026-09-08 검증).</li><li>Windows <code>KiFastSystemCall</code>/ntdll 시스템 콜 진입 방식, 리눅스 <code>__kernel_vsyscall</code>(vDSO) 관례: 공개된 리버싱/OS 내부 구조 일반 자료 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

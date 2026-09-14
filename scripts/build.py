@@ -36,7 +36,7 @@ REQUIRED_FIELDS = [
     "keywords", "aliases", "symptom_keywords", "source_ids", "last_verified",
 ]
 
-# AGENTS.md "UI" required top-level navigation, mapped to query-string
+# Required top-level navigation, mapped to query-string
 # entry points into index.html. Categories that don't have any articles yet
 # simply render an empty-state message -- this is expected at Phase 1.
 NAV_ITEMS = [

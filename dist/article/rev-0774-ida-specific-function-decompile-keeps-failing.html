@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA에서 특정 함수만 계속 디컴파일이 실패할 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA에서 특정 함수만 계속 디컴파일이 실패할 때</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>REV-0152에서 다루는 일반적인 조치(원인 문구 확인, Reanalyze, 타입 지정)를 다 해봤는데도 <strong>유독 그 함수 하나만 매번 같은 에러로 실패</strong>한다면, 대부분은 그 함수 안에 컴파일러가 만들지 않은 구조(손으로 짠 인라인 어셈블리, SEH 예외 처리 프레임, 계산된 점프, 자기 자신을 수정하는 코드)가 들어 있어서 디컴파일러의 표준 패턴 매칭 자체가 통하지 않는 경우이며, 이때는 디컴파일러를 억지로 통과시키려 하지 말고 디스어셈블리/그래프 뷰로 직접 읽는 쪽으로 전략을 바꿔야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>같은 바이너리 안의 다른 함수는 다 F5가 잘 되는데, 특정 함수 한두 개만 항상 같은 에러 메시지로 실패할 때</li><li>REV-0152에서 안내하는 조치(Reanalyze, 원형 지정, SP 보정)를 다 시도했는데도 에러가 그대로일 때</li><li>함수 안에 <code>__asm</code> 블록이나 손으로 짠 것처럼 보이는 특이한 명령어 조합(레지스터를 직접 조작하는 짧은 코드)이 섞여 있을 때</li><li>Windows에서 <code>__try</code>/<code>__except</code> 구조나 SEH 관련 스텁 근처 함수에서 반복적으로 실패할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Hex-Rays 디컴파일러는 컴파일러가 생성하는 <strong>정형화된 패턴</strong>(표준적인 함수 프롤로그/에필로그, 스택 프레임 접근 방식, 분기 구조)을 전제로 마이크로코드를 재구성한다. 이 전제가 깨지는 코드에서는 REV-0152에서 소개하는 일반적인 처방(스택 보정, 타입 지정)을 아무리 반복해도 근본 원인이 안 없어지므로 계속 같은 에러가 재발한다. 대표적인 원인들은 다음과 같다.</p>
+<ul><li><strong>손으로 짠 인라인 어셈블리</strong>: 컴파일러가 만드는 코드는 지역 변수/레지스터 사용에 일정한 규칙이 있지만, 개발자가 직접 어셈블리로 작성한 부분은 그 규칙을 벗어나는 경우가 많다. 예를 들어 스택 포인터를 컴파일러가 예상하지 못한 방식으로 직접 조작하면 디컴파일러의 스택 프레임 추적이 매번 틀어진다.</li><li><strong>SEH(Structured Exception Handling) 프레임</strong>: Windows x86 바이너리에서 <code>__try</code>/<code>__except</code>는 특수한 예외 처리 프레임 구조체와 함께 컴파일되는데, 디컴파일러가 이 구조를 인식하지 못하면 관련 함수에서 반복적으로 실패한다. x64에서는 별도의 예외 처리 테이블(.pdata/.xdata)을 사용하는데, 이 정보가 불완전하면 마찬가지로 실패할 수 있다.</li><li><strong>계산된 점프/콜(computed jump/call)</strong>: <code>jmp [eax*4 + table]</code> 같은 점프 테이블이 표준적이지 않은 형태로 만들어졌거나, 함수 포인터를 계산해서 호출하는 코드는 디컴파일러가 제어 흐름을 하나의 함수로 못 묶어서 반복 실패로 이어질 수 있다.</li><li><strong>자기 자신을 수정하는 코드(self-modifying code)나 난독화</strong>: 실행 중에 자기 코드를 바꾸는 바이너리는 정적으로 본 바이트와 실제 실행되는 바이트가 다르므로, 디컴파일러가 애초에 잘못된 코드를 분석하는 셈이 되어 실패가 반복된다.</li><li><strong>함수 청크(chunk)가 여러 조각으로 흩어져 있음</strong>: 컴파일러 최적화로 함수의 일부(예: 드물게 실행되는 에러 처리 블록)가 원래 함수와 멀리 떨어진 위치에 별도 청크로 배치되는 경우, 청크 연결이 깨지면 반복적으로 실패할 수 있다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>같은 함수에서 <code>Reanalyze function</code>을 여러 번 실행해도 정확히 같은 실패 메시지가 계속 나옴.</li><li>디스어셈블리를 보면 함수 중간에 스택을 직접 조작하는 짧은 명령어 블록(<code>push</code>/<code>pop</code> 짝이 안 맞거나 <code>esp</code>를 직접 더하고 빼는 코드)이 보임.</li><li>Windows PE에서 함수 근처에 <code>SEH_prolog</code>, <code>_except_handler</code> 류 이름이나 <code>.pdata</code>/<code>.xdata</code> 관련 참조가 보임.</li><li>함수 경계 밖에 화살표로 연결된 별도의 코드 청크(<code>sub_401000</code> 옆에 회색으로 <code>sub_401000_0</code> 같은 청크가 따로 존재)가 있음.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문제의 함수를 디스어셈블리(그래프 뷰 또는 텍스트 뷰)로 처음부터 끝까지 눈으로 훑어서, 컴파일러가 만든 평범한 코드와 다르게 보이는 부분(비정상적인 스택 조작, SEH 관련 심볼, 계산된 점프)이 있는지부터 찾는다.</p>
+<h2>단계별 절차</h2>
+<ol><li>REV-0152의 일반 조치(에러 문구 확인 → Reanalyze → 타입/SP 보정)를 이미 시도했다는 전제하에, 그래도 안 된다면 함수를 그래프 뷰(Space)로 열어 전체 블록 구조를 눈으로 살핀다.</li><li>스택 조작이 이상해 보이는 블록이 있다면, 그 블록이 인라인 어셈블리인지 확인한다. 컴파일러가 만들지 않았을 법한 짧고 특이한 명령어 조합(예: 불필요해 보이는 <code>xchg</code>, 직접적인 <code>esp</code> 산술)이 반복되면 인라인 어셈블리일 가능성이 높다 — 이 경우 디컴파일러가 절대 정상적으로 재구성할 수 없으므로, 그 부분만 디스어셈블리로 남겨두고 나머지만 이해하는 것으로 목표를 낮춘다.</li><li>SEH 관련 심볼/구조가 보이면, Windows x86이라면 <code>__except_handler</code> 체인이 스택에 어떻게 걸리는지, x64라면 <code>.pdata</code>(런타임 함수 테이블)와 <code>.xdata</code>(언와인드 정보)가 정상적으로 파싱됐는지 확인한다. 이 정보가 깨졌다면 해당 함수의 정확한 스택 언와인드 재구성이 원천적으로 어려우므로, 디컴파일 대신 디버거로 실제 예외 처리 흐름을 관찰하는 방법으로 전환한다.</li><li>계산된 점프/콜이 원인이면, 그 점프 명령어 위에서 우클릭 → <code>Specify switch idiom</code>으로 테이블 구조를 알려주거나, 함수 포인터가 가리키는 실제 대상들을 하나씩 확인해서 수동으로 코드 참조(xref)를 추가한다.</li><li>함수가 여러 청크로 나뉘어 있는지 확인하려면 <code>Functions</code> 창에서 해당 함수를 찾아 이름 옆에 청크 여부가 표시되는지 보거나, 함수 시작에서 <code>Edit → Functions → Set function end</code>로 실제 범위를 재확인한다. 청크 연결이 깨졌다면 청크를 수동으로 다시 지정해야 한다.</li><li>Hex-Rays의 Microcode Explorer(<code>Ctrl+F1</code>, 버전에 따라 다를 수 있음)를 열 수 있다면, 각 최적화 단계(MMAT)에서 어느 지점에서 재구성이 깨지는지 더 세밀하게 볼 수 있다. 이는 고급 기능이므로 시간이 오래 걸리면 생략하고 디스어셈블리 읽기로 넘어가도 무방하다.</li><li>위 방법을 다 시도해도 안 된다면, 그 함수 하나는 디컴파일러의 한계로 받아들이고 디스어셈블리/그래프 뷰만으로 로직을 손으로 재구성한다 — 이는 실패가 아니라 정상적인 대안 경로다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li><code>Space</code> : 그래프 뷰 ↔ 텍스트 뷰 전환</li><li>우클릭 → <code>Reanalyze function</code></li><li>우클릭(간접 점프) → <code>Specify switch idiom</code></li><li><code>Edit → Functions → Set function end</code> : 함수 범위(청크 포함) 재확인/수정</li><li><code>Ctrl+F1</code>(버전에 따라 다름) : Microcode Explorer(고급, 선택 사항)</li><li><code>Edit → Segments → Edit segment</code> : <code>.pdata</code>/<code>.xdata</code> 관련 섹션 속성 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>매번 정확히 같은 실패 메시지가 재현된다는 것 자체가 "일시적 분석 실수"가 아니라 "구조적으로 재구성이 불가능한 패턴"이라는 강한 신호다.</li><li>인라인 어셈블리나 SEH가 원인일 때는 디컴파일러가 아무리 재시도해도 개선되지 않으므로, 반복 시도에 시간을 쓰기보다 디스어셈블리 분석으로 넘어가는 것이 효율적이다.</li><li>Microcode Explorer에서 특정 최적화 단계(MMAT_LOCOPT, MMAT_CALLS 등) 이후로 코드가 이상하게 뭉개진다면, 그 앞 단계까지는 정상적으로 해석됐다는 뜻이므로 원인 범위를 좁히는 데 도움이 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>같은 "Reanalyze function"을 근본 원인 파악 없이 수십 번 반복하는 것 — 구조적 문제는 재분석만으로 해결되지 않는다.</li><li>인라인 어셈블리나 SEH 구조를 컴파일러가 만든 일반 코드와 똑같이 취급해서 REV-0152의 일반 조치만 반복 적용하는 것.</li><li>디컴파일이 안 되는 함수 하나에 매몰되어 전체 분석 진행을 멈추는 것 — 그 함수만 디스어셈블리로 읽고 넘어가도 전체 문제 해결에는 지장이 없는 경우가 많다.</li><li>함수 청크가 분리된 것을 모르고, 눈에 보이는 부분만 함수 전체라고 착각해 논리 일부를 놓치는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>일반적인 디컴파일 실패 메시지별 조치를 아직 안 해봤다면 → REV-0152 IDA Decompiler Failed가 뜰 때</li><li>함수 경계 자체가 잘못 잡힌 것 같다면 → REV-0154 IDA에서 함수 경계가 잘못 잡혔을 때</li><li>이 함수를 아예 그래프 뷰로만 읽고 넘어가려면 → REV-0777 IDA 그래프 뷰가 너무 복잡해서 못 읽을 때</li><li>타입을 지정한 뒤 오히려 더 이상해진 경우라면 → REV-0780 IDA에서 타입 지정 후 디컴파일이 더 이상해질 때</li></ul>
+<h2>미니 예제</h2>
+<p><code>check_license</code> 함수가 항상 <code>positive sp value has been found</code>로 실패하고, REV-0152의 SP 보정 절차를 반복해도 계속 재발하는 상황.</p>
+<pre><code class="language-text">1. 그래프 뷰로 함수를 열어 블록을 하나씩 확인
+2. 중간에 `sub esp, 0x10` 후 곧바로 `add esp, 0x20`처럼 짝이 안 맞는 스택 조작 블록 발견
+3. 그 위치를 디스어셈블리로 자세히 보니 컴파일러 패턴과 다른 손으로 짠 스택 트릭(안티디버깅용 스택 정렬 조작)으로 확인
+4. 이 블록은 디컴파일러가 절대 정상적으로 재구성 못 할 부분이라 판단
+5. F5 대신 디스어셈블리로 그 블록만 직접 해석하고, 나머지 정상 부분만 F5로 확인하는 방식으로 전환</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0152-ida-decompiler-failed.html">REV-0152 — IDA Decompiler Failed가 뜰 때</a></li><li><a href="rev-0154-ida-wrong-function-boundary.html">REV-0154 — IDA에서 함수 경계가 잘못 잡혔을 때</a></li><li><a href="rev-0150-ida-graph-view.html">REV-0150 — IDA Graph View에서 분기 읽기</a></li><li><a href="rev-0780-ida-settype-makes-decompile-worse.html">REV-0780 — IDA에서 타입 지정 후 디컴파일이 더 이상해질 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Hex-Rays 디컴파일러가 컴파일러 생성 패턴을 전제로 마이크로코드를 재구성한다는 점과 인라인 어셈블리/SEH/계산된 점프에서 실패가 반복되는 경향: Hex-Rays 공식 문서 "Limitations" 및 "Failures and troubleshooting" 섹션 기준.</li><li>Windows x64 SEH가 <code>.pdata</code>/<code>.xdata</code> 기반 테이블 방식 언와인드를 사용한다는 사실: Microsoft 공식 x64 예외 처리 문서 기준.</li><li>Microcode Explorer 관련 단축키/메뉴는 IDA 버전과 라이선스 등급에 따라 다를 수 있어 실제 환경에서 재확인을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

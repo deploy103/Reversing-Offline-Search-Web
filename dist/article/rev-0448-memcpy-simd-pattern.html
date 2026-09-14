@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>memcpy가 SIMD 명령으로 인라인되는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>memcpy가 SIMD 명령으로 인라인되는 패턴</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>memcpy(dst, src, len)</code>도 <code>memset</code>(REV-0447)과 마찬가지로 길이가 상수로 확정되면 함수 호출 없이 <code>MOVUPS/MOVDQU</code>로 소스를 로드해서 목적지에 그대로 저장하는 SIMD 페어(load+store) 반복, 또는 큰/가변 길이라면 <code>REP MOVSB</code>로 직접 펼쳐지며, 구조체 대입문(<code>*dst = *src;</code>)도 정확히 같은 패턴으로 컴파일된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>memcpy</code> 호출이 있어야 할 것 같은데 디스어셈블리에 <code>call memcpy</code>가 안 보이고 <code>movups xmm0, [rsi]</code> 다음 곧바로 <code>movups [rdi], xmm0</code> 같은 로드+저장 쌍이 반복될 때</li><li><code>rep movsb</code>/<code>rep movsd</code>/<code>rep movsq</code>가 큰 배열이나 구조체를 통째로 옮기는 것처럼 보일 때</li><li>구조체 대입(<code>struct_a = struct_b;</code>)이나 배열 복사 코드가 함수 호출 없이 여러 줄의 <code>MOV</code>/<code>MOVUPS</code>로 풀려 있을 때</li><li><code>memcpy</code>와 <code>memmove</code>의 차이(겹치는 영역 처리)가 어셈블리에서 어떻게 드러나는지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>로드 + 스토어 쌍이 memcpy의 본질</h3>
+<p><code>memcpy</code>가 하는 일은 결국 "소스의 N바이트를 읽어서(load) 목적지에 그대로 쓴다(store)"는 것뿐이다. 길이가 컴파일 시점에 확정되고 크지 않으면(대략 수십~수백 바이트 이하, 정확한 임계값은 컴파일러/타겟 CPU에 따라 다름), 컴파일러는 <code>call memcpy</code> 대신 SIMD 레지스터를 매개로 한 로드+스토어 쌍을 필요한 만큼 반복해서 그 자리에 박아 넣는다.</p>
+<pre><code class="language-asm">movups  xmm0, [rsi]        ; 소스에서 16바이트 로드
+movups  [rdi], xmm0        ; 목적지에 16바이트 저장
+movups  xmm0, [rsi+10h]    ; 다음 16바이트
+movups  [rdi+10h], xmm0</code></pre>
+<p>정수 XMM 계열(<code>MOVDQA</code>/<code>MOVDQU</code>, REV-0389)이나 AVX가 켜진 빌드에서는 <code>VMOVDQU ymm0, [rsi]</code>로 32바이트씩 옮기기도 한다. 아주 작은 크기(1, 2, 4, 8바이트)라면 SIMD조차 필요 없이 그냥 정수 레지스터로 <code>mov rax, [rsi]</code> → <code>mov [rdi], rax</code> 한 쌍으로 끝난다 — 이 경우가 사실 가장 흔하다(작은 구조체 대입, <code>int</code>/<code>long</code> 필드 복사 등).</p>
+<h3>정렬(Alignment)에 따른 명령 선택</h3>
+<ul><li>목적지/소스 주소가 모두 16바이트 정렬이 보장되면 <code>MOVAPS</code>/<code>MOVDQA</code>(정렬 필요, REV-0386/REV-0389)를 쓴다 — 정렬이 어긋난 주소에 쓰면 <code>#GP</code> 예외가 발생하므로, 컴파일러는 정렬을 100% 확신할 때만 이 명령을 고른다.</li><li>정렬을 보장할 수 없으면 <code>MOVUPS</code>/<code>MOVDQU</code>(비정렬, REV-0387)를 쓴다 — 느릴 수 있지만 항상 안전하다. 실무에서는 스택/힙 버퍼의 정렬을 컴파일러가 확신하기 어려운 경우가 많아 <code>MOVUPS/MOVDQU</code>가 더 자주 보인다.</li></ul>
+<h3>큰 크기 또는 런타임 길이 — REP MOVSB</h3>
+<p>길이가 크거나 런타임에만 알 수 있으면(<code>memcpy(dst, src, n)</code>에서 <code>n</code>이 변수), SIMD 언롤 대신 문자열 명령 <code>REP MOVSB</code>(1바이트씩)/<code>REP MOVSD</code>(4바이트씩)/<code>REP MOVSQ</code>(8바이트씩)를 쓴다(REV-0080, REV-0081 참고).</p>
+<pre><code class="language-asm">mov     rsi, src
+mov     rdi, dst
+mov     rcx, n
+rep movsb</code></pre>
+<p>최신 x86 CPU(Ivy Bridge 이후 Intel, 이후 세대 AMD)는 <strong>ERMSB(Enhanced REP MOVSB)</strong> 기능을 지원해서, 크기가 큰 경우 이 문자열 명령이 SIMD 언롤/수동 루프보다 오히려 빠르다. 그래서 <code>memcpy</code>의 실제 libc 구현체(glibc <code>memcpy</code>, Windows CRT <code>memcpy</code>)도 내부적으로 크기별 임계값에 따라 SIMD 루프와 <code>REP MOVSB</code>를 섞어 쓴다 — 컴파일러가 인라인할 때도 같은 전략을 쓰는 것으로 이해하면 된다.</p>
+<h3>memcpy vs memmove — 방향과 겹침</h3>
+<p><code>memcpy</code>는 소스/목적지 영역이 <strong>겹치지 않는다고 가정</strong>하고 항상 앞에서 뒤로(낮은 주소 → 높은 주소) 복사한다. 반면 <code>memmove</code>는 겹치는 영역도 안전하게 처리해야 하므로, 목적지가 소스보다 뒤에 있으면(즉 <code>dst &gt; src</code>이고 겹치면) <strong>뒤에서 앞으로</strong> 복사한다. 이 방향 제어는 x86에서 방향 플래그(DF, EFLAGS의 한 비트)로 표현된다.</p>
+<ul><li><code>CLD</code>(Clear Direction Flag): DF=0, RSI/RDI가 매 반복 후 <strong>증가</strong> — 정방향 복사. <code>MOVSB</code> 등이 이 상태로 실행된다.</li><li><code>STD</code>(Set Direction Flag): DF=1, RSI/RDI가 매 반복 후 <strong>감소</strong> — 역방향 복사. <code>memmove</code>가 겹치는 뒤쪽 이동을 처리할 때 이 방식을 쓸 수 있다.</li></ul>
+<p>컴파일러가 인라인한 <code>memcpy</code>는 항상 정방향(단순 SIMD 로드+스토어 나열)이라 DF를 신경 쓸 필요가 거의 없지만, <code>memmove</code> 인라인이나 라이브러리 구현을 볼 때는 <code>std</code>/<code>cld</code> 명령이나 방향 판단 분기(목적지·소스 주소 비교 후 <code>jae</code>/<code>jb</code>로 정방향/역방향 루프를 고르는 코드)가 앞에 붙는지 확인해야 한다.</p>
+<h3>레지스터 효과와 플래그</h3>
+<ul><li><code>MOVUPS</code>/<code>MOVUPD</code>/<code>MOVDQA</code>/<code>MOVDQU</code>는 <strong>플래그를 변경하지 않는다.</strong></li><li><code>REP MOVSB/MOVSD/MOVSQ</code>도 EFLAGS(ZF, CF 등 산술 플래그)는 바꾸지 않지만, 매 반복마다 RCX(카운터)가 감소하고 RSI/RDI가 DF 방향에 따라 증가/감소한다는 점이 부수 효과다. <code>REP</code> 자체는 RCX가 0이 될 때까지 반복하는 접두사이며, 조건부 반복(<code>REPE</code>/<code>REPNE</code>)과 달리 ZF를 검사하지 않는다.</li><li>signed/unsigned 구분은 <code>memcpy</code>에는 의미가 없다 — 바이트 단위 원시 복사이므로 데이터의 타입 해석과 무관하다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">; 32바이트 고정 크기 복사 (SSE)
+movups  xmm0, [rsi]
+movups  [rdi], xmm0
+movups  xmm0, [rsi+10h]
+movups  [rdi+10h], xmm0</code></pre>
+<pre><code class="language-asm">; 8바이트 이하의 작은 구조체 복사는 정수 레지스터로 끝남
+mov     rax, [rsi]
+mov     [rdi], rax</code></pre>
+<pre><code class="language-asm">; 큰 크기, REP MOVSB (ERMSB)
+lea     rsi, [rbp-400h]
+lea     rdi, [rbp-800h]
+mov     ecx, 400h
+rep movsb</code></pre>
+<pre><code class="language-asm">; memmove가 겹침을 확인 후 방향을 고르는 전형적인 분기
+cmp     rdi, rsi
+jae     copy_backward
+; ... 정방향 복사 ...
+jmp     done
+copy_backward:
+; ... 역방향 복사 (rdi/rsi를 끝에서부터, std 사용 또는 감소 인덱스) ...
+done:</code></pre>
+<h2>가장 먼저 할 것</h2>
+<ol><li>로드(<code>movups xmm, [src]</code>)와 스토어(<code>movups [dst], xmm</code>)가 짝을 이루는지 확인한다 — 소스 레지스터와 목적지 레지스터가 다르면 memcpy류(복사), 목적지 하나만 반복되면 memset류(REV-0447, 채우기)다.</li><li>복사되는 총 길이를 계산한다(반복 오프셋 개수 × 16, 또는 <code>REP</code> 앞 카운터 값).</li><li>소스/목적지 주소가 겹칠 가능성이 있는지 확인한다 — 겹친다면 <code>memmove</code> 의미론(겹침-안전 복사)이 필요했을 자리인데 단순 <code>memcpy</code> 패턴이 쓰였다면 버그 가능성을 의심한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 소스/목적지 레지스터 구분</strong></p>
+<p><code>movups xmm0, [X]</code> 줄의 <code>X</code>가 소스, <code>movups [Y], xmm0</code> 줄의 <code>Y</code>가 목적지다. 두 레지스터가 프로그램의 어떤 버퍼를 가리키는지(지역 배열, 함수 인자, 힙 포인터) 각각 위쪽에서 추적한다.</p>
+<p><strong>2) 복사 길이 계산</strong></p>
+<p>반복되는 <code>movups</code>/<code>mov</code> 쌍의 오프셋 최대값 + 오퍼랜드 크기가 곧 전체 길이다. <code>REP MOVSx</code> 형태면 <code>mov ecx, N</code>의 N이 (MOVSB 기준) 바이트 수 그 자체다.</p>
+<p><strong>3) memcpy vs memmove 판별</strong></p>
+<p>복사 직전에 <code>cmp dst, src</code> 후 대소 비교로 분기하는 코드가 있으면 겹침을 검사하는 <code>memmove</code> 스타일이다. 그런 분기 없이 바로 로드+스토어가 나열되면 컴파일러가 "겹치지 않는다"고 확신한 <code>memcpy</code>다.</p>
+<p><strong>4) IDA/Ghidra 재인식 결과와 비교</strong></p>
+<p>F5 디컴파일 결과가 <code>memcpy(dst, src, N)</code>으로 다시 요약되는지 확인한다. 재인식이 실패하면 XMM 로드/스토어가 그대로 나열되어 나오므로, 수동으로 "이 블록은 N바이트 복사"라고 주석을 남긴다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>F5</code>(디컴파일), <code>;</code>(코멘트), Xrefs to(<code>X</code>)로 이 코드가 어떤 필드 대입/함수 인자 준비인지 상위 함수에서 확인</li><li>Ghidra: Decompile 창 자동 재인식 확인, Listing에서 <code>movups</code>/<code>movdqu</code> 연속 블록 강조</li><li>x64dbg/GDB: 목적지 버퍼에 write 하드웨어 브레이크포인트를 걸어 실제로 복사되는 바이트 수와 값을 실행 중 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>IDA가 <code>memcpy(dest, src, size)</code>로 재인식하면, 실제로는 함수 호출이 아니라 SIMD/정수 로드-스토어 나열이 원본이었다는 것을 기억한다.</li><li><code>rep movsb</code>만 있고 <code>std</code>가 없으면 정방향(낮은 주소→높은 주소) 복사다. <code>std</code> 또는 역순 오프셋 접근(감소하는 인덱스)이 보이면 겹침을 고려한 역방향 복사(memmove 스타일)다.</li><li>소스와 목적지 버퍼 크기가 다르게 계산된다면(예: 목적지가 소스보다 작음) 오버플로우 버그 후보다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>movups</code> 로드+스토어 쌍을 "암호화 라운드"나 "해시 믹싱"으로 오판하는 것 — 소스/목적지가 항상 같은 오프셋 간격(16바이트)으로 나란히 진행하고 중간에 XOR/ADD 같은 변형이 전혀 없다면 그냥 복사다.</li><li><code>rep movsb</code>를 보고 무조건 "느린 레거시 코드"라고 무시하는 것 — ERMSB를 지원하는 CPU에서는 컴파일러가 의도적으로 고른 빠른 경로일 수 있다.</li><li><code>memcpy</code>와 <code>memmove</code>를 어셈블리 레벨에서 구분하지 않고 아무 겹침 버퍼에나 단순 로드+스토어 패턴을 가정하는 것 — 겹치는 영역에 <code>memcpy</code> 의미론(정방향만 가정)을 썼다면 원본 소스 코드 자체의 버그일 수 있으니, 실제로 겹침 검사 분기가 있는지 반드시 먼저 확인한다.</li><li>구조체 대입(<code>a = b;</code>)이 함수 호출 없이 이런 SIMD 패턴으로 나오는 것을 보고 "이상하다"고 여기는 것 — 구조체/배열 값 복사는 C/C++에서 컴파일러가 내부적으로 <code>memcpy</code>와 동일하게 처리하는 것이 표준적인 동작이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>이게 <code>memcpy</code>가 아니라 <code>memset</code>일 수도 있다고 헷갈리면 → REV-0447로 이동해서 목적지만 반복되는지(스토어만 있고 로드가 없는지) 다시 확인.</li><li>복사 길이가 어디서 오는지 못 찾겠다면 → <code>REP</code> 앞의 <code>mov ecx, ...</code> 또는 SIMD 반복 오프셋 최댓값을 다시 센다.</li><li>정렬 관련 크래시(<code>MOVAPS</code>/<code>MOVDQA</code>에서 예외)가 의심되면 → 소스/목적지 주소가 실제로 16바이트 정렬인지, 혹은 컴파일러가 잘못 <code>MOVUPS</code> 대신 <code>MOVAPS</code>를 썼을 리는 없으므로 다른 원인(버퍼 오버플로우로 주소 자체가 깨졌을 가능성)을 의심한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 고정 크기 구조체 복사</strong></p>
+<pre><code class="language-c">struct Point { int x, y; };
+Point b = a;   // 8바이트</code></pre>
+<pre><code class="language-asm">mov     rax, [rbp+a]
+mov     [rbp+b], rax</code></pre>
+<p><strong>예제 2 — 32바이트 버퍼 복사, SIMD 언롤</strong></p>
+<pre><code class="language-c">memcpy(dst, src, 32);</code></pre>
+<pre><code class="language-asm">movups  xmm0, [rsi]
+movups  [rdi], xmm0
+movups  xmm0, [rsi+10h]
+movups  [rdi+10h], xmm0</code></pre>
+<p><strong>예제 3 — 가변 길이, REP MOVSB</strong></p>
+<pre><code class="language-c">void copy_n(char *dst, const char *src, size_t n) {
+    memcpy(dst, src, n);
+}</code></pre>
+<pre><code class="language-asm">; SysV x64: rdi=dst, rsi=src, rdx=n
+mov     rcx, rdx
+rep movsb</code></pre>
+<p><strong>예제 4 — memmove 겹침 검사 분기</strong></p>
+<pre><code class="language-c">memmove(buf + 2, buf, 10);   // 목적지가 소스보다 뒤, 겹침</code></pre>
+<pre><code class="language-asm">lea     rdi, [buf+2]
+mov     rsi, buf
+cmp     rdi, rsi
+jb      forward_copy      ; dst &lt; src면 정방향도 안전
+; dst &gt; src &amp;&amp; 겹침 → 역방향 복사 필요
+std                        ; 방향 플래그 설정 (뒤에서 앞으로)
+...
+cld                        ; 복사 후 관례적으로 원상 복구</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0447-memset-simd-pattern.html">REV-0447 — memset이 SIMD 명령으로 인라인되는 패턴</a></li><li><a href="rev-0449-strlen-inline-pattern.html">REV-0449 — strlen이 인라인 최적화되는 패턴</a></li><li><a href="rev-0080-rep-prefix.html">REV-0080 — REP Prefix와 반복 문자열 명령</a></li><li><a href="rev-0081-movs.html">REV-0081 — MOVS MOVSB MOVSW MOVSD MOVSQ</a></li><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>MOVUPS</code>/<code>MOVDQU</code>/<code>MOVAPS</code>/<code>MOVDQA</code>의 정렬 요구사항과 플래그 미변경: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2 각 명령어 항목 기준.</li><li><code>REP MOVSB</code> 및 Enhanced REP MOVSB(ERMSB) 동작: Intel SDM Volume 1 "String Operations" 및 Intel Optimization Reference Manual 기준.</li><li><code>memcpy</code>(겹치지 않음 가정)와 <code>memmove</code>(겹침 허용) 의미론 차이: ISO C 표준 라이브러리 명세(<code>string.h</code>) 기준.</li><li>방향 플래그(DF)와 <code>CLD</code>/<code>STD</code> 동작: Intel SDM Volume 1, EFLAGS 및 "CLD/STD" 명령어 항목 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

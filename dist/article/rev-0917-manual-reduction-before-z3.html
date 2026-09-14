@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Z3로 풀기 전에 손으로 먼저 검증 로직 축소하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>Z3로 풀기 전에 손으로 먼저 검증 로직 축소하기</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span><span class="tag">Z3</span></div>
+<h2>한 줄 요약</h2>
+<p>검증 로직 전체를 그대로 Z3 제약식으로 옮기면 변수 수와 제약 복잡도 때문에 solver가 몇 시간째 끝나지 않거나 <code>unknown</code>을 리턴하는 경우가 흔하므로, Z3에 넘기기 전에 상수 폴딩(constant folding), 죽은 코드 제거, 독립 변수 그룹 분리 같은 손 작업으로 문제를 최대한 축소해두는 습관이 실전 solver 성능을 좌우한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>REV-0268~0270에서 배운 대로 Z3 BitVec 제약식을 세웠는데 <code>solver.check()</code>가 몇 분이 지나도 끝나지 않을 때</li><li>Z3가 <code>sat</code>/<code>unsat</code>이 아니라 <code>unknown</code>을 리턴해서 답을 못 얻었을 때</li><li>검증 함수 전체(수백 줄)를 거의 그대로 옮겨 적어서 제약식이 지나치게 복잡하고 변수도 수십 개나 될 때</li><li>Z3를 쓰기 전에 먼저 "이 문제를 얼마나 단순화할 수 있는지" 점검하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Z3는 만능이 아니다 — 문제 크기가 solver 성능을 결정한다</h3>
+<p>SMT solver인 Z3는 강력하지만, 비트벡터 제약식의 변수 수와 연산 복잡도(특히 곱셈, 나눗셈, 모듈러 연산이 많을수록)에 따라 실행 시간이 기하급수적으로 늘어날 수 있다. "검증 함수를 그대로 옮기면 Z3가 알아서 풀어주겠지"라는 기대는 간단한 문제에서는 맞지만, 실전 크랙미처럼 수십 줄짜리 변환이 여러 겹 있는 경우에는 자주 실패한다. 따라서 Z3에 넘기기 전에 사람이 먼저 문제를 최대한 정리해서 solver의 부담을 줄여주는 작업이 실전에서는 필수적이다.</p>
+<h3>축소 기법 1 — 상수 폴딩(Constant Folding)</h3>
+<p>검증 로직 중 입력과 무관하게 항상 같은 값으로 계산되는 부분(리터럴 상수끼리의 연산, 또는 이미 알려진 키/테이블 값)은 Z3 변수로 만들 필요 없이 파이썬에서 미리 계산해 숫자 하나로 대체한다.</p>
+<pre><code class="language-c">// 원본
+int key = (0x12 ^ 0x34) + compute_something(0x56);
+result = input[0] ^ key;</code></pre>
+<pre><code class="language-python"># Z3로 옮기기 전에 key 값을 미리 계산
+key = (0x12 ^ 0x34) + compute_something(0x56)   # 파이썬으로 먼저 계산 -&gt; 상수 하나
+# Z3 제약식에서는 key를 그냥 리터럴로 사용</code></pre>
+<p>이렇게 하면 <code>compute_something</code>이라는 복잡한 서브루틴 전체를 Z3 제약식으로 표현할 필요 없이, 파이썬에서 한 번 계산한 결과만 상수로 넣으면 된다. 입력에 의존하지 않는 계산을 Z3에게 "풀어달라"고 맡기는 것 자체가 낭비다.</p>
+<h3>축소 기법 2 — 죽은 코드 제거(Dead Code Elimination)</h3>
+<p>실제 검증 결과에 영향을 주지 않는 코드(로깅, 디버그 출력, 항상 참인 조건, 사용되지 않는 변수 갱신)는 제약식에서 완전히 빼도 된다. 예를 들어 안티 디버깅 체크나 타이밍 체크처럼 최종 flag 검증과 무관한 코드가 같은 함수 안에 섞여 있는 경우가 많다 — 이런 부분까지 전부 제약식으로 옮기면 solver가 불필요한 변수와 제약을 떠안게 된다.</p>
+<h3>축소 기법 3 — 독립 변수 그룹으로 분리(Constraint Splitting)</h3>
+<p>검증 로직이 사실은 입력 바이트 여러 개가 서로 얽히지 않고 독립적으로 검증되는 구조(예: <code>input[0..3]</code>에 대한 조건과 <code>input[4..7]</code>에 대한 조건이 서로 완전히 무관)라면, 이를 하나의 거대한 제약식으로 합쳐서 풀지 말고 그룹별로 나눠서 각각 별도의 (더 작은) Z3 인스턴스로 푸는 것이 훨씬 빠르다. Z3의 solver 성능은 변수 수에 비선형적으로 나빠지는 경우가 많으므로, 32개 변수를 한 번에 푸는 것보다 8개 변수짜리 문제 4개를 따로 푸는 것이 전체적으로 훨씬 빠를 수 있다.</p>
+<h3>축소 기법 4 — 비트폭을 실제 필요한 만큼만 사용</h3>
+<p>입력 바이트 하나가 실제로는 0~9(숫자만) 또는 0~15(hex 문자만)처럼 제한된 범위라는 게 이미 알려져 있다면(REV-0218, REV-0223), <code>BitVec(8)</code>로 8비트 전체를 열어두는 대신 처음부터 <code>Extract</code>나 범위 제약(<code>0 &lt;= x</code>, <code>x &lt;= 9</code>)을 추가 제약으로 걸어 탐색 공간을 줄여준다. 이는 REV-0918(다중 조건 좁히기)에서 다루는 narrowing 절차와 정확히 같은 원리를 Z3 제약식 안에서도 적용하는 것이다.</p>
+<h3>축소 기법 5 — 곱셈/나눗셈을 시프트/마스크로 치환 가능한지 확인</h3>
+<p>비트벡터 제약식에서 일반 곱셈(<code>BitVecVal * BitVecVal</code>)과 나눗셈은 비교적 무겁다. 만약 곱해지는 상수가 2의 거듭제곱이라면(<code>x * 4</code>는 <code>x &lt;&lt; 2</code>와 같음), 미리 시프트 연산으로 바꿔서 표현하면 solver 내부 처리가 더 가벼워질 수 있다. 이런 치환이 결과에 영향을 주지 않는지는 반드시 파이썬에서 몇 개 값으로 직접 검산한다.</p>
+<h3>언제 축소를 포기하고 그냥 Z3에 맡길지</h3>
+<p>모든 문제를 이렇게까지 정성 들여 축소할 필요는 없다. 변수가 적고(10개 이하) 연산이 단순(XOR, 덧셈 위주)하다면 Z3는 대개 수 초 안에 끝난다. 축소 작업은 어디까지나 "Z3가 오래 걸리거나 실패했을 때" 투입하는 다음 수단이며, 처음부터 과도하게 손으로 최적화하려다 시간을 낭비하지 않도록 먼저 그냥 돌려보고, 느리면 그때 하나씩 축소 기법을 적용하는 순서가 실전적이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>solver.check()</code> 호출 후 CTF 대회 시간 내에 응답이 안 옴</li><li>Z3 결과가 <code>unknown</code>으로 나와서 <code>model()</code>을 호출할 수 없음</li><li>제약식 생성 코드가 검증 함수의 모든 줄을 거의 그대로 옮긴 상태이고 변수 개수가 20개를 훌쩍 넘음</li><li>프로파일링해보니(단순히 코드 블록별로 주석 처리해가며 테스트) 특정 서브루틴 하나가 사실 상수 계산이었다는 게 뒤늦게 발견됨</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>일단 그대로 Z3에 넘겨서 몇 초~몇 분 안에 끝나는지 시도해본다. 안 끝나면 <code>solver.check()</code>에 타임아웃을 걸어(<code>solver.set("timeout", 10000)</code>) 빠르게 실패를 확인하고, 코드를 다시 훑어 상수 폴딩·죽은 코드 제거부터 순서대로 적용한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>검증 로직 전체를 일단 그대로 Z3 제약식으로 옮겨 실행해보고, 타임아웃을 짧게(예: 10초) 걸어 바로 끝나는지 확인한다.</li><li>안 끝나면 코드에서 입력과 무관한 부분(상수 계산, 안티 디버깅/로깅 등 죽은 코드)을 찾아 제거하거나 미리 계산한 상수로 치환한다.</li><li>입력 바이트들이 서로 독립적으로 검증되는 그룹으로 나뉘는지 확인하고, 나뉜다면 그룹별로 별도 Z3 인스턴스를 만든다.</li><li>이미 알려진 문자셋 제약(REV-0218, REV-0223)이 있다면 <code>BitVec</code> 선언 직후 범위 제약으로 즉시 추가한다.</li><li>곱셈/나눗셈 중 2의 거듭제곱과 관련된 것은 시프트로 치환 가능한지 검토하고, 치환 후 파이썬으로 검산한다.</li><li>축소된 제약식으로 다시 <code>solver.check()</code>를 실행해 성능이 개선됐는지 확인하고, 여전히 느리면 2~5단계를 반복한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python">from z3 import *
+
+solver = Solver()
+solver.set("timeout", 10000)  # 10초, 빠른 실패 확인용
+
+# 상수 폴딩 예시: compute_something(0x56)을 미리 파이썬에서 계산
+def compute_something(x):
+    return (x * 3 + 7) &amp; 0xFF
+
+key = (0x12 ^ 0x34) + compute_something(0x56)  # 이미 숫자로 확정됨
+
+x = BitVec('x', 8)
+solver.add(x ^ key == 0x42)
+
+result = solver.check()
+print(result)
+if result == sat:
+    print(solver.model())</code></pre>
+<pre><code class="language-python"># 독립 변수 그룹 분리 예시: 앞 4바이트와 뒤 4바이트가 서로 무관하다면
+solver1 = Solver(); solver1.set("timeout", 5000)
+solver2 = Solver(); solver2.set("timeout", 5000)
+# solver1은 input[0..3]만 담당, solver2는 input[4..7]만 담당</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>sat</code>이 빠르게 나오면 축소가 잘 됐거나 애초에 문제가 단순했다는 뜻이다.</li><li><code>unknown</code>이 나오면 여전히 solver가 감당하기엔 복잡하다는 뜻이므로 축소 기법을 더 적용하거나, 문제 자체가 SMT로 풀기 부적합한 구조(예: 강한 해시 혼합)일 가능성도 고려해야 한다.</li><li>그룹 분리 후 각각은 빠르게 풀리는데 합쳐서 풀면 느리다면, 애초에 두 그룹이 정말 독립적이라는 게 재확인된 것이므로 그룹 분리 전략이 유효했다는 뜻이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>검증 로직을 한 줄도 안 줄이고 통째로 옮긴 뒤 "Z3가 알아서 하겠지"라고 방치하는 것 — 실전 크랙미에서는 이 접근이 자주 실패한다.</li><li>상수 폴딩을 하면서 계산을 잘못해서(파이썬 정수 오버플로 처리 누락 등) 실제와 다른 상수를 넣는 것 — 폴딩한 상수는 반드시 원본 코드와 몇 개 값으로 직접 검산해야 한다.</li><li>타임아웃을 걸지 않고 무기한 <code>solver.check()</code>를 돌려서, 얼마나 걸릴지 감도 못 잡은 채 하염없이 기다리는 것 — 짧은 타임아웃으로 빠르게 실패를 확인하고 반복 개선하는 사이클이 훨씬 생산적이다.</li><li>독립적이지 않은 변수를 억지로 그룹 분리해서 잘못된 결과를 얻는 것 — 그룹을 나누기 전에 반드시 두 그룹이 서로의 값에 전혀 의존하지 않는지 코드 흐름으로 확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>Z3 기본 문법과 BitVec 사용법이 헷갈리면 → REV-0268 Z3 BitVec 기초, REV-0269 Z3로 문자 조건 풀기, REV-0270 Z3에서 8비트 32비트 Overflow 다루기</li><li>문자셋/길이 제약을 어떻게 뽑아내는지 궁금하면 → REV-0218 길이 검증부터 역추적하는 법, REV-0223 Known plaintext와 Flag 형식으로 조건 줄이기</li><li>여러 조건을 동시에 만족하는 입력 공간을 좁히는 전체 절차가 궁금하면 → REV-0918 다중 조건을 만족하는 입력 공간 좁히는 실전 절차</li><li>Z3로도 안 풀리는 규모라면 심볼릭 실행 엔진 자체를 바꿔볼 수도 있다 → REV-0271 angr 심볼릭 실행 기초</li></ul>
+<h2>미니 예제</h2>
+<p>검증 함수가 다음과 같다고 하자.</p>
+<pre><code class="language-c">int debug_log_enabled = 0;   // 항상 0, 실제 검증에 영향 없음
+int verify(unsigned char *input) {
+    if (debug_log_enabled) {
+        printf("debug\n");   // 죽은 코드 - 절대 실행 안 됨
+    }
+    int key = (0x10 * 3 + 7) &amp; 0xFF;   // 입력과 무관한 상수 계산
+    int a = input[0] ^ key;
+    int b = input[1] ^ key;
+    return (a == 0x55) &amp;&amp; (b == 0x22);
+}</code></pre>
+<p>축소 없이 그대로 옮기면 <code>debug_log_enabled</code> 조건과 <code>key</code> 계산까지 전부 Z3 변수/제약식으로 표현하려는 실수를 할 수 있다. 축소를 적용하면:</p>
+<pre><code class="language-python">from z3 import *
+
+# 1. 죽은 코드(debug_log_enabled) 제거 - 애초에 제약식에 넣지 않음
+# 2. key는 입력과 무관하므로 파이썬에서 미리 계산
+key = (0x10 * 3 + 7) &amp; 0xFF  # = 55 (0x37)
+
+# 3. input[0], input[1]은 서로 완전히 독립 -&gt; 그룹 분리도 가능하지만
+#    여기선 변수가 2개뿐이라 그냥 같이 풀어도 충분히 빠름
+a, b = BitVecs('a b', 8)
+solver = Solver()
+solver.add(a ^ key == 0x55)
+solver.add(b ^ key == 0x22)
+
+if solver.check() == sat:
+    m = solver.model()
+    print(m[a].as_long(), m[b].as_long())</code></pre>
+<p>변수 2개짜리 이 예시는 축소 없이도 순식간에 풀리지만, 실전에서 변수가 30~40개로 늘어나고 <code>key</code> 같은 상수 계산이 여러 겹으로 중첩된 함수 호출이라면, 이 축소 과정을 생략하는 순간 Z3가 몇 시간 동안 응답하지 않는 상황을 실제로 자주 겪게 된다.</p>
+<h3>완전한 예제 스크립트 — 상수 폴딩과 독립 변수 그룹 분리를 모두 적용한 전체 흐름</h3>
+<p>Z3를 쓰려면 먼저 <code>pip install z3-solver</code>로 설치해야 한다(오프라인 환경이라면 미리 설치된 패키지를 오프라인 저장소에 준비해둔다). 아래 스크립트는 앞서 "축소 기법 1"에서 설명한 <code>compute_something()</code>이 섞인 <code>key</code> 계산을 실제로 상수 폴딩하고, <code>a</code>와 <code>b</code>가 서로 독립적이라는 걸 이용해 두 개의 작은 Z3 인스턴스로 나눠서 푸는 전체 과정을 담고 있다.</p>
+<pre><code class="language-python">from z3 import *  # Z3 SMT solver를 파이썬에서 쓰기 위한 모듈
+
+
+def compute_something(x: int) -&gt; int:
+    """검증 함수 안에 있던, 입력과 무관한 서브루틴이라고 가정한다."""
+    return (x * 3 + 7) &amp; 0xFF
+
+
+# --- 1단계: 상수 폴딩 ---
+# 원본 C 코드가 `int key = (0x12 ^ 0x34) + compute_something(0x56);` 라고 하자.
+# 이 계산은 입력(a, b)과 전혀 무관하므로, Z3에게 맡기지 않고 파이썬에서 미리 계산해 숫자 하나로 만든다.
+key = ((0x12 ^ 0x34) + compute_something(0x56)) &amp; 0xFF
+print("상수 폴딩으로 미리 계산한 key:", hex(key), key)  # 어떤 값이 나왔는지 직접 확인
+
+# --- 2단계: 죽은 코드 제거 ---
+# 원본에 있던 debug_log_enabled 같은 조건은 결과에 영향이 없으므로 아예 코드에 옮기지 않는다 (여기서는 생략).
+
+# --- 3단계: 독립 변수 그룹 분리 ---
+# 검증 로직이 `(input[0] ^ key == 0x55) and (input[1] ^ key == 0x22)` 형태라면,
+# input[0]과 input[1]은 서로의 값에 전혀 영향을 주지 않는 완전히 독립적인 조건이다.
+# 그러므로 하나의 큰 Solver에 다 넣지 않고, 각각 작은 Solver로 따로 푼다.
+
+a = BitVec('a', 8)  # 8비트(0~255) 크기의 미지수 a
+b = BitVec('b', 8)  # 8비트 크기의 미지수 b
+
+solver_a = Solver()
+solver_a.set("timeout", 5000)   # 5초 안에 못 풀면 포기하고 unknown을 반환하도록 설정
+solver_a.add(a ^ key == 0x55)    # 원본 조건: a를 key로 XOR한 결과가 0x55와 같아야 한다
+
+solver_b = Solver()
+solver_b.set("timeout", 5000)
+solver_b.add(b ^ key == 0x22)    # 원본 조건: b를 key로 XOR한 결과가 0x22와 같아야 한다
+
+result_a = solver_a.check()      # solver_a만 독립적으로 풀어본다
+result_b = solver_b.check()      # solver_b도 독립적으로 풀어본다
+print("solver_a 결과:", result_a)
+print("solver_b 결과:", result_b)
+
+if result_a == sat:                       # sat이면 "만족하는 해가 있다"는 뜻
+    model_a = solver_a.model()             # 실제로 만족시키는 값(모델)을 꺼낸다
+    a_value = model_a[a].as_long()         # BitVec 값을 파이썬 정수로 변환
+    print("복원된 a:", a_value, hex(a_value))
+
+if result_b == sat:
+    model_b = solver_b.model()
+    b_value = model_b[b].as_long()
+    print("복원된 b:", b_value, hex(b_value))</code></pre>
+<p>실제로 실행한 결과:</p>
+<pre><code>상수 폴딩으로 미리 계산한 key: 0x2f 47
+solver_a 결과: sat
+solver_b 결과: sat
+복원된 a: 122 0x7a
+복원된 b: 13 0xd</code></pre>
+<p>이 결과가 맞는지는 XOR의 성질(<code>a ^ key == 0x55</code>이면 <code>a == 0x55 ^ key</code>)로 손으로도 바로 검산할 수 있다: <code>0x55 ^ 0x2f = 0x7a</code>, <code>0x22 ^ 0x2f = 0x0d</code> — Z3가 내놓은 값과 정확히 일치한다. 이 예제처럼 아주 간단한 XOR 조건은 사실 Z3 없이도 풀리지만, 검증 로직이 곱셈·시프트·조건 분기가 뒤섞여 손으로 뒤집기 어려운 형태라면, 상수 폴딩과 그룹 분리만 미리 해둔 뒤 Z3에 맡기는 이 워크플로우가 실전에서 solver 응답 시간을 극적으로 줄여준다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0268-z3-bitvec-basics.html">REV-0268 — Z3 BitVec 기초</a></li><li><a href="rev-0269-z3-solving-char-constraints.html">REV-0269 — Z3로 문자 조건 풀기</a></li><li><a href="rev-0270-z3-overflow-handling.html">REV-0270 — Z3에서 8비트 32비트 Overflow 다루기</a></li><li><a href="rev-0218-length-check-backtrace.html">REV-0218 — 길이 검증부터 역추적하는 법</a></li><li><a href="rev-0223-known-plaintext-narrowing.html">REV-0223 — Known plaintext와 Flag 형식으로 조건 줄이기</a></li><li><a href="rev-0918-multi-constraint-narrowing-workflow.html">REV-0918 — 다중 조건을 만족하는 입력 공간 좁히는 실전 절차</a></li><li><a href="rev-0271-angr-basics.html">REV-0271 — angr 심볼릭 실행 기초</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>SMT solver(Z3)의 성능이 변수 수와 비선형 연산(곱셈, 나눗셈)의 개수에 크게 좌우된다는 일반적 성질: Z3 공식 문서 및 SMT-LIB 커뮤니티에서 통용되는 solver 성능 최적화 관행 기준.</li><li>상수 폴딩(constant folding), 죽은 코드 제거(dead code elimination)가 컴파일러 최적화의 표준 기법이며 동일한 원리를 수작업 전처리에도 적용할 수 있다는 점: 컴파일러 최적화 이론의 일반 개념 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

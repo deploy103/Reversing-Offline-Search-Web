@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinAPI 프로세스 정보 함수 사전: GetCurrentProcessId Module32First · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>WinAPI 프로세스 정보 함수 사전: GetCurrentProcessId Module32First</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>GetCurrentProcessId</code>는 현재 프로세스의 PID를 얻는 가장 단순한 API이고, <code>Module32First</code>/<code>Module32Next</code>는 <code>CreateToolhelp32Snapshot</code>으로 찍은 스냅샷을 돌며 특정 프로세스에 로드된 모든 모듈(EXE/DLL)을 나열하는 함수로, 두 API가 함께 쓰이면 "이 프로세스가 자기 자신 혹은 다른 프로세스의 모듈 목록을 훑어보고 있다"는 뜻이며 샌드박스/분석도구 DLL 탐지나 후킹 대상 DLL 찾기 같은 목적일 가능성이 높다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Import 목록에서 <code>Module32First</code>/<code>Module32Next</code>/<code>CreateToolhelp32Snapshot</code>을 발견하고 이 코드가 어떤 DLL 목록을 뒤지는지 알아내야 할 때</li><li><code>GetCurrentProcessId</code>의 반환값이 이후 <code>CreateToolhelp32Snapshot</code>이나 <code>OpenProcess</code>의 인자로 흘러가는 흐름을 추적해야 할 때</li><li>특정 모듈 이름(<code>sbiedll.dll</code>, <code>api_log.dll</code>, <code>dbghelp.dll</code> 등)과 문자열 비교를 반복하는 루프를 만나 이것이 모듈 열거 기반 탐지인지 확인하고 싶을 때</li><li><code>GetModuleHandle</code>/<code>EnumProcessModules</code>(REV-0520, REV-0521)와 무엇이 다른지 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>GetCurrentProcessId</h3>
+<pre><code class="language-c">DWORD GetCurrentProcessId(void);</code></pre>
+<p>인자 없이 현재 프로세스의 PID(<code>DWORD</code>)를 즉시 반환한다. 내부적으로 PEB의 <code>UniqueProcessId</code> 필드(또는 TEB의 <code>ClientId.UniqueProcess</code>)를 참조하는 매우 가벼운 호출이다. <code>GetCurrentProcess()</code>(의사 핸들 <code>-1</code>을 반환하는 별개 함수)와 이름이 비슷해 혼동하기 쉬우니 주의한다.</p>
+<h3>CreateToolhelp32Snapshot + Module32First/Next</h3>
+<pre><code class="language-c">HANDLE CreateToolhelp32Snapshot(
+    DWORD dwFlags,     // TH32CS_SNAPMODULE 등, 무엇을 스냅샷할지
+    DWORD th32ProcessID // 대상 프로세스 PID, 0이면 호출자 자신
+);
+
+BOOL Module32First(
+    HANDLE          hSnapshot, // CreateToolhelp32Snapshot이 반환한 핸들
+    LPMODULEENTRY32 lpme       // 채워질 MODULEENTRY32 구조체 주소(dwSize 필드 미리 설정 필요)
+);
+
+BOOL Module32Next(
+    HANDLE          hSnapshot,
+    LPMODULEENTRY32 lpme
+);</code></pre>
+<p><code>dwFlags</code>는 <code>TH32CS_SNAPMODULE</code>(0x8, 32비트 모듈), <code>TH32CS_SNAPMODULE32</code>(0x10, WOW64에서 32비트 모듈), <code>TH32CS_SNAPPROCESS</code>(0x2, 프로세스 목록) 등을 조합할 수 있다. <code>MODULEENTRY32</code> 구조체는 다음 핵심 필드를 가진다.</p>
+<pre><code class="language-c">typedef struct tagMODULEENTRY32 {
+    DWORD   dwSize;         // 구조체 크기, Module32First 호출 전 반드시 설정
+    DWORD   th32ModuleID;
+    DWORD   th32ProcessID;
+    DWORD   GlblcntUsage;
+    DWORD   ProccntUsage;
+    BYTE    *modBaseAddr;   // 모듈이 로드된 시작 주소(=HMODULE와 동일)
+    DWORD   modBaseSize;    // 모듈 이미지 크기
+    HMODULE hModule;
+    char    szModule[MAX_MODULE_NAME32 + 1]; // 모듈 파일명(확장자 제외 가능)
+    char    szExePath[MAX_PATH];             // 전체 경로
+} MODULEENTRY32;</code></pre>
+<p><code>Module32First</code>로 첫 항목을 얻은 뒤, <code>Module32Next</code>를 반복 호출해 더 이상 항목이 없을 때(<code>FALSE</code> 반환, <code>GetLastError() == ERROR_NO_MORE_FILES</code>)까지 순회하는 것이 표준 패턴이다.</p>
+<h3>왜 리버싱에서 중요한가</h3>
+<ul><li>스냅샷 목록의 첫 항목(<code>Module32First</code>가 처음 채우는 항목)은 항상 EXE 자기 자신이며, <code>modBaseAddr</code>가 곧 이미지 베이스(REV-0118의 RVA 계산 기준점)다.</li><li>악성코드/프로텍터가 <code>szModule</code>을 <code>"SbieDll.dll"</code>(Sandboxie), <code>"api_log.dll"</code>, <code>"dbghelp.dll"</code>, <code>"x64dbg.dll"</code>류 이름과 비교하는 루프를 만들면, 이는 분석 환경/디버거 플러그인을 모듈 이름으로 탐지하는 기법이다.</li><li><code>GetModuleHandle</code>(REV-0520)이 이름을 알고 있을 때 즉시 핸들을 얻는 데 반해, <code>Module32First</code>/<code>Next</code>는 "이름을 모르는 상태에서 전체 목록을 나열"할 때 쓰인다는 점이 근본적인 차이다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">call GetCurrentProcessId
+push eax                      ; th32ProcessID
+push 8                        ; TH32CS_SNAPMODULE
+call CreateToolhelp32Snapshot
+...
+call Module32First
+loop_top:
+lea  eax, [ebp+me32.szModule]
+push offset aSbiedllDll        ; "sbiedll.dll"
+push eax
+call _stricmp
+test eax, eax
+jz   detected
+call Module32Next
+test eax, eax
+jnz  loop_top</code></pre>
+<ul><li>반복문 안에 <code>Module32Next</code> 호출과 문자열 비교(<code>_stricmp</code>, <code>strcmp</code>, <code>lstrcmpi</code>)가 함께 있으면 전형적인 모듈 열거 탐지 패턴이다.</li><li><code>lpme.dwSize</code>에 <code>sizeof(MODULEENTRY32)</code>(0x224 부근)를 미리 세팅하는 코드가 <code>Module32First</code> 호출 직전에 보인다(이 값을 세팅하지 않으면 API가 실패한다).</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>Module32First</code>/<code>Module32Next</code>가 발견되면 먼저 루프 안에서 비교되는 문자열 상수(<code>szModule</code>과 비교되는 대상)부터 확인한다. 비교 대상 문자열이 곧 "이 프로그램이 찾고 있는 대상"이므로 분석 목적을 가장 빨리 파악할 수 있다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) IDA에서 문자열 비교 대상 확인</strong> <code>Module32Next</code> 루프 안의 <code>call</code>(strcmp류) 직전 인자로 들어가는 문자열 리터럴을 확인한다. Strings 창(<code>Shift+F12</code>)에서 관련 DLL 이름이 있는지 미리 훑어보면 빠르다.</p>
+<p><strong>2) x64dbg로 동적 확인</strong></p>
+<pre><code class="language-text">bp Module32First
+run
+; RDX(x64)/[esp+8](x86)가 가리키는 MODULEENTRY32 버퍼를 Follow in Dump
+; szModule 오프셋(약 +0x2C)에서 현재 순회 중인 모듈 이름을 눈으로 확인</code></pre>
+<p><code>Ctrl+F9</code>로 한 번씩 빠져나오며 어떤 모듈 이름이 나열되는지 순서대로 관찰한다.</p>
+<p><strong>3) 탐지 성공 분기 추적</strong> <code>stricmp</code>/<code>strcmp</code> 결과가 0(일치)일 때 어디로 점프하는지 따라가서, 탐지됐을 때 프로그램이 무엇을 하는지(종료, 다른 코드 경로, 잘못된 결과 계산) 확인한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp CreateToolhelp32Snapshot</code>, <code>bp Module32First</code>, <code>bp Module32Next</code>, <code>Ctrl+F9</code></li><li>x64dbg: 버퍼 주소 우클릭 → <code>Follow in Dump</code>로 <code>MODULEENTRY32</code> 필드 직접 확인</li><li>IDA: <code>Shift+F12</code>(Strings), <code>X</code>(xref)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>Module32First</code>/<code>Module32Next</code>가 <code>FALSE</code>(0)를 반환하면 더 이상 순회할 모듈이 없다는 뜻이며, <code>GetLastError()</code>가 <code>ERROR_NO_MORE_FILES</code>(18)이면 정상 종료다.</li><li><code>modBaseAddr</code> 값이 IDA/PE-bear에서 본 Image Base와 일치하면 그 항목이 EXE 자기 자신이다.</li><li>문자열 비교가 대소문자를 구분하지 않는 <code>stricmp</code>/<code>lstrcmpiA</code>를 쓰는지, 구분하는 <code>strcmp</code>를 쓰는지에 따라 우회 난이도가 달라진다(대소문자 구분 비교라면 파일명 대소문자만 바꿔도 우회될 수 있다).</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>dwSize</code> 필드를 세팅하지 않아서 <code>Module32First</code>가 실패하는 실제 버그 코드를 보고, 리버서 본인이 "이건 왜 실패하지?"라며 헷갈리는 것 — 원본 코드 자체의 버그일 수도 있으므로 반환값과 <code>GetLastError</code>를 항상 함께 확인한다.</li><li><code>GetCurrentProcessId</code>와 <code>GetCurrentProcess</code>(핸들이 아니라 PID를 반환하는 함수와, 의사 핸들 -1을 반환하는 함수)를 같은 것으로 착각하는 것.</li><li>자기 프로세스가 아니라 다른 프로세스(<code>th32ProcessID</code>가 0이 아닌 값)를 스냅샷하는 경우를 놓치는 것 — 이 경우 인젝션 대상 탐색이나 프로세스 후킹 목적일 수 있다.</li><li><code>TH32CS_SNAPMODULE</code>만 확인하고 <code>TH32CS_SNAPMODULE32</code>(WOW64 프로세스의 32비트 모듈 목록)를 함께 요청하지 않은 코드가 64비트 프로세스에서 32비트 대상 모듈을 놓친다는 점을 간과하는 것 — 대상 프로세스가 WOW64로 실행 중이면 두 플래그를 OR해서 요청해야 완전한 목록을 얻는다.</li><li><code>szModule</code>(파일명만)과 <code>szExePath</code>(전체 경로) 필드를 혼동해서, 짧은 이름만 비교하는 코드를 전체 경로까지 비교한다고 잘못 해석하는 것 — 두 필드는 서로 다른 오프셋에 저장되며 길이 제한도 다르다(<code>szModule</code>은 <code>MAX_MODULE_NAME32+1</code>, <code>szExePath</code>는 <code>MAX_PATH</code>).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>이름을 이미 알고 있는 모듈의 핸들만 빠르게 얻는 방식이 궁금하면 → REV-0520 WinAPI 모듈 함수 사전: LoadLibraryEx FreeLibrary GetModuleHandle</li><li>더 현대적인 모듈 열거 API(<code>EnumProcessModules</code>)와 비교하고 싶다면 → REV-0521 WinAPI 모듈 함수 사전: EnumProcessModules GetModuleFileName</li><li>다른 프로세스를 열어 접근하려는 흐름이라면 → REV-0504 WinAPI 프로세스 함수 사전: OpenProcess TerminateProcess</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">DWORD pid = GetCurrentProcessId();
+HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPMODULE, pid);
+MODULEENTRY32 me32 = { .dwSize = sizeof(MODULEENTRY32) };
+if (Module32First(hSnap, &amp;me32)) {
+    do {
+        if (_stricmp(me32.szModule, "SbieDll.dll") == 0) {
+            ExitProcess(1); // 샌드박스 DLL 탐지 시 종료
+        }
+    } while (Module32Next(hSnap, &amp;me32));
+}</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0520-loadlibraryex-freelibrary-getmodulehandle.html">REV-0520 — WinAPI 모듈 함수 사전: LoadLibraryEx FreeLibrary GetModuleHandle</a></li><li><a href="rev-0521-enumprocessmodules-getmodulefilename.html">REV-0521 — WinAPI 모듈 함수 사전: EnumProcessModules GetModuleFileName</a></li><li><a href="rev-0504-openprocess-terminateprocess.html">REV-0504 — WinAPI 프로세스 함수 사전: OpenProcess TerminateProcess</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>GetCurrentProcessId</code>, <code>CreateToolhelp32Snapshot</code>, <code>Module32First</code>/<code>Module32Next</code>, <code>MODULEENTRY32</code> 구조체 필드는 Microsoft 공식 문서(learn.microsoft.com, "Toolhelp32Snapshot Functions") 기준이다(2026-09-08 확인).</li><li>모듈 이름 기반 샌드박스/분석 DLL 탐지 패턴은 일반적인 안티분석 관례 레퍼런스 기준이다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

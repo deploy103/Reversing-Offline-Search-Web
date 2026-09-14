@@ -2,8 +2,6 @@
 
 인터넷이 끊긴 Windows PC에서도 `dist/index.html`을 더블클릭하면 바로 열리는, 오프라인 한국어 리버싱 지식베이스 겸 검색 엔진입니다. CTF/워게임 대회 중 `call`, `positive sp value`, `16777619`, `main 어디` 처럼 아무렇게나 검색해도 실전에서 바로 쓸 수 있는 답을 찾는 것이 목표입니다.
 
-프로젝트 스펙은 `MASTER_PROMPT.md` / `AGENTS.md` / `REQUIREMENTS.md` / `CONTENT_PLAN.md`에 있습니다. 진행 상태는 `DEVELOPMENT_LOG.md`와 `state/progress.json`에 계속 기록됩니다.
-
 ## 현재 상태
 
 **콘텐츠 1,110개 작성 완료** (원 계획 1,000개 + 드림핵 write-up 50개 + C 코드 분석 30개 + 타 아키텍처/언어·실전 팁 30개). 카테고리별 구성:
@@ -48,7 +46,7 @@ python3 scripts/build.py       # content/articles/*.md -> dist/ 생성
 python3 scripts/validate.py    # 중복/깨진 링크/frontmatter/placeholder/file:// 안전성 검증
 ```
 
-`dist/`는 빌드 산출물이라 git에 커밋하지 않습니다(.gitignore). 실제 오프라인 배포 시에는 `dist/` 폴더 전체를 SSD에 복사하면 됩니다.
+`dist/`는 GitHub에 함께 포함되므로 저장소를 받은 뒤 바로 `dist/index.html`을 더블클릭할 수 있습니다. 콘텐츠를 수정한 경우에는 빌드 명령으로 산출물을 갱신한 뒤 함께 커밋합니다.
 
 빌드/검증은 idempotent합니다 — 연속으로 두 번 실행해도 같은 결과가 나옵니다.
 
@@ -62,10 +60,11 @@ Node.js의 `vm` 모듈로 빌드된 `dist/assets/search-index.js` + `assets/js/s
 
 ## 오프라인 사용법
 
-1. `python3 scripts/build.py`로 `dist/`를 생성한다.
-2. `dist/` 폴더를 통째로 오프라인 PC(SSD 등)에 복사한다.
-3. 인터넷 연결 없이 `dist/index.html`을 더블클릭해서 연다.
-4. 검색창에 명령어, 레지스터, 에러 메시지, 상수, 증상 등을 아무렇게나 입력한다.
+1. 저장소의 `dist/` 폴더를 통째로 오프라인 PC(SSD 등)에 복사한다.
+2. 인터넷 연결 없이 `dist/index.html`을 더블클릭해서 연다.
+3. 검색창에 명령어, 레지스터, 에러 메시지, 상수, 증상 등을 아무렇게나 입력한다.
+
+콘텐츠를 직접 수정했다면 먼저 `python3 scripts/build.py`로 `dist/`를 갱신합니다.
 
 로컬 서버, Node, Python, CDN, 원격 폰트/이미지, `fetch()`/`XMLHttpRequest` 없이 순수 `file://`로 동작하도록 만들어져 있습니다. 이미지도 전부 로컬 SVG(`assets/images/`)만 사용합니다.
 
@@ -97,10 +96,9 @@ scripts/fetch-tools.sh / .ps1           # 툴 오프라인 킷 다운로드 스�
 tools/manifest.json                     # 오프라인 툴킷 매니페스트 (버전/URL/SHA256/라이선스)
 tools/verify-checksums.py               # 다운로드된 툴 파일 체크섬 검증
 research/sources.json                   # 리서치 출처 기록
-state/progress.json                     # 진행 상태 (다른 AI/작업자가 이어받기 위함)
 tests/search-smoke-queries.txt          # 검색 스모크 테스트 쿼리 목록 (145개)
 tests/run-smoke-test.js                 # 검색 스모크 테스트 실행 스크립트 (Node.js vm 샌드박스)
-dist/                                   # 빌드 산출물 (gitignore, 배포용)
+dist/                                   # 커밋된 오프라인 배포용 빌드 산출물
 ```
 
 `reversing_analysis/`는 이 저장소와 무관한 별도 프로젝트이며 git에서 제외되어 있습니다.

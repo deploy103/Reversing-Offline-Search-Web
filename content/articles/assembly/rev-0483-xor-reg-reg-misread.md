@@ -131,7 +131,7 @@ IDA F5 결과에서 `xor eax, eax`는 보통 `v1 = 0;` 또는 `return 0;`처럼 
 
 ## 막혔을 때 다음 체크
 - XOR 명령어 자체의 전체 문법/플래그를 다시 보고 싶으면 → REV-0057(XOR: XOR 연산과 XOR reg reg 제로화)
-- 진짜 XOR 기반 flag 인코딩/디코딩을 역산하는 절차가 필요하면 → CONTENT_PLAN.md의 "XOR 반복 변환 역산" 계열 문서(algorithms 카테고리) 참고
+- 진짜 XOR 기반 flag 인코딩/디코딩을 역산하는 절차가 필요하면 → REV-0199(XOR 반복 변환 역산)를 참고
 - 플래그가 왜 이렇게 세팅되는지 다시 확인하려면 → REV-0088(플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기)
 
 ## 미니 예제

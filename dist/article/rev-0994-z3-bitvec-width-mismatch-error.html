@@ -1,0 +1,181 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Z3 제약조건 작성 시 비트 폭이 안 맞아서 오류가 날 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / automation</div>
+<article class="article-body">
+<h1>Z3 제약조건 작성 시 비트 폭이 안 맞아서 오류가 날 때</h1>
+<div class="article-meta"><span class="tag">automation</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Z3</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>Z3의 <code>BitVec</code>은 파이썬 정수와 달리 선언할 때 정한 비트 폭이 고정된 타입(sort)이라서, 서로 다른 폭의 <code>BitVec</code>끼리 바로 연산하거나 비교하면 <code>Z3Exception: sort mismatch</code> 오류가 나며, 이럴 때는 <code>ZeroExt</code>/<code>SignExt</code>(폭 늘리기)나 <code>Extract</code>(일부 비트 잘라내기)로 폭을 먼저 맞춰야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Z3 코드를 실행했더니 <code>Z3Exception</code>과 함께 <code>sort mismatch</code> 또는 <code>sorts do not match</code> 같은 메시지가 뜰 때</li><li>8비트 <code>char</code> 변수와 32비트 <code>int</code> 변수를 같은 식에서 비교/연산하려다 오류가 날 때</li><li>리버싱한 로직에 <code>(BYTE)x</code>, <code>(int)y</code> 같은 C 캐스팅이 있어서 이를 Z3로 어떻게 옮겨야 할지 모를 때</li><li>여러 바이트를 이어붙여 하나의 정수로 만드는 로직(예: 4바이트를 합쳐 32비트 값 만들기)을 Z3로 표현하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>파이썬의 일반 정수는 폭 제한이 없어서 <code>8 + 32bit_int</code> 같은 연산이 아무 문제 없이 된다. 하지만 Z3의 <code>BitVec</code>은 다르다. <code>BitVec('x', 8)</code>과 <code>BitVec('y', 32)</code>는 <strong>서로 다른 타입(sort)</strong>이며, Z3는 이 둘을 직접 더하거나 비교하는 것을 허용하지 않는다. C 컴파일러가 암묵적으로 <code>char</code>를 <code>int</code>로 승격(promotion)시켜주는 것과 달리, Z3는 그런 자동 변환을 해주지 않으므로 <strong>폭 변환을 항상 명시적으로</strong> 해줘야 한다.</p>
+<p>폭을 맞추는 데 쓰는 핵심 함수 세 가지는 다음과 같다.</p>
+<ol><li><strong><code>ZeroExt(n, bv)</code></strong> — <code>bv</code>의 왼쪽(상위 비트)에 0을 <code>n</code>비트만큼 채워서 폭을 늘린다. C의 <code>unsigned char</code> → <code>unsigned int</code> 변환(부호 없는 확장)에 대응한다.</li><li><strong><code>SignExt(n, bv)</code></strong> — <code>bv</code>의 최상위 비트(부호 비트)를 그대로 복제해서 <code>n</code>비트만큼 채운다. C의 <code>signed char</code> → <code>int</code> 변환(부호 있는 확장)에 대응한다. 원본 값이 음수(최상위 비트가 1)면 확장된 상위 비트도 전부 1로 채워져 값의 부호가 유지된다.</li><li><strong><code>Extract(hi, lo, bv)</code></strong> — <code>bv</code>에서 <code>hi</code>번째 비트부터 <code>lo</code>번째 비트까지만 잘라낸다(0번이 최하위 비트). C에서 <code>(BYTE)x</code>처럼 하위 바이트만 꺼내는 캐스팅에 대응한다.</li></ol>
+<p>여기에 더해 <code>Concat(a, b)</code>는 두 <code>BitVec</code>을 이어붙여(<code>a</code>가 상위, <code>b</code>가 하위) 더 넓은 하나의 값을 만든다. 예를 들어 4개의 바이트를 리틀엔디안 32비트 정수로 합치는 로직을 Z3로 그대로 표현할 때 쓴다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-python">&gt;&gt;&gt; from z3 import *
+&gt;&gt;&gt; a = BitVec('a', 8)
+&gt;&gt;&gt; b = BitVec('b', 32)
+&gt;&gt;&gt; s = Solver()
+&gt;&gt;&gt; s.add(a == b)
+Traceback (most recent call last):
+  File "&lt;stdin&gt;", line 1, in &lt;module&gt;
+  File "z3.py", line ..., in __eq__
+    ...
+z3.z3types.Z3Exception: sort mismatch</code></pre>
+<p>또는 산술 연산에서도 동일하게 발생한다.</p>
+<pre><code class="language-python">&gt;&gt;&gt; s.add(a + b == 100)
+z3.z3types.Z3Exception: sort mismatch</code></pre>
+<p><code>sort</code>는 Z3가 타입을 부르는 용어이며, <code>sort mismatch</code>는 곧 "타입(비트 폭)이 다른 값끼리 연산하려 했다"는 뜻이다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>오류 메시지에 나온 두 변수(또는 표현식)의 비트 폭을 각각 확인한다. <code>bv.size()</code>를 호출하면 해당 <code>BitVec</code> 표현식의 비트 폭을 바로 확인할 수 있다. 폭이 다른 두 값을 어떤 방향(부호 있게 확장? 부호 없이 확장? 아니면 잘라내기?)으로 맞춰야 하는지, 원래 C 코드의 캐스팅 방향을 다시 확인한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 오류가 난 변수들의 폭 확인</strong></p>
+<pre><code class="language-python">from z3 import *
+a = BitVec('a', 8)
+b = BitVec('b', 32)
+print(a.size(), b.size())  # 8 32</code></pre>
+<p><strong>2) 부호 없는 8비트 값을 32비트로 확장(ZeroExt)</strong></p>
+<pre><code class="language-python">from z3 import *
+
+a = BitVec('a', 8)   # C: unsigned char a
+b = BitVec('b', 32)  # C: unsigned int b
+s = Solver()
+
+s.add(ZeroExt(24, a) == b)   # 8 + 24 = 32비트로 맞춤
+s.add(b == 200)
+
+print(s.check())  # sat
+print(s.model())</code></pre>
+<p><strong>3) 부호 있는 8비트 값을 32비트로 확장(SignExt)</strong></p>
+<pre><code class="language-python">from z3 import *
+
+a = BitVec('a', 8)   # C: signed char a (예: -1 == 0xff)
+s = Solver()
+
+extended = SignExt(24, a)   # signed char -&gt; int 확장과 동일한 의미
+s.add(extended == -1)        # 부호 확장이 되면 0xff -&gt; 0xffffffff(-1)
+
+print(s.check())
+print(s.model())</code></pre>
+<p><strong>4) 32비트 값에서 하위 1바이트만 추출(Extract)</strong></p>
+<pre><code class="language-python">from z3 import *
+
+x = BitVec('x', 32)
+low_byte = Extract(7, 0, x)   # 최하위 8비트(0~7번 비트)만 추출
+
+s = Solver()
+s.add(low_byte == 0x41)
+s.add(x &gt; 0x1000)
+
+print(s.check())
+print(s.model())</code></pre>
+<p><strong>5) 여러 바이트를 합쳐 정수 만들기(Concat)</strong></p>
+<pre><code class="language-python">from z3 import *
+
+b0 = BitVec('b0', 8)  # 최하위 바이트
+b1 = BitVec('b1', 8)
+b2 = BitVec('b2', 8)
+b3 = BitVec('b3', 8)  # 최상위 바이트
+
+# 리틀엔디안 4바이트를 32비트로 합침: b3가 상위, b0가 하위
+value = Concat(b3, b2, b1, b0)
+
+s = Solver()
+s.add(value == 0x1337beef)
+print(s.check())
+print(s.model())</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li><code>bv.size()</code> : 해당 <code>BitVec</code> 표현식의 비트 폭 확인</li><li><code>ZeroExt(n, bv)</code> : 상위에 0을 채워 <code>n</code>비트만큼 폭 확장(unsigned 확장)</li><li><code>SignExt(n, bv)</code> : 부호 비트를 복제해 <code>n</code>비트만큼 폭 확장(signed 확장)</li><li><code>Extract(hi, lo, bv)</code> : <code>hi</code>~<code>lo</code> 비트 구간만 잘라내기</li><li><code>Concat(a, b, ...)</code> : 여러 <code>BitVec</code>을 왼쪽부터 상위 비트로 이어붙이기</li><li><code>BitVecVal(v, n)</code> : <code>n</code>비트 폭을 갖는 구체값 상수 생성(변수와 폭을 맞출 때도 사용)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>Z3Exception: sort mismatch</code> — 서로 다른 비트 폭(또는 아예 다른 타입, 예: <code>BitVec</code>과 <code>Bool</code>)끼리 연산했다는 뜻. 스택 트레이스에 어떤 연산자(<code>__eq__</code>, <code>__add__</code> 등)에서 발생했는지 나오므로, 해당 줄의 두 피연산자 폭을 각각 확인한다.</li><li><code>ZeroExt</code>/<code>SignExt</code> 적용 후에도 여전히 <code>sort mismatch</code>가 난다면, <code>n</code>(확장할 비트 수)을 잘못 계산했을 가능성이 크다. <code>n</code>은 "목표 폭"이 아니라 "추가로 늘릴 비트 수"라는 점에 주의한다(예: 8비트를 32비트로 만들려면 <code>ZeroExt(24, ...)</code>이지 <code>ZeroExt(32, ...)</code>가 아니다).</li><li><code>Extract(hi, lo, bv)</code>의 결과 폭은 <code>hi - lo + 1</code>비트가 된다. 이후 다른 값과 비교할 때 이 결과 폭을 잊고 원본 폭으로 착각하는 실수가 흔하다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>ZeroExt</code>/<code>SignExt</code>의 인자를 "목표 전체 폭"으로 착각해서 실제보다 훨씬 큰 값을 넘기는 것 — 인자는 항상 "추가되는 비트 수"다.</li><li>C에서 <code>unsigned char</code>인데 습관적으로 <code>SignExt</code>를 쓰거나, <code>signed char</code>인데 <code>ZeroExt</code>를 써서 음수 값이 있는 케이스에서만 결과가 미묘하게 틀어지는 것.</li><li><code>Concat</code>의 인자 순서를 반대로 넣어서(리틀엔디안/빅엔디안을 헷갈려서) 바이트 순서가 뒤바뀐 값을 만드는 것.</li><li><code>Extract(lo, hi, bv)</code>처럼 인자 순서를 반대로 써서(<code>Extract</code>는 <code>hi, lo</code> 순서) 예외가 나거나 엉뚱한 비트 구간이 추출되는 것.</li><li>폭을 맞추는 과정 자체를 생략하고 그냥 파이썬 정수처럼 다른 폭끼리 바로 연산하려는 것 — Z3는 C 컴파일러 같은 암묵적 타입 승격을 해주지 않는다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>unsat</code>이 계속 나는 문제라면(비트 폭 문제와는 다른 증상) → REV-0993 Z3에서 unsat이 떴는데 조건이 맞다고 생각될 때.</li><li>8비트/32비트 오버플로우와 부호 확장이 섞인 좀 더 복잡한 사례는 → REV-0270 Z3에서 8비트 32비트 Overflow 다루기.</li><li>문자열/문자 배열 단위로 여러 <code>BitVec</code>을 다루는 패턴은 → REV-0269 Z3로 문자 조건 풀기.</li><li>애초에 <code>BitVec</code> 기본 개념이 헷갈리면 → REV-0268 Z3 BitVec 기초.</li></ul>
+<h2>미니 예제</h2>
+<p>C의 다음 검증 로직을 Z3로 옮기는 예다.</p>
+<pre><code class="language-c">unsigned char key = get_byte();   // 8비트
+int check = (int)key * 7;          // 8비트를 32비트로 부호 없이 확장 후 곱셈
+if (check == 700) puts("ok");</code></pre>
+<pre><code class="language-python">from z3 import *
+
+key = BitVec('key', 8)
+s = Solver()
+
+check = ZeroExt(24, key) * 7   # unsigned char -&gt; int 확장 후 곱셈
+s.add(check == 700)
+
+if s.check() == sat:
+    m = s.model()
+    print('key =', m[key].as_long())  # 100</code></pre>
+<p><code>ZeroExt(24, key)</code>로 폭을 8에서 32비트로 맞춘 뒤에야 32비트 상수 <code>700</code>과 곱셈/비교를 할 수 있었다는 점이 이 예제의 핵심이다.</p>
+<h3>에러를 재현하는 잘못된 코드 vs 고쳐서 정상 동작하는 코드</h3>
+<p><code>unsigned short idx; unsigned int base; if (base + idx == 0x1000)</code>처럼 서로 다른 크기의 두 변수를 더하는 C 로직을 옮기는 상황이다. 두 스크립트 모두 <code>pip install z3-solver</code>만 되어 있으면 그대로 실행된다.</p>
+<p><strong>잘못된 코드 — 폭이 다른 두 BitVec을 변환 없이 그대로 더해서 Z3Exception 재현</strong></p>
+<pre><code class="language-python">from z3 import *
+
+# C 원본: unsigned short idx (16비트) + unsigned int base (32비트)
+idx = BitVec('idx', 16)     # unsigned short: 16비트
+base = BitVec('base', 32)   # unsigned int: 32비트
+
+s = Solver()
+try:
+    # *** 잘못된 부분: 16비트 idx와 32비트 base를 폭 변환 없이 그냥 더함 ***
+    s.add(base + idx == 0x1000)   # 두 BitVec의 sort(타입)가 서로 다름 -&gt; 예외 발생
+    print(s.check())
+except Z3Exception as e:
+    print('에러 발생:', e)   # z3.z3types.Z3Exception: sort mismatch</code></pre>
+<p><strong>고친 코드 — <code>ZeroExt</code>로 폭을 먼저 맞춘 뒤 연산</strong></p>
+<pre><code class="language-python">from z3 import *
+
+idx = BitVec('idx', 16)
+base = BitVec('base', 32)
+
+s = Solver()
+# *** 고친 부분: idx(16비트)를 base와 같은 32비트로 먼저 확장한다 ***
+# unsigned short -&gt; unsigned int 확장이므로, 부호 없는 확장인 ZeroExt를 쓴다.
+# ZeroExt의 첫 인자는 "추가로 늘릴 비트 수"이므로 32 - 16 = 16을 넘긴다.
+idx_32 = ZeroExt(32 - 16, idx)   # 16비트 -&gt; 32비트로 확장 (상위 16비트를 0으로 채움)
+print('idx_32 폭:', idx_32.size())   # 32 (base와 동일한 폭)
+
+s.add(base + idx_32 == 0x1000)   # 이제 둘 다 32비트라서 정상적으로 연산 가능
+print(s.check())    # sat
+print(s.model())</code></pre>
+<p><code>idx_32.size()</code>로 확장 후 폭이 정말 <code>base</code>와 같은 32비트가 됐는지 먼저 확인한 뒤 연산에 쓰는 습관을 들이면, <code>sort mismatch</code> 예외를 사전에 방지할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0993-z3-unsat-when-expected-sat.html">REV-0993 — Z3에서 unsat이 떴는데 조건이 맞다고 생각될 때</a></li><li><a href="rev-0268-z3-bitvec-basics.html">REV-0268 — Z3 BitVec 기초</a></li><li><a href="rev-0269-z3-solving-char-constraints.html">REV-0269 — Z3로 문자 조건 풀기</a></li><li><a href="rev-0270-z3-overflow-handling.html">REV-0270 — Z3에서 8비트 32비트 Overflow 다루기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>BitVec</code>, <code>ZeroExt</code>, <code>SignExt</code>, <code>Extract</code>, <code>Concat</code> API와 <code>sort mismatch</code> 예외 동작은 Z3 공식 GitHub(Z3Prover/z3) 및 Z3py 튜토리얼 문서를 기준으로 정리했다(2026-09-09 검증).</li><li>코드 예제는 <code>pip install z3-solver</code> 환경의 표준 CPython 3에서 그대로 재현 가능하다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

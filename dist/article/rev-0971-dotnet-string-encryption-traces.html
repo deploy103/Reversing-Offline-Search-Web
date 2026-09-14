@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>.NET 문자열 암호화 흔적 알아보기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dotnet-android</div>
+<article class="article-body">
+<h1>.NET 문자열 암호화 흔적 알아보기</h1>
+<div class="article-meta"><span class="tag">dotnet-android</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">.NET</span><span class="tag">dnSpyEx</span></div>
+<h2>한 줄 요약</h2>
+<p>.NET 문자열 암호화는 IL의 <code>ldstr "평문"</code> 명령어를 코드에서 아예 없애고, 대신 암호화된 바이트/정수 배열과 그것을 프로그램 시작 시 또는 사용 시점에 복호화하는 자동 삽입 헬퍼 메서드로 대체하는 기법이며, 복호화 알고리즘 자체를 역산하지 않고도 <strong>실행 중 메모리에서 복호화 직후의 값을 훔쳐보는 동적 접근</strong>이 실전에서 가장 빠르고 확실한 대응이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><a href="rev-0246-dotnet-strings-resources.html">REV-0246</a>에서 배운 대로 <code>Ctrl+Shift+F</code>로 문자열을 검색했는데 예상되는 문자열이 하나도 안 나올 때</li><li>코드에 <code>byte[]</code> 또는 <code>int[]</code> 리터럴 배열과 그것을 인자로 받는 낯선 static 메서드 호출이 문자열이 필요할 법한 자리마다 반복될 때</li><li><code>static readonly string</code> 필드가 생성자에서 이상한 계산을 거쳐 초기화되고 있을 때</li><li>어떤 문자열 복호화 알고리즘이 쓰였는지 직접 역산해서 파이썬으로 일괄 복호화하고 싶을 때</li><li><a href="rev-0970-confuserex-traces.html">REV-0970</a>에서 다룬 ConfuserEx의 Constants Protection이 걸린 파일을 만났을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 문자열이 가장 먼저 암호화 대상이 되는가</h3>
+<p><a href="rev-0246-dotnet-strings-resources.html">REV-0246</a>에서 다룬 것처럼 .NET 바이너리는 문자열 전체 검색만으로 <code>flag{...}</code>, URL, 에러 메시지 같은 결정적 힌트가 그대로 노출되는 경우가 매우 흔하다. 배포자 입장에서는 이것이 가장 손쉽게 뚫리는 지점이므로, 이름 맹글링이나 제어 흐름 난독화보다도 문자열 암호화를 우선적으로 적용하는 경우가 많다.</p>
+<h3>컴파일 결과의 차이 — ldstr vs 배열+호출</h3>
+<p>암호화되지 않은 일반 문자열은 IL에서 다음처럼 단순하다.</p>
+<pre><code>ldstr "Welcome to the crackme!"
+call void [mscorlib]System.Console::WriteLine(string)</code></pre>
+<p>문자열이 암호화되면 이 자리가 다음과 같은 형태로 바뀐다.</p>
+<pre><code>ldsfld uint8[] Program::'encData1'      // 미리 선언된 암호화 바이트 배열
+ldc.i4 0x0                              // 인덱스나 키 등 부가 인자
+call string Program::Decrypt(uint8[], int32)  // 복호화 헬퍼 메서드 호출
+call void [mscorlib]System.Console::WriteLine(string)</code></pre>
+<p><code>ldstr</code>가 사라지고 <code>ldsfld</code>(정적 필드 로드)와 이름 없는 <code>Decrypt</code>류 메서드 호출로 바뀐 것이 핵심 신호다.</p>
+<h3>흔한 구현 패턴 3가지</h3>
+<p><strong>패턴 A — 사용 시점마다 즉석 복호화</strong>: 문자열이 필요한 자리마다 바로 그 자리에서 <code>Decrypt(암호화배열, 인덱스)</code>를 호출한다. 호출 횟수가 문자열 사용 횟수만큼 그대로 반복되므로, <code>Ctrl+Shift+F</code>로 특정 메서드 이름을 검색하면 호출 지점이 프로그램 전체에 흩어져 나타난다.</p>
+<p><strong>패턴 B — 모듈 초기화 시 일괄 복호화 후 캐싱</strong>: <code>&lt;Module&gt;</code> 또는 특정 클래스의 정적 생성자(<code>.cctor</code>)에서 프로그램이 시작되자마자 모든 암호화 문자열을 한 번에 복호화해서 <code>static string[]</code> 배열이나 개별 <code>static readonly string</code> 필드에 저장해둔다. 이후 코드에서는 그 캐시 필드를 읽기만 한다(<code>ldsfld</code>). 이 패턴이면 <strong>초기화 루틴이 끝난 직후 어디서든 브레이크포인트를 걸어 캐시 배열/필드를 한 번만 들여다봐도 모든 문자열을 한 번에 확인할 수 있다</strong>는 것이 중요한 실전 팁이다.</p>
+<p><strong>패턴 C — 알고리즘</strong>: 실제 복호화 알고리즘은 도구/버전마다 다르지만 크게 세 부류로 나뉜다.</p>
+<ul><li>단순 XOR 또는 바이트 회전(비트 시프트) 기반 — 파이썬으로 몇 줄이면 재현 가능.</li><li>Base64 인코딩 + 간단한 치환 — 디코딩 순서만 알면 재현 쉬움.</li><li>표준 암호(AES 등) 기반 — 키/IV가 프로그램 내부 상수로 하드코딩되어 있는 경우가 대부분이며, 알고리즘 자체는 표준이므로 키만 찾으면 파이썬 <code>pycryptodome</code> 등으로 동일하게 복호화 가능.</li></ul>
+<h3>정적 역산 vs 동적 관찰 — 언제 어느 쪽을 쓸까</h3>
+<ul><li>복호화 헬퍼가 한두 개뿐이고 로직이 단순(XOR 등)하면, 정적으로 알고리즘을 읽고 파이썬으로 옮겨 모든 암호화 문자열을 일괄 복호화하는 것이 효율적이다. 특히 문자열이 수십~수백 개라면 이 방법이 압도적으로 빠르다.</li><li>복호화 알고리즘이 복잡하거나(다단계, 커스텀 암호), 애초에 관심 있는 문자열이 한두 개뿐이라면, dnSpyEx 디버거로 복호화 호출 직후에 브레이크포인트를 걸어 그 값만 바로 읽는 동적 접근이 훨씬 빠르다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>Ctrl+Shift+F</code> 문자열 검색 결과가 예상보다 훨씬 적거나 텍스트로 된 문자열이 거의 없다.</li><li>코드에 <code>byte[]</code>/<code>int[]</code> 배열 리터럴과 그것을 인자로 받는 static 메서드 호출이 반복된다.</li><li>어떤 static 메서드 하나가 프로그램 전체에서 비정상적으로 높은 빈도로 호출된다(문자열이 쓰이는 모든 자리에서).</li><li><code>&lt;Module&gt;.cctor</code>나 특정 클래스의 정적 생성자가 크고, 그 안에서 배열을 순회하며 <code>string[]</code> 캐시를 채우는 루프가 보인다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>Ctrl+Shift+F</code>로 아무 문자열이나(예: 프로그램 제목, 흔한 UI 문자열) 검색해서 정상적으로 나오는지부터 확인한다. 안 나오면 문자열 암호화가 걸려 있다고 확정하고, 코드에서 <code>byte[]</code>/<code>Decrypt</code>류 이름의 static 메서드부터 찾는다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>Ctrl+Shift+F</code>로 일반적인 UI 문자열을 검색해 암호화 여부를 확인한다.</li><li>코드에서 <code>byte[]</code>/<code>int[]</code> 리터럴 배열을 인자로 받는 낯선 static 메서드(대개 이름이 <code>a</code>, <code>b</code>, <code>Decrypt</code> 등)를 찾는다.</li><li>그 메서드가 어디서 호출되는지 <code>Analyze</code>(Uses/Used By, <a href="rev-0967-dnspyex-ilspy-shortcuts.html">REV-0967</a>)로 확인해, 즉석 복호화(패턴 A)인지 일괄 캐싱(패턴 B)인지 판단한다.</li><li>패턴 B(캐싱)라면 캐시 필드/배열이 채워지는 정적 생성자 직후에 브레이크포인트를 걸고, 캐시 전체를 한 번에 Watch 창에서 덤프한다.</li><li>패턴 A(즉석 복호화)이고 관심 있는 지점이 소수라면, 각 호출 직후에 브레이크포인트를 걸어 그때그때 반환값을 확인한다.</li><li>문자열이 수십 개 이상이고 알고리즘이 단순(XOR 등)해 보이면, 복호화 메서드의 IL/디컴파일 결과를 읽고 파이썬으로 동일 연산을 재현해 일괄 복호화 스크립트를 작성한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">dnSpyEx: Ctrl+Shift+F              일반 UI 문자열로 암호화 여부 1차 확인
+dnSpyEx: Ctrl+Shift+K              복호화 의심 static 메서드 이름 검색
+dnSpyEx: Alt+F12 (메서드 위)        Analyze로 Uses/Used By 확인(패턴 A/B 구분)
+dnSpyEx: F9 (복호화 호출 직후) → F5  런타임 복호화 값 확인</code></pre>
+<pre><code class="language-python"># 패턴 C(단순 XOR)로 밝혀졌을 때 일괄 복호화 예시
+def decrypt(enc_bytes, key):
+    return bytes(b ^ key[i % len(key)] for i, b in enumerate(enc_bytes)).decode("utf-8", errors="replace")
+
+enc = bytes([0x1a, 0x2f, 0x05, 0x33])   # 디컴파일 결과에서 그대로 옮겨온 배열
+key = b"\x7e"                            # 복호화 메서드에서 확인한 고정 키
+print(decrypt(enc, key))</code></pre>
+<h2>출력 해석</h2>
+<ul><li>디버거 Watch 창에서 복호화 직후 값이 <code>flag{...}</code>, URL, 파일 경로처럼 사람이 읽을 수 있는 형태로 나오면 그 지점이 목표에 해당할 확률이 높다.</li><li>캐시 배열(패턴 B)을 한 번에 덤프했는데 문자열이 수십 개 나온다면, 그중 실제로 유의미한 값(에러 메시지, 정답 비교 대상 등)만 골라 <a href="rev-0246-dotnet-strings-resources.html">REV-0246</a> 방식으로 다시 문맥을 확인해야 한다.</li><li>파이썬으로 재현한 복호화 결과가 깨진 문자(mojibake)로 나오면, 인코딩(UTF-8/UTF-16/ASCII) 가정이 틀렸을 가능성이 크므로 원본 C#의 <code>Encoding.</code> 관련 호출을 다시 확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>복호화 알고리즘을 처음부터 완벽하게 역산하려고 시간을 쏟는 것 — 문자열이 몇 개 안 되면 동적으로 값만 훔쳐보는 게 훨씬 빠르다.</li><li>정적 생성자(<code>.cctor</code>)에서 이미 캐싱된 문자열을 놓치고, 매번 사용 지점마다 개별적으로 복호화된다고 잘못 가정해 비효율적으로 하나씩 추적하는 것.</li><li>파이썬으로 재현한 XOR 키의 바이트 순서(리틀엔디안/빅엔디안 혼동)나 인덱스 진행 방향을 원본 C# 코드와 다르게 구현해서 결과가 깨지는 것.</li><li>AES 같은 표준 암호가 쓰였을 때 알고리즘 자체를 의심하며 시간을 낭비하는 것 — 표준 암호라면 키/IV만 찾으면 되고, 알고리즘 구현을 손으로 다시 만들 필요가 없다(<code>pycryptodome</code> 등 기존 라이브러리를 그대로 쓰면 된다).</li><li>암호화된 배열 리터럴을 디컴파일 코드에서 옮겨 적을 때 값 일부를 누락하거나 순서를 잘못 옮기는 것 — 배열이 길면 IL 뷰에서 원문 그대로 복사하는 것이 안전하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>문자열/리소스를 체계적으로 검색하는 기본 방법이 헷갈리면 → <a href="rev-0246-dotnet-strings-resources.html">REV-0246 .NET 문자열과 리소스 찾기</a></li><li>이 암호화가 ConfuserEx의 Constants Protection인지 확인하고 싶으면 → <a href="rev-0970-confuserex-traces.html">REV-0970 ConfuserEx 흔적 알아보기</a></li><li>복호화 헬퍼 메서드 자체가 리플렉션으로 은닉되어 찾기 어렵다면 → <a href="rev-0969-dotnet-reflection-obfuscation.html">REV-0969 .NET 리플렉션(Reflection) 기반 난독화 알아보기</a></li><li>dnSpyEx 디버거 조작(브레이크포인트, Watch 창) 단축키가 헷갈리면 → <a href="rev-0967-dnspyex-ilspy-shortcuts.html">REV-0967 dnSpyEx/ILSpy 단축키 빠른 참조</a></li></ul>
+<h2>미니 예제</h2>
+<p>디컴파일된 코드가 다음과 같다고 하자.</p>
+<pre><code class="language-csharp">static readonly byte[] encData1 = new byte[] { 0x1a, 0x2f, 0x05, 0x33 };
+
+static string a(byte[] data, byte key)
+{
+    var sb = new StringBuilder();
+    foreach (byte b in data)
+        sb.Append((char)(b ^ key));
+    return sb.ToString();
+}
+
+static void Main()
+{
+    Console.WriteLine(a(encData1, 0x7e));
+}</code></pre>
+<p><code>Ctrl+Shift+F</code>로 문자열을 검색해도 <code>flag</code>나 <code>Welcome</code> 같은 텍스트가 전혀 안 나오는데, 코드에는 <code>byte[]</code> 배열과 <code>a(...)</code>라는 짧은 static 메서드가 보인다. <code>a</code>의 본문을 읽어보니 각 바이트를 고정 키(<code>0x7e</code>)와 XOR한 뒤 문자로 이어붙이는 단순한 로직임을 알 수 있다. 문자열이 이 배열 하나뿐이라면 dnSpyEx에서 <code>Console.WriteLine(a(encData1, 0x7e));</code> 줄에 브레이크포인트를 걸고 <code>F5</code>로 실행해 반환값을 확인하는 것으로 충분하다. 만약 이런 배열이 수십 개 있다면, 위 "명령어/단축키" 절의 파이썬 스크립트에 각 배열과 키를 그대로 대입해 한 번에 전부 복호화하는 쪽이 훨씬 빠르다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0246-dotnet-strings-resources.html">REV-0246 — .NET 문자열과 리소스 찾기</a></li><li><a href="rev-0970-confuserex-traces.html">REV-0970 — ConfuserEx 흔적 알아보기</a></li><li><a href="rev-0969-dotnet-reflection-obfuscation.html">REV-0969 — .NET 리플렉션(Reflection) 기반 난독화 알아보기</a></li><li><a href="rev-0967-dnspyex-ilspy-shortcuts.html">REV-0967 — dnSpyEx/ILSpy 단축키 빠른 참조</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>IL 명령어 <code>ldstr</code>/<code>ldsfld</code>의 의미와 문자열 리터럴이 메타데이터 문자열 힙에 저장되는 방식은 ECMA-335(Common Language Infrastructure) 명세를 기준으로 확인했다.</li><li>.NET 난독화 도구의 문자열 암호화 일반 구현 패턴(사용 시점 즉석 복호화 vs 초기화 시 일괄 캐싱)은 ConfuserEx 등 오픈소스 난독화 도구 문서 및 관련 리버싱 커뮤니티 자료를 기준으로 정리했다.</li><li>위 코드/알고리즘 예제는 학습용으로 재구성한 것이며 특정 실제 문제의 정답이 아니다 (2026-09-09 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

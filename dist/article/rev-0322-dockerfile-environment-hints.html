@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>문제에 주어진 Dockerfile에서 실행 환경 힌트 읽기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>문제에 주어진 Dockerfile에서 실행 환경 힌트 읽기</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">file</span><span class="tag">checksec</span><span class="tag">Docker</span></div>
+<h2>한 줄 요약</h2>
+<p>CTF 문제에 <code>Dockerfile</code>이나 <code>docker-compose.yml</code>이 함께 첨부되어 있다면 이는 단순한 배포 설정 파일이 아니라 "이 문제가 실제로 어떤 OS/glibc/권한/실행 인자로 돌아가는지"를 알려주는 명세서이므로, 코드를 열기 전에 먼저 이 파일부터 읽으면 분석 방향을 크게 절약할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>첨부파일에 <code>Dockerfile</code>, <code>docker-compose.yml</code>, <code>run.sh</code> 같은 파일이 포함되어 있을 때</li><li>로컬에서 바이너리를 실행한 결과와 원격 서버(<code>nc</code>)에서 받는 결과가 미묘하게 다를 때</li><li>문제에서 flag 파일 경로나 실행 인자를 어떻게 넘겨야 하는지 감이 안 잡힐 때</li><li>리버싱한 로직은 맞는 것 같은데 검증에 필요한 glibc/라이브러리 버전을 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Dockerfile은 실행 환경의 설계도다</h3>
+<p><code>Dockerfile</code>은 채점 서버가 실제로 어떤 이미지를 기반으로, 어떤 파일을 어디에 배치하고, 어떤 명령으로 바이너리를 실행하는지를 그대로 기술한다. 이 정보는 로컬에서 직접 실행하며 추측하는 것보다 훨씬 정확하고 빠르다.</p>
+<h3>확인해야 할 항목별 의미</h3>
+<ul><li><strong><code>FROM</code> 줄</strong>: 베이스 이미지와 태그. 예를 들어 <code>FROM ubuntu:20.04</code>라면 그 이미지에 포함된 glibc가 정확히 2.31 계열이라는 뜻이다(REV-0711, REV-0647). pwn 요소가 섞인 문제라면 이 버전에 맞는 <code>libc.so</code>를 구해야 하고, 순수 리버싱이라도 <code>printf</code>/<code>scanf</code> 같은 표준 함수의 미묘한 버전 차이(REV-0648)를 이 정보로 미리 짐작할 수 있다.</li><li><strong><code>COPY</code>/<code>ADD</code> 줄</strong>: 어떤 파일이 컨테이너의 어느 경로에 배치되는지 보여준다. <code>COPY flag.txt /flag.txt</code>처럼 flag 파일 위치가 그대로 드러나는 경우도 흔하다.</li><li><strong><code>RUN apt-get install ...</code> / <code>RUN pip install ...</code></strong>: 추가로 설치되는 라이브러리나 도구가 있다는 뜻이며, 바이너리가 그 라이브러리에 동적으로 링크되어 있을 가능성을 알려준다.</li><li><strong><code>USER</code> 줄</strong>: <code>USER nobody</code>처럼 비루트 권한으로 실행된다면, 원격 pwn 문제에서 특정 파일 접근이 제한된다는 뜻이다.</li><li><strong><code>ENTRYPOINT</code>/<code>CMD</code></strong>: 바이너리가 실제로 어떤 인자와 함께 실행되는지 보여준다. <code>socat</code>으로 포트를 여는 패턴이면 원격 접속 시 표준입출력이 그대로 소켓에 연결된다는 뜻이라, 로컬에서 인자 없이 실행한 것과 동작이 다를 수 있다.</li><li><strong><code>ENV</code> 줄</strong>: 환경 변수가 미리 설정되어 있으면 그 값이 실행에 영향을 줄 수 있다(예: 특정 로케일, 디버그 플래그).</li><li><strong>포트/<code>EXPOSE</code></strong>: 어떤 포트로 접속해야 하는지, 서비스가 몇 개 떠 있는지(예: 리버싱용 바이너리 하나 + 별도 검증 서버 하나) 알 수 있다.</li></ul>
+<h3>ASLR/리소스 제한 힌트</h3>
+<p><code>docker-compose.yml</code>이나 <code>run.sh</code>에 <code>--security-opt seccomp=unconfined</code>, <code>ulimit</code>, <code>sysctl kernel.randomize_va_space</code> 같은 옵션이 있으면 ASLR이나 syscall 필터링 설정이 로컬 기본값과 다를 수 있다는 신호다. 순수 리버싱 문제에는 큰 영향이 없지만, pwn 요소가 섞였다면(REV-0319) 반드시 확인해야 하는 항목이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>첨부 zip 안에 <code>Dockerfile</code>, <code>docker-compose.yml</code>, <code>xinetd</code> 설정 파일이 함께 들어있음</li><li><code>Dockerfile</code> 안에 <code>FROM ubuntu:22.04</code> 같이 명확한 배포판/버전 태그가 있음</li><li><code>COPY chall /home/user/chall</code>처럼 실행 파일 배치 경로가 명시됨</li><li><code>CMD ["/home/user/chall"]</code> 또는 <code>ENTRYPOINT ["socat", "TCP-LISTEN:...", "EXEC:/home/user/chall"]</code> 같은 실행 명령</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>Dockerfile</code>을 텍스트 편집기로 열어 <code>FROM</code>, <code>COPY</code>, <code>CMD</code>/<code>ENTRYPOINT</code> 세 줄부터 확인한다. 이 세 줄만으로도 "어떤 OS/glibc에서, 어떤 파일 배치로, 어떻게 실행되는지"의 큰 그림이 잡힌다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>Dockerfile</code>의 <code>FROM</code> 줄에서 베이스 이미지와 태그를 기록 (예: <code>ubuntu:20.04</code>, <code>debian:bullseye-slim</code>, <code>alpine:3.18</code>)</li><li><code>alpine</code> 계열이면 musl libc 기반임을 인지 (REV-0647) — 표준 함수 동작이 glibc와 다를 수 있음</li><li><code>COPY</code>/<code>ADD</code> 줄을 모두 읽어 어떤 파일이 어디에 배치되는지, flag 파일 경로가 노출되는지 확인</li><li><code>RUN apt-get install</code> 등에서 추가 설치되는 패키지 확인 — 바이너리가 의존하는 라이브러리 힌트</li><li><code>USER</code> 줄로 실행 권한(root/nobody 등) 확인</li><li><code>CMD</code>/<code>ENTRYPOINT</code> 줄로 바이너리가 실제로 어떤 인자/파이프라인으로 실행되는지 확인 (<code>socat</code> 경유 여부 포함)</li><li><code>docker-compose.yml</code>이 있다면 <code>ports</code>, <code>environment</code>, <code>cap_drop</code>, <code>security_opt</code> 항목까지 확인</li><li>확인한 glibc 버전에 맞춰 필요하면 해당 버전 <code>libc.so</code>를 별도로 준비해 로컬 검증 환경을 서버와 최대한 맞춤</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">cat Dockerfile
+cat docker-compose.yml 2&gt;/dev/null
+grep -E "FROM|COPY|ADD|RUN|USER|CMD|ENTRYPOINT|ENV" Dockerfile</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>FROM</code> 태그에 버전이 없으면(<code>FROM ubuntu</code>) <code>latest</code> 태그를 쓴다는 뜻이라 정확한 glibc 버전을 Dockerfile만으로 확정할 수 없다 — 이때는 실제 바이너리의 <code>strings ... | grep "GNU C Library"</code> 결과를 더 신뢰한다.</li><li><code>ENTRYPOINT</code>가 <code>socat</code>을 경유하면 표준입출력이 그대로 소켓으로 연결되는 구조이므로, 로컬에서 인자 없이 실행했을 때와 개행 처리, 버퍼링 동작이 다를 수 있다는 점을 감안한다.</li><li><code>COPY flag /flag</code> 같은 줄이 보이면 flag 파일 자체의 정확한 절대 경로를 이미 알아낸 것이므로, 이후 익스플로잇/입력값에서 그 경로를 그대로 사용하면 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Dockerfile을 아예 열어보지 않고 코드 분석부터 시작해서, glibc 버전 불일치로 나중에 다시 확인하러 돌아오는 것.</li><li><code>alpine</code> 베이스 이미지를 보고도 이를 무시한 채 glibc 기준으로 분석해서 함수 동작 차이(REV-0647)에 혼란을 겪는 것.</li><li><code>latest</code> 태그를 특정 버전으로 착각하고 그 버전 기준으로 완전히 확정해버리는 것 — 태그가 고정되어 있는지 항상 확인한다.</li><li>Dockerfile에 명시된 실행 인자(<code>CMD</code>)를 무시하고 바이너리를 인자 없이 실행해서 다른 동작을 보고 잘못된 결론을 내리는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>glibc 버전 차이로 함수 동작이 헷갈린다 → REV-0648 glibc 버전별 함수 시그니처 차이 확인법, REV-0711 서버 환경 glibc와 로컬 glibc가 달라 분석이 안 맞을 때</li><li>musl 기반 이미지라 낯설다 → REV-0647 musl libc와 glibc 차이가 리버싱에 미치는 영향</li><li>문제 설명 자체에서 다른 힌트도 더 뽑아야 한다 → REV-0012 문제 설명과 첨부파일에서 힌트 뽑는 방법</li><li>pwn 요소까지 섞여서 환경 설정이 더 중요해졌다 → REV-0319 리버싱과 Pwnable이 섞인 문제 구분하는 법</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-dockerfile">FROM ubuntu:20.04
+
+RUN apt-get update &amp;&amp; apt-get install -y socat
+
+COPY chall /home/user/chall
+COPY flag.txt /home/user/flag.txt
+RUN chmod 400 /home/user/flag.txt
+
+USER nobody
+WORKDIR /home/user
+
+CMD ["socat", "TCP-LISTEN:9999,reuseaddr,fork", "EXEC:/home/user/chall"]</code></pre>
+<p>이 Dockerfile 하나로 다음을 즉시 알 수 있다. ① <code>ubuntu:20.04</code> → glibc 2.31 계열, ② flag는 <code>/home/user/flag.txt</code>에 있고 <code>nobody</code> 권한으로는 읽기 권한이 400이라 소유자만 읽을 수 있음(권한 상승/파일 디스크립터 유출이 필요할 수도 있다는 신호), ③ <code>socat</code>으로 감싸져 있으니 원격 접속 시 표준입출력이 소켓과 그대로 연결된다는 것. 코드를 한 줄도 안 보고 이 정도 정보를 얻을 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0012-hints-from-problem.html">REV-0012 — 문제 설명과 첨부파일에서 힌트 뽑는 방법</a></li><li><a href="rev-0647-musl-vs-glibc-reversing.html">REV-0647 — musl libc와 glibc 차이가 리버싱에 미치는 영향</a></li><li><a href="rev-0648-glibc-version-function-signature-diff.html">REV-0648 — glibc 버전별 함수 시그니처 차이 확인법</a></li><li><a href="rev-0711-server-vs-local-glibc-mismatch.html">REV-0711 — 서버 환경 glibc와 로컬 glibc가 달라 분석이 안 맞을 때</a></li><li><a href="rev-0319-reversing-vs-pwnable.html">REV-0319 — 리버싱과 Pwnable이 섞인 문제 구분하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Dockerfile 지시어(<code>FROM</code>, <code>COPY</code>, <code>RUN</code>, <code>USER</code>, <code>CMD</code>, <code>ENTRYPOINT</code>)의 의미: Docker 공식 문서(docs.docker.com/reference/dockerfile) 기준.</li><li><code>ubuntu:20.04</code> 이미지의 기본 glibc 버전이 2.31 계열이라는 사실: Ubuntu 20.04 LTS(Focal Fossa) 공식 패키지 정보 및 본 위키 REV-0646/REV-0711 검증 내용과 동일 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

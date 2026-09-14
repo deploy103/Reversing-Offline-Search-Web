@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>레지스터 값을 수정했는데 프로그램이 무시하는 것처럼 보일 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>레지스터 값을 수정했는데 프로그램이 무시하는 것처럼 보일 때</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>레지스터를 수정했는데 무시된 것처럼 보이는 가장 흔한 원인은 진짜로 안 바뀐 게 아니라 (1) 바로 다음 명령어가 그 레지스터를 다른 값으로 즉시 덮어써버렸거나, (2) 콜스택의 바깥쪽 프레임(GDB <code>frame N</code>)이나 엉뚱한 스레드에서 수정했거나, (3) 서브레지스터 폭을 착각한 경우이므로, "값이 실제로 바뀌었는지"와 "그 값이 다음에 쓰이는 지점까지 살아있는지"를 나눠서 확인해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>x64dbg Registers 창에서 값을 더블클릭해 바꿨는데 실행 결과(분기, 리턴값)가 그대로일 때</li><li>GDB에서 <code>set $rax = 값</code>을 했는데 바로 <code>print $rax</code>를 해도 이전 값처럼 보일 때</li><li>콜스택 위쪽 프레임에서 레지스터를 바꿨는데 실제 프로그램 동작에는 아무 영향이 없을 때</li><li>멀티스레드 프로그램에서 레지스터를 바꿨는데 계속 이상하게 동작할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>가장 흔한 원인 — 바로 다음 명령어가 그 레지스터를 다시 쓴다</h3>
+<p>레지스터 편집은 항상 "지금 이 순간의 CPU 레지스터 값"만 바꾼다. 만약 다음에 실행될 명령이 <code>mov eax, [rbp-0x10]</code>처럼 그 레지스터를 메모리에서 다시 로드하는 명령이라면, 방금 바꾼 값은 명령어 하나만큼도 못 버티고 사라진다. 이는 x64dbg/GDB 어느 쪽이든 동일하게 발생하는, 도구와 무관한 현상이다. 지금 멈춰 있는 지점(<code>$pc</code>/EIP) 바로 다음 명령이 그 레지스터를 다시 쓰는지부터 확인해야 한다.</p>
+<h3>GDB — 콜스택 프레임 선택 문제</h3>
+<p><code>frame 1</code> 같은 바깥쪽 프레임을 보고 있는 상태에서 <code>set $rax = 값</code>을 하면, GDB는 경고 없이 받아주는 것처럼 보이지만 실제 CPU 레지스터(가장 안쪽 프레임 0의 값)에는 반영되지 않는 경우가 있다. 실행에 영향을 주려면 반드시 <code>frame 0</code>(가장 안쪽)으로 돌아온 상태에서 수정해야 한다. 자세한 사례와 스레드/서브레지스터 혼동까지 포함한 전체 목록은 REV-0713에서 다룬다.</p>
+<h3>x64dbg — 스레드 선택 문제</h3>
+<p>멀티스레드 프로그램은 스레드마다 별도의 레지스터 세트를 가진다. Threads 창에서 지금 편집하려는 스레드가 실제로 다음에 실행될 스레드가 맞는지 확인하지 않으면, 엉뚱한(대기 중인) 스레드의 레지스터만 계속 바꾸게 된다.</p>
+<h3>서브레지스터 크기 혼동(플랫폼 공통)</h3>
+<p><code>EAX</code>를 바꾸면 x86-64에서는 상위 32비트(<code>RAX</code>의 상위 절반)가 자동으로 0으로 클리어된다(제로 확장). <code>AL</code>(하위 8바이트)만 바꾸면 나머지 상위 바이트는 그대로 남는다. 어떤 폭을 바꿨는지와 어떤 폭으로 확인하는지가 다르면 "반영이 이상하다"고 오해하기 쉽다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-gdb">(gdb) frame 1
+(gdb) set $rax = 0
+(gdb) frame 0
+(gdb) print $rax
+$1 = 32          # frame 1에서 바꾼 값이 반영되지 않음</code></pre>
+<p>x64dbg에서는 Registers 창에서 값을 바꾸고 F8(Step Over)을 한 번 눌렀더니 그 값이 이미 다른 값으로 바뀌어 있는 경우가 전형적이다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>값을 바꾼 직후 다시 한 번 조회해서(<code>print $rax</code> / Registers 창 갱신) 실제로 바뀌었는지부터 확인한다. 바뀌어 있다면 "무시된 것"이 아니라 "다음 명령이 곧바로 덮어쓴 것"이므로, 그 다음 명령어(<code>x/i $pc</code>)가 그 레지스터를 다시 로드하는지 확인한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>값을 바꾼 직후 즉시 재조회해서 편집 자체가 성공했는지 확인한다.</li><li><code>x/i $pc</code>(GDB) 또는 CPU 창의 다음 명령(x64dbg)을 확인해, 그 레지스터를 바로 다시 쓰는 명령인지 본다.</li><li>GDB라면 <code>bt</code>로 지금 몇 번째 프레임인지 확인하고, 실행에 영향을 주려면 <code>frame 0</code>으로 이동한다.</li><li>멀티스레드라면 <code>info threads</code>(GDB)/Threads 창(x64dbg)으로 대상 스레드가 맞는지 확인한다.</li><li>서브레지스터를 썼다면(<code>$eax</code>, <code>$al</code>) 폭이 맞는 이름으로 다시 확인한다.</li><li>값을 진짜로 유지시키고 싶다면, 그 레지스터를 다시 로드하는 명령어 자체를 NOP 처리하거나 바로 그 지점 이후에 브레이크포인트를 걸어 다시 수정하는 방식으로 접근한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-gdb">print $rax
+x/i $pc
+bt
+frame 0
+info threads
+thread N
+set $rax = 값</code></pre>
+<pre><code class="language-text">x64dbg: Registers 창 더블클릭 편집, Threads 탭, F8(Step Over) 후 재확인</code></pre>
+<h2>출력 해석</h2>
+<p>값을 바꾼 직후 재조회했을 때 이미 이전 값으로 돌아와 있다면 편집 자체가 실패한 것(프레임/스레드 문제)이고, 바뀐 값이 보였다가 한 스텝 뒤에 사라진다면 다음 명령어가 덮어쓴 것이다. 이 둘을 구분하는 것이 원인 진단의 핵심이다.</p>
+<h2>흔한 실수</h2>
+<ul><li>값을 바꾼 직후 재확인 없이 "반영이 안 됐다"고 단정하는 것.</li><li>GDB에서 바깥쪽 프레임에 머문 채로 레지스터를 수정하고 <code>frame 0</code>으로 안 돌아온 것을 잊는 것.</li><li>멀티스레드 프로그램에서 <code>thread</code>/Threads 탭을 확인하지 않고 엉뚱한 스레드만 계속 편집하는 것.</li><li><code>$eax</code>로 바꿔놓고 <code>$rax</code>(64비트 전체)로 확인하면서 "왜 상위 비트가 이상하지"라고 헷갈리는 것 — 제로 확장은 정상 동작이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>GDB 프레임/스레드 문제의 상세 사례가 필요하다면 → REV-0713 GDB에서 레지스터를 수정했는데 반영이 안 되는 것처럼 보일 때</li><li>메모리 값 패치도 비슷하게 반영이 안 된다면 → REV-0844 메모리 값을 패치했는데 반영이 안 될 때</li><li>브레이크포인트/워치포인트 타이밍 자체가 헷갈린다면 → REV-0708 GDB에서 tbreak/watch가 예상과 다른 시점에 걸릴 때</li></ul>
+<h2>미니 예제</h2>
+<p>x64dbg에서 분기 직전 <code>EAX</code>를 <code>1</code>로 바꿨는데, F8을 한 번 누르고 나니 <code>EAX</code>가 다시 <code>0</code>이 되어 있었다. CPU 창에서 다음 명령을 보니 <code>mov eax, [ebp-0x8]</code>이었다 — 스택에서 다시 로드하는 명령이었기 때문에 레지스터 편집이 무의미했던 것이다. 대신 <code>[ebp-0x8]</code> 메모리 값 자체를 바꾸자 원하는 대로 반영됐다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0713-gdb-register-write-not-applied.html">REV-0713 — GDB에서 레지스터를 수정했는데 반영이 안 되는 것처럼 보일 때</a></li><li><a href="rev-0844-memory-patch-not-applied.html">REV-0844 — 메모리 값을 패치했는데 반영이 안 될 때</a></li><li><a href="rev-0708-tbreak-watch-timing-issue.html">REV-0708 — GDB에서 tbreak/watch가 예상과 다른 시점에 걸릴 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>GDB의 프레임 선택과 언와인딩된 레지스터 값, <code>set $reg</code>/스레드별 컨텍스트: GDB 공식 매뉴얼("Selecting a Frame", "Registers", "Threads" 챕터) 기준.</li><li>x86-64에서 32비트 레지스터 쓰기 시 상위 32비트가 자동 제로 확장되는 동작: Intel 64 and IA-32 Architectures Software Developer's Manual 기준(2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

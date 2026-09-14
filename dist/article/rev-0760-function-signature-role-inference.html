@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>함수 시그니처(인자 개수/타입)만으로 역할 추정하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>함수 시그니처(인자 개수/타입)만으로 역할 추정하기</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">radare2</span></div>
+<h2>한 줄 요약</h2>
+<p>strip되어 이름이 <code>sub_401234</code>/<code>FUN_00401234</code>로만 남은 함수라도, 레지스터/스택에 전달되는 <strong>인자 개수, 각 인자의 크기(4바이트/8바이트), 포인터 여부, 리턴값의 크기와 사용 방식</strong>만 정리해도 그 함수가 대략 어떤 역할(비교, 변환, 할당, 콜백 등)을 하는지 코드를 한 줄도 읽지 않고 상당히 좁은 범위로 추측할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>strip된 정적 바이너리(REV-0646)나 FLIRT/Function ID 매칭이 실패한 함수라서 이름 단서가 전혀 없을 때</li><li>함수가 너무 많아(REV-0755) 전부 읽을 시간이 없는데, 일단 어떤 함수들이 "라이브러리 유틸리티"이고 어떤 것이 "사용자 정의 로직"인지 빠르게 나누고 싶을 때</li><li>Call Graph(REV-0166)나 XREF(REV-0757)로 후보를 좁혔지만, 정밀 분석 전에 시그니처만 보고 우선순위를 한 번 더 정하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>함수의 시그니처(인자 개수, 타입, 리턴 타입)는 호출 규약(calling convention)에 따라 레지스터/스택에 값이 전달되는 패턴으로 드러난다(REV-0071 CALL 문서 참고).</p>
+<ul><li><strong>SysV x64(Linux)</strong>: 정수/포인터 인자는 순서대로 <code>RDI, RSI, RDX, RCX, R8, R9</code>에 담기고, 그 이상은 스택으로 전달된다.</li><li><strong>Windows x64</strong>: 정수/포인터 인자는 <code>RCX, RDX, R8, R9</code> 네 개까지 레지스터로 전달되고, 그 이상은 스택으로 전달된다(추가로 "shadow space" 32바이트가 항상 예약된다).</li></ul>
+<p>디스어셈블리에서 함수 진입 직후 또는 호출 직전에 몇 개의 인자 레지스터가 채워지는지 세어보면, 정확한 타입까지는 몰라도 <strong>인자 개수</strong>는 바로 알 수 있다. 여기에 몇 가지 정황을 더하면 역할 추정의 정확도가 크게 올라간다.</p>
+<h3>인자 개수/형태로 보는 역할 힌트</h3>
+<ul><li><strong>인자 1개, 포인터 하나만 받음</strong>: <code>free</code>, <code>strlen</code>류처럼 버퍼 하나를 받아 처리/해제하는 함수일 가능성.</li><li><strong>인자 2개, 포인터+정수(크기)</strong>: <code>malloc</code>류(크기만 받는 경우는 인자 1개), 또는 버퍼+길이를 함께 받는 파싱/복사 함수.</li><li><strong>인자 2개, 포인터+포인터</strong>: <code>strcpy</code>/<code>strcat</code>류의 문자열 복사, 또는 두 버퍼를 비교/병합하는 함수.</li><li><strong>인자 3개, 포인터+포인터+정수(길이)</strong>: <code>memcpy</code>/<code>memcmp</code>류의 전형적인 형태.</li><li><strong>인자 개수가 가변적으로 보임(레지스터 채우는 패턴이 상황마다 다름)</strong>: 가변 인자 함수(<code>printf</code>류) 래퍼일 가능성.</li><li><strong>리턴값이 항상 0/1(또는 참/거짓처럼 좁은 범위)로 마스킹됨(<code>and eax, 1</code> 등)</strong>: 성공/실패를 반환하는 검증/체크 함수일 가능성이 크다.</li><li><strong>리턴값이 포인터(호출 후 그 값을 다시 다른 함수의 인자로 바로 넘김)</strong>: 할당(allocate)이나 생성(factory) 함수일 가능성.</li><li><strong>인자가 없고 리턴값도 없음(void)</strong>: 초기화 루틴이나 전역 상태를 다루는 함수일 가능성 — REV-0759의 데이터 xref와 함께 보면 어떤 전역 변수를 건드리는지까지 확인할 수 있다.</li></ul>
+<h3>콜백/함수 포인터로 쓰이는 경우</h3>
+<p>함수 시그니처가 특정 패턴(예: 인자 2개, 리턴 void)으로 반복해서 나타나고, 이 함수들의 주소가 데이터 섹션의 테이블에 나열되어 있다면 이벤트 핸들러나 콜백 배열일 가능성이 있다 — REV-0757의 데이터 참조 관점과 결합하면 이런 테이블 구조를 함께 확인할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>디컴파일러가 자동으로 <code>undefined4 FUN_00401234(void *param_1, int param_2)</code>처럼 타입을 일부만 추론해 붙여준 시그니처가 보인다.</li><li>함수 이름은 없지만 호출부에서 레지스터에 값을 채우는 순서(<code>mov rdi, ...</code> → <code>mov rsi, ...</code> → <code>call</code>)가 뚜렷하게 보인다.</li><li>여러 함수가 비슷한 개수/형태의 인자를 받고 있어, 그중 어느 것이 진짜 검증 로직인지 구분이 필요한 상황이다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>후보 함수의 호출부(call site)로 가서, 호출 직전에 몇 개의 레지스터가 채워지는지부터 센다. 플랫폼에 맞는 인자 레지스터 순서(SysV RDI/RSI/RDX/RCX/R8/R9, Windows RCX/RDX/R8/R9)를 기준으로 하나씩 대응시킨다.</p>
+<h2>단계별 절차</h2>
+<ol><li>대상 함수의 호출부를 찾는다(REV-0160/REV-0751의 xref로 이동).</li><li>호출 직전 코드에서 어떤 레지스터가 몇 개 채워지는지 순서대로 기록한다.</li><li>각 인자가 즉시값(정수처럼 보이는 값)인지, 스택/전역 변수의 주소(포인터로 추정)인지 구분한다.</li><li>함수 본문 시작 부분에서 이 인자들이 어떻게 쓰이는지 훑어본다 — 인자를 역참조(<code>[rdi]</code>, <code>[rdi+8]</code> 등)해서 읽으면 포인터, 그냥 산술 연산에 쓰이면 정수일 가능성이 크다.</li><li>함수의 리턴값(보통 <code>RAX</code>/<code>EAX</code>)이 호출 이후 어떻게 쓰이는지 확인한다 — 조건 분기(<code>test eax, eax</code> / <code>cmp eax, 0</code>)에 바로 쓰이면 불리언(성공/실패) 리턴, 다른 함수의 인자로 바로 전달되면 포인터/핸들 리턴일 가능성이 크다.</li><li>위 표(인자 개수/형태별 힌트)와 대조해 가장 그럴듯한 역할 후보 1~2개를 정한다.</li><li>후보가 여러 함수 중 하나로 좁혀지면, 그중 가장 유력한 것만 REV-0158/REV-0146으로 정밀 분석해 확정한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 함수 시그니처 확인은 Decompile 창(F5) 상단 선언부, 또는 함수명 위 <code>Y</code>(Set item type)로 수동 지정 가능. 인자 레지스터 채우는 부분은 View → Disassembly에서 직접 확인.</li><li>Ghidra: Decompile 창 상단 함수 시그니처, Function Signature 편집(<code>Ctrl+Shift+P</code> 또는 Edit Function Signature 우클릭 메뉴).</li><li>radare2: <code>afi</code>(현재 함수 상세 정보, 인자 개수 추정치 포함), <code>pdf</code>에서 호출 직전 레지스터 채우는 패턴 확인.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>디컴파일러가 이미 인자 개수/타입을 어느 정도 추정해 보여주지만, strip된 최적화 코드에서는 이 추정이 틀리는 경우가 있다 — 항상 원본 레지스터 사용 패턴으로 한 번 더 검증하는 것이 안전하다(REV-0754의 교차검증 원칙과 동일).</li><li>인자 개수가 딱 맞아떨어지는 표준 함수(예: 인자 3개 포인터+포인터+정수)라도, 실제로는 커스텀 함수(예: 자체 구현한 비교 함수)일 수 있다 — 시그니처는 "후보를 좁히는 단서"이지 "확정 증거"가 아니다.</li><li>리턴값을 아예 쓰지 않는(호출 후 <code>RAX</code>를 확인하는 코드가 없는) 함수라면, 그 함수는 값을 리턴하기보다 인자로 받은 포인터를 통해 부수효과(side effect)를 일으키는 함수(예: 버퍼에 결과를 직접 써넣는 함수)일 가능성이 크다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Windows x64와 SysV x64의 인자 레지스터 순서를 혼동해서 잘못된 인자를 짚는 것 — 바이너리의 플랫폼(PE인지 ELF인지)을 먼저 확인하고 그에 맞는 규약을 적용해야 한다.</li><li>스택으로 전달되는 5번째 이후 인자를 놓치고 "인자가 4개뿐"이라고 성급히 결론짓는 것 — 레지스터 4~6개를 넘는 인자는 스택에서 전달되므로 호출 직전의 <code>push</code>나 <code>mov [rsp+N], ...</code> 패턴도 함께 확인해야 한다.</li><li>시그니처만으로 함수를 100% 확정하고 코드를 안 읽는 것 — 이 방법은 어디까지나 "우선순위를 정하는" 용도이며, 최종 확정은 실제 로직(REV-0158)과 필요시 동적 검증으로 마무리해야 한다.</li><li>컴파일러가 레지스터를 재활용(reuse)하는 것을 인자 전달로 착각하는 것 — 함수 프롤로그 직후, 즉 호출 시점 가까이의 레지스터 상태만 인자로 간주해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>호출 규약과 CALL 자체의 개념이 헷갈리면 → REV-0071 CALL: 함수 호출, 반환 주소, 인자 추적</li><li>이 함수의 호출 지점을 못 찾겠으면 → REV-0751 radare2로 함수 목록과 XREF 확인하기(afl, axt), REV-0160 Ghidra XREF 따라가기</li><li>후보가 여러 개 남아 우선순위를 정해야 한다면 → REV-0755 큰 바이너리에서 분석 범위를 좁히는 실전 전략</li><li>시그니처 추정과 디컴파일러 추정이 다르게 나오면 → REV-0754 여러 정적분석 도구 결과를 교차검증하는 이유와 방법</li></ul>
+<h2>미니 예제</h2>
+<p>strip된 ELF에서 <code>sub_401500</code>이라는 함수가 호출되기 직전 디스어셈블리가 다음과 같았다고 하자(SysV x64).</p>
+<pre><code>lea rdi, [rbp-0x20]   ; 첫 번째 인자: 스택 버퍼의 주소(포인터로 추정)
+mov esi, 0x10         ; 두 번째 인자: 즉시값 16(길이로 추정)
+call sub_401500
+test eax, eax
+jz  fail_branch</code></pre>
+<p>인자 2개(포인터+정수)라는 형태와, 리턴값을 곧바로 <code>test</code>/<code>jz</code>로 검사한다는 점을 종합하면 "버퍼와 길이를 받아 성공/실패를 반환하는 검증 함수"라는 가설을 코드를 열기 전부터 세울 수 있다. 실제로 함수 내부를 열어보면 이 가설대로 버퍼의 각 바이트를 검사하는 반복문이 있는 경우가 많다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li><li><a href="rev-0751-radare2-afl-axt-xref.html">REV-0751 — radare2로 함수 목록과 XREF 확인하기(afl, axt)</a></li><li><a href="rev-0160-ghidra-xref.html">REV-0160 — Ghidra XREF 따라가기</a></li><li><a href="rev-0755-narrowing-scope-large-binary.html">REV-0755 — 큰 바이너리에서 분석 범위를 좁히는 실전 전략</a></li><li><a href="rev-0754-cross-validate-static-analysis-tools.html">REV-0754 — 여러 정적분석 도구 결과를 교차검증하는 이유와 방법</a></li><li><a href="rev-0759-data-xref-global-variable-usage.html">REV-0759 — Data Xref로 전역 변수 사용처 전부 찾기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>SysV x64 인자 레지스터 순서(RDI/RSI/RDX/RCX/R8/R9)와 Windows x64 인자 레지스터 순서(RCX/RDX/R8/R9, shadow space 32바이트): System V AMD64 ABI 명세 및 Microsoft x64 calling convention 공식 문서 기준.</li><li>리턴값(<code>RAX</code>/<code>EAX</code>)이 성공/실패 판단에 쓰이는 관용적 패턴(<code>test</code>/<code>cmp</code> 뒤 조건 분기)은 두 ABI 문서에서 공통으로 규정하는 정수/포인터 리턴 레지스터 규약 기준.</li><li>인자 개수/형태로 함수 역할을 추정하는 것은 정형화된 표준이 아니라 실전 리버싱에서 통용되는 경험적 휴리스틱이며, 항상 실제 코드 확인으로 최종 검증해야 한다(2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

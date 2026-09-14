@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>여러 개의 검증 함수가 있는 문제 접근 순서 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>여러 개의 검증 함수가 있는 문제 접근 순서</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>검증 함수가 여러 개 있는 문제는 각 함수를 무작정 순서대로 정독하지 말고, 먼저 <strong><code>main</code>(또는 호출부)에서 각 함수가 호출되는 순서와 인자를 표로 정리</strong>해 "어느 함수가 어느 입력 필드를 검증하는지"부터 매핑한 뒤, 조건 분기가 가장 단순한 함수부터 공략하는 것이 빠르다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디컴파일 코드에 <code>check_username</code>, <code>check_password</code>, <code>check_serial</code>처럼 이름이 다른 검증 함수가 여러 개 보일 때</li><li>strip된 바이너리라 이름은 없지만 <code>main</code>에서 비슷한 형태의 함수 호출이 여러 번 반복될 때</li><li>여러 입력 필드(아이디, 비밀번호, 시리얼 번호 등)를 받는 프로그램인데 각 필드가 어떤 함수에서 검증되는지 헷갈릴 때</li><li>검증 함수 하나를 다 풀었는데 프로그램이 여전히 실패 메시지를 낼 때(다른 함수가 더 있다는 신호)</li></ul>
+<h2>핵심 개념</h2>
+<p>REV-0006에서 다룬 "검증 함수 찾기"는 검증 함수가 하나라고 가정한 경우다. 실제로는 입력 필드가 여러 개인 문제(로그인 폼, 시리얼 키 등록, 여러 옵션을 받는 CLI)에서 필드마다 별도의 검증 함수를 두는 경우가 흔하다. 이때는 "검증 함수 찾기"가 아니라 <strong>"검증 함수들을 서로 구분하고 순서를 정하는 것"</strong>이 과제가 된다.</p>
+<h3>함수 대 입력 매핑표 만들기</h3>
+<p><code>main</code>(또는 메인 로직 함수)을 열어서, 입력을 받는 지점(<code>scanf</code>, <code>fgets</code>, <code>read</code>)부터 각 검증 함수 호출까지의 흐름을 표로 정리한다.</p>
+<table><thead><tr><th>순서</th><th>호출 함수</th><th>인자로 들어가는 값</th><th>반환값 의미(추정)</th></tr></thead><tbody><tr><td>1</td><td><code>check_length</code></td><td>입력 문자열 전체</td><td>길이 통과 여부</td></tr><tr><td>2</td><td><code>check_username</code></td><td>입력의 앞부분(아이디 필드)</td><td>아이디 일치 여부</td></tr><tr><td>3</td><td><code>check_password</code></td><td>입력의 뒷부분(비밀번호 필드)</td><td>비밀번호 일치 여부</td></tr></tbody></table>
+<p>이 표를 만들면 각 함수가 <strong>독립적으로 검증되는지</strong>, 아니면 앞 함수의 결과가 뒤 함수의 입력에 영향을 주는지(REV-0314의 다단계 구조와 겹치는 부분)를 구분할 수 있다. 순수하게 여러 필드를 병렬로 검증하는 구조라면 이 문서의 범위이고, 한 필드를 순차적으로 여러 단계 거쳐 검증하는 구조라면 REV-0314를 같이 참고해야 한다.</p>
+<h3>공략 순서 정하는 기준</h3>
+<p>모든 검증 함수를 동시에 파고들 필요는 없다. 다음 기준으로 우선순위를 정한다.</p>
+<ol><li><strong>조건 분기가 적은 함수부터</strong>: <code>if</code> 문 1~2개짜리 단순 비교 함수(예: 길이 체크)는 5분 안에 끝나므로 먼저 처리해 전체 진행률을 올린다.</li><li><strong>다른 함수의 입력이 되는 함수 먼저</strong>: 예를 들어 <code>check_username</code>의 결과값이 <code>check_password</code>의 키로 쓰인다면, 반드시 <code>check_username</code>부터 풀어야 다음 단계로 넘어갈 수 있다. <code>main</code>의 호출 순서와 변수 의존 관계를 보고 이 종속성을 미리 파악한다.</li><li><strong>문자열 상수와 직접 비교하는 함수 먼저</strong>: <code>strcmp(input, "admin")</code>처럼 정답이 바로 보이는 함수는 로직을 이해할 필요도 없이 즉시 값을 얻을 수 있다.</li><li><strong>복잡한 암호학적 변환이 있는 함수는 마지막</strong>: TEA, AES, 커스텀 해시가 들어간 함수는 시간이 오래 걸리므로, 쉬운 함수들을 다 처리한 뒤 마지막에 집중해서 본다.</li></ol>
+<h3>각 함수를 실제로 실행하는지 확인</h3>
+<p>정적으로 로직만 보고 넘어가지 말고, 각 함수에 브레이크포인트를 걸어 실제로 어떤 값이 인자로 들어오고 반환되는지 GDB/x64dbg로 확인한다. 특히 여러 필드 검증에서는 "이 함수가 실제로 이 필드를 검사하는 게 맞는지"에 대한 가정이 틀리는 경우가 많으므로(예: 두 함수의 인자가 뒤바뀐 것처럼 보였는데 실제로는 안 그런 경우), 동적으로 한 번은 검증해야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>main</code> 안에 <code>if (!check_a(input1)) fail(); if (!check_b(input2)) fail();</code> 형태로 검증 호출이 연달아 나온다.</li><li>여러 함수가 구조는 비슷한데(짧은 반복문 + 비교) 사용하는 상수만 다르다.</li><li>strip된 바이너리에서 비슷한 크기의 함수가 2~4개 반복해서 호출된다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>main</code>을 열어 입력을 받는 지점부터 반환까지 전체 흐름을 한 번 쭉 훑으면서, 호출되는 검증 함수 이름(또는 주소)과 인자만 순서대로 받아 적는다. 이 단계에서는 각 함수 내부에 들어가지 않는다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>main</code>(또는 진입 로직)에서 입력 처리 직후부터 반환까지 호출되는 함수 목록을 순서대로 나열</li><li>각 호출의 인자(어떤 변수/버퍼가 들어가는지)와 반환값 사용처(어떤 조건문에 쓰이는지)를 표로 정리</li><li>함수 간 의존 관계(한 함수의 출력이 다른 함수의 입력이 되는지) 확인</li><li>조건 분기 개수·크기 기준으로 쉬운 함수부터 순서 재배열</li><li>가장 쉬운 함수부터 F5 디컴파일 정독 + 브레이크포인트로 실제 값 확인</li><li>확정된 로직을 REV-0222 방식으로 Python에 옮겨 적음</li><li>다음 함수로 이동, 전체 함수를 다 풀 때까지 반복</li><li>모든 함수를 통과하는 입력을 조합해 실제 바이너리에 넣어 최종 검증</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 함수 이름 더블클릭으로 이동, <code>X</code>(xref) 키로 어디서 호출되는지 확인</li><li>GDB: <code>break check_username</code>, <code>run</code>, <code>info args</code>, <code>finish</code>(반환값 확인)</li><li>x64dbg: 함수 시작 주소에 브레이크포인트(F2), 실행(F9) 후 인자 레지스터/스택 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>종속 관계 표에서 화살표가 한 방향으로만 흐르면(A → B → C) 이는 사실상 REV-0314의 순차적 다단계 구조와 유사하므로, 앞 단계부터 순서대로 풀어야만 다음 단계 값을 얻을 수 있다.</li><li>각 함수가 서로 다른 입력 버퍼만 참조하고 서로의 결과를 쓰지 않는다면, 함수들은 완전히 독립적이므로 순서와 무관하게 병렬로(팀이라면 REV-0311처럼 나눠서) 공략해도 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>함수 이름만 보고 역할을 단정하는 것(예: <code>check_serial</code>이라는 이름이지만 실제로는 다른 필드를 검사할 수 있다) — 반드시 실제 인자를 GDB/x64dbg로 확인한다.</li><li>모든 함수를 처음부터 순서대로 똑같은 노력으로 정독하는 것 — 쉬운 함수부터 처리해 빠르게 진행률을 올려야 한다.</li><li>함수 간 의존 관계를 확인하지 않고 뒤쪽 함수부터 먼저 풀려다가, 앞쪽 함수의 결과값이 필요하다는 걸 뒤늦게 깨닫는 것.</li><li>한 함수를 완전히 이해했다고 착각하고 다음으로 넘어갔는데, 실제로는 그 함수가 다른 함수와 값을 주고받는 부분을 놓친 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>함수들이 순차적으로 하나의 흐름을 이루는 것 같다 → REV-0314 다단계 검증(Stage 1/2/3)이 있는 문제 공략법</li><li>애초에 어떤 함수가 검증 함수인지부터 확신이 안 선다 → REV-0006 Flag 검증 함수 찾는 가장 흔한 경로</li><li>팀으로 나눠서 함수별로 맡기고 싶다 → REV-0311 팀 대회에서 리버싱 문제를 분업하는 법</li><li>확정된 로직을 스크립트로 옮기는 방법이 필요하다 → REV-0222 검증 루틴을 Python으로 그대로 재현하기</li></ul>
+<h2>미니 예제</h2>
+<p><code>main</code>에서 <code>read_input(buf)</code> 이후 <code>check_len(buf)</code>, <code>check_prefix(buf)</code>, <code>check_hash(buf)</code>가 순서대로 호출되는 것을 확인했다. <code>check_len</code>은 <code>strlen(buf) == 20</code>만 확인하는 한 줄짜리 함수, <code>check_prefix</code>는 <code>memcmp(buf, "FLAG{", 5)</code>만 확인하는 함수였다 — 두 함수는 5분 안에 끝났다. 남은 시간을 전부 <code>check_hash</code>(SHA-256 유사 변환이 있는 함수)에 집중할 수 있었고, 이미 확정된 길이 20과 접두사 <code>FLAG{</code>라는 제약 조건 덕분에 <code>check_hash</code>의 브루트포스 범위도 줄일 수 있었다(REV-0016).</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0006-finding-check-function.html">REV-0006 — Flag 검증 함수 찾는 가장 흔한 경로</a></li><li><a href="rev-0314-multi-stage-validation-strategy.html">REV-0314 — 다단계 검증(Stage 1/2/3)이 있는 문제 공략법</a></li><li><a href="rev-0222-reimplement-in-python.html">REV-0222 — 검증 루틴을 Python으로 그대로 재현하기</a></li><li><a href="rev-0016-when-bruteforce-works.html">REV-0016 — 브루트포스를 해도 되는 문제인지 판단하는 법</a></li><li><a href="rev-0311-team-ctf-division-of-labor.html">REV-0311 — 팀 대회에서 리버싱 문제를 분업하는 법</a></li><li><a href="rev-0007-trace-from-input.html">REV-0007 — 입력 함수부터 역추적하는 방법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>다중 검증 함수 구조 분석 및 함수-입력 매핑 방법론: CTF 리버싱 실전 경험칙 요약 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

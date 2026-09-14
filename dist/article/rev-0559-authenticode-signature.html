@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Authenticode 서명이 있는 PE 기초 확인법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>Authenticode 서명이 있는 PE 기초 확인법</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">PE-bear</span><span class="tag">sigcheck</span><span class="tag">signtool</span></div>
+<h2>한 줄 요약</h2>
+<p>Authenticode는 마이크로소프트가 정의한 코드 서명 표준으로, PE 파일의 <code>DataDirectory[4]</code>(Security Directory, <code>IMAGE_DIRECTORY_ENTRY_SECURITY</code>)가 가리키는 위치에 <code>WIN_CERTIFICATE</code> 구조로 감싼 PKCS#7 서명 데이터가 붙어 있으며, 이 서명은 "누가 언제 이 파일을 서명했는가"뿐 아니라 "빌드 이후 파일이 바이트 단위로 변조되지 않았는가"까지 검증할 수 있어 신뢰 판단과 변조 탐지 양쪽에 쓰인다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>파일 속성 창에서 "디지털 서명" 탭이 있는지, 있다면 서명자가 누구인지 확인하고 싶을 때</li><li>악성코드가 정상 회사 인증서로 서명된 것처럼 보이는데 진짜인지 위조인지 판단해야 할 때</li><li><code>signtool verify</code>나 <code>sigcheck</code> 실행 결과가 "서명이 유효하지 않음"으로 나오는 이유를 알고 싶을 때</li><li>Security Directory(<code>DataDirectory[4]</code>)의 <code>VirtualAddress</code> 필드가 다른 데이터 디렉터리와 다르게 동작하는 이유(RVA가 아니라 파일 오프셋)를 알고 싶을 때</li><li>서명된 파일을 패치했더니 서명이 깨졌다는 것을 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Security Directory는 RVA가 아니라 파일 오프셋이다</h3>
+<p><code>IMAGE_OPTIONAL_HEADER.DataDirectory[4]</code>는 다른 14개 데이터 디렉터리(Export, Import, Resource 등)와 달리 <code>VirtualAddress</code> 필드가 <strong>RVA가 아니라 파일 오프셋(Raw File Offset)</strong>을 직접 의미한다. 이는 서명 데이터 자체가 메모리에 매핑될 필요가 없는, 파일에만 존재하는 부가 데이터이기 때문이다. 이 예외 규칙을 모르면 다른 디렉터리처럼 섹션 헤더로 RVA→오프셋 변환을 시도하다가 엉뚱한 위치를 읽게 된다.</p>
+<h3>WIN_CERTIFICATE 구조</h3>
+<pre><code class="language-c">typedef struct _WIN_CERTIFICATE {
+    DWORD dwLength;        // 이 구조체 + 서명 데이터 전체 길이
+    WORD  wRevision;       // 보통 WIN_CERT_REVISION_2_0 (0x0200)
+    WORD  wCertificateType; // 보통 WIN_CERT_TYPE_PKCS_SIGNED_DATA (0x0002)
+    BYTE  bCertificate[ANYSIZE_ARRAY]; // PKCS#7 SignedData (실제 서명 블롭)
+} WIN_CERTIFICATE;</code></pre>
+<p><code>bCertificate</code>에 들어 있는 PKCS#7 <code>SignedData</code> 블롭 안에는 서명자의 인증서 체인, 서명 알고리즘, 그리고 <code>SpcIndirectDataContent</code>라는 Authenticode 전용 구조가 들어 있는데, 여기에 <strong>파일 자체의 특수 해시값</strong>이 담겨 있다.</p>
+<h3>Authenticode 해시가 파일 전체를 그대로 해시하지 않는 이유</h3>
+<p>서명 이후에도 서명 데이터 자체를 파일에 붙여야 하고, 체크섬(REV-0557)처럼 서명 시점에 알 수 없는 필드도 있기 때문에, Authenticode 해시는 파일을 그대로 해시하지 않고 다음 부분을 <strong>제외</strong>하고 계산한다.</p>
+<ul><li><code>IMAGE_OPTIONAL_HEADER.CheckSum</code> 필드 (4바이트)</li><li><code>DataDirectory[4]</code>(Security Directory) 항목 자체(<code>VirtualAddress</code>, <code>Size</code> 8바이트)</li><li>Security Directory가 가리키는 서명 데이터 블록 자체(파일 맨 끝에 붙는 것이 일반적)</li></ul>
+<p>이렇게 "서명을 추가하기 전 상태의 파일 내용"만 해시해서 서명하기 때문에, 서명을 붙이는 행위 자체는 해시에 영향을 주지 않는다. 반대로 말하면 서명 이후 코드 섹션 등 다른 바이트가 단 1비트라도 바뀌면 이 해시가 어긋나서 서명 검증이 실패한다 — 이것이 리버서에게 중요한 이유다: <strong>서명이 유효하다면 그 파일은 서명 시점 이후 변조되지 않았다는 강한 증거</strong>가 된다.</p>
+<h3>서명이 있다고 해서 무조건 신뢰할 수 있는 것은 아니다</h3>
+<ul><li>인증서 자체가 도난되거나 부정 발급된 경우, 악성코드도 유효한 서명을 가질 수 있다(실제로 여러 APT/악성코드 사례에서 탈취된 코드서명 인증서가 사용됨).</li><li>서명이 "유효함"이 의미하는 것은 어디까지나 "이 인증서 체인이 신뢰된 루트까지 이어지고, 파일이 서명 시점 이후 변조되지 않았다"는 것이지, "이 파일이 안전하다"는 뜻이 아니다.</li><li>타임스탬프(RFC 3161 계열 타임스탬핑, <code>Authenticode Timestamp</code>)가 없으면 서명에 사용된 인증서가 만료된 후에는 서명 자체가 만료된 것으로 취급될 수 있다. 타임스탬프가 있으면 "서명 당시에는 인증서가 유효했다"는 사실이 별도로 증명되어 인증서 만료 이후에도 서명이 유효하게 유지된다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>파일 우클릭 → 속성 → "디지털 서명" 탭이 존재하고, 서명자 이름/타임스탬프가 표시됨</li><li>PE-bear나 CFF Explorer의 Data Directory 목록에서 <code>Security</code>(인덱스 4) 항목에 0이 아닌 <code>Size</code>가 표시됨</li><li><code>sigcheck -i 파일.exe</code> 실행 시 서명자, 발급자, 유효기간 정보가 출력됨</li><li>파일 맨 끝부분(마지막 섹션 이후)에 마지막 섹션에 포함되지 않는 추가 데이터 블록이 존재함 — 이것이 대개 서명 데이터다</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>서명 여부와 유효성을 빠르게 확인하려면 GUI로는 파일 속성의 "디지털 서명" 탭을, 커맨드라인으로는 Sysinternals의 <code>sigcheck -i 파일.exe</code>를 쓰는 것이 가장 빠르다. 서명자 이름, 인증서 발급자, 타임스탬프 존재 여부까지 한 번에 나온다. 더 엄격하게 확인하려면 <code>signtool verify /pa /v 파일.exe</code>로 정책 기반 검증(Authenticode 정책, <code>/pa</code>)까지 수행한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) Security Directory 존재 확인</strong> <code>DataDirectory[4].Size</code>가 0이 아니면 서명이 붙어 있다는 뜻이다(REV-0116에서 다룬 Optional Header의 Data Directory 배열).</p>
+<p><strong>2) 파일 오프셋으로 직접 이동</strong>(RVA 변환 없이!) <code>DataDirectory[4].VirtualAddress</code> 값을 그대로 파일 오프셋으로 사용해 헥스 에디터로 이동한다. 이 지점부터 <code>WIN_CERTIFICATE</code> 구조가 시작된다.</p>
+<p><strong>3) 도구로 서명자/유효성 확인</strong></p>
+<pre><code class="language-text">sigcheck -i 파일.exe          서명자, 발급자, 타임스탬프 요약 출력
+signtool verify /pa /v 파일.exe   정책 검증 포함 상세 결과 출력</code></pre>
+<p><strong>4) 인증서 체인 상세 확인이 필요하면 GUI</strong> 파일 속성 → 디지털 서명 탭 → 서명 선택 → 세부 정보 → 인증서 보기로 발급자 체인, 유효기간, 지문(thumbprint)까지 확인한다.</p>
+<p><strong>5) 변조 여부 판단</strong> 서명은 있는데 검증이 실패한다면(<code>signtool</code>이 <code>Error: SignTool.exe: File is not signed</code>가 아니라 해시 불일치류 오류를 낸다면), 서명 이후 파일이 수정됐다는 강한 정황이다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">sigcheck -i 파일.exe              Sysinternals sigcheck, 서명 요약 정보
+sigcheck -h 파일.exe              해시값과 함께 출력
+signtool verify /pa /v 파일.exe   Windows SDK 도구, 정책 기반 상세 검증
+PowerShell: Get-AuthenticodeSignature 파일.exe   서명 상태(.Status)를 스크립트로 확인</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>signtool verify</code> 결과 <code>Successfully verified</code>가 나오면 인증서 체인이 신뢰되고 해시가 일치한다는 뜻</li><li><code>Error: SignTool.exe: A certificate chain could not be built to a trusted root authority</code> — 서명 자체는 있지만 신뢰 체인이 로컬 신뢰 저장소에 없다는 뜻(자체 서명 인증서이거나, 오래되어 루트가 갱신된 경우 등)</li><li><code>Hash that represents the subject does not match the hash computed</code> 계열 오류 — 서명 시점 이후 파일이 변조됐다는 확실한 신호</li><li><code>Get-AuthenticodeSignature</code>의 <code>.Status</code>가 <code>Valid</code>가 아니라 <code>HashMismatch</code>, <code>NotSigned</code>, <code>NotTrusted</code> 등으로 나오면 각각 변조/미서명/신뢰 안 됨을 의미</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>DataDirectory[4].VirtualAddress</code>를 다른 디렉터리처럼 RVA로 취급해서 섹션 테이블로 오프셋 변환을 시도하는 것 — 이 필드만 예외적으로 이미 파일 오프셋이다.</li><li>"서명이 있으니 안전하다"고 단정하는 것 — 탈취되거나 부정 발급된 인증서로 서명된 악성코드 사례가 실제로 존재한다. 서명은 무결성/신원 증거이지 안전성 보증이 아니다.</li><li>서명 검증에 체크섬(REV-0557)이 직접 관여한다고 착각하는 것 — 체크섬 필드는 오히려 서명 해시 계산 범위에서 제외되는 항목이다.</li><li>파일 끝에 붙은 서명 데이터를 "알 수 없는 덧붙은 바이트"로 오인해서 패커가 붙인 데이터라고 착각하는 것 — 마지막 섹션 이후 나타나는 추가 데이터는 먼저 Security Directory 여부부터 확인해야 한다.</li><li>타임스탬프가 없는 서명에서 인증서 만료 이후에도 서명이 계속 유효할 것으로 기대하는 것 — 타임스탬프가 없으면 인증서 만료 시 서명도 함께 무효화될 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>Data Directory 배열/인덱스 구조 자체가 헷갈리면 → <a href="rev-0116-pe-coff-optional-header.html">REV-0116 PE Header COFF Optional Header 읽기</a></li><li>체크섬과 서명의 관계가 헷갈리면 → <a href="rev-0557-pe-checksum.html">REV-0557 PE 체크섬(Checksum) 검증과 리버싱 의미</a></li><li>컴파일러/빌드 환경 지문을 다른 방식으로 확인하고 싶으면 → <a href="rev-0558-rich-header.html">REV-0558 Rich Header에서 컴파일러 정보 추출하기</a></li><li>파일 종류 자체를 먼저 식별하고 싶으면 → <a href="rev-0126-die-basics.html">REV-0126 Detect It Easy로 컴파일러 패커 확인</a></li></ul>
+<h2>미니 예제</h2>
+<p>서명된 것으로 보이는 <code>installer.exe</code>를 받았다고 하자.</p>
+<pre><code class="language-text">1) 파일 우클릭 → 속성 → 디지털 서명 탭
+   → "Example Corp" 명의 서명 1개 확인, 타임스탬프 있음.
+
+2) sigcheck -i installer.exe
+   Verified:        Signed
+   Signing date:    2025-11-02
+   Publisher:       Example Corp
+   Company:         Example Corp Inc.
+
+3) signtool verify /pa /v installer.exe
+   Successfully verified: installer.exe
+
+결론: 서명 자체는 유효 — 최소한 서명 시점 이후 바이트가 변조되지 않았다는 것은 확인됨.
+다만 "Example Corp"가 정말 신뢰할 만한 발급 대상인지는 별도로 판단해야 한다
+(인증서가 탈취/도용됐을 가능성은 서명 유효성 검증만으로는 배제되지 않는다).</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0116-pe-coff-optional-header.html">REV-0116 — PE Header COFF Optional Header 읽기</a></li><li><a href="rev-0557-pe-checksum.html">REV-0557 — PE 체크섬(Checksum) 검증과 리버싱 의미</a></li><li><a href="rev-0558-rich-header.html">REV-0558 — Rich Header에서 컴파일러 정보 추출하기</a></li><li><a href="rev-0126-die-basics.html">REV-0126 — Detect It Easy로 컴파일러 패커 확인</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>WIN_CERTIFICATE</code> 구조 및 Security Directory(<code>DataDirectory[4]</code>)가 RVA가 아닌 파일 오프셋을 사용하는 예외 규칙: Microsoft Learn "PE Format" 공식 문서, "The Attribute Certificate Table (Image Only)" 절 기준 (2026-09-08 검증).</li><li>Authenticode 해시가 CheckSum 필드/Security Directory/서명 데이터 자체를 제외하고 계산된다는 규칙: Microsoft "Windows Authenticode Portable Executable Signature Format" 공식 규격 문서 기준.</li><li><code>sigcheck</code>, <code>signtool verify</code> 사용법과 출력 형식: Microsoft Sysinternals 공식 문서 및 Windows SDK <code>signtool</code> 공식 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

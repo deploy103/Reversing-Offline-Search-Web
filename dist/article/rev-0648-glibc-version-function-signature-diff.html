@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>glibc 버전별 함수 시그니처 차이 확인법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>glibc 버전별 함수 시그니처 차이 확인법</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">readelf</span><span class="tag">objdump</span></div>
+<h2>한 줄 요약</h2>
+<p>glibc는 버전이 올라가면서 함수 내부 구현, 심볼 이름, 힙 방어 로직, 에러 메시지가 계속 바뀌기 때문에, CTF 문제를 풀 때는 반드시 대상 바이너리가 어떤 glibc 버전으로 빌드/링크됐는지 먼저 확인하고 그 버전 기준으로 함수 동작을 해석해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA/Ghidra에서 <code>scanf</code>를 호출한 줄 같은데 실제 심볼 이름은 <code>__isoc99_scanf</code>로 나와서 왜 다른 이름인지 궁금할 때</li><li><code>free()</code> 도중 <code>free(): double free detected in tcache 2</code> 같은 메시지가 나오는데 이게 어느 glibc부터 생긴 검사인지 알고 싶을 때</li><li>로컬에서 익스플로잇을 짰는데 원격 서버에서 <code>version GLIBC_2.34 not found</code>류 에러가 나서 버전 불일치를 의심할 때</li><li><code>pwninit</code>이나 <code>patchelf</code>로 특정 libc를 맞춰 써야 하는데 정확히 몇 버전을 구해야 하는지 판단이 안 설 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 버전을 알아야 하는가</h3>
+<p>glibc는 하나의 코드베이스가 계속 진화하는 라이브러리라서, 같은 함수 이름이라도 버전에 따라 내부 동작·보안 검사·심지어 심볼 이름 자체가 다르다. 익스플로잇 오프셋(<code>system</code> 주소와 <code>"/bin/sh"</code> 문자열 사이 거리, <code>one_gadget</code> 조건 등)은 물론이고 정적 분석 중 "이 코드가 왜 이런 검사를 하지?"를 이해하는 데도 버전 지식이 필요하다. CTF에서 흔한 실수 1위가 로컬 libc와 문제 배포 libc 버전이 달라 오프셋이 안 맞는 것이다.</p>
+<h3>함수 이름 자체가 바뀌는 경우 — __isoc99_ 접두사</h3>
+<p>glibc 2.7부터 C99 표준을 엄격히 준수하는 <code>scanf</code> 계열 함수가 <code>__isoc99_scanf</code>, <code>__isoc99_sscanf</code>, <code>__isoc99_fscanf</code> 라는 별도 심볼로 제공된다. 소스 코드에서 <code>scanf(...)</code>를 호출해도 컴파일 시 헤더의 매크로/별칭 처리로 실제로는 <code>__isoc99_scanf</code>가 링크된다. 그래서 <code>readelf --dyn-syms ./chall</code>이나 IDA Imports에는 <code>scanf</code>가 아니라 <code>__isoc99_scanf</code>로 보인다. 이 함수는 <code>%d</code>, <code>%c</code> 같은 포맷의 폭(width)/부호 해석을 C99 규격에 맞게 처리한다는 점만 다르고, CTF 리버싱 관점에서는 그냥 <code>scanf</code>로 취급해도 무방하다.</p>
+<h3>힙 방어 로직의 버전별 변화</h3>
+<ul><li><strong>2.26</strong>: tcache(thread-local cache) 도입. <code>malloc</code>/<code>free</code>가 크기별 최대 7개(기본값)까지 스레드 로컬 단일 연결 리스트에 청크를 캐싱해 속도를 높였지만, 초기 구현에는 double-free 검사가 없어 tcache dup 공격이 매우 쉬웠다.</li><li><strong>2.29</strong>: <code>tcache_entry</code> 구조체에 <code>key</code> 필드 추가. <code>free()</code> 시 해제하려는 청크가 이미 같은 tcache bin에 들어있는지 순회 검사하고, 일치하면 <code>free(): double free detected in tcache 2</code>를 출력하며 중단한다. <code>struct tcache_entry { struct tcache_entry *next; struct tcache_perthread_struct *key; };</code> 형태다.</li><li><strong>2.31~2.32</strong>: 여러 sanity check 강화(<code>malloc(): invalid size (unsorted)</code>, <code>free(): invalid pointer</code> 등 메시지 세분화). 2.32에서 <strong>safe-linking</strong>이 fastbin과 tcache에 도입되어, 리스트의 <code>fd</code>(next) 포인터가 <code>PROTECT_PTR(pos, ptr) = ((size_t)pos &gt;&gt; 12) ^ (size_t)ptr</code> 공식으로 마스킹된다. 여기서 <code>pos</code>는 포인터가 저장된 위치(청크 자신의 주소)다. 힙 주소 leak 없이 <code>fd</code>를 조작하는 tcache poisoning이 이 시점부터 훨씬 어려워졌다.</li><li><strong>2.34</strong>: 이전까지 <code>libpthread.so.0</code>, <code>libdl.so.2</code>, <code>libutil.so.1</code>, <code>libanl.so.1</code>로 나뉘어 있던 기능이 <code>libc.so.6</code> 하나로 통합됐다. <code>pthread_create</code> 등에 <code>-lpthread</code> 없이 바로 접근 가능해졌고, <code>__libc_start_main</code>에 새 <code>GLIBC_2.34</code> 심볼 버전이 추가돼 이 버전 이상으로 빌드된 바이너리는 구버전 시스템에서 실행되지 않는다(<code>version GLIBC_2.34 not found</code> 에러의 원인).</li><li><strong>2.34 전후</strong>: <code>__malloc_hook</code>, <code>__free_hook</code>, <code>__realloc_hook</code> 같은 훅 포인터가 2.34에서 완전히 제거됐다. 이 훅을 GOT처럼 덮어써서 <code>system</code>을 호출시키는 고전 기법(House of Force 계열의 훅 오버라이트)은 2.34 이상에서 더 이상 통하지 않는다.</li></ul>
+<h3>버전을 확인하는 실전 방법</h3>
+<p>가장 정확한 방법은 대상 <code>libc.so.6</code> 자체에서 얻는 것이다.</p>
+<pre><code class="language-bash">strings ./libc.so.6 | grep "GNU C Library"
+./libc.so.6   # 실행 파일처럼 직접 실행하면 버전 정보를 출력한다</code></pre>
+<p><code>libc.so.6</code>을 인자 없이 직접 실행하면 <code>GNU C Library (Ubuntu GLIBC 2.31-0ubuntu9.9) stable release version 2.31.</code> 같은 배너와 컴파일러 버전, 컴파일 옵션까지 출력해준다. 대상 실행 파일만 있고 <code>libc.so.6</code>이 없다면, <code>readelf --dyn-syms ./chall</code>에서 각 심볼 뒤에 붙은 <code>@GLIBC_x.y</code> 중 가장 높은 버전이 "이 바이너리가 최소한 요구하는 glibc 버전"이다(정확한 빌드 버전은 아닐 수 있음, REV-0653 참고).</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA Imports에 <code>scanf</code> 대신 <code>__isoc99_scanf</code>, <code>__isoc99_sscanf</code></li><li><code>free()</code> 크래시 메시지에 <code>double free detected in tcache 2</code>(2.29+ 신호)</li><li>pwndbg에서 tcache의 <code>fd</code> 값이 힙 주소로 안 보이고 이상한 큰 정수로 보임(safe-linking, 2.32+ 신호)</li><li><code>objdump -T ./chall | grep GLIBC</code> 결과 최고 버전이 <code>GLIBC_2.34</code>(libpthread/libdl 통합 이후)</li><li>원격 실행 시 <code>/lib/x86_64-linux-gnu/libc.so.6: version 'GLIBC_2.34' not found</code> 에러</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>CTF 배포 파일에 <code>libc.so.6</code>이 동봉되어 있다면 그 파일을 직접 실행(<code>./libc.so.6</code>)해서 버전 배너부터 확인한다. 동봉되지 않았다면 <code>readelf --dyn-syms ./chall</code>로 요구 버전을 추정하고, <code>libc-database</code> 같은 도구로 정확한 버전을 찾아 로컬에 받아둔다.</p>
+<h2>단계별 절차</h2>
+<ol><li>배포 파일에 <code>libc.so.6</code>이 있는지 확인</li><li>있다면 <code>./libc.so.6</code> 직접 실행 또는 <code>strings libc.so.6 | grep "GNU C Library"</code>로 버전 확인</li><li>없다면 <code>readelf --dyn-syms ./chall</code>로 요구되는 <code>GLIBC_x.y</code> 최댓값 확인(REV-0653)</li><li><code>patchelf --set-interpreter ./ld-2.31.so --set-rpath . ./chall</code> 등으로 정확한 버전의 loader/libc를 강제 로드해서 로컬 재현 환경을 맞춘다(REV-0649 참고)</li><li>힙 관련 문제라면 해당 버전에 어떤 방어(tcache key, safe-linking)가 들어있는지부터 확인하고 익스플로잇 전략을 정한다</li><li>훅 기반 기법을 시도하기 전에 2.34 이상인지 확인 — 이상이면 <code>__free_hook</code> 등이 없으므로 다른 접근(FSOP, ROP 등)이 필요하다</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">./libc.so.6
+strings ./libc.so.6 | grep "GNU C Library"
+readelf --dyn-syms ./chall | grep GLIBC
+objdump -T ./chall | grep GLIBC
+patchelf --set-interpreter ./ld-2.31.so --set-rpath . ./chall</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>./libc.so.6</code> 실행 결과의 <code>stable release version X.Y</code>가 가장 신뢰할 수 있는 정확한 버전 정보다.</li><li><code>readelf --dyn-syms</code>에서 얻는 버전은 "최소 요구 버전"일 뿐, 실제 빌드에 쓰인 버전과 100% 일치한다는 보장은 없다(더 최신 libc에서도 오래된 버전 심볼을 그대로 쓰는 함수가 있을 수 있음, REV-0653 참고).</li><li><code>double free detected in tcache 2</code>처럼 메시지에 구체적 숫자/단어가 붙은 경우, 그 문구 자체가 특정 glibc 커밋에서 도입된 것이므로 검색만 해도 최소 버전을 역추적할 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>로컬 Ubuntu 시스템의 libc 버전과 문제 배포 libc 버전이 다른데 그냥 로컬 걸로 디버깅해서 오프셋이 안 맞는 것.</li><li><code>__malloc_hook</code>/<code>__free_hook</code> 기반 익스플로잇을 2.34 이상 libc에 시도하고 왜 안 되는지 못 찾는 것 — 애초에 그 심볼이 없다.</li><li><code>__isoc99_scanf</code>를 보고 "이건 scanf가 아니라 다른 함수"라고 오해해서 인자 해석을 다르게 하는 것 — 사실상 scanf와 동일하게 다루면 된다.</li><li>safe-linking이 적용된 버전에서 leak 없이 곧바로 <code>fd</code> 값을 원하는 주소로 덮어쓰려다 실패하는 것 — 힙 주소 leak이 선행되어야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>.gnu.version_r</code>/<code>.gnu.version</code> 구조 자체를 더 깊이 이해하고 싶다면 → REV-0653 ELF Symbol Versioning(GLIBC_2.x) 이해하기</li><li>특정 libc/interpreter로 강제 실행하는 구체적 방법이 필요하면 → REV-0649 ELF Interpreter(ld-linux.so)가 하는 일</li><li>tcache 구조체와 key 필드, safe-linking을 힙 구조 관점에서 더 자세히 보려면 → REV-0654 tcache와 fastbin 등 glibc 힙 구조 개요</li><li>정적 링킹 바이너리에 내장된 libc 버전을 찾는 법이 필요하면 → REV-0646 정적 링킹된(Statically Linked) ELF 분석 접근법</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ ./libc.so.6
+GNU C Library (Ubuntu GLIBC 2.31-0ubuntu9.9) stable release version 2.31.
+Copyright (C) 2020 Free Software Foundation, Inc.
+...
+
+$ readelf --dyn-syms ./chall | grep GLIBC | sort -t_ -k2 -V | tail -3
+    12: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND __isoc99_scanf@GLIBC_2.7
+    15: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND __stack_chk_fail@GLIBC_2.4
+    20: 0000000000000000     0 FUNC    GLOBAL DEFAULT  UND puts@GLIBC_2.2.5</code></pre>
+<p>이 예시는 최고 요구 버전이 <code>GLIBC_2.7</code>(<code>__isoc99_scanf</code>)뿐이라 실제 빌드 버전을 정확히 특정하기엔 부족하지만, "2.7 미만 시스템에서는 절대 못 돌아간다"는 하한선은 알려준다. 정확한 버전은 동봉된 <code>libc.so.6</code>을 직접 실행해 확인해야 한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0653-elf-symbol-versioning.html">REV-0653 — ELF Symbol Versioning(GLIBC_2.x) 이해하기</a></li><li><a href="rev-0649-ld-linux-so-interpreter.html">REV-0649 — ELF Interpreter(ld-linux.so)가 하는 일</a></li><li><a href="rev-0654-tcache-fastbin-heap-overview.html">REV-0654 — tcache와 fastbin 등 glibc 힙 구조 개요(리버싱 관점)</a></li><li><a href="rev-0655-glibc-malloc-internal-flow.html">REV-0655 — glibc malloc 내부 흐름 개요(청크 헤더 수준)</a></li><li><a href="rev-0646-statically-linked-elf-analysis.html">REV-0646 — 정적 링킹된(Statically Linked) ELF 분석 접근법</a></li><li><a href="rev-0109-input-functions.html">REV-0109 — scanf fgets read 입력 추적</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>__isoc99_scanf</code> 계열 심볼 도입(glibc 2.7, C99 준수): glibc NEWS 및 매뉴얼 기준.</li><li>tcache <code>key</code> 필드와 <code>double free detected in tcache 2</code> 검사(glibc 2.29): glibc 공식 저장소 커밋 로그(<code>malloc/malloc.c</code>, tcache_entry에 key 필드 추가) 기준.</li><li>Safe-linking <code>PROTECT_PTR</code> 공식(glibc 2.32): glibc 소스 <code>malloc/malloc.c</code> 및 공개된 보안 분석 자료 기준.</li><li>glibc 2.34의 libpthread/libdl/libutil/libanl 통합 및 <code>__malloc_hook</code> 계열 제거: Red Hat Developer 공식 블로그("Why glibc 2.34 removed libpthread") 및 glibc 2.34 NEWS 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

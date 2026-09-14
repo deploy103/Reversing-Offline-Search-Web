@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Write-up] randzzz · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / writeup</div>
+<article class="article-body">
+<h1>[Write-up] randzzz</h1>
+<div class="article-meta"><span class="tag">writeup</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>드림핵 Silver 4 "randzzz"는 "fall asleep from now on."을 출력한 뒤 난수로 정해진 시간만큼 <code>sleep()</code>하고, 이어서 서로 다른 난수값과 비교하는 두 개의 조건문을 연달아 통과해야 플래그가 나오는 문제로, 난수 생성 알고리즘 자체를 역산하지 않고도 디버거로 <code>sleep</code> 인자와 비교 대상 레지스터 값을 실행 중에 직접 확인해서 그 자리에서 값을 바꿔 넣는 동적 패치로 풀린다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>프로그램을 실행하면 "fall asleep from now on." 같은 문구가 뜨고 그 뒤로 한참 응답이 없어서 그냥 멈춘 것처럼 보일 때</li><li>IDA에서 <code>sleep</code> 호출 바로 앞에 <code>rand()</code>나 시드 기반 연산 결과가 레지스터에 로드되는 패턴이 보일 때</li><li>입력을 한 번만 받는데 조건 분기(<code>cmp</code>/<code>jne</code>)가 두 번 이상 연속으로 나오고, 각 분기가 서로 다른 값과 비교하는 것처럼 보여서 "대체 뭘 입력해야 둘 다 통과하나" 싶을 때</li><li>난수라서 값이 실행마다 달라 정적으로 하드코딩된 정답을 찾을 수 없어 보이는 상황일 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>sleep() 인자를 실행 중에 직접 확인하고 바꾸는 이유</h3>
+<p><code>sleep(n)</code>은 <code>n</code>초 동안 프로세스를 재운다. 이 문제는 <code>n</code>을 난수로 정하기 때문에 실행마다 대기 시간이 달라지고, 운이 나쁘면 체감상 매우 길게 느껴질 수 있다. 이를 정적으로 계산해서 기다리는 대신, <code>sleep</code>을 호출하는 명령어 직전에 브레이크포인트를 걸고 인자가 담기는 레지스터(x64 System V 호출 규약에서 첫 번째 정수 인자는 <code>edi</code>/<code>rdi</code>)를 확인한 다음, 디버거에서 그 값을 <code>1</code>로 바꿔서 실제로는 1초만 자게 만드는 것이 실전적인 접근이다. <code>eax</code>에 담겨 있던 난수 결과를 <code>edi</code>로 옮기기 직전이라면 <code>eax</code>를 원하는 값으로 바꿔도 같은 효과를 낸다.</p>
+<h3>입력을 한 번만 받는데 조건이 두 개인 구조</h3>
+<p>프로그램 흐름상 사용자 입력은 한 번만 받지만, 그 입력값(또는 입력에서 파생된 값)을 서로 다른 두 지점에서 각각 다른 난수 기반 값과 비교하는 것으로 보인다. 즉 하나의 <code>if</code> 검사를 통과한 뒤 곧바로 또 다른 <code>if</code> 검사가 이어지는 구조다. 두 비교값이 모두 난수라서 매 실행마다 달라지므로, "정답을 외워서 넣는" 전략은 통하지 않고 그때그때 디버거로 비교 직전 레지스터 값을 읽어 맞춰주는 전략이 필요하다.</p>
+<h3>비교 직전 레지스터 값을 읽어 조건을 통과시키는 절차</h3>
+<p>각 <code>if</code> 검사는 어셈블리 수준에서 <code>cmp 레지스터, 상수</code>(또는 <code>cmp 레지스터, 레지스터</code>) 다음에 <code>jne</code>/<code>jnz</code> 같은 분기로 구현된다. <code>jne</code> 명령어 바로 앞에 브레이크포인트를 걸면, 그 시점의 레지스터 값이 곧 "이 검사를 통과하려면 입력이 어떤 값이어야 하는가"에 대한 답이 된다. 첫 번째 검사에서는 비교 대상 레지스터(예: <code>ecx</code>)가 특정 값을 담고 있는 것을 확인하고, 그 값을 실제 입력으로 사용해 첫 관문을 통과한다. 이어서 두 번째 검사 지점에서도 마찬가지로 비교 대상 레지스터(예: <code>rcx</code>)를 확인하고, 이번엔 디버거에서 그 레지스터에 필요한 값을 직접 대입해 두 번째 관문까지 강제로 통과시킨다.</p>
+<h3>왜 "알고리즘을 완전히 풀지 않아도" 되는가</h3>
+<p>이 문제의 핵심은 RNG의 시드나 생성 알고리즘 자체를 역산해서 "다음에 나올 값"을 예측하는 데 있지 않다. 오히려 디버거가 프로그램의 메모리와 레지스터를 실행 중에 자유롭게 읽고 쓸 수 있다는 점을 이용해, "비교 직전 상태"를 관찰하고 그 상태에 맞춰 입력/레지스터를 맞춰주는 것으로 충분하다. 이런 방식은 CTF 리버싱에서 난수 검증을 다루는 매우 실전적인 패턴이며, RNG를 수학적으로 완전히 이해할 필요가 없다는 것이 randzzz류 문제의 특징이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>실행 시 "fall asleep from now on." 문구가 출력된 뒤 프로그램이 오랫동안 응답하지 않는다(사실은 <code>sleep()</code> 중).</li><li>IDA에서 <code>sleep</code> 호출 직전에 <code>mov edi, eax</code> 같은 코드가 있고, 그 <code>eax</code>는 <code>rand()</code>류 함수의 반환값을 가공한 값으로 보인다.</li><li>입력을 받는 코드(<code>scanf</code>/<code>read</code>) 이후 <code>cmp</code>+<code>jne</code> 쌍이 짧은 간격으로 두 번 연속 나온다.</li><li>첫 번째 <code>if</code>를 통과하면 플래그의 앞부분(또는 별도 메시지)이 출력되고, 두 번째 <code>if</code>까지 통과해야 전체 플래그가 완성되는 것처럼 보인다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>IDA로 <code>sleep</code> 호출 위치와 그 직전에 인자를 만드는 코드를 먼저 확인해 "실행마다 대기 시간이 달라지는 지점"을 특정한다. 그다음 GDB(또는 Pwndbg)로 그 지점에 브레이크포인트를 걸어 실제로 인자 레지스터 값을 관찰하고, 값을 짧게 바꿔서 대기 시간을 없앤 뒤에야 그 이후 로직(두 개의 조건문)을 여유 있게 분석한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>IDA에서 <code>sleep</code>을 Imports에서 찾아 호출부로 Xref(X 키)를 따라간다.</li><li><code>sleep</code> 호출 직전에 인자를 만드는 코드(예: <code>rand()</code> 결과를 가공해 <code>edi</code>/<code>rdi</code>로 옮기는 부분)를 확인한다.</li><li>GDB로 실행하고 <code>sleep</code> 호출 명령어 주소에 브레이크포인트를 건다: <code>b *0x주소</code>.</li><li>프로그램을 실행(<code>r</code>)해 브레이크포인트에서 멈추면 <code>p $edi</code>(또는 <code>i r rdi</code>)로 실제 대기 시간을 확인하고, <code>set $edi = 1</code>로 강제로 1초로 줄인다.</li><li><code>sleep</code> 이후 흐름을 계속 진행(<code>c</code>)하며 입력을 요구하는 지점까지 간다.</li><li>입력 이후 첫 번째 <code>cmp</code>+<code>jne</code> 지점에 브레이크포인트를 걸고, 비교 대상 레지스터 값을 확인한다.</li><li>확인한 값을 실제 프로그램 입력으로 사용해 첫 번째 조건을 통과시킨다(또는 그 값이 이미 다른 방식으로 결정된다면 디버거에서 레지스터를 직접 그 값으로 맞춰준다).</li><li>두 번째 <code>cmp</code>+<code>jne</code> 지점에서도 동일하게 비교 대상 레지스터 값을 확인하고, <code>set $레지스터 = 확인한값</code>으로 강제 대입한 뒤 계속 실행해 두 검사를 모두 통과시킨다.</li><li>두 조건을 모두 통과하면 출력되는 문자열을 조합해 최종 플래그를 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">gdb ./randzzz
+(gdb) b *0x401234           # sleep 호출 직전/직후 주소
+(gdb) r
+(gdb) p $edi                # sleep 인자로 들어갈 값 확인
+(gdb) set $edi = 1          # 대기 시간을 1초로 강제
+(gdb) c
+(gdb) b *0x401300           # 첫 번째 cmp/jne 지점
+(gdb) p $ecx                # 비교 대상 값 확인
+(gdb) b *0x401360           # 두 번째 cmp/jne 지점
+(gdb) set $rcx = 3          # 두 번째 검사에 필요한 값으로 강제 대입
+(gdb) c</code></pre>
+<p>Pwndbg를 함께 쓰면 <code>c</code> 이후 <code>context</code> 화면에서 다음 몇 줄의 어셈블리와 레지스터 상태를 한 화면에서 바로 볼 수 있어 <code>cmp</code> 직후 어느 분기로 갈지 예측하기 쉬워진다.</p>
+<h2>출력 해석</h2>
+<ul><li><code>sleep</code> 인자를 확인했을 때 값이 매 실행마다 다르게 나오는 것이 정상이며, 이는 <code>rand()</code>의 시드가 실행마다(예: 현 시각 기반) 달라지기 때문이다. 값을 강제로 줄이는 것이 목적이므로 원래 값이 무엇이었는지는 중요하지 않다.</li><li>첫 번째 검사에서 확인한 레지스터 값(예: <code>5</code>)은 "이 실행에서 우연히 그 값이 나왔다"는 뜻이므로, 다시 실행하면 다른 값이 나올 수 있다. 따라서 이 절차는 매 실행마다 다시 관찰하고 다시 맞춰주는 것이 원칙이다.</li><li>두 번째 검사까지 통과했는데도 플래그가 온전히 안 보인다면, 두 조건이 각각 플래그의 다른 조각을 출력하는 구조일 수 있으므로 두 출력을 이어붙여야 완성될 가능성을 염두에 둔다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>sleep</code> 시간을 줄이지 않고 그냥 실제로 오래 기다리다가 디버깅 세션이나 터미널을 실수로 끄는 것.</li><li>첫 번째 조건에서 확인한 값을 두 번째 조건에도 그대로 쓰려는 것 — 문제 설명상 두 조건은 서로 다른 난수값과 비교하므로 각 지점에서 다시 확인해야 한다.</li><li><code>cmp</code> 대상이 즉시값이 아니라 다른 레지스터/메모리일 때, 그 레지스터가 이미 난수로 채워진 상태라는 것을 놓치고 상수라고 오해하는 것.</li><li>GDB에서 <code>set $edi = 1</code>처럼 레지스터를 직접 바꾸는 것이 가능하다는 것을 몰라서 매번 실제로 대기 시간을 다 기다리는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>rand()</code>/<code>srand()</code> 기반 난수 문제의 시드 추정 자체가 필요한 다른 유형이라면 → REV-0893 rand()/srand() 시드 기반 문제 접근법</li><li>난수 생성 알고리즘 구조(LCG 등)를 더 깊이 분석해야 하는 경우라면 → REV-0891 LCG(Linear Congruential Generator) 기반 난수 알아보기</li><li><code>sleep</code>이 실제로는 안티디버깅/안티샌드박스 용도로 쓰이는 다른 유형의 문제라면 → REV-0573 Sleep 남용과 안티디버깅/안티샌드박스 기법</li><li>GDB 조건부 브레이크포인트로 이 과정을 자동화하고 싶다면 → REV-0819 GDB에서 조건부 브레이크포인트(condition) 활용하기</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">// 구조 설명용 재구성 예시 (원문 코드 아님)
+int main() {
+    printf("fall asleep from now on.\n");
+    unsigned r = rand() % 10 + 1;
+    sleep(r);
+
+    int a; scanf("%d", &amp;a);
+    if (a != rand() % 10) {           // 첫 번째 검사
+        puts("wrong"); return 1;
+    }
+    puts("part1 ok");
+
+    if (a + 1 != rand() % 10) {       // 두 번째 검사(예시)
+        puts("wrong"); return 1;
+    }
+    puts("flag part2 ok");
+    return 0;
+}</code></pre>
+<p>실제 randzzz의 두 검사는 각각 다른 시점의 <code>rand()</code> 결과와 비교하므로, 디버거로 두 지점 각각에서 "지금 이 순간 필요한 값"을 확인하고 그 값을 입력/레지스터에 반영하는 것이 알고리즘을 완전히 풀지 않고도 통과하는 핵심이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0893-rand-srand-seed-approach.html">REV-0893 — rand()/srand() 시드 기반 문제 접근법</a></li><li><a href="rev-0891-lcg-linear-congruential-generator.html">REV-0891 — LCG(Linear Congruential Generator) 기반 난수 알아보기</a></li><li><a href="rev-0573-sleep-antidebug-antisandbox.html">REV-0573 — Sleep 남용과 안티디버깅/안티샌드박스 기법</a></li><li><a href="rev-0819-gdb-conditional-breakpoint-condition.html">REV-0819 — GDB에서 조건부 브레이크포인트(condition) 활용하기</a></li><li>[REV-1046 — [Write-up] Long Sleep](rev-1046-writeup-long-sleep.html)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>"fall asleep from now on." 출력 문구, <code>sleep()</code> 호출에 난수 기반 인자가 쓰인다는 점, 두 개의 연속된 조건 검사가 각각 다른 난수값과 비교한다는 점, <code>sleep</code> 인자 레지스터를 강제로 줄이고 비교 직전 레지스터 값을 읽어 맞춰주는 풀이 방식: velog.io/@buaii/randzzz write-up의 분석 내용을 참고해 새로 서술함(원문의 정확한 레지스터명/상수는 재구성한 예시이며 원문을 그대로 인용하지 않음).</li><li>이 문제가 Dreamhack CTF div2에서 출제된 리버싱 문제라는 배경도 같은 write-up에서 확인됨.</li><li>정확한 바이너리 주소, 실제 플래그 값은 이번 조사에서 확인하지 않았으며 이 글에도 기재하지 않았다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

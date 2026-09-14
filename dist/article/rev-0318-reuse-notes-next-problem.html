@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>문제 풀이 후 정리 노트를 다음 문제에 재사용하는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>문제 풀이 후 정리 노트를 다음 문제에 재사용하는 법</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>문제를 풀고 나면 그 자리에서 끝내지 말고 <strong>패턴별로 분류한 개인 노트(치트시트)와 재사용 가능한 Python 스니펫 라이브러리</strong>로 결과물을 남겨두면, 다음에 비슷한 유형의 문제를 만났을 때 처음부터 분석하지 않고 과거 노트에서 바로 시작할 수 있어 풀이 속도가 누적적으로 빨라진다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>문제를 다 풀고 나서 다음 문제로 그냥 넘어가려는 순간</li><li>예전에 분명히 비슷한 문제를 풀었던 것 같은데 그때 어떻게 했는지 기억이 안 나서 처음부터 다시 분석하고 있을 때</li><li>매번 XOR, Base64, TEA 같은 흔한 패턴을 만날 때마다 Python 코드를 처음부터 새로 짜고 있을 때</li><li>스터디나 대회를 여러 번 반복하는데 실력이 느는 느낌이 안 들 때</li></ul>
+<h2>핵심 개념</h2>
+<p>REV-0014(리버싱 노트 작성법)와 REV-0317(write-up 읽기 전 기록)이 <strong>문제를 푸는 도중과 write-up 비교 시점</strong>의 기록이라면, 이 문서는 <strong>문제를 다 풀고 난 뒤 그 결과물을 어떻게 정리해서 미래의 자신이 재사용할 수 있게 만드는가</strong>를 다룬다. 세 문서는 서로 다른 시점을 커버하는 하나의 연속된 습관이다.</p>
+<h3>왜 재사용 가능한 정리가 필요한가</h3>
+<p>CTF 리버싱 문제는 겉보기엔 매번 다르지만, 실제로 쓰이는 패턴(XOR 루프, Base64 변형, TEA/XTEA, 다단계 검증, 커스텀 VM 등)은 한정되어 있다. REV-0196~0223(algorithms 카테고리)에서 다루는 패턴들이 실제로 반복해서 등장한다. 문제를 풀 때마다 "이건 예전에 봤던 그 패턴이다"를 빨리 알아챌 수 있다면 분석 시간이 크게 줄어드는데, 이를 위해서는 과거에 푼 문제의 정보가 <strong>검색 가능하고 패턴별로 분류된 형태</strong>로 남아 있어야 한다. 노트가 문제별로 흩어진 일기 형태로만 쌓이면, "이 패턴 어떻게 풀었더라"를 떠올릴 때 옛날 노트를 처음부터 다 뒤져야 해서 사실상 재사용이 안 된다.</p>
+<h3>정리 구조: 문제 로그와 패턴 노트를 분리한다</h3>
+<ol><li><strong>문제 로그(시간순)</strong>: 어떤 대회에서 어떤 문제를 풀었는지, 소요 시간, 최종 flag, 배운 점을 시간순으로 기록. 이건 REV-0325(풀이 시간 기록)와도 연결되는 개인 이력 기록이다.</li><li><strong>패턴 노트(주제별)</strong>: "XOR 루프", "Base64 변형", "다단계 검증", "커스텀 VM" 같은 주제별 폴더/문서에 그 패턴을 만났을 때의 알아보는 법과 풀이 스니펫을 모아둔다. 문제 로그에 쓴 내용 중 재사용 가능한 부분을 패턴 노트로 복사해서 옮기는 것이 핵심 작업이다.</li></ol>
+<p>문제 로그만 쌓고 패턴 노트로 옮기지 않으면, 정보는 있지만 검색이 안 돼서 사실상 죽은 기록이 된다.</p>
+<h3>재사용 가능한 스크립트 라이브러리 만들기</h3>
+<p>Python으로 재구현한 검증 로직(REV-0017, REV-0222)은 그 문제 하나만을 위한 일회성 스크립트로 버리지 말고, 범용 함수로 다듬어 개인 라이브러리에 저장한다.</p>
+<pre><code class="language-python"># xor_utils.py — 개인 스니펫 라이브러리 예시
+def xor_bytes(data: bytes, key: bytes) -&gt; bytes:
+    return bytes(d ^ key[i % len(key)] for i, d in enumerate(data))
+
+def try_single_byte_xor(data: bytes):
+    """단일 바이트 XOR 키를 0~255 전부 시도해 결과를 반환"""
+    return {k: xor_bytes(data, bytes([k])) for k in range(256)}</code></pre>
+<p>다음에 비슷한 XOR 문제를 만나면 이 함수를 그대로 <code>import</code>해서 몇 초 안에 시도해볼 수 있다. TEA/XTEA, Base64 변형 알파벳 처리, 커스텀 VM opcode 디스어셈블러 등도 같은 방식으로 라이브러리화할 수 있다.</p>
+<h3>정리 시점과 소요 시간</h3>
+<p>문제를 풀고 나서 <strong>바로</strong>, 다음 문제로 넘어가기 전에 15~20분을 투자해 정리한다. 시간이 지날수록 세부 사항(어떤 함수가 검증 함수였는지, 왜 그렇게 판단했는지)을 잊어버리므로, 이 정리는 미루면 미룰수록 품질이 떨어진다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>이 글도 REV-0317과 마찬가지로 화면/코드보다는 습관을 다루므로, 다음과 같은 정황을 "징후"로 본다.</p>
+<ul><li>문제를 풀자마자 바로 다음 문제나 다른 작업으로 넘어가고 정리하는 시간이 전혀 없다.</li><li>노트 파일을 열어보면 문제별로만 나뉘어 있고 패턴/주제별로 묶인 문서가 없다.</li><li>이전에 짠 Python 스크립트들이 문제별 폴더에 흩어져 있고 재사용 가능한 형태로 정리된 라이브러리가 없다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문제를 풀고 flag를 제출한 직후, 아직 세부 사항이 기억날 때 바로 정리 시간을 갖는다. 다음 문제나 다음 스케줄로 넘어가기 전에 15~20분을 이 작업에 배정한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>문제 로그에 시간순으로 기록: 문제명, 소요 시간, 최종 flag, 핵심 배운 점 한 줄</li><li>이번 문제에서 쓰인 패턴을 식별(XOR, Base64 변형, 다단계, VM 등)</li><li>해당 패턴의 패턴 노트 문서가 이미 있으면 열어서 이번 사례를 추가, 없으면 새로 만든다</li><li>패턴 노트에는 "이 패턴을 알아보는 징후"와 "이번에 통했던 접근법"을 함께 적는다</li><li>이번에 짠 Python 코드 중 범용화 가능한 부분을 뽑아 개인 스니펫 라이브러리 파일에 함수로 저장</li><li>라이브러리 함수에는 짧은 설명(docstring)과 사용 예시를 남긴다</li><li>REV-0317에서 write-up과 비교해 얻은 누락/오류 목록이 있다면 여기서 함께 패턴 노트에 반영</li><li>다음에 비슷한 문제를 풀 때는 처음부터 분석하지 말고 패턴 노트와 스니펫 라이브러리부터 확인하는 습관을 들인다</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>특별한 도구 명령어는 없으며, 폴더 구조 예시로 대체한다.</li></ul>
+<pre><code>notes/
+  log/2026-09-09-picoctf-babyrev.md      # 문제 로그(시간순)
+  patterns/xor-loop.md                    # 패턴 노트(주제별)
+  patterns/multi-stage.md
+  patterns/custom-vm.md
+  snippets/xor_utils.py                   # 재사용 스니펫 라이브러리
+  snippets/vm_disasm_template.py</code></pre>
+<h2>출력 해석</h2>
+<ul><li>패턴 노트 문서 개수가 늘어날수록, 새 문제를 받았을 때 "이거 어디서 본 것 같은데"라는 감이 더 빨리, 더 정확하게 온다 — 이는 실제로 시간이 지날수록 리버싱 속도가 빨라지고 있다는 증거다.</li><li>스니펫 라이브러리에서 그대로 가져다 쓸 수 있는 함수가 있으면, REV-0016/REV-0222 단계(로직을 Python으로 재구현)가 몇 분 안에 끝난다 — 이 단계가 매번 오래 걸린다면 라이브러리화가 부족하다는 신호다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>문제를 풀자마자 바로 다음 문제로 넘어가서 정리를 미루다가 결국 안 하게 되는 것 — 세부 사항을 잊기 전에 바로 하는 것이 핵심이다.</li><li>문제 로그만 쌓고 패턴별 노트로 옮기지 않아서, 기록은 많은데 검색이 안 되는 것.</li><li>스크립트를 문제별 폴더에만 저장하고 범용 함수로 다듬지 않아서, 다음에 비슷한 문제를 만나도 코드를 처음부터 다시 짜는 것.</li><li>패턴 노트를 만들어놓고 새 문제를 풀 때 확인하러 돌아가지 않는 것 — 정리해두고 활용하지 않으면 의미가 없다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>문제 도중 기록하는 습관 자체가 안 잡혀 있다 → REV-0014 리버싱 노트 작성법: 함수 이름 바꾸기와 가설 기록</li><li>write-up과 비교한 결과를 어떻게 반영할지 궁금하다 → REV-0317 Write-up을 읽기 전에 스스로 어디까지 풀었는지 기록하는 법</li><li>어떤 패턴들이 흔히 반복되는지 목록이 필요하다 → REV-0196 strcmp 기반 Flag 검증 패턴, REV-0199 XOR 반복 변환 역산, REV-0210 TEA와 XTEA 상수 패턴, REV-0212 Base64 인코딩 검증 패턴</li><li>풀이 시간 자체를 기록해서 병목을 찾고 싶다 → REV-0325 리버싱 문제 풀이 시간을 기록하고 병목을 찾는 법 (예정)</li></ul>
+<h2>미니 예제</h2>
+<p>어떤 문제에서 커스텀 VM(REV-0315 유형)을 만나 opcode 표를 손으로 만들며 3시간을 썼다. 문제를 풀고 나서 20분을 들여 <code>patterns/custom-vm.md</code>에 "이 패턴을 알아보는 징후(거대 switch, 공통 레지스터 배열, pc 변수)"와 "opcode 표를 빠르게 만드는 절차"를 정리하고, 바이트코드를 니모닉으로 변환하는 Python 스니펫을 <code>snippets/vm_disasm_template.py</code>로 저장해두었다. 두 달 뒤 다른 대회에서 비슷한 VM 구조의 문제를 만났을 때, 처음부터 분석하지 않고 이 노트와 스니펫을 열어 opcode 매핑 틀만 바꿔가며 40분 만에 풀 수 있었다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0014-reversing-notes.html">REV-0014 — 리버싱 노트 작성법: 함수 이름 바꾸기와 가설 기록</a></li><li><a href="rev-0317-record-progress-before-writeup.html">REV-0317 — Write-up을 읽기 전에 스스로 어디까지 풀었는지 기록하는 법</a></li><li><a href="rev-0315-custom-vm-first-signs.html">REV-0315 — 커스텀 가상머신(VM) 기반 문제를 알아보는 첫 징후</a></li><li><a href="rev-0222-reimplement-in-python.html">REV-0222 — 검증 루틴을 Python으로 그대로 재현하기</a></li><li><a href="rev-0016-when-bruteforce-works.html">REV-0016 — 브루트포스를 해도 되는 문제인지 판단하는 법</a></li><li><a href="rev-0325-track-solving-time-bottleneck.html">REV-0325 — 리버싱 문제 풀이 시간을 기록하고 병목을 찾는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>개인 지식 관리(패턴별 노트 정리, 재사용 가능한 코드 라이브러리화)와 반복 학습을 통한 숙련도 향상: 일반 학습 방법론 및 CTF 실전 경험칙 요약 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

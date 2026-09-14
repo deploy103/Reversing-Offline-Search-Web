@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Docker 컨테이너 안에서 gdb가 ptrace 권한 오류를 낼 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>Docker 컨테이너 안에서 gdb가 ptrace 권한 오류를 낼 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Docker</span><span class="tag">ptrace</span></div>
+<h2>한 줄 요약</h2>
+<p>Docker 컨테이너는 기본적으로 <code>ptrace</code> 시스템 콜을 seccomp 프로파일로 차단하고 <code>SYS_PTRACE</code> capability도 빼놓기 때문에, 컨테이너 안에서 GDB로 프로세스를 실행/attach하려 하면 호스트에서는 잘 되던 것과 달리 <code>ptrace: Operation not permitted</code> 오류가 나는데, 컨테이너를 실행할 때 <code>--cap-add=SYS_PTRACE</code>와 <code>--security-opt seccomp=unconfined</code>(또는 그에 준하는 프로파일)를 추가해야 해결된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>호스트에서는 <code>gdb ./chall</code> + <code>run</code>이 잘 되는데, 같은 바이너리를 Docker 컨테이너 안에서 실행하면 GDB가 <code>ptrace: Operation not permitted</code>를 낼 때</li><li>컨테이너 안에서 이미 실행 중인 프로세스에 <code>gdb -p PID</code>로 attach하려는데 권한 오류가 날 때</li><li>CI 파이프라인이나 CTF 문제 배포용 Docker 이미지 안에서 디버깅을 시도하는데 GDB가 아예 실행을 못 시킬 때</li><li><code>strace</code>도 같은 컨테이너 안에서 비슷한 권한 오류를 낼 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Docker 기본 보안 정책이 ptrace를 막는 이유</h3>
+<p><code>ptrace</code> 시스템 콜은 다른 프로세스의 메모리를 읽고 쓰고 실행을 제어할 수 있게 해주는 강력한 기능이라, 컨테이너 격리를 우회해 호스트나 다른 컨테이너를 공격하는 데 악용될 소지가 있다. 그래서 Docker는 기본 seccomp 프로파일에서 <code>ptrace</code> 계열 시스템 콜을 차단하고, 기본 capability 목록에서도 <code>SYS_PTRACE</code>를 빼놓는다. GDB, <code>strace</code>, <code>ltrace</code> 모두 내부적으로 <code>ptrace</code>를 사용하므로 이 기본 정책 아래에서는 아예 동작하지 못한다.</p>
+<h3>해결 — capability와 seccomp 프로파일 완화</h3>
+<p>컨테이너를 실행할 때 다음 두 가지를 추가하면 컨테이너 안에서도 GDB가 정상 동작한다.</p>
+<ul><li><code>--cap-add=SYS_PTRACE</code>: <code>ptrace</code> 시스템 콜을 실행할 수 있는 Linux capability를 부여한다.</li><li><code>--security-opt seccomp=unconfined</code>: 기본 seccomp 필터를 완전히 해제한다(더 좁게 제한하고 싶다면 <code>ptrace</code>를 허용하는 커스텀 seccomp 프로파일을 만들어 지정할 수도 있다).</li></ul>
+<p>두 옵션을 함께 줘야 한다 — capability만 주고 seccomp이 그대로면 여전히 시스템 콜 자체가 필터에 걸려 막힌다. <code>--privileged</code>로 컨테이너를 완전 권한으로 띄우면 이 문제가 한 번에 사라지지만, 이건 훨씬 더 넓은 권한을 부여하는 것이라 신뢰할 수 있는 로컬 실습 환경이 아니면 권장되지 않는다.</p>
+<h3>컨테이너 안이 아니라 호스트의 YAMA ptrace_scope가 원인인 경우도 있다</h3>
+<p>컨테이너 옵션을 다 맞게 줬는데도 여전히 안 된다면, 호스트 커널의 YAMA 모듈이 "부모-자식 관계가 아닌 프로세스 간의 ptrace"를 막고 있을 수 있다(<code>/proc/sys/kernel/yama/ptrace_scope</code> 기본값 <code>1</code>). GDB로 직접 <code>run</code>(자신이 자식으로 실행)한 경우는 보통 문제가 없지만, 이미 떠 있는 다른 프로세스에 <code>gdb -p PID</code>로 attach하려는 경우는 이 설정에 영향을 받을 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code>$ gdb ./chall
+(gdb) run
+Starting program: /app/chall
+ptrace: Operation not permitted.</code></pre>
+<p>또는</p>
+<pre><code>$ gdb -p 1234
+Attaching to process 1234
+ptrace: Operation not permitted.</code></pre>
+<h2>가장 먼저 할 것</h2>
+<p>컨테이너를 어떤 <code>docker run</code> 명령으로 띄웠는지 확인하고, <code>--cap-add=SYS_PTRACE</code>와 <code>--security-opt seccomp=unconfined</code>가 빠져 있는지부터 확인한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>현재 컨테이너를 종료하고, 다음 옵션을 추가해 다시 실행</li></ol>
+<pre><code class="language-bash">   docker run --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it &lt;이미지&gt; bash</code></pre>
+<ol><li>컨테이너 안에서 다시 <code>gdb ./chall</code> + <code>run</code>으로 재시도</li><li>그래도 안 되면 호스트에서 <code>cat /proc/sys/kernel/yama/ptrace_scope</code> 확인</li><li>값이 <code>1</code> 이상이고 attach 방식이 문제라면(호스트 관리자 권한이 있는 실습 환경 한정) 임시로 <code>echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope</code>로 완화 후 재시도, 작업 후 원복</li><li>docker-compose를 쓴다면 서비스 정의에 <code>cap_add: [SYS_PTRACE]</code>와 <code>security_opt: ["seccomp:unconfined"]</code>를 추가</li><li>그래도 안 되면 최후 수단으로 <code>--privileged</code>(신뢰 가능한 로컬 실습 환경에서만) 테스트해 문제 범위를 좁힌다</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">docker run --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it &lt;이미지&gt; bash
+cat /proc/sys/kernel/yama/ptrace_scope
+echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope</code></pre>
+<p>docker-compose.yml:</p>
+<pre><code class="language-yaml">services:
+  chall:
+    cap_add:
+      - SYS_PTRACE
+    security_opt:
+      - "seccomp:unconfined"</code></pre>
+<h2>출력 해석</h2>
+<p><code>ptrace: Operation not permitted.</code>는 GDB가 <code>ptrace(PTRACE_TRACEME 또는 PTRACE_ATTACH, ...)</code> 호출 자체가 커널/seccomp에 의해 거부됐다는 뜻이다. <code>--cap-add=SYS_PTRACE</code> + <code>--security-opt seccomp=unconfined</code>를 준 컨테이너에서 같은 명령이 정상적으로 <code>Starting program:</code> 이후 실행을 이어간다면 컨테이너 정책이 원인이었음이 확인된 것이다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>--cap-add=SYS_PTRACE</code>만 주고 <code>--security-opt seccomp=unconfined</code>는 빼먹어서 여전히 막히는 것 — 두 조건 모두 필요하다.</li><li>이미 떠 있는 컨테이너에 <code>docker exec</code>로 들어가서 옵션을 나중에 추가하려 하는 것 — capability/seccomp 옵션은 컨테이너를 처음 <code>run</code>할 때만 지정할 수 있고, 이미 실행 중인 컨테이너에는 나중에 추가할 수 없다(컨테이너를 다시 만들어야 한다).</li><li>문제 원인을 무조건 컨테이너 설정으로 단정하고, 실제로는 호스트의 YAMA <code>ptrace_scope</code>가 원인인 경우를 놓치는 것.</li><li><code>--privileged</code>를 습관적으로 아무 환경에나 쓰는 것 — 신뢰할 수 없는 이미지/공용 서버에서는 보안 위험이 크다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>컨테이너 실행 옵션은 맞는데 GDB가 파일 경로 문제로 다른 오류를 낸다면 → REV-0688 GDB에서 No such file or directory 오류가 뜰 때.</li><li>pwndbg 자체가 컨테이너 안에서 명령을 못 알아듣는 것이라면 → REV-0690 Pwndbg가 설치는 됐는데 명령어가 안 먹을 때.</li><li>원격 서버/다른 머신에서 GDB로 붙어야 하는 상황이라면 attach 대신 원격 디버깅도 고려 → REV-0658 GDB 원격 디버깅(gdbserver) 기초.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ docker run -it alpine-gdb-test bash
+# (컨테이너 안)
+$ gdb ./chall
+(gdb) run
+ptrace: Operation not permitted.
+
+# 컨테이너를 다시 띄움
+$ docker run --cap-add=SYS_PTRACE --security-opt seccomp=unconfined -it alpine-gdb-test bash
+# (컨테이너 안)
+$ gdb ./chall
+(gdb) run
+Starting program: /chall
+Hello from inside the container!</code></pre>
+<p>동일한 이미지, 동일한 GDB 명령인데 컨테이너 실행 옵션만 바꿔서 <code>ptrace</code> 문제가 해결된 것을 볼 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0688-gdb-no-such-file-or-directory.html">REV-0688 — GDB에서 No such file or directory 오류가 뜰 때</a></li><li><a href="rev-0690-pwndbg-commands-not-working.html">REV-0690 — Pwndbg가 설치는 됐는데 명령어가 안 먹을 때</a></li><li><a href="rev-0658-gdb-remote-debugging-gdbserver.html">REV-0658 — GDB 원격 디버깅(gdbserver) 기초</a></li><li><a href="rev-0702-permission-denied-execution.html">REV-0702 — Permission denied로 바이너리 실행이 안 될 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Docker의 기본 seccomp 프로파일이 <code>ptrace</code> 계열 시스템 콜을 차단하는 동작과 <code>--security-opt seccomp=unconfined</code> 옵션: Docker 공식 문서("Seccomp security profiles for Docker") 기준.</li><li><code>--cap-add=SYS_PTRACE</code>로 ptrace capability를 부여하는 방법: Docker 공식 문서("Runtime privilege and Linux capabilities") 기준.</li><li>YAMA LSM의 <code>ptrace_scope</code> 설정과 non-parent ptrace 제한: Linux 커널 문서(<code>Documentation/admin-guide/LSM/Yama.rst</code>) 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

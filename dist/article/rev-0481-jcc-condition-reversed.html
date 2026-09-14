@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jcc 조건을 반대로 착각해서 로직을 잘못 해석했을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>Jcc 조건을 반대로 착각해서 로직을 잘못 해석했을 때</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>Jcc</code>(조건부 분기)는 항상 "직전 명령어가 세팅한 플래그가 이 조건을 만족하면 점프한다"는 순수한 기계적 규칙으로 동작할 뿐 "성공/실패"라는 의미와는 무관하며, 초보자가 흔히 하는 실수는 점프 대상 라벨 이름이나 코드 흐름의 "느낌"만으로 조건 방향을 짐작하다가 반대로 해석하는 것이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>cmp</code>/<code>test</code> 다음에 오는 <code>jz</code>, <code>jnz</code>, <code>jl</code>, <code>jg</code>, <code>ja</code>, <code>jb</code> 등이 어느 쪽으로 분기해야 "정답"인지 헷갈릴 때</li><li>디컴파일 결과와 어셈블리 원문을 비교했는데 <code>if</code> 조건의 방향이 반대로 보일 때</li><li>라벨 이름이 <code>fail</code>, <code>error</code>, <code>wrong</code>인데 실제로 그쪽이 성공 경로인 것처럼 느껴질 때</li><li>Jcc를 부정 접두사(<code>N</code>, negative)까지 포함해서 정확히 구분하지 못할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Jcc는 "의미"가 아니라 "플래그"만 본다</h3>
+<p><code>Jcc</code>는 CPU 플래그 레지스터(EFLAGS/RFLAGS)의 특정 비트 조합을 검사해서 조건이 맞으면 점프하고, 아니면 다음 명령어로 그대로 진행한다. 이 판단은 코드가 "성공"을 의미하는지 "실패"를 의미하는지와 <strong>전혀 무관</strong>하다. <code>Jcc</code>는 오직 직전에 <code>CMP</code>, <code>TEST</code>, <code>SUB</code>, <code>ADD</code> 등으로 세팅된 ZF/SF/OF/CF/PF 값만 본다(REV-0088 참고).</p>
+<p>가장 흔한 착각은 "이 분기가 정답 경로로 가는 것 같으니까 조건이 이럴 것이다"라고 <strong>결과를 먼저 상상하고 조건을 역으로 끼워 맞추는 것</strong>이다. 항상 순서를 반대로 해야 한다 — 먼저 플래그 조건이 무엇인지 기계적으로 읽고, 그 다음에 그게 어떤 의미인지 해석해야 한다.</p>
+<h3>핵심 Jcc 표 (자주 헷갈리는 것 위주)</h3>
+<pre><code>JE  / JZ    : ZF=1 이면 점프  (같다 / 0이다)
+JNE / JNZ   : ZF=0 이면 점프  (다르다 / 0이 아니다)
+JS          : SF=1 이면 점프  (결과가 음수)
+JNS         : SF=0 이면 점프  (결과가 음수가 아님)
+JG  / JNLE  : (signed) ZF=0 그리고 SF=OF  이면 점프  (크다)
+JGE / JNL   : (signed) SF=OF               이면 점프  (크거나 같다)
+JL  / JNGE  : (signed) SF≠OF               이면 점프  (작다)
+JLE / JNG   : (signed) ZF=1 또는 SF≠OF     이면 점프  (작거나 같다)
+JA  / JNBE  : (unsigned) CF=0 그리고 ZF=0  이면 점프  (크다)
+JAE / JNB   : (unsigned) CF=0               이면 점프  (크거나 같다)
+JB  / JNAE  : (unsigned) CF=1               이면 점프  (작다)
+JBE / JNA   : (unsigned) CF=1 또는 ZF=1     이면 점프  (작거나 같다)</code></pre>
+<p>이름 앞의 <code>N</code>은 "Not(부정)"을 뜻한다 — <code>JNZ</code>는 "JZ가 아닌 경우"이지 별개의 새로운 조건이 아니다. 이 대응 관계를 알면 <code>JG</code>와 <code>JNLE</code>가 완전히 같은 명령어(같은 opcode)라는 것도 이해된다.</p>
+<h3>"점프하면 실패"라는 고정관념이 위험한 이유</h3>
+<p>CTF 검증 로직은 프로그래머가 어떻게 코드를 짰느냐에 따라 자유롭게 라벨을 붙인다. 예를 들어:</p>
+<pre><code class="language-asm">cmp   eax, 1
+jz    success      ; ZF=1(같다)이면 success로 점프
+jmp   fail</code></pre>
+<p>이 경우는 "점프하면 성공"이다. 하지만 바로 다음 예처럼 정반대로 짤 수도 있다.</p>
+<pre><code class="language-asm">cmp   eax, 1
+jnz   fail          ; ZF=0(다르다)이면 fail로 점프
+; 여기로 떨어지면(점프 안 하면) 성공</code></pre>
+<p>여기서는 "점프하면 실패, 안 하면(떨어지면) 성공"이다. <strong>라벨 이름과 점프 여부만 보고 패턴을 암기하면 안 되고, 매번 어떤 플래그 조건이고 그게 어느 쪽을 의미하는지 코드별로 다시 읽어야 한다.</strong></p>
+<h3>컴파일러 최적화가 조건을 뒤집는 경우</h3>
+<p>컴파일러는 <code>if (x == 1) { A } else { B }</code> 같은 코드를 컴파일할 때, 종종 조건을 반대로 뒤집어서 <code>if (x != 1) goto B_label; A; goto end; B_label: B;</code> 형태로 만든다(분기 예측이나 코드 배치 최적화 때문). 그래서 원본 C 코드의 <code>==</code>가 어셈블리에서는 <code>jne</code>로 나타나는 게 매우 흔하다 — 이것도 "반대로 보이는" 것이지 오류가 아니다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>cmp</code>/<code>test</code> 바로 다음 줄에 <code>Jcc</code>가 오고, 그 대상 라벨이 함수 뒤쪽 어딘가로 멀리 뛰는 형태</li><li>IDA 그래프 뷰에서 초록 화살표(조건 참일 때)와 빨간 화살표(조건 거짓일 때)가 나뉘어 표시됨(REV-0150 참고)</li><li>디컴파일에서 <code>if (eax != 1)</code>처럼 원본 C의 <code>==</code>가 반대 연산자로 나타남</li><li>같은 함수 안에서 성공/실패 라벨 이름이 없고 그냥 <code>loc_401050</code> 같은 번지수 라벨만 있어서 의미를 짐작할 단서가 부족함</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>Jcc</code> 바로 위에서 플래그를 세팅한 명령어(<code>cmp</code>, <code>test</code> 등)의 오퍼랜드 순서를 정확히 읽는다.</li><li>그 <code>Jcc</code>가 표에서 어떤 플래그 조건인지 기계적으로 확인한다(의미 추측 금지).</li><li>"점프했을 때 도착하는 코드"와 "점프 안 했을 때(다음 줄로 이어지는) 코드"를 각각 따로 열어서 어느 쪽에 성공 메시지(<code>puts("Correct")</code> 등)가 있는지 실제로 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 플래그 조건표로 기계적으로 해석</strong></p>
+<p><code>Jcc</code> 니모닉을 위 표와 대조해서 "어떤 플래그가 어떤 값일 때 점프하는가"를 문장으로 적어본다. 예: <code>jle</code> → "ZF=1이거나 SF≠OF이면 점프".</p>
+<p><strong>2) 오퍼랜드 순서와 결합해서 사람 언어로 번역</strong></p>
+<p>바로 위 <code>cmp a, b</code>와 결합하면 "a - b의 결과가 0 이하(작거나 같음)이면 점프"로 번역된다. <code>cmp</code>는 REV-0060에서 다루듯 뺄셈 결과로 플래그를 세팅하므로, <code>cmp a, b; jle L</code>은 "a &lt;= b이면 L로 점프"라는 뜻이다.</p>
+<p><strong>3) 점프 target과 fallthrough 양쪽 다 확인</strong></p>
+<p>IDA 그래프 뷰에서 초록/빨강 화살표를 각각 따라가 본다(REV-0150). 두 경로 중 어느 쪽에 성공 문자열 출력(<code>puts</code>, <code>printf("Correct")</code> 등)이 있는지 실제로 열어서 확인하기 전에는 "이게 성공 분기다"라고 단정하지 않는다.</p>
+<p><strong>4) 디버거로 실제 플래그 값과 분기 결과 대조</strong></p>
+<p>x64dbg/GDB로 <code>Jcc</code> 직전에 브레이크포인트를 걸고, 플래그 레지스터 값을 확인한 뒤 한 스텝 실행해서 실제로 점프했는지/안 했는지와 미리 세운 가설이 맞는지 검증한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 그래프 뷰(Space로 그래프/텍스트 전환), 초록/빨강 화살표로 조건 참/거짓 분기 구분, <code>Y</code>로 EFLAGS 이해를 돕는 타입 확인은 불필요하고 REV-0149(Signed/Unsigned/Hex 전환)가 오히려 도움됨</li><li>x64dbg: Flags 창(레지스터 창 하단)에서 ZF/SF/OF/CF 실시간 확인, F8로 한 스텝씩 실행하며 분기 결과 관찰</li><li>GDB/pwndbg: <code>info registers eflags</code>, <code>p $eflags</code>, <code>stepi</code> 후 <code>p/x $eflags</code>로 변화 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>디버거에서 플래그 값을 직접 확인했는데 표와 다른 곳으로 분기했다면, 표 자체가 아니라 오퍼랜드 순서(<code>cmp a, b</code>인지 <code>cmp b, a</code>인지)를 잘못 읽었을 가능성이 크다.</li><li>그래프 뷰의 초록 화살표를 따라갔는데 실패 메시지가 나온다면, "초록 = 항상 성공"이라는 고정관념이 틀렸다는 증거이니 코드를 있는 그대로 다시 읽는다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>Jcc</code> 이름에 <code>N</code>이 붙었는지 안 붙었는지 대충 보고 지나쳐서 정반대 조건으로 읽는 것(<code>JL</code>과 <code>JNL</code>은 완전히 반대).</li><li>"점프 = 실패, 통과 = 성공"이라는 패턴을 모든 바이너리에 그대로 적용하는 것 — 코드마다 라벨 배치가 다르다.</li><li><code>cmp a, b; jg L</code>을 볼 때 오퍼랜드 순서(<code>a</code>가 기준)를 무시하고 그냥 "크면 점프"라고만 기억해서 <code>a</code>와 <code>b</code>를 헷갈리는 것.</li><li>signed 계열(<code>JG/JL</code>)과 unsigned 계열(<code>JA/JB</code>)을 같은 대소비교로 뭉뚱그려 착각하는 것 — 자세한 차이는 REV-0482에서 다룬다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>signed/unsigned 비교 자체가 헷갈리면 → REV-0482(부호 있는 비교와 없는 비교를 헷갈려서 틀렸을 때)</li><li>플래그 레지스터 각각의 의미부터 다시 보고 싶으면 → REV-0088(플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기)</li><li>CMP 자체의 동작(뺄셈으로 플래그만 세팅)이 헷갈리면 → REV-0060(CMP: 값을 바꾸지 않는 SUB 비교)</li><li>그래프 뷰에서 분기를 읽는 법이 더 필요하면 → REV-0150(IDA Graph View에서 분기 읽기)</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 점프하면 성공인 경우</strong></p>
+<pre><code class="language-asm">cmp   eax, 1337h
+jz    success        ; eax == 0x1337 이면 success로 점프 (여기가 성공 경로)
+jmp   fail</code></pre>
+<p><strong>예제 2 — 점프하면 실패이고, 안 하면(떨어지면) 성공인 경우</strong></p>
+<pre><code class="language-asm">cmp   eax, 1337h
+jnz   fail            ; eax != 0x1337 이면 fail로 점프
+; jnz가 실행되지 않고 다음 줄로 떨어지면 -&gt; eax == 0x1337 -&gt; 성공 경로
+mov   edi, offset correct_msg
+call  puts</code></pre>
+<p><strong>예제 3 — 컴파일러가 조건을 뒤집은 경우 (원본과 반대 연산자)</strong></p>
+<pre><code class="language-c">// 원본 C
+if (input_len == 20) {
+    check_flag();
+} else {
+    puts("Wrong length");
+}</code></pre>
+<pre><code class="language-asm">cmp   dword ptr [rbp-4], 14h
+jne   wrong_length     ; == 이 아니라 != 로 뒤집혀서 컴파일됨
+call  check_flag
+jmp   end_if
+wrong_length:
+    ; puts("Wrong length")
+end_if:</code></pre>
+<p><code>jne</code>만 보고 "원본이 <code>!=</code>였겠다"고 단정하면 틀린다 — 컴파일러가 <code>==</code>를 <code>jne</code> + 반대 분기 구조로 뒤집는 것은 매우 흔한 최적화다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a></li><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li><li><a href="rev-0067-je-jz.html">REV-0067 — JE와 JZ: ZF가 1일 때 분기</a></li><li><a href="rev-0068-jne-jnz.html">REV-0068 — JNE와 JNZ: ZF가 0일 때 분기</a></li><li><a href="rev-0069-jg-jge-jl-jle.html">REV-0069 — JG JGE JL JLE: Signed 비교 분기</a></li><li><a href="rev-0070-ja-jae-jb-jbe.html">REV-0070 — JA JAE JB JBE: Unsigned 비교 분기</a></li><li><a href="rev-0482-signed-unsigned-compare-confusion.html">REV-0482 — 부호 있는 비교와 없는 비교를 헷갈려서 틀렸을 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Jcc 조건별 플래그 조합(ZF/SF/OF/CF): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "Jcc—Jump if Condition Is Met" 섹션 기준(2026-09-08 확인).</li><li>컴파일러가 조건 분기를 뒤집어 코드 배치를 최적화하는 경향: GCC/LLVM 최적화 문서 및 일반적인 컴파일러 코드 생성 자료 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

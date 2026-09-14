@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>콜백 함수 패턴을 어셈블리에서 알아보는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>콜백 함수 패턴을 어셈블리에서 알아보는 법</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>콜백(callback)은 "내 함수의 주소를 다른 함수에게 인자로 넘겨서, 그 다른 함수가 나중에 필요한 시점에 대신 호출해달라"는 패턴이며, 어셈블리에서는 REV-0348에서 다룬 간접 호출(<code>call reg</code>)이 <strong>호출자가 아니라 호출받는 라이브러리/프레임워크 함수 내부에서</strong> 일어나기 때문에 "내가 만든 함수가 어디서도 호출되지 않는 것처럼" 보이는 게 특징이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>qsort(arr, n, size, cmp_func)</code>처럼 함수 포인터를 인자로 받는 라이브러리 API를 만났는데 <code>cmp_func</code>가 실제로 언제 어떻게 실행되는지 감이 안 잡힐 때</li><li>내가 분석 중인 함수(예: 비교 함수, 이벤트 핸들러)가 IDA에서 "Xrefs to"가 하나도 없는데 실행 중에는 분명히 실행되고 있을 때</li><li><code>signal()</code>, <code>pthread_create()</code>, GUI 이벤트 핸들러 등록처럼 "함수를 등록해두면 나중에 시스템/라이브러리가 대신 불러준다"는 API 패턴을 분석해야 할 때</li><li>라이브러리 함수(<code>qsort</code>, <code>bsearch</code> 등) 내부를 스텝인(Step Into)했더니 갑자기 내가 만든 코드로 점프해서 당황스러울 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>콜백 = "나중에 불러달라"고 주소를 맡기는 것</h3>
+<p>일반적인 함수 호출은 A가 B를 직접 부른다(<code>B()</code>). 콜백 패턴은 방향이 뒤집힌다. A(예: 내가 만든 <code>main</code>)가 B(예: 라이브러리의 <code>qsort</code>)를 부르면서, "네가 필요할 때 이 함수(<code>cmp</code>)를 대신 불러줘"라며 <strong>함수의 주소</strong>를 인자로 넘긴다. 그러면 B 내부 어딘가에서 그 주소로 간접 호출(REV-0348)이 일어난다. 즉 콜백 함수의 몸체는 내가 작성했지만, <strong>그 함수를 실제로 호출하는 코드(call 명령어)는 내 코드가 아니라 라이브러리 코드 안에 있다</strong>는 것이 핵심이다.</p>
+<pre><code class="language-c">int cmp(const void *a, const void *b) {
+    return *(int*)a - *(int*)b;
+}
+
+int main(void) {
+    int arr[5] = {5,3,1,4,2};
+    qsort(arr, 5, sizeof(int), cmp);   // cmp의 "주소"를 인자로 전달
+    return 0;
+}</code></pre>
+<p><code>main</code>이 하는 일은 딱 두 가지다: (1) <code>cmp</code> 함수의 시작 주소를 계산(<code>lea</code>)하고, (2) 그 주소를 4번째 인자 레지스터(SysV x64는 <code>rcx</code>)에 담아 <code>qsort</code>를 호출하는 것. <code>cmp</code>를 직접 <code>call</code>하는 코드는 <code>main</code> 어디에도 없다.</p>
+<pre><code class="language-asm">main:
+    ...
+    lea     rcx, [cmp]              ; cmp 함수의 주소 계산 (call이 아니라 lea!)
+    mov     rdx, 4                  ; sizeof(int)
+    mov     rsi, 5                  ; n
+    lea     rdi, [rbp-0x20]         ; arr
+    call    qsort                    ; qsort 호출, cmp는 인자로만 전달됨
+    ...</code></pre>
+<h3>라이브러리 내부에서 실제 호출이 일어난다</h3>
+<p><code>qsort</code>(libc 내부, 우리가 소스를 직접 볼 수 없는 경우가 많음)는 정렬 알고리즘을 수행하다가 두 원소를 비교해야 할 때마다, 인자로 받아둔 함수 포인터를 통해 간접 호출한다.</p>
+<pre><code class="language-asm">; qsort 내부(개념적 의사코드, 실제 glibc 구현은 더 복잡함)
+qsort_internal:
+    ...
+    mov     rdi, [원소1 주소]
+    mov     rsi, [원소2 주소]
+    call    r12                      ; r12에 저장해둔 cmp 함수 포인터로 간접 호출
+    cmp     eax, 0
+    jg      swap_needed
+    ...</code></pre>
+<p>IDA로 <code>main</code>만 봐서는 <code>cmp</code>가 호출되는 지점을 절대 찾을 수 없다 — 그 <code>call</code>은 <code>qsort</code>(때로는 정적으로 링크되어 있어도 별도 함수로 분리된) 내부에 있기 때문이다. 이것이 REV-0348에서 설명한 "간접 호출은 정적 xref로 안 잡힌다"는 문제의 가장 흔한 실전 사례다.</p>
+<h3>콜백을 찾는 실전 전략</h3>
+<ol><li><strong>인자 전달 지점에서 역추적</strong>: 콜백을 등록/전달하는 호출(<code>qsort(..., cmp)</code>, <code>signal(SIGINT, handler)</code>, <code>pthread_create(&amp;t, NULL, worker, arg)</code>)을 먼저 찾는다. 이 호출 직전에 <code>lea reg, [함수주소]</code> 또는 <code>mov reg, 함수주소</code> 형태로 함수 시작 주소를 레지스터에 담는 코드가 반드시 있다.</li><li><strong>디버거로 실제 실행 흐름 추적</strong>: 콜백 함수의 시작 주소에 브레이크포인트를 걸어두면, 정적 분석으로 호출 지점을 못 찾아도 실행 중 언제 어디서 불리는지 곧바로 확인할 수 있다.</li><li><strong>레지스터/스택에서 함수 포인터 값 검색</strong>: 디버거에서 "이 함수의 주소를 담고 있는 메모리/레지스터가 어디 있는가"를 역방향으로 찾는다(예: x64dbg의 메모리 검색으로 특정 주소값 검색).</li></ol>
+<h3>흔한 콜백 API 예시</h3>
+<ul><li><strong><code>qsort</code>/<code>bsearch</code>(libc)</strong>: 비교 함수를 인자로 받음.</li><li><strong><code>signal</code>(libc)</strong>: 시그널 핸들러 함수 포인터를 등록, 커널이 시그널 발생 시 호출.</li><li><strong><code>pthread_create</code>(pthread)</strong>: 스레드 시작 함수를 인자로 받음, 새 스레드에서 그 함수가 실행됨.</li><li><strong>Windows API의 콜백 계열</strong>(<code>EnumWindows</code>, <code>SetTimer</code>, <code>CreateThread</code>): 함수 포인터를 등록해두면 시스템이 필요할 때 호출.</li><li><strong>GUI 프레임워크의 이벤트 핸들러 등록</strong>: 버튼 클릭 등 이벤트 발생 시 등록해둔 함수가 호출됨.</li></ul>
+<p>이들의 공통점은 "등록은 내 코드에서, 실제 호출은 프레임워크/커널/라이브러리 코드에서" 일어난다는 것이다.</p>
+<h3>콜백과 REV-0348 함수 포인터 배열의 차이</h3>
+<p>REV-0348에서 다룬 함수 포인터 배열(디스패치 테이블, vtable)은 <strong>내 코드 안에서</strong> 인덱스로 골라 직접 호출하는 패턴이다. 반면 콜백은 함수 포인터를 <strong>외부(라이브러리/커널/프레임워크)에게 넘겨주고</strong>, 그 외부 코드 안에서 호출이 일어난다는 점이 다르다. 둘 다 "함수 주소를 값으로 다룬다"는 원리는 같지만, 호출이 일어나는 위치(내 코드 vs 남의 코드)가 다르므로 분석 전략도 달라진다 — 배열이면 그 배열이 정의된 데이터 영역을 뒤지면 되지만, 콜백이면 등록 지점에서 시작해 라이브러리 내부까지 따라 들어가거나 디버거로 실행을 추적해야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>lea reg, [함수이름]</code> 또는 <code>mov reg, offset 함수이름</code> 형태로 함수 주소를 레지스터에 담은 직후, <code>call</code>이 아니라 <strong>다른 함수 호출의 인자로 그 레지스터가 쓰인다</strong>.</li><li>내가 정의한 함수 위에서 IDA "Xrefs to"를 봤을 때 아무 결과도 없다(직접 호출하는 곳이 없음).</li><li><code>qsort</code>, <code>signal</code>, <code>pthread_create</code> 같은 잘 알려진 라이브러리 함수 호출 직전에 함수 주소로 보이는 값이 인자로 전달된다.</li><li>라이브러리 함수를 스텝인(Step Into)하다가 갑자기 프로그램 자신의 코드(<code>.text</code>의 낮은 주소 등, 라이브러리 코드와 다른 영역)로 실행 흐름이 튄다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>분석 대상 함수가 "아무도 호출하지 않는 것 같다"면, 먼저 그 함수의 <strong>시작 주소값 자체</strong>가 다른 어딘가에서 데이터/인자로 쓰이고 있는지부터 찾는다. IDA에서 함수 이름 위에 커서를 놓고 Xrefs를 보면 코드상의 호출(call)뿐 아니라 주소 값으로 참조되는 지점("Data" 타입 xref)도 함께 나열되므로, 그 목록에서 "이 주소를 인자로 넘기는 코드"를 찾는 것이 출발점이다.</p>
+<h2>단계별 절차</h2>
+<ol><li>콜백으로 의심되는 함수의 Xrefs를 확인한다 — 코드 xref는 없어도 데이터 xref(주소값 참조)가 있을 수 있다.</li><li>그 데이터 xref 지점 근처에서 어떤 라이브러리/API 함수 호출에 인자로 쓰였는지 확인한다.</li><li>그 API가 잘 알려진 콜백 API(<code>qsort</code>, <code>signal</code>, <code>pthread_create</code> 등)인지 문서에서 시그니처를 확인해 몇 번째 인자가 함수 포인터인지, 언제 호출되는지 파악한다.</li><li>콜백 함수 시작 주소에 브레이크포인트를 걸어 실제 호출 시점과 호출자(콜스택)를 디버거로 확인한다.</li><li>콜스택(<code>bt</code>/<code>Alt+K</code>)을 확인해 실제로 어떤 라이브러리 함수 내부에서 호출되었는지 검증한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code>(gdb) break cmp                 # 콜백 함수 이름/주소에 직접 브레이크
+(gdb) run
+(gdb) bt                         # 콜스택 확인 → qsort 내부에서 호출되었는지 바로 보임</code></pre>
+<pre><code>(gdb) info symbol *0x401120      # 어떤 함수 주소인지 심볼로 확인</code></pre>
+<p>IDA: 함수 이름 위 <code>X</code> 단축키(Xrefs to)로 코드 xref와 데이터 xref를 함께 확인. x64dbg: 콜백 함수 시작 주소에 브레이크포인트(<code>F2</code>) 후 실행, 걸리면 Call Stack 창에서 호출 경로 확인.</p>
+<h2>출력 해석</h2>
+<ul><li><code>bt</code>(backtrace) 결과에 <code>cmp</code> 함수 위에 <code>qsort</code> 관련 프레임(<code>msort_with_tmp</code>, <code>__qsort_r</code> 등 glibc 내부 함수명)이 여러 겹 보이면, 라이브러리 내부에서 콜백이 호출되고 있다는 확실한 증거다.</li><li>콜백 함수가 여러 번(정렬 대상 개수에 비례해서) 반복 호출된다면 비교/순회 계열 콜백(정렬, 순회)일 가능성이 높고, 딱 한 번만 호출된다면 초기화/이벤트성 콜백일 가능성이 높다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>콜백 함수에 대한 코드 Xref가 없다고 "죽은 코드(dead code)"라고 오판하고 분석에서 제외하는 것 — 실행에는 실제로 관여하는 경우가 매우 흔하다.</li><li>콜백 등록 API 호출(<code>qsort(..., cmp)</code>)만 보고 "cmp가 바로 이 시점에 실행된다"고 착각하는 것 — 실제 실행은 <code>qsort</code> 내부 로직이 진행되는 동안 여러 차례에 걸쳐 나중에 일어난다.</li><li>REV-0348의 함수 포인터 배열(디스패치 테이블)과 콜백을 같은 것으로 취급해서, 콜백 함수를 찾을 때도 데이터 영역만 뒤지고 라이브러리 내부 호출 경로를 확인하지 않는 것.</li><li>콜백 함수의 매개변수 타입/개수를 API 문서 없이 임의로 추측하는 것 — <code>qsort</code> 비교 함수는 <code>int (*)(const void*, const void*)</code>처럼 정해진 시그니처를 반드시 따라야 하므로, 실제 호출 규약을 API 문서에서 확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>함수 포인터가 메모리/레지스터에서 어떻게 표현되고 간접 호출이 어떻게 생겼는지 기본 개념이 헷갈리면 → REV-0348 함수 포인터가 메모리에서 어떻게 보이는지</li><li>함수 인자가 어느 레지스터로 전달되는지 호출 규약 자체가 헷갈리면 → REV-0032 함수 인자와 반환값이 어디에 있는지</li><li>스택 프레임과 콜스택 구조 자체가 헷갈리면 → REV-0031 스택 프레임이 무엇인지</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">#include &lt;stdlib.h&gt;
+
+int cmp(const void *a, const void *b) {
+    return *(const int*)a - *(const int*)b;
+}
+
+void sort_array(int *arr, int n) {
+    qsort(arr, n, sizeof(int), cmp);
+}</code></pre>
+<p>x64 SysV 어셈블리(개념 설명용, <code>sort_array</code>만 발췌):</p>
+<pre><code class="language-asm">sort_array:
+    ; rdi=arr, esi=n
+    mov     ecx, esi
+    mov     rsi, rdi          ; qsort 인자 순서에 맞춰 재배치 시작
+    ...
+    lea     rcx, [cmp]        ; 4번째 인자(cmp)에 함수 주소를 로드 — call이 아니라 lea!
+    mov     r8d, 4            ; sizeof(int) (Windows x64 예시 레지스터 배치, 개념 설명용)
+    call    qsort               ; cmp는 여기서 호출되지 않고 인자로만 전달됨
+    ret</code></pre>
+<p>디버거에서 <code>qsort</code> 안으로 Step Into해 들어가면, 정렬 알고리즘이 진행되는 도중 어느 시점에 <code>call rcx</code>(또는 그에 준하는 레지스터) 형태로 <code>cmp</code> 함수가 실제로 호출되는 지점을 만나게 된다. <code>sort_array</code> 함수 자체의 코드만 아무리 들여다봐도 <code>call cmp</code>라는 줄은 존재하지 않으며, 이것이 콜백 패턴의 핵심 특징이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0348-function-pointers-in-memory.html">REV-0348 — 함수 포인터가 메모리에서 어떻게 보이는지</a></li><li><a href="rev-0032-args-and-return-location.html">REV-0032 — 함수 인자와 반환값이 어디에 있는지</a></li><li><a href="rev-0031-stack-frame.html">REV-0031 — 스택 프레임이 무엇인지</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>qsort</code>/<code>bsearch</code> 비교 함수 콜백 시그니처와 호출 규약: ISO C 표준(C11) 7.22.5 Searching and sorting utilities 섹션 및 POSIX/glibc <code>qsort(3)</code> 매뉴얼 기준.</li><li>간접 호출을 통한 콜백 실행과 정적 xref 한계: Intel 64 and IA-32 Architectures Software Developer's Manual, Vol.2(<code>CALL</code> 명령어) 및 IDA Pro 공식 문서(Xrefs 동작 방식) 기준 (2026-09-09 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>타이밍 기반 안티디버깅으로 스텝 실행이 너무 느려서 걸릴 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>타이밍 기반 안티디버깅으로 스텝 실행이 너무 느려서 걸릴 때</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>타이밍 기반 안티디버깅은 코드 구간 실행 전후의 타임스탬프(<code>RDTSC</code>, <code>GetTickCount</code>, <code>QueryPerformanceCounter</code>, Linux의 <code>clock_gettime</code> 등) 차이를 재서 "이 짧은 구간이 비정상적으로 오래 걸렸다"는 사실만으로 디버거의 존재(특히 사람이 한 줄씩 Step 하고 있다는 것)를 추측하므로, 그냥 실행(<code>F9</code>/<code>continue</code>)하면 통과하던 구간도 Step Into/Over로 한 줄씩 밟으면 그 구간 자체가 실제로 느려져서 걸리게 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>프로그램을 F9로 그냥 쭉 실행하면 멀쩡한데, F7/F8로 한 줄씩 스텝하며 확인하면 특정 지점에서 프로그램이 이상 종료되거나 다른 분기를 탈 때</li><li><code>rdtsc</code> 명령어 두 번 사이의 값 차이를 비교하는 코드나, <code>GetTickCount()</code>/<code>QueryPerformanceCounter()</code>를 시작·끝에 각각 호출하는 패턴을 발견했을 때(REV-0087, REV-0237, REV-0538, REV-0572 참고)</li><li>재현이 매번 불안정해서(빠르게 스텝하면 통과, 느리게 스텝하면 실패) 원인을 못 찾고 있을 때</li><li>이 체크를 통과시키면서 그 구간의 코드를 여전히 자세히 들여다보고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>타이밍 체크의 기본 구조</h3>
+<pre><code class="language-c">start = read_timestamp();
+... // 보호하려는 코드 구간 (보통 몇 개 안 되는 명령어)
+end = read_timestamp();
+if (end - start &gt; THRESHOLD) {
+    // 디버거가 붙어 스텝 중이라고 판단 → 종료/오동작
+}</code></pre>
+<p>정상적으로 CPU가 이 구간을 그냥 실행하면 수십~수백 사이클 만에 끝나지만, 사람이 Step Into(<code>F7</code>, <code>si</code>)로 한 줄씩 밟으면 각 스텝마다 디버거가 사용자 입력을 기다리고 화면을 갱신하는 시간이 끼어들어 같은 구간이 수백만 배 더 오래 걸린다. 이 차이가 <code>THRESHOLD</code>를 넘는 순간 안티디버깅 코드는 "지금 이 구간이 비정상적으로 느리다 = 디버거가 붙어서 한 줄씩 실행되고 있다"고 판단한다.</p>
+<h3>왜 재현이 "가끔만" 되는 것처럼 보이는가</h3>
+<p>이 체크는 절대적인 디버거 존재 여부가 아니라 <strong>그 순간 실행 속도</strong>만 본다. 그래서 같은 디버거를 붙여도 F9로 빠르게 실행하면 통과하고, F7로 천천히 스텝하면 걸린다. 분석자 입장에서는 "왜 어떨 때는 되고 어떨 때는 안 되지"라며 혼란스러울 수 있지만, 실제로는 일관된 규칙(느리면 걸린다)을 따르고 있는 것이다.</p>
+<h3>대응 전략의 방향</h3>
+<p>핵심은 "그 짧은 보호 구간 자체는 스텝하지 않고 통과시키되, 그 앞뒤는 원하는 만큼 자세히 본다"는 것이다.</p>
+<ol><li>타임스탬프를 읽는 두 지점을 미리 찾아, 그 사이 구간은 Step 대신 <strong>Run to cursor</strong>(그 구간 끝까지 한 번에 실행)로 건너뛴다.</li><li>비교 직후의 분기(<code>Jcc</code>)에 브레이크포인트를 걸어, 그 분기 결과(<code>end - start</code>가 THRESHOLD를 넘었는지)를 값으로 확인만 하고 필요하면 플래그를 조작해 원하는 방향으로 보낸다(REV-0174 참고).</li><li>타임스탬프 자체를 읽는 명령(<code>rdtsc</code>) 직후 반환값을 조작해서 "차이가 작게 나온 것처럼" 속이는 방법도 있으나, 이는 실행 중 레지스터 값을 직접 바꾸는 방식이라 신중하게 적용해야 한다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>코드에 <code>rdtsc</code> 명령어가 짧은 간격을 두고 두 번 나오고, 그 사이 값을 빼서 비교하는 <code>sub</code>/<code>cmp</code> 패턴이 보인다.</li><li>Import 목록에 <code>GetTickCount</code>, <code>GetTickCount64</code>, <code>QueryPerformanceCounter</code>가 있고, 두 번 호출한 결과를 빼는 코드가 근처에 있다.</li><li>F9로 실행할 때는 안 보이던 크래시/조기 종료가 F7/F8로 스텝할 때만 재현된다.</li><li>스텝 속도(빠르게 연타 vs 천천히 하나씩)에 따라 결과가 달라진다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>문제가 되는 구간이 타이밍 체크인지부터 확인한다(직전에 <code>rdtsc</code>/<code>GetTickCount</code>류 호출이 있는지).</li><li>그 구간의 시작과 끝(두 번째 타임스탬프를 읽는 지점) 주소를 각각 확인한다.</li><li>그 구간을 Step 대신 Run to cursor/임시 브레이크포인트로 건너뛰도록 계획한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>x64dbg</strong></p>
+<ol><li>첫 번째 <code>rdtsc</code>(또는 <code>GetTickCount</code> 호출) 직후에 멈춘 상태에서, 두 번째 타임스탬프를 읽는 명령어 줄을 찾는다.</li><li>그 줄에서 우클릭 → "Run until this line"(또는 커서를 두고 <code>F4</code>, "Run to Cursor")을 사용해 그 사이 구간을 스텝 없이 한 번에 실행시킨다.</li><li>두 번째 타임스탬프 직후, 값 비교(<code>cmp</code>/<code>sub</code>) 결과를 확인하고 필요하면 이제부터 다시 F7로 자세히 스텝을 재개한다.</li><li>비교 결과 분기가 항상 "느림"으로 판단된다면, 플래그 창에서 관련 플래그를 직접 뒤집어 반대 분기로 보낸다(REV-0174의 플래그 강제 조작 참고).</li></ol>
+<p><strong>GDB / Pwndbg</strong></p>
+<ol><li>첫 번째 타임스탬프 호출 이후 지점에 브레이크포인트를 건다.</li><li>두 번째 타임스탬프를 읽는 지점에도 브레이크포인트를 걸어둔다.</li><li>그 사이는 <code>si</code>/<code>ni</code> 대신 <code>continue</code>로 단번에 진행한다.</li></ol>
+<pre><code>   (gdb) break *0x401210   ; 첫 rdtsc 직후
+   (gdb) break *0x401230   ; 두 번째 rdtsc 직후
+   (gdb) continue          ; 첫 브레이크포인트까지
+   (gdb) continue          ; 바로 두 번째 브레이크포인트까지 (스텝 없이 순식간에 통과)</code></pre>
+<ol><li>비교 결과 레지스터/플래그를 확인하고, 필요하면 <code>set $eflags = ...</code>나 결과 레지스터 값을 직접 원하는 값으로 덮어써서 통과시킨다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: "Run to Cursor"(<code>F4</code> 또는 우클릭 메뉴), 임시 브레이크포인트로 구간 건너뛰기, 플래그 창 직접 조작</li><li>GDB/Pwndbg: <code>break *ADDR</code>로 구간 양 끝에 걸고 <code>continue</code>로 건너뛰기, <code>set $reg = value</code>(비교 결과 레지스터 강제 조작), <code>set $eflags = value</code></li></ul>
+<h2>출력 해석</h2>
+<ul><li>비교 직후 분기 플래그를 확인했을 때 항상 "차이가 크다" 방향으로 나온다면, 그 구간을 스텝으로 지나왔다는 뜻이다 — Run to Cursor/브레이크포인트 건너뛰기로 다시 시도해본다.</li><li>값 차이를 직접 확인하고 싶다면 두 타임스탬프 값을 레지스터에서 읽어 직접 빼보고(<code>p $rax - $prev_rax</code>류), THRESHOLD로 추정되는 값과 비교해본다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>보호 구간까지 포함해서 전체를 F7로 스텝하며 "이상하게 여기서 죽네"라고 반복 재현만 하는 것 — 원인이 스텝 자체라는 걸 깨닫지 못하면 계속 같은 실수를 반복하게 된다.</li><li>Run to Cursor로 건너뛸 범위를 너무 넓게 잡아서, 정작 보고 싶었던 다른 로직까지 한 번에 지나쳐버리는 것 — 타임스탬프를 읽는 두 지점 "사이만" 정확히 건너뛰어야 한다.</li><li>이 문제를 REV-0865(CPU 사용량 급증)와 혼동하는 것 — 이쪽은 CPU 사용량이 아니라 "경과 시간"이 문제가 되는 경우다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>타임스탬프 읽는 지점 자체를 못 찾겠다면 → REV-0237(RDTSC Time Check 안티디버깅), REV-0538(타이밍 기반 안티디버깅 다양한 변형), REV-0572(GetTickCount/QueryPerformanceCounter 안티디버깅)를 참고해 패턴을 먼저 식별한다.</li><li>다른 안티디버깅과 겹쳐 있는지 의심된다면 → REV-0871(안티디버깅 원인 좁히기 실전)로 전체 실행을 비교해본다.</li><li>이 체크를 우회한 후에도 계속 다른 곳에서 걸린다면 → REV-0240 체크리스트로 돌아가 다른 범주를 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-asm">rdtsc
+mov [ebp-4], eax        ; start 저장
+call check_password       ; 보호하려는 구간
+rdtsc
+sub eax, [ebp-4]          ; end - start
+cmp eax, 100000
+ja  detected_debugger</code></pre>
+<p><code>call check_password</code> 앞뒤 두 <code>rdtsc</code> 사이를 F7로 한 줄씩 밟으면 <code>eax</code>(경과 사이클)가 <code>100000</code>을 훌쩍 넘어 <code>ja detected_debugger</code>로 분기한다. 이 구간 전체를 Run to Cursor로 한 번에 통과시키면 정상 실행과 비슷한 사이클 수가 나와 분기를 피할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0237-rdtsc-timing-check.html">REV-0237 — RDTSC Time Check 안티디버깅</a></li><li><a href="rev-0538-timing-based-anti-debugging.html">REV-0538 — 타이밍 기반 안티디버깅 다양한 변형</a></li><li><a href="rev-0871-anti-debug-cause-narrowing-practical.html">REV-0871 — 안티디버깅 때문에 디버거에서 갑자기 종료될 때 원인 좁히기(실전)</a></li><li><a href="rev-0865-debugging-cpu-100-percent.html">REV-0865 — 디버깅 중 CPU 사용량이 100%로 치솟을 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>RDTSC</code> 명령어와 타이밍 기반 안티디버깅 원리: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "RDTSC—Read Time-Stamp Counter" 섹션 기준.</li><li><code>GetTickCount</code>/<code>QueryPerformanceCounter</code>를 이용한 타이밍 체크: Microsoft Learn API 문서 및 일반 안티디버깅 참고 자료 기준.</li><li>x64dbg "Run to Cursor" 기능: x64dbg 공식 문서(Debugging) 기준.</li><li>2026-09-09 검증.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

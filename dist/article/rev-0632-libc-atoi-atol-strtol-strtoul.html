@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>libc 함수 사전: atoi atol strtol strtoul · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>libc 함수 사전: atoi atol strtol strtoul</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">ltrace</span><span class="tag">objdump</span></div>
+<h2>한 줄 요약</h2>
+<p><code>atoi</code>/<code>atol</code>은 문자열을 정수로 바꿔주지만 <strong>잘못된 입력에 대한 오류 검사가 전혀 없어</strong> 실패해도 <code>0</code>을 반환하는 반면, <code>strtol</code>/<code>strtoul</code>은 진법(<code>base</code>)을 지정할 수 있고 <code>endptr</code>을 통해 "어디까지 숫자로 해석했는지"와 파싱 실패 여부를 정확히 알려준다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>call atoi@plt</code>가 보이는데 사용자 입력을 검증 없이 정수로 바꿔서 이후 배열 인덱스나 크기로 쓰는 코드(정수 오버플로우/인덱스 취약점 후보)를 분석할 때</li><li><code>call strtol@plt</code>에 인자가 3개 전달되는데 세 번째 인자(<code>base</code>)가 무엇을 뜻하는지 확인하고 싶을 때</li><li><code>strtol</code> 호출 뒤 <code>errno</code>를 확인하는 코드가 있어 정확히 어떤 실패 케이스를 검사하는지 알고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<pre><code class="language-c">int   atoi(const char *nptr);
+long  atol(const char *nptr);
+long  strtol(const char *nptr, char **endptr, int base);
+unsigned long strtoul(const char *nptr, char **endptr, int base);</code></pre>
+<p><strong>atoi/atol</strong>: 문자열 앞의 공백을 건너뛰고, 선택적 부호(<code>+</code>/<code>-</code>) 다음에 오는 숫자를 읽어 정수로 변환한다. <strong>오류 검사가 전혀 없다</strong> — 숫자로 시작하지 않는 문자열(<code>"abc"</code>)을 넘기면 그냥 <code>0</code>을 반환하고, 변환 결과가 <code>int</code>/<code>long</code> 범위를 넘으면 동작이 정의되지 않는다(Undefined Behavior, 실무에서는 대개 잘려서 이상한 값이 나옴). 즉 반환값 <code>0</code>만으로는 "입력이 진짜 <code>\"0\"</code>이었는지" "파싱에 실패했는지" 구분할 수 없다. SysV x64: <code>rdi=nptr</code>, 반환값은 <code>eax</code>(atoi) 또는 <code>rax</code>(atol).</p>
+<p><strong>strtol/strtoul</strong>: 같은 방식으로 문자열을 파싱하되 두 가지가 추가된다.</p>
+<ol><li><code>base</code> — 몇 진법으로 해석할지 지정. <code>10</code>이면 10진수, <code>16</code>이면 16진수(<code>0x</code> 접두사 있어도 없어도 인식), <code>8</code>이면 8진수. <strong><code>base</code>를 <code>0</code>으로 주면</strong> 문자열 접두사를 보고 자동 판별한다: <code>0x</code>/<code>0X</code> 시작이면 16진수, <code>0</code> 시작(그 다음 숫자)이면 8진수, 그 외는 10진수.</li><li><code>endptr</code> — <code>NULL</code>이 아닌 <code>char **</code>를 넘기면, 함수가 파싱을 멈춘 지점(더 이상 숫자로 해석할 수 없는 첫 문자)의 주소를 <code>*endptr</code>에 써준다. <strong><code>*endptr == nptr</code>이면 숫자를 하나도 못 읽었다는 뜻</strong>(완전 실패), <code>*endptr</code>이 문자열 끝(<code>\0</code>)을 가리키면 문자열 전체가 숫자였다는 뜻이다.</li></ol>
+<p>변환 결과가 <code>long</code>/<code>unsigned long</code> 범위를 넘으면 <code>strtol</code>은 <code>LONG_MAX</code>/<code>LONG_MIN</code>, <code>strtoul</code>은 <code>ULONG_MAX</code>를 반환하고 전역 변수 <code>errno</code>를 <code>ERANGE</code>로 설정한다 — <code>atoi</code>와 달리 <strong>오버플로우를 명확히 감지할 수 있다.</strong></p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>call atoi@plt</code> 반환값을 곧바로 <code>malloc</code> 크기나 배열 인덱스로 사용 — 검증 없는 사용자 제어 정수가 크기/인덱스에 흘러드는 취약점 후보</li><li><code>mov edx, 0x10</code> (또는 <code>0xa</code>) 후 <code>call strtol@plt</code> — 세 번째 인자로 진법(16 또는 10)을 명시</li><li><code>strtol</code> 호출 후 <code>call __errno_location@plt</code>가 뒤따르면 <code>ERANGE</code> 검사를 하는 방어적 코드</li><li><code>lea rsi, [rbp-0x8]</code> (스택 변수 주소) 후 <code>call strtol@plt</code> — <code>endptr</code>을 받아 파싱 성공 여부를 검증하는 패턴</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>atoi</code>가 쓰였다면 "이 프로그램은 잘못된 숫자 입력에 대한 검증이 약하다"고 가정하고 그 반환값이 이후 어디에 쓰이는지(배열 크기, 인덱스, 반복 횟수) 추적한다. <code>strtol</code>이 쓰였다면 <code>base</code> 인자와 <code>endptr</code> 사용 여부부터 확인한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>objdump -d ./chall | grep 'atoi@plt\|atol@plt\|strtol@plt\|strtoul@plt'</code>로 어떤 변환 함수가 쓰였는지 확인.</li><li>GDB에서 <code>break atoi</code> 후 <code>x/s $rdi</code>로 변환 대상 문자열 확인, <code>finish</code> 후 <code>print $eax</code>로 결과 확인.</li><li><code>break strtol</code> 후 <code>x/s $rdi</code>(문자열), <code>print $rdx</code>(base), <code>print/x $rsi</code>(endptr 저장 위치, 0이면 안 씀) 확인.</li><li><code>finish</code> 후 <code>print $rax</code>(변환 결과)와, endptr을 넘겼다면 <code>x/s *(char**)$rsi_저장주소</code>로 파싱이 어디서 멈췄는지 확인.</li><li>반환값이 이후 <code>malloc</code>, 배열 인덱싱, 반복 카운터로 쓰이는지 xref로 추적.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">objdump -d ./chall | grep 'atoi@plt\|strtol@plt\|strtoul@plt'
+ltrace ./chall</code></pre>
+<p>GDB/Pwndbg: <code>break atoi</code>, <code>break strtol</code>, <code>x/s $rdi</code>, <code>print $rdx</code>, <code>print $rax</code>, <code>print $eax</code></p>
+<h2>출력 해석</h2>
+<ul><li><code>atoi</code> 반환값이 <code>0</code>이면 실제 <code>"0"</code> 입력인지 파싱 실패인지 코드만으로는 구분 불가 — 실패 처리 분기가 없다면 그냥 <code>0</code>으로 취급되어 다음 로직으로 넘어간다는 뜻.</li><li><code>strtol</code>에서 <code>endptr</code>이 가리키는 문자가 <code>\0</code>이 아니면(<code>x/c *endptr</code>로 확인) 문자열 뒤에 숫자가 아닌 문자가 남아있다는 뜻 — <code>"123abc"</code> 같은 입력에서 <code>123</code>까지만 변환되고 <code>abc</code> 위치를 가리킨다.</li><li><code>strtol</code> 반환값이 <code>LONG_MAX</code>(0x7fffffffffffffff)이고 직후 <code>errno</code>가 <code>ERANGE</code>(34)면 오버플로우로 값이 잘렸다는 뜻이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>atoi("abc")</code>가 에러를 일으킨다고 생각하는 것 — 크래시 없이 조용히 <code>0</code>을 반환한다. 오류 처리를 기대하고 분기를 찾다가 못 찾는 경우가 많다.</li><li><code>strtol</code>의 <code>base=0</code>을 "진법 지정 안 함(에러)"으로 착각하는 것 — 실제로는 "문자열 접두사로 자동 판별"이라는 유효한 의미다.</li><li><code>endptr</code>을 확인하지 않고 <code>strtol</code> 반환값만 보고 "파싱 성공"이라 단정하는 것 — 숫자를 하나도 못 읽어도 <code>strtol</code>은 크래시 없이 <code>0</code>을 반환하며, 이 경우도 <code>endptr == nptr</code>으로만 구분할 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>변환된 정수가 이후 malloc 크기로 쓰이는 흐름이 궁금하면 → REV-0626, REV-0627.</li><li>사용자 입력을 받는 함수 자체(scanf/fgets)가 궁금하면 → REV-0109.</li><li>라이브러리 호출 인자를 로그로 빠르게 보고 싶으면 → REV-0111(ltrace).</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">char *end;
+long v = strtol("0x2A", &amp;end, 16);   // v = 42, *end = '\0'
+int  n = atoi("not_a_number");        // n = 0 (에러 구분 불가)</code></pre>
+<pre><code class="language-gdb">(gdb) break strtol
+(gdb) run
+(gdb) x/s $rdi
+0x7fffffffe420: "0x2A"
+(gdb) print $rdx
+$1 = 16
+(gdb) finish
+Value returned is $2 = 42</code></pre>
+<p><code>base=16</code>이 명시되어 있고 <code>"0x2A"</code>의 <code>0x</code> 접두사까지 정상 인식되어 결과가 <code>42</code>(0x2A)로 나온 것을 확인할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0626-libc-malloc-free.html">REV-0626 — libc 함수 사전: malloc free 계열</a></li><li><a href="rev-0109-input-functions.html">REV-0109 — scanf fgets read 입력 추적</a></li><li><a href="rev-0110-comparison-functions.html">REV-0110 — strcmp strncmp memcmp 비교 추적</a></li><li><a href="rev-0111-ltrace-basics.html">REV-0111 — ltrace로 라이브러리 호출 빠르게 보기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>atoi</code>/<code>atol</code>/<code>strtol</code>/<code>strtoul</code> 시그니처와 오버플로우 시 <code>ERANGE</code>/<code>LONG_MAX</code> 동작: ISO C 표준(C11 7.22.1) 및 Linux man-pages <code>atoi(3)</code>, <code>strtol(3)</code> 기준.</li><li><code>atoi</code>가 오류 검사를 제공하지 않는다는 점은 <code>atoi(3)</code> man 페이지 "NOTES" 섹션 및 CERT C 코딩 표준(문자열-정수 변환 권고, ERR34-C)에서 공통적으로 지적하는 내용.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

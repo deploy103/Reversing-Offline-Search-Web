@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>반환 타입을 디컴파일러가 잘못 추론했을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>반환 타입을 디컴파일러가 잘못 추론했을 때</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>디컴파일러는 함수 자체의 선언이 아니라 "호출한 쪽이 <code>eax</code>/<code>rax</code>(x86-64 반환 레지스터)를 실제로 읽어서 쓰는지"를 관찰해 반환 타입의 존재 여부와 크기를 추측하므로, 호출자가 반환값의 일부만 쓰거나(<code>al</code>만), 아예 무시하거나, 반대로 우연히 남아 있던 값을 잘못 읽으면 실제 함수 의미와 다른 반환 타입(<code>void</code>인데 <code>int</code>로, 혹은 그 반대로)이 붙을 수 있으며, 이때는 함수 원형을 <code>Y</code>나 Edit Function으로 직접 지정해서 고쳐야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Pseudocode에서 <code>v1 = sub_401200(...)</code>처럼 반환값을 받는 변수(<code>result</code>, <code>v1</code> 등)가 생기는데, 그 변수가 이후 어디에도 쓰이지 않을 때</li><li>함수가 명백히 <code>void</code>처럼 동작하는데(예: 화면 출력만 하는 함수) 디컴파일 결과에는 정수를 반환하는 것처럼 보일 때</li><li>반대로 함수가 분명히 성공/실패 값을 리턴하는데 호출부에서는 그 값을 아예 안 받아서, 반환 타입이 <code>void</code>로 잘못 잡혀 있을 때</li><li>함수 여러 종료 경로(return) 중 일부만 값을 설정하고 나머지는 설정하지 않는(uninitialized) 것처럼 보일 때</li></ul>
+<h2>핵심 개념</h2>
+<p>x86-64에서 정수/포인터 반환값은 관례적으로 <code>rax</code>(또는 그 서브레지스터 <code>eax</code>/<code>ax</code>/<code>al</code>)에 담겨 돌아온다. 디컴파일러는 함수 정의 자체에 명시적 타입 정보가 없으면(원형이 지정 안 된 상태) 다음을 관찰해서 반환 타입을 추측한다: 함수가 끝나기 직전 <code>eax</code>에 의미 있는 값을 설정하는가, 그리고 호출한 쪽에서 그 <code>eax</code>를 실제로 읽어서 쓰는가. 이 추측은 다음과 같은 이유로 어긋난다.</p>
+<ol><li><strong>호출자가 반환값을 무시함</strong>: 함수는 실제로 유의미한 값을 <code>eax</code>에 남기지만, 모든 호출부가 그 값을 안 쓰면 디컴파일러가 "반환값이 안 쓰이니 <code>void</code>나 다름없다"고 표시해버릴 수 있다(실제로는 값이 있는데 그냥 아무도 안 읽는 것뿐).</li><li><strong>부분 폭만 사용</strong>: 함수가 사실은 1바이트(<code>bool</code>류 성공/실패)만 의미 있게 설정하는데, 호출자가 상위 비트까지 포함한 <code>eax</code> 전체를 정수로 취급해서 읽으면 쓰레기 상위 비트가 섞인 값으로 보일 수 있다. 반대로 함수가 <code>eax</code> 전체를 의미 있게 채우는데 호출자가 <code>al</code>(하위 1바이트)만 확인하면, 디컴파일러가 반환 타입을 실제보다 작게(<code>char</code>) 추정할 수 있다.</li><li><strong>일부 종료 경로에서만 반환값 설정</strong>: 함수 안에 여러 <code>return</code>이 있는데, 어떤 경로는 <code>eax</code>를 명시적으로 설정하고 어떤 경로는 그냥 함수 끝(에필로그)으로 흘러가 <code>eax</code>에 이전 계산의 잔여값이 우연히 남아 있는 경우, 이 경로는 사실 "반환값 없음(void 의도)"인데 디컴파일러는 우연히 남은 값을 진짜 반환값처럼 취급할 수 있다.</li><li><strong>부동소수점 반환</strong>: x86-64는 float/double을 <code>xmm0</code>으로 반환하는데, 함수가 실제로는 정수를 반환하면서 <code>xmm0</code>를 안 건드리면 디컴파일러가 반환 타입을 완전히 헷갈릴 수 있다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>반환값을 받는 변수가 생성되지만 이후 전혀 사용되지 않음(죽은 코드처럼 보임)</li><li>함수가 여러 <code>return</code> 경로를 가지는데 그 중 일부에서만 <code>eax</code>가 명시적으로 설정됨</li><li>호출부에서 반환값의 하위 1바이트(<code>al</code>)만 <code>if</code> 조건으로 검사하는데, 함수 원형은 <code>int</code>(4바이트) 전체를 반환하는 것으로 나옴</li><li>함수 내부에 부동소수점 연산이 있는데 반환 타입은 정수로 표시됨</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문제 함수의 모든 종료 지점(<code>ret</code>)에서 실제로 <code>eax</code>/<code>al</code>/<code>xmm0</code> 중 무엇을 설정하는지 디스어셈블리로 직접 확인하고, 모든 호출부에서 그 반환값을 실제로 읽어서 조건/대입에 쓰는지 대조한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 함수의 모든 종료 지점 확인</strong> 그래프 뷰(REV-0150)로 함수의 모든 <code>ret</code> 지점을 찾고, 각 지점 직전에 <code>eax</code>/<code>al</code>/<code>xmm0</code>를 설정하는 명령이 있는지 확인한다. 일부 경로만 설정한다면 그 함수의 진짜 의도가 "조건부로만 값을 리턴"인지, 아니면 사실 그 경로들도 뭔가 값을 리턴해야 하는데 컴파일러가 최적화로 생략한 것인지 판단한다.</p>
+<p><strong>2) 호출부에서 실제 사용 여부와 폭 확인</strong> <code>Ctrl+X</code>로 호출부를 모아, 각 호출 직후 <code>eax</code>(4바이트), <code>al</code>(1바이트) 중 어느 크기로 읽는지, 아니면 아예 안 읽는지 확인한다.</p>
+<p><strong>3) 원형 직접 지정</strong> 함수 시작에서 <code>Y</code>를 눌러 정확한 반환 타입을 지정한다(<code>void</code>, <code>int</code>, <code>char</code>, <code>bool</code>, <code>double</code> 등). 부분폭만 의미 있다면 <code>char</code>나 <code>_BOOL1</code>처럼 작은 타입으로 지정해 상위 쓰레기 비트를 표시에서 제거한다.</p>
+<p><strong>4) 재분석</strong> F5로 다시 디컴파일하고, 모든 호출부에서 반환값 사용이 자연스럽게 보이는지 재확인한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li><code>Y</code>: 함수/변수 타입·원형 지정(반환 타입 포함)</li><li><code>Ctrl+X</code>: 호출부 Xref 목록</li><li>그래프 뷰(Space): 함수의 모든 종료 경로(ret) 한눈에 보기</li><li>Ghidra: 함수 우클릭 → Edit Function Signature에서 Return Type 필드 수정</li></ul>
+<h2>출력 해석</h2>
+<ul><li>반환 타입을 <code>void</code>로 바꿨는데도 호출부에서 <code>result</code> 변수가 계속 생긴다면, 그 호출부가 반환 레지스터를 실제로 읽는 코드가 남아 있다는 뜻이므로 그 부분을 다시 확인해야 한다.</li><li>타입을 <code>char</code>/<code>bool</code>로 좁혔더니 이전에 보이던 이상한 큰 값들이 사라지고 0/1만 남는다면, 원래 함수 의도가 성공/실패 플래그였다는 것이 확정된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>반환값을 아무도 안 쓴다고 해서 무조건 <code>void</code>로 단정하는 것 — 일부 호출부에서만 값을 쓸 수도 있으므로 모든 호출부를 다 확인해야 한다.</li><li><code>eax</code> 전체와 <code>al</code>을 구분하지 않고 아무 정수 타입이나 지정하는 것 — 실제 어셈블리가 몇 바이트를 다루는지 반드시 확인한다.</li><li>여러 return 경로 중 하나만 보고 반환 타입을 결정하는 것 — 다른 경로에서 다르게 동작할 수 있다.</li><li>부동소수점 반환(<code>xmm0</code>)을 놓치고 정수 레지스터(<code>eax</code>)만 확인하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>인자 개수도 같이 이상하다면 → REV-0795</li><li>애초에 디컴파일 자체가 실패한다면 → REV-0152</li><li>함수/변수 타입 지정 기본 사용법이 헷갈리면 → REV-0148</li><li>함수의 모든 종료 경로를 한눈에 보는 방법이 궁금하면 → REV-0150</li></ul>
+<h2>미니 예제</h2>
+<p><code>sub_401400</code>이 항상 <code>int</code> 반환으로 디컴파일되지만, 세 곳의 호출부를 모두 확인해보니 전부 <code>if ((sub_401400(...) &amp; 0xFF) == 1)</code>처럼 하위 1바이트만 검사한다고 하자. 함수 본문을 그래프 뷰로 확인하니 모든 <code>ret</code> 직전에 <code>al</code>만 0 또는 1로 설정하고 상위 바이트는 건드리지 않는다. 이는 원래 <code>bool</code>(또는 1바이트 성공/실패 코드) 반환 함수였음을 의미하므로, <code>Y</code>로 반환 타입을 <code>_BOOL1</code>(또는 <code>char</code>)로 좁혀 지정하면 이후 상위 쓰레기 비트 없이 깔끔한 <code>if (sub_401400(...))</code> 형태로 정리된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0795-wrong-argument-count.html">REV-0795 — 함수 인자 개수를 디컴파일러가 잘못 추론했을 때</a></li><li><a href="rev-0152-ida-decompiler-failed.html">REV-0152 — IDA Decompiler Failed가 뜰 때</a></li><li><a href="rev-0148-ida-set-type.html">REV-0148 — IDA Y로 타입 지정하기</a></li><li><a href="rev-0150-ida-graph-view.html">REV-0150 — IDA Graph View에서 분기 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>x86-64 반환값 레지스터 규칙(정수/포인터는 RAX, 부동소수점은 XMM0)은 System V ABI AMD64 문서 및 Microsoft x64 calling convention 공식 문서 기준.</li><li>디컴파일러가 반환 타입을 호출부의 실제 사용 패턴으로 추론한다는 원리는 Hex-Rays 공식 문서(디컴파일러 동작 원리 관련 챕터) 기준.</li><li>Ghidra의 Edit Function Signature에서 Return Type을 수동 편집하는 절차는 Ghidra 공식 문서(Functions 관련 챕터) 기준.</li><li>이 글은 2026-09-09 기준으로 작성되었다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

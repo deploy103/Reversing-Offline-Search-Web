@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Write-up] dungeon-in-1983 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / writeup</div>
+<article class="article-body">
+<h1>[Write-up] dungeon-in-1983</h1>
+<div class="article-meta"><span class="tag">writeup</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>"dungeon-in-1983"은 드림핵 CTF Season 5 Round #8(Div2)에도 리버싱 카테고리로 출제되었고 코인으로 구매 가능한 공식 write-up이 존재하는 것까지는 확인되지만, 로그인 없이 볼 수 있는 상세 풀이는 찾지 못했다. 제목이 1983년대 텍스트 어드벤처/던전 탐험형 게임을 연상시키므로, 상태(state)를 옮겨가며 진행하는 구조를 흉내 낸 상태 기계형 검증일 가능성을 열어두고 접근하는 것이 안전하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>"dungeon-in-1983"을 열었는데 실행 결과가 마치 텍스트 게임처럼 여러 줄의 안내 문구와 선택 입력을 요구할 때</li><li>Bronze 2 난이도인데 코드 흐름이 하나의 함수가 아니라 여러 "방(room)"이나 "단계"처럼 나뉘어 있는 것처럼 보일 때</li><li>다른 사람의 정식 write-up을 찾아봤지만 공개된 자료가 없어서 스스로 분석 전략을 세워야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>공식 검색 결과에서 "dungeon-in-1983"은 드림핵 CTF Season 5 Round #8 (Div2) 대회 페이지에 리버싱 카테고리 문제로 이름이 확인되었고, 코인을 지불하면 열리는 Official Writeup이 있다는 사실까지만 확인되었다. 실제 코드 로직이나 정답 값을 설명하는 공개 블로그 글은 찾지 못했다. 이하 내용은 제목에서 유추한 일반적 접근법이며, 확정된 정답 풀이가 아니다.</p>
+<p>"던전(dungeon)"이라는 단어는 여러 개의 방이나 단계를 순서대로 통과하는 구조를 떠올리게 하고, "1983"이라는 연도는 초기 텍스트 기반 어드벤처 게임(예: 로그라이크, MUD류)이 유행하던 시기를 가리킨다고 볼 수 있다. 이런 컨셉의 리버싱 문제는 보통 다음과 같은 형태로 구현되는 경우가 많다.</p>
+<ul><li>여러 개의 "방"이나 "단계"를 나타내는 열거형/정수 상태 변수가 있고, 사용자의 입력(이동 명령 등)에 따라 상태가 전환된다.</li><li>특정 상태 전환 순서를 모두 맞춰야만 마지막에 플래그를 계산하는 함수가 호출된다.</li><li>이런 구조는 이 저장소의 상태 기계 기반 검증 로직(REV-0908)과 정확히 같은 패턴이므로, 상태 변수가 어디서 갱신되는지부터 추적하는 것이 유효한 전략이다.</li></ul>
+<p>다만 이 구조가 맞다는 보장은 없으며, 단순히 스토리텔링을 위한 텍스트만 출력하고 실제 검증은 단순한 문자열 비교 하나로 끝나는 문제일 가능성도 배제할 수 없다. 실제 분석 시 반드시 바이너리를 직접 실행해 실제 동작을 관찰해야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>실행하면 여러 줄의 설명 텍스트(스토리텔링 문구)가 출력되고 그 사이에 입력을 요구하는 구간이 여러 번 있음</li><li>IDA/Ghidra에서 하나의 큰 <code>switch</code>문 또는 여러 개의 <code>if</code> 블록이 상태 변수 하나를 계속 갱신하는 형태로 보임</li><li>문자열 섹션에 게임 컨셉과 관련된 단어(방, 문, 몬스터, 열쇠 등에 대응하는 영어/한글 단어)가 다수 존재함</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>바이너리를 실행해 실제로 어떤 텍스트가 출력되고 어떤 입력을 요구하는지 최소 한 번은 끝까지 진행해 본다. 그다음 문자열 창(Strings)에서 스토리 텍스트를 모두 훑어 몇 단계로 구성된 문제인지 가늠하고, <code>main</code>에서 상태 변수로 쓰이는 지역 변수를 찾아 xref를 따라간다.</p>
+<h2>단계별 절차</h2>
+<ol><li>실행하여 전체 흐름을 한 번 관찰(입력을 아무렇게나 넣어보며 반응 확인)</li><li>IDA/Ghidra Strings 창에서 스토리 텍스트를 모두 확인해 "단계"의 개수 추정</li><li><code>main</code> 함수에서 반복 구조(루프)와 상태 변수 식별</li><li>상태 변수가 어떤 값일 때 다음 단계로 넘어가는지, 어떤 값일 때 실패 처리되는지 조건 정리</li><li>모든 단계를 통과하는 입력 순서를 구성한 뒤 실제 실행으로 검증</li><li>플래그 조립 함수가 있다면 그 지점에 x64dbg 브레이크포인트를 걸어 최종 값을 직접 읽음</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">IDA: Shift+F12(Strings 창) → 더블클릭으로 xref 위치 이동
+IDA: Ctrl+X(현재 변수/함수의 xref 목록)
+x64dbg: 플래그 조립 예상 지점에 F2 → F9로 실행 → 메모리 덤프 확인</code></pre>
+<h2>출력 해석</h2>
+<p>스토리 텍스트가 여러 단계로 나뉘어 있다면, 각 단계 사이의 분기 조건(대개 <code>cmp</code>+<code>jnz</code>/<code>jz</code> 조합)이 REV-0908에서 설명하는 상태 기계 패턴과 일치하는지 대조한다. 일치한다면 상태 값 목록과 전환 조건을 표로 정리해두면 실수 없이 전체 경로를 구성할 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li>텍스트가 길다고 스토리를 무시하고 코드만 보다가 실제로는 스토리 텍스트 안에 힌트(예: 특정 방향, 특정 숫자)가 숨어 있는 것을 놓치는 것</li><li>상태 전환 조건 중 하나를 놓치고 나머지만 맞춰서 계속 실패 분기로 빠지는 것</li><li>Bronze 2라는 난이도만 보고 단순 문자열 비교일 것이라 예단해 상태 기계 구조를 처음부터 배제하는 것</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>상태 전환형 로직 자체가 낯설다면 → REV-0908 State Machine(상태 기계) 기반 검증 로직 알아보기</li><li>여러 단계가 이어지는 문제 전체를 어떻게 정리해야 할지 막히면 → REV-0911 여러 알고리즘이 순차적으로 합성된 문제 풀어내기</li><li>IDA/Ghidra에서 Strings 창 사용법이 익숙하지 않으면 → REV-0276 IDA 10분 실전 워크플로, REV-0279 Ghidra 10분 실전 워크플로</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">// 추정 기반 예시 (실제 코드 아님)
+int state = 0;
+while (1) {
+    print_room(state);
+    int cmd = read_command();
+    state = transition(state, cmd);
+    if (state == WIN_STATE) { print_flag(); break; }
+    if (state == FAIL_STATE) { puts("죽었습니다"); break; }
+}</code></pre>
+<p>이 예제는 던전 탐험형 상태 기계 구조를 일반적으로 표현한 것이며, 실제 "dungeon-in-1983" 바이너리 코드가 아니다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0908-state-machine-validation-pattern.html">REV-0908 — State Machine(상태 기계) 기반 검증 로직 알아보기</a></li><li><a href="rev-0911-chained-algorithm-composition.html">REV-0911 — 여러 알고리즘이 순차적으로 합성된 문제 풀어내기</a></li><li><a href="rev-0276-ida-10min-workflow.html">REV-0276 — IDA 10분 실전 워크플로</a></li><li><a href="rev-0279-ghidra-10min-workflow.html">REV-0279 — Ghidra 10분 실전 워크플로</a></li><li>[REV-1039 — [Write-up] Happy New Year!](rev-1039-writeup-happy-new-year.html)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>WebSearch로 "dreamhack dungeon-in-1983 writeup reversing"을 검색한 결과 드림핵 CTF Season 5 Round #8(Div2) 대회 페이지에 리버싱 카테고리 문제로 이름이 등재되어 있고, 코인 구매형 Official Writeup 존재가 확인되었다(2026-09-10 검증).</li><li>로그인 없이 접근 가능한 제3자 write-up(velog, tistory, medium, GitHub 등)은 검색 결과에서 발견되지 않았다.</li><li>본문의 상태 기계형 로직 추정은 문제명에서 착안한 가설이며 실제 바이너리 분석 결과가 아님을 명시한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

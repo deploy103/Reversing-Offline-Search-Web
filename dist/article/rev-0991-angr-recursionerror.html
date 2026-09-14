@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>angr에서 RecursionError가 발생할 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / automation</div>
+<article class="article-body">
+<h1>angr에서 RecursionError가 발생할 때</h1>
+<div class="article-meta"><span class="tag">automation</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">angr</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>angr 탐색 도중 파이썬의 <code>RecursionError: maximum recursion depth exceeded</code>가 발생하는 것은 대부분 심볼릭 제약조건 트리(claripy 표현식)가 반복문/재귀 실행으로 인해 매우 깊게 중첩되어, 이를 내부적으로 재귀 순회하는 파이썬 함수(제약조건 단순화, 직렬화 등)의 호출 스택 한도를 초과했기 때문이며, angr 버그라기보다 탐색 범위가 지나치게 넓어졌다는 신호로 봐야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>simgr.explore()</code> 실행 중 갑자기 <code>RecursionError: maximum recursion depth exceeded</code>로 스크립트가 죽을 때</li><li>이 오류가 특정 상태에서만, 특히 긴 반복문을 통과한 뒤에 발생할 때</li><li><code>sys.setrecursionlimit()</code>을 늘려서 임시로 해결했는데 다시 다른 지점에서 같은 오류가 날 때</li><li>claripy 관련 스택트레이스와 함께 오류가 뜰 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Z3에 넘길 제약조건(claripy 표현식)은 내부적으로 트리 구조로 표현된다. <code>x + 1 + 1 + 1 + ...</code>처럼 같은 연산이 반복문 안에서 계속 누적되면, 이 표현식 트리의 깊이가 반복 횟수만큼 계속 깊어진다. 파이썬의 여러 내부 함수(표현식 단순화, 재귀적 해시 계산, 문자열 변환 등)는 이런 트리를 재귀 함수로 순회하는데, 파이썬은 기본적으로 재귀 호출 깊이를 약 1000단계 정도로 제한한다(<code>sys.getrecursionlimit()</code>). 반복문이 수백~수천 번 도는 로직을 심볼릭하게 실행하면 이 한계를 쉽게 넘어선다.</p>
+<p>즉 이 오류는 대개 <strong>탐색 범위 자체가 반복 횟수 대비 너무 넓다</strong>는 신호이며, 단순히 재귀 한도를 늘리는 것은 임시방편일 뿐 근본 해결책이 아닌 경우가 많다. 진짜 해결책은 반복 횟수를 제한하거나(REV-0987의 <code>LoopSeer</code>), 함수 단위로 탐색 범위를 좁히거나, 제약조건이 커지기 전에 주기적으로 단순화하는 것이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>스크립트 출력 마지막에 <code>RecursionError: maximum recursion depth exceeded</code>와 함께 길게 이어지는 스택트레이스가 뜬다.</li><li>스택트레이스 안에 <code>claripy</code>, <code>ast</code>, <code>simplify</code> 같은 이름이 반복적으로 등장한다.</li><li>특정 반복 횟수(예: 1000번 이상 도는 루프) 이후에만 이 오류가 재현된다.</li><li><code>sys.setrecursionlimit(10000)</code>처럼 임시로 늘린 코드가 있는데도 결국 다시 발생한다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>오류가 나기 직전까지 <code>step_func</code>로 상태를 관찰해서, 어떤 반복문/함수에서 이 문제가 생기는지부터 특정한다. 무작정 재귀 한도부터 늘리지 말고, 그 반복 구조 자체를 <code>LoopSeer</code>로 제한할 수 있는지 먼저 살펴본다.</p>
+<h2>단계별 절차</h2>
+<ol><li>오류가 발생하는 시점을 <code>step_func</code>나 반복적인 <code>print</code>로 좁혀서, 어떤 반복문/함수 근처인지 확인한다.</li><li><code>angr.exploration_techniques.LoopSeer(bound=N)</code>를 적용해서 해당 반복문의 실행 횟수를 제한한다(REV-0987 참고).</li><li>함수 전체가 아니라 문제되는 검증 함수만 <code>call_state</code>로 좁혀서 실행 범위를 줄인다.</li><li>그래도 필요하다면 <code>sys.setrecursionlimit()</code>을 임시로 늘리되, 이는 문제를 감추는 것이지 근본 해결이 아님을 인지하고 병행 대책(3번)을 함께 적용한다.</li><li>표현식이 지나치게 커지는 게 확실하다면, 상태를 주기적으로 <code>state.solver.simplify()</code>(또는 유사한 단순화 호출)로 정리해서 트리 깊이를 관리한다.</li><li>반복 자체가 문제의 핵심이 아니라 값 자체를 역산하는 문제라면, 애초에 angr 대신 Z3로 직접 제약조건을 세우는 것(REV-0268~REV-0270)이 이 문제를 원천적으로 피하는 방법일 수 있다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python">import sys
+sys.setrecursionlimit(10000)   # 임시 완화(근본 해결 아님)
+
+from angr.exploration_techniques import LoopSeer
+simgr.use_technique(LoopSeer(bound=20))   # 반복 횟수 자체를 제한(더 근본적)</code></pre>
+<h2>출력 해석</h2>
+<ul><li>스택트레이스에 <code>claripy.ast</code> 관련 함수가 수백~수천 번 반복해서 찍혀 있다면, 제약조건 트리 깊이 문제라는 확실한 신호다.</li><li><code>LoopSeer</code> 적용 후 같은 오류가 사라졌다면, 반복 횟수가 실제 원인이었다는 뜻이다.</li><li><code>sys.setrecursionlimit()</code>을 크게 늘렸는데도 결국 인터프리터 자체가 크래시(세그먼트 폴트급 스택 오버플로우)한다면, 이는 파이썬 자체의 C 스택 한계에 부딪힌 것이므로 재귀 한도를 늘리는 방식으로는 해결할 수 없고 반드시 탐색 범위를 줄여야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>sys.setrecursionlimit()</code>만 계속 키우면서 근본 원인(반복 범위)을 들여다보지 않는 것 — 결국 더 큰 값에서 같은 문제가 재발한다.</li><li>재귀 한도를 지나치게 크게 설정해서 실제 스택 오버플로우로 파이썬 인터프리터 자체가 죽는(<code>Segmentation fault</code>) 상황을 만드는 것.</li><li>문제되는 반복문을 특정하지 않고 전체 프로그램에 <code>LoopSeer</code>를 걸어 정작 필요한 반복까지 과도하게 제한해버리는 것.</li><li>이 오류를 angr 버그로 오해해서 다른 angr 버전으로 계속 바꿔가며 시도하는 것 — 대부분 근본 원인은 탐색 범위 문제다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>반복문으로 인한 상태 폭발/재귀 문제를 근본적으로 제어하는 방법이 궁금하면 → REV-0987 angr 심볼릭 실행 심화(상태 탐색 전략)</li><li>기본 개념 자체가 헷갈리면 → REV-0271 angr 심볼릭 실행 기초</li><li>상태가 아예 안 끝나고 계속 쌓이기만 한다면 → REV-0992 angr 탐색이 State Explosion으로 끝나지 않을 때</li></ul>
+<h2>미니 예제</h2>
+<p>아래처럼 반복 횟수가 매우 많은 검증 로직을 심볼릭 실행하면 <code>RecursionError</code>가 재현되기 쉽다.</p>
+<pre><code class="language-c">// heavy_loop.c
+int main() {
+    int x;
+    scanf("%d", &amp;x);
+    int acc = x;
+    for (int i = 0; i &lt; 5000; i++) {
+        acc = acc + 1;   // 심볼릭 표현식이 반복마다 계속 깊어짐
+    }
+    if (acc == 12345) printf("Correct!\n");
+    else printf("Wrong\n");
+    return 0;
+}</code></pre>
+<pre><code class="language-python">import angr
+from angr.exploration_techniques import LoopSeer
+
+proj = angr.Project('./heavy_loop', auto_load_libs=False)
+state = proj.factory.entry_state()
+simgr = proj.factory.simgr(state)
+
+# LoopSeer 없이 그냥 explore()만 돌리면 RecursionError가 날 가능성이 큼
+simgr.use_technique(LoopSeer(bound=50))
+
+simgr.explore(find=0x401300, avoid=0x401320)  # 실제 주소는 대상에 맞게 확인
+if simgr.found:
+    print(simgr.found[0].posix.dumps(0))</code></pre>
+<p>이 경우처럼 반복 횟수 자체가 크고 매번 산술 연산이 누적되는 구조라면, <code>LoopSeer</code>로 반복을 적절히 제한하거나 아예 Z3로 <code>acc = x + 5000</code>이라는 최종 관계식을 직접 세워 푸는 것(REV-0268)이 훨씬 안전하고 빠르다.</p>
+<h3>에러를 재현하는 잘못된 코드 vs 고쳐서 정상 동작하는 코드</h3>
+<p>angr/claripy를 설치하지 않아도 <code>RecursionError</code>가 실제로 어떻게 발생하는지 직접 눈으로 볼 수 있도록, claripy 내부에서 표현식 트리를 재귀적으로 순회하는 상황을 순수 파이썬 함수 하나로 그대로 흉내낸다. 이 예제는 외부 라이브러리 없이 파이썬 3만 있으면 그대로 실행된다.</p>
+<p><strong>잘못된 코드 — 재귀 함수로 깊은 호출 스택을 쌓아서 RecursionError를 그대로 재현</strong></p>
+<pre><code class="language-python">import sys
+
+print('현재 파이썬 재귀 호출 한도:', sys.getrecursionlimit())  # 보통 1000 근처
+
+def build_expr_recursive(n):
+    """claripy가 'x + 1 + 1 + 1 + ...' 같은 반복 누적 표현식을,
+    내부적으로 재귀 함수를 이용해 트리 형태로 순회/처리하는 상황을 흉내낸 함수다.
+    n이 커질수록 자기 자신을 그만큼 더 깊이 호출하게 된다."""
+    if n == 0:
+        return 0
+    # 재귀 호출: 자기 자신을 다시 부르고, 그 결과가 돌아와야 +1을 계산할 수 있다.
+    # 이 호출이 끝나기 전까지 현재 호출은 계속 파이썬 호출 스택에 쌓여 있다.
+    return build_expr_recursive(n - 1) + 1
+
+# 검증 로직이 5000번 반복되는 검증 함수를 심볼릭 실행한 것과 비슷한 상황을 흉내낸다.
+# 5000 &gt; sys.getrecursionlimit()(약 1000) 이므로 도중에 RecursionError가 발생한다.
+result = build_expr_recursive(5000)
+print('결과:', result)   # 이 줄까지 도달하지 못하고 예외로 스크립트가 중단된다</code></pre>
+<p>실행하면 다음과 비슷한 형태로 끝없이 이어지는 스택트레이스와 함께 오류가 난다.</p>
+<pre><code class="language-text">  File "...", line 10, in build_expr_recursive
+    return build_expr_recursive(n - 1) + 1
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  ... (같은 줄이 수백~수천 번 반복) ...
+RecursionError: maximum recursion depth exceeded</code></pre>
+<p><strong>고친 코드 — 재귀 대신 반복문(for)으로 바꿔서 호출 스택이 전혀 깊어지지 않게 함</strong></p>
+<pre><code class="language-python">def build_expr_iterative(n):
+    """재귀 호출 없이 for 반복문만으로 정확히 같은 값을 계산한다.
+    함수를 다시 호출하는 부분이 없으므로 파이썬 호출 스택이 전혀 깊어지지 않는다."""
+    result = 0
+    for _ in range(n):      # n번 반복하지만, 매번 새 함수 호출을 만들지 않고 그냥 값만 누적한다
+        result += 1
+    return result
+
+result = build_expr_iterative(5000)   # RecursionError 없이 즉시 끝까지 실행됨
+print('결과:', result)   # 5000</code></pre>
+<p>실제 angr/claripy 상황에서는 이렇게 직접 재귀 함수를 다시 짜서 고치는 게 아니라, 이 글의 "명령어/단축키" 절에 있는 <code>angr.exploration_techniques.LoopSeer(bound=N)</code>으로 반복문 자체의 심볼릭 실행 횟수를 제한해서 claripy 표현식 트리가 애초에 이렇게까지 깊어지지 않도록 막는 것이 정석이다. 위 두 파이썬 함수는 "왜 반복 횟수를 제한하면 RecursionError가 사라지는지"를 angr 없이도 가장 단순한 형태로 보여주기 위한 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0987-angr-advanced-state-exploration.html">REV-0987 — angr 심볼릭 실행 심화(상태 탐색 전략)</a></li><li><a href="rev-0271-angr-basics.html">REV-0271 — angr 심볼릭 실행 기초</a></li><li><a href="rev-0992-angr-state-explosion.html">REV-0992 — angr 탐색이 State Explosion으로 끝나지 않을 때</a></li><li><a href="rev-0268-z3-bitvec-basics.html">REV-0268 — Z3 BitVec 기초</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>파이썬의 재귀 호출 깊이 제한(<code>sys.getrecursionlimit</code>/<code>setrecursionlimit</code>) 동작은 CPython 공식 문서("sys — System-specific parameters and functions")를 기준으로 정리했다(2026-09-09 확인).</li><li>claripy 표현식 트리 구조 및 <code>LoopSeer</code>를 통한 반복 제한은 angr 공식 문서(docs.angr.io)의 "Symbolic Expressions and Constraint Solving", "Exploration Techniques" 챕터 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>-O0과 -O2 컴파일 결과를 나란히 비교하는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>-O0과 -O2 컴파일 결과를 나란히 비교하는 법</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>같은 C 소스를 <code>-O0</code>과 <code>-O2</code>로 각각 컴파일해서 디스어셈블리를 나란히 놓고 비교하는 훈련은, 실전에서 마주치는 최적화된 릴리즈 바이너리(대부분 -O2/-O3, MSVC라면 <code>/O2</code>)를 읽는 감각을 기르는 가장 효과적인 방법이며, 특히 자신이 추정한 로직이 맞는지 검증할 때 로컬에서 유사한 참조 샘플을 만들어 대조하는 것은 실무에서도 그대로 쓰이는 기법이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>최적화된 릴리즈 바이너리의 코드가 너무 낯설게 느껴져서, 소스 레벨 로직으로 먼저 감을 잡고 싶을 때</li><li>"이 최적화된 코드 조각이 소스에서 정확히 어떤 구문이었을까"라는 가설을 세웠는데, 직접 확인해볼 방법이 필요할 때</li><li><code>-O0</code> 디스어셈블리에는 있던 <code>push rbp</code>/<code>mov rbp, rsp</code>가 <code>-O2</code>에서 사라져서 스택 프레임을 못 찾겠을 때</li><li>학습 목적으로 "최적화가 정확히 무엇을 바꾸는지" 손으로 직접 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 이 훈련이 유용한가</h3>
+<p>실전에서 마주치는 대다수의 릴리즈 바이너리, CTF 문제, 상용 소프트웨어, 심지어 악성코드도 최적화가 켜진 상태(GCC/Clang <code>-O2</code>/<code>-O3</code>, MSVC <code>/O2</code>, /Ox)로 빌드된다. <code>-O0</code>에서만 연습하면 실전 바이너리를 만났을 때 당황하기 쉽다. 반대로, 소스가 있는 프로그램(직접 만든 테스트 프로그램, 오픈소스)을 두 수준으로 컴파일해서 나란히 비교하면 "소스의 이 구문이 최적화되면 저렇게 변한다"는 매핑을 눈으로 직접 확인할 수 있다. 이는 앞선 여러 글(REV-0457 for/while, REV-0458 do-while, REV-0459 단축 평가 등)에서 설명한 패턴들을 스스로 재현하고 검증하는 가장 확실한 방법이기도 하다.</p>
+<h3>준비: 두 수준으로 각각 빌드</h3>
+<pre><code class="language-bash">gcc -O0 -g -o prog_O0 prog.c
+gcc -O2 -g -o prog_O2 prog.c</code></pre>
+<p><code>-g</code>(디버그 정보 포함)는 최적화 자체에 영향을 주지 않고 메타데이터만 추가하므로, 두 빌드 모두에 안전하게 붙여서 줄 번호 대조에 활용할 수 있다. Windows/MSVC라면:</p>
+<pre><code class="language-text">cl /Od /Zi prog.c /Fe:prog_O0.exe
+cl /O2 /Zi prog.c /Fe:prog_O2.exe</code></pre>
+<h3>디스어셈블리 텍스트로 뽑아 비교</h3>
+<pre><code class="language-bash">objdump -d -M intel --no-show-raw-insn prog_O0 &gt; O0.asm
+objdump -d -M intel --no-show-raw-insn prog_O2 &gt; O2.asm
+diff -y --suppress-common-lines O0.asm O2.asm | less</code></pre>
+<p>함수 단위로만 보고 싶다면 <code>objdump -d prog_O0 | awk '/&lt;func_name&gt;:/,/^$/'</code> 식으로 특정 함수만 추출한다. IDA/Ghidra로 GUI 비교를 하고 싶다면 두 바이너리를 각각 다른 창(IDA 인스턴스 두 개, 또는 Ghidra 프로젝트에 둘 다 임포트)에서 열고 같은 함수 이름끼리 대조한다(심볼이 스트립되지 않은 자체 빌드이므로 함수명이 그대로 남아있어 대조가 쉽다).</p>
+<h3>-O0에서 흔한 특징</h3>
+<ul><li>모든 지역 변수가 스택에 고정 위치로 존재한다(<code>[rbp-N]</code>). 레지스터 재사용이 거의 없다.</li><li>프롤로그가 항상 <code>push rbp; mov rbp, rsp; sub rsp, N</code> 형태로 명확하다(REV-0031 스택 프레임 참고).</li><li>매 연산마다 메모리에서 로드하고 다시 메모리에 저장하는 중복 load/store가 많다(같은 변수를 두 번 쓰면 두 번 다 메모리 접근).</li><li>함수 호출은 인라인되지 않고 항상 실제 <code>call</code>로 남는다.</li><li>소스 줄과 명령어 그룹이 거의 1:1로 대응해서 읽기 쉽다 — 초보자 학습용으로는 -O0이 훨씬 친절하다.</li></ul>
+<h3>-O2에서 흔한 특징</h3>
+<ul><li><strong>프레임 포인터 생략(Frame Pointer Omission, FPO)</strong>: <code>push rbp</code>/<code>mov rbp, rsp</code>가 사라지고 <code>RSP</code>를 직접 기준으로 지역 변수에 접근한다(단, 디버깅 편의나 가변 길이 배열 등 이유로 프레임 포인터를 유지하는 경우도 있다).</li><li>변수들이 레지스터에 최대한 오래 머무르고, 필요할 때만 스택에 스필(spill)된다.</li><li>작은 함수는 호출부에 그대로 인라인되어 <code>call</code> 자체가 사라진다.</li><li>루프는 loop rotation(REV-0458)을 거쳐 가드+do-while 형태로 재배치된다.</li><li>반복적인 배열/구조체 연산이 SIMD 명령(REV-0386~0395류)으로 벡터화될 수 있다.</li><li>삼항 연산자나 짧은 if문이 분기 대신 <code>CMOVcc</code>/<code>SETcc</code>(REV-0075, REV-0076)로 바뀔 수 있다.</li><li>나눗셈이 매직 넘버를 이용한 곱셈+시프트로 대체될 수 있다.</li><li>명령어 순서가 소스 줄 순서와 다르게 재배치(instruction scheduling)될 수 있다.</li><li>소스 줄과 명령어의 대응이 흐트러진다 — 여러 줄이 하나로 합쳐지거나, 한 줄이 여러 군데로 흩어질 수 있다(REV-0463에서 다룬 디버깅 어려움의 근본 원인).</li></ul>
+<h3>실전 검증 기법: 로컬 참조 샘플 만들기</h3>
+<p>실제 리버싱 대상 바이너리에서 "이 최적화된 코드 조각이 아마 <code>if (a &gt; b) x = a; else x = b;</code> 같은 삼항/조건식이었을 것"이라는 가설이 섰다면, 그 가설을 그대로 짧은 C 코드로 작성해서 <strong>같은 컴파일러, 같은 최적화 수준</strong>으로 컴파일해본 뒤 실제 대상과 비교하는 것이 가장 빠르고 확실한 검증 방법이다. 컴파일러(GCC/Clang/MSVC)와 버전, 타겟 아키텍처가 다르면 세부 명령어 선택이 달라질 수 있으므로, 가능하면 대상 바이너리와 같은 툴체인 계열을 추정해서 맞추는 것이 좋다(예: PE라면 MSVC, ELF에 특정 GCC 버전 문자열이 있다면 그 버전).</p>
+<h3>컴파일러 버전에 따른 차이도 존재함</h3>
+<p>같은 <code>-O2</code>라도 GCC와 Clang, 그리고 같은 컴파일러의 버전이 달라지면 세부적인 명령어 선택, 레지스터 할당, 인라이닝 임계값이 달라질 수 있다. 그래서 "정답이 하나가 아니다"라는 점을 감안하고, 큰 틀의 패턴(어떤 구문이 어떤 형태로 바뀌는가)에 집중하는 것이 실용적이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>-O0</code> 디스어셈블리: 명확한 <code>push rbp; mov rbp, rsp</code>, 모든 변수가 <code>[rbp-N]</code>, 소스 줄마다 깔끔하게 나뉜 명령어 그룹</li><li><code>-O2</code> 디스어셈블리: <code>rbp</code> 없이 <code>rsp</code> 기준 접근, 레지스터 재사용이 많음, 함수 호출이 줄어듦(인라인), 예상치 못한 SIMD/CMOVcc/매직넘버 곱셈 등장</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>비교하고 싶은 소스 조각을 최소한의 독립 실행 가능한 함수로 분리한다.</li><li><code>-O0</code>과 <code>-O2</code>(또는 대상과 같은 최적화 수준)로 각각 컴파일한다.</li><li><code>objdump -d -M intel</code>로 두 결과를 텍스트로 뽑아 나란히 놓고 비교한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 최소 재현 코드 작성</strong> 가설을 검증하려는 로직만 담은 짧은 C 함수를 작성한다(전체 프로그램을 다시 만들 필요 없음).</p>
+<p><strong>2) 두 수준으로 컴파일</strong></p>
+<pre><code class="language-bash">gcc -O0 -g -c test.c -o test_O0.o
+gcc -O2 -g -c test.c -o test_O2.o</code></pre>
+<p><code>-c</code>로 오브젝트 파일만 만들면 링크 없이 빠르게 반복 실험 가능하다.</p>
+<p><strong>3) 디스어셈블리 추출 및 정렬 비교</strong></p>
+<pre><code class="language-bash">objdump -d -M intel test_O0.o &gt; O0.txt
+objdump -d -M intel test_O2.o &gt; O2.txt
+diff -y O0.txt O2.txt</code></pre>
+<p><strong>4) 대상 바이너리와 대조</strong> 실제 분석 대상의 해당 함수 디스어셈블리와 <code>O2.txt</code>의 패턴이 얼마나 비슷한지 눈으로 비교한다. 명령어가 완전히 같을 필요는 없고, 구조(분기 개수, 레지스터 사용 패턴, 특징적인 명령어 등)가 비슷하면 가설이 맞을 가능성이 높다고 판단한다.</p>
+<p><strong>5) IDA/Ghidra GUI 비교(선택)</strong> 같은 두 바이너리를 IDA 두 인스턴스 또는 Ghidra 프로젝트에 함께 임포트해서 F5 디컴파일 결과까지 나란히 비교하면 더 직관적이다.</p>
+<h2>명령어/단축키</h2>
+<ul><li><code>objdump -d -M intel --no-show-raw-insn &lt;file&gt;</code> — Intel 문법으로 깔끔하게 디스어셈블(REV-0488, AT&amp;T vs Intel 참고)</li><li><code>diff -y --suppress-common-lines A B</code> — 두 텍스트를 좌우로 나란히, 공통 줄은 생략하고 비교</li><li><code>gcc -S -O2 -masm=intel prog.c -o prog.s</code> — 오브젝트 대신 어셈블리 소스 텍스트를 바로 얻어 objdump 없이 확인</li><li>Compiler Explorer(godbolt.org) 스타일 웹 도구가 오프라인 환경에서는 못 쓰이므로, 로컬 <code>gcc</code>/<code>clang</code>/<code>objdump</code> 조합이 오프라인 학습의 기본 도구다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>-O0</code>에서는 <code>mov</code>가 압도적으로 많고 반복적이다 — 이는 비효율이 아니라 "매 문장을 있는 그대로, 최적화 없이" 옮긴 결과다.</li><li><code>-O2</code>에서 어떤 함수가 <code>call</code>로 안 보이고 사라졌다면, 그 함수가 인라인됐거나 애초에 부작용이 없어 완전히 제거됐을 가능성을 함께 고려한다.</li><li>두 빌드의 명령어 개수 차이가 크지 않은 짧은 함수라도, 레지스터 할당과 분기 순서는 상당히 달라질 수 있다는 점에 유의한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>-O0</code> 디스어셈블리 감각만으로 실전 릴리즈 바이너리를 기대하는 것 — 실전에서는 대부분 최적화가 켜져 있으므로 <code>-O2</code> 패턴에 반드시 익숙해져야 한다.</li><li>다른 컴파일러/버전으로 만든 참조 샘플과 대상 바이너리를 정확히 명령어 단위로 똑같을 것이라 기대하는 것 — 큰 구조적 패턴만 참고하고 세부 명령어 선택 차이는 정상으로 받아들인다.</li><li><code>-g</code>(디버그 정보)가 최적화 결과 자체를 바꾼다고 착각하는 것 — <code>-g</code>는 메타데이터만 추가할 뿐 생성되는 기계어 코드에는 영향을 주지 않는다(단, 극히 일부 컴파일러/상황에서 최적화 정보 수집 방식에 미세한 차이가 날 수 있다는 점은 있지만 일반적으로 무시 가능).</li><li>함수를 통째로 비교하지 않고 일부 명령어만 떼어 비교해서 문맥(주변 레지스터 할당 상태)을 놓치는 것 — 최적화된 코드는 함수 전체의 레지스터 할당이 서로 얽혀 있으므로 가능한 한 함수 단위로 비교한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>대상 바이너리가 어떤 컴파일러로 만들어졌는지 모르겠다면 → 문자열 섹션에서 컴파일러 버전 문자열(<code>GCC: (...)</code>, MSVC의 리치 헤더 등)을 먼저 찾는다.</li><li>최적화 수준이 -O2인지 -O3인지 구분이 안 되면 → SIMD 벡터화나 공격적 루프 언롱링(REV-0443 예정) 유무로 대략 짐작한다.</li><li>레지스터 할당 차이 때문에 비교가 헷갈리면 → REV-0469(레지스터 할당 차이, 계획된 항목)류의 관점으로 "값의 흐름"에 집중하고 "어느 레지스터인가"는 부차적으로 취급한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 같은 함수, 두 최적화 수준 비교</strong></p>
+<pre><code class="language-c">int add3(int a, int b, int c) { return a + b + c; }</code></pre>
+<pre><code class="language-asm">; -O0
+add3:
+    push  rbp
+    mov   rbp, rsp
+    mov   [rbp-4], edi
+    mov   [rbp-8], esi
+    mov   [rbp-0xc], edx
+    mov   eax, [rbp-4]
+    add   eax, [rbp-8]
+    add   eax, [rbp-0xc]
+    pop   rbp
+    ret</code></pre>
+<pre><code class="language-asm">; -O2
+add3:
+    lea   eax, [rdi+rsi]
+    add   eax, edx
+    ret</code></pre>
+<p><code>-O0</code>은 세 인자를 전부 스택에 내려 쓰고 다시 읽어오지만, <code>-O2</code>는 레지스터만으로 <code>LEA</code>(REV-0042) 한 번과 <code>ADD</code>(REV-0047) 한 번으로 끝낸다.</p>
+<p><strong>예제 2 — 프레임 포인터 생략 확인</strong></p>
+<pre><code class="language-bash">objdump -d prog_O0 | grep -A2 "&lt;add3&gt;:"   # push rbp; mov rbp, rsp 확인
+objdump -d prog_O2 | grep -A2 "&lt;add3&gt;:"   # rbp 관련 명령이 없는지 확인</code></pre>
+<p><strong>예제 3 — 실전 검증 워크플로 예시</strong></p>
+<pre><code class="language-c">// 가설: 대상 바이너리의 이 조각은 "x = (a &gt; b) ? a : b;"였을 것이다
+int test(int a, int b) { return (a &gt; b) ? a : b; }</code></pre>
+<pre><code class="language-bash">gcc -O2 -S -masm=intel test.c -o test.s</code></pre>
+<pre><code class="language-asm">    cmp   edi, esi
+    mov   eax, edi
+    cmovle eax, esi      ; CMOVcc로 분기 없이 처리 (REV-0075)</code></pre>
+<p>이 결과가 실제 대상 바이너리의 조각과 구조적으로 일치하면 가설이 맞을 가능성이 높다고 판단할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0457-for-vs-while-loop.html">REV-0457 — for문과 while문을 어셈블리에서 구분하는 법</a></li><li><a href="rev-0458-do-while-shorter-assembly.html">REV-0458 — do-while 루프가 다른 루프보다 어셈블리가 짧은 이유</a></li><li><a href="rev-0463-optimized-away-variable-recovery.html">REV-0463 — 최적화로 사라진 변수를 디버거에서 복원하는 법</a></li><li><a href="rev-0075-cmovcc.html">REV-0075 — CMOVcc: 분기 없는 조건부 이동</a></li><li><a href="rev-0031-stack-frame.html">REV-0031 — 스택 프레임이 무엇인지</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>GCC/Clang 최적화 수준(<code>-O0</code>~<code>-O3</code>)의 정의와 각 단계에서 활성화되는 최적화 패스 목록: GCC 공식 문서(Options That Control Optimization) 및 LLVM/Clang 공식 문서 기준.</li><li>프레임 포인터 생략(FPO)과 <code>-fomit-frame-pointer</code>: GCC 공식 문서 기준.</li><li><code>objdump</code>의 Intel 문법 출력 옵션(<code>-M intel</code>): GNU Binutils 공식 매뉴얼 기준. (2026-09-08 검증)</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>리눅스 프로세스 종료 코드(Exit Code)로 크래시 원인 좁히기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>리눅스 프로세스 종료 코드(Exit Code)로 크래시 원인 좁히기</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>쉘에서 프로그램 실행 직후 <code>echo $?</code>로 보이는 종료 코드가 128보다 크면(예: 139, 134, 132) <code>128 + 시그널 번호</code>이며, 그 시그널 번호(139→11=SIGSEGV, 134→6=SIGABRT, 132→4=SIGILL, 136→8=SIGFPE)만 알아도 코드를 한 줄도 안 읽고 "널 포인터 역참조인지, abort()가 호출됐는지, 잘못된 명령어를 실행했는지, 0으로 나눴는지"를 즉시 좁힐 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>퍼징이나 무작위 입력 테스트 중 특정 입력에서만 프로그램이 비정상 종료됐는데, 왜 죽었는지 로그 없이 빠르게 1차 분류하고 싶을 때</li><li><code>./chall; echo $?</code>로 확인한 숫자(예: 139)가 무슨 뜻인지 모를 때</li><li>스크립트로 자동화된 크래시 탐지(exit code만으로 "크래시 후보"를 걸러내는 방식)를 만들고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>정상 종료와 시그널 종료의 exit code 차이</h3>
+<p>프로세스가 <code>exit(n)</code>이나 <code>return n</code>(main에서)으로 <strong>정상 종료</strong>하면, 쉘에서 보는 종료 코드는 <code>n &amp; 0xFF</code>(0~255 범위)다.</p>
+<p>프로세스가 처리되지 않은 <strong>시그널로 강제 종료</strong>되면, bash 등 대부분의 쉘은 <code>128 + 시그널번호</code>를 종료 코드로 보고한다. 이건 커널이 직접 정하는 규칙이 아니라 쉘의 관례지만, bash/zsh/dash 모두 이 관례를 따르므로 사실상 표준처럼 쓰인다.</p>
+<h3>자주 보는 값과 의미</h3>
+<table><thead><tr><th>exit code</th><th>128+N</th><th>시그널</th><th>의미</th></tr></thead><tbody><tr><td>132</td><td>128+4</td><td>SIGILL</td><td>잘못된 명령어 실행(illegal instruction) — 손상된 코드, 잘못된 함수 포인터 호출 등</td></tr><tr><td>133</td><td>128+5</td><td>SIGTRAP</td><td>트랩/브레이크포인트성 시그널, <code>int3</code> 등</td></tr><tr><td>134</td><td>128+6</td><td>SIGABRT</td><td><code>abort()</code> 호출 — 스택 카나리 감지(<code>__stack_chk_fail</code>), <code>assert()</code> 실패, glibc의 malloc/free 무결성 검사 실패(double free, heap corruption 등)</td></tr><tr><td>135</td><td>128+7</td><td>SIGBUS</td><td>버스 에러 — 정렬 안 된 메모리 접근, 매핑되지 않은 파일 영역 접근 등</td></tr><tr><td>136</td><td>128+8</td><td>SIGFPE</td><td>부동소수점 예외 — 대표적으로 <strong>정수 나눗셈에서 0으로 나누기</strong>(<code>idiv</code>)</td></tr><tr><td>137</td><td>128+9</td><td>SIGKILL</td><td>강제 종료(<code>kill -9</code>), OOM killer에 의해 죽은 경우도 포함</td></tr><tr><td>139</td><td>128+11</td><td>SIGSEGV</td><td>세그멘테이션 폴트 — 매핑 안 된 주소 접근, 널 포인터 역참조, 스택 오버플로우로 인한 잘못된 접근 등 리버싱에서 가장 자주 보는 크래시</td></tr></tbody></table>
+<h3>왜 이게 "가장 먼저 할 것"이 되는가</h3>
+<p>GDB로 core dump나 실시간 크래시를 분석하기 전에, exit code 하나만 확인해도 <strong>어느 카테고리의 버그인지</strong>(메모리 접근 오류 vs 무결성 검사 실패 vs 산술 오류)를 미리 좁힐 수 있다. 특히 자동화된 fuzzing/brute-force 스크립트에서는 매번 GDB를 붙이는 대신 <code>subprocess</code>로 실행하고 반환 코드만 확인해서 "이 입력이 크래시를 유발했는지"를 빠르게 스크리닝하는 데 이 값이 직접 쓰인다.</p>
+<h3>C에서 wait 계열 함수와의 관계</h3>
+<p>부모 프로세스가 <code>wait()</code>/<code>waitpid()</code>로 자식의 종료 상태를 받을 때는 매크로로 해석해야 한다:</p>
+<pre><code class="language-c">int status;
+waitpid(pid, &amp;status, 0);
+if (WIFEXITED(status)) {
+    printf("정상 종료, code = %d\n", WEXITSTATUS(status));
+} else if (WIFSIGNALED(status)) {
+    printf("시그널로 종료, signal = %d\n", WTERMSIG(status));
+}</code></pre>
+<p>쉘이 보여주는 <code>128+N</code> 규칙은 이 <code>WTERMSIG(status)</code> 값을 쉘이 사람이 보기 좋게 인코딩한 것이다. pwntools의 <code>process</code> 객체를 쓸 때도 <code>p.wait()</code> 후 <code>p.poll()</code>이 음수를 반환하면 그 절댓값이 시그널 번호를 의미한다(REV-0266 참고).</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>터미널에서 프로그램 실행 후 쉘이 직접 출력하는 메시지에서 확인된다:</p>
+<pre><code>Segmentation fault (core dumped)</code></pre>
+<p>이 메시지가 뜬 직후 <code>echo $?</code>를 치면 <code>139</code>이 나온다. <code>Aborted (core dumped)</code>가 뜨면 <code>echo $?</code>는 <code>134</code>다. 메시지 없이 그냥 프로세스가 사라지고 <code>$?</code>만 이상한 값일 때도 이 표를 참고해서 원인을 좁힌다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>프로그램을 실행한 직후 바로 종료 코드를 확인하는 습관을 들인다:</p>
+<pre><code class="language-bash">./chall
+echo $?</code></pre>
+<p>128보다 크면 위 표에서 시그널을 확인하고, core dump 설정(REV-0113)이 되어 있다면 바로 core 파일을 GDB로 열어 정확한 크래시 지점을 확인한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 실행 후 즉시 종료 코드 확인</strong></p>
+<pre><code class="language-bash">./chall &lt; input.txt
+echo "exit code: $?"</code></pre>
+<p><strong>2) 128 초과 여부로 1차 분류</strong></p>
+<ul><li>128 이하: 정상 종료 경로. 프로그램 로직상 의도된 실패(예: "Wrong password" 후 <code>return 1</code>)일 가능성이 높다.</li><li>128 초과: 시그널에 의한 비정상 종료. 위 표에서 시그널 번호(<code>code - 128</code>)를 확인한다.</li></ul>
+<p><strong>3) 시그널별로 다음 액션 결정</strong></p>
+<ul><li>SIGSEGV(139) → GDB로 core dump 열거나 재실행 후 크래시 지점의 faulting 주소 확인(REV-0113)</li><li>SIGABRT(134) → 스택 카나리 검사 실패인지, glibc 힙 무결성 검사(<code>malloc(): invalid pointer</code> 등) 실패인지 stderr 메시지 확인</li><li>SIGFPE(136) → 코드에서 나눗셈(<code>idiv</code>) 근처를 확인, 0으로 나누는 입력을 의심(REV-0053)</li><li>SIGILL(132) → 함수 포인터가 잘못된 주소를 가리키거나, 손상된 코드 영역을 실행했을 가능성</li></ul>
+<p><strong>4) 커널 로그로 교차 확인 (SIGSEGV/SIGBUS)</strong></p>
+<pre><code class="language-bash">dmesg | tail -20</code></pre>
+<p><code>chall[12345]: segfault at 0 ip 0000000000401146 sp 00007ffd... error 4</code>처럼 폴트 주소(<code>at 0</code>)와 명령어 포인터(<code>ip</code>)가 나온다. <code>at 0</code>은 널 포인터 역참조를 강하게 시사한다.</p>
+<p><strong>5) 자동화 스크립트에서 exit code로 크래시 후보 스크리닝</strong></p>
+<pre><code class="language-python">import subprocess
+for candidate in test_inputs:
+    p = subprocess.run(["./chall"], input=candidate, capture_output=True)
+    if p.returncode &lt; 0:  # 음수 = -시그널번호 (Python subprocess 관례)
+        print(f"크래시 후보: {candidate!r}, signal={-p.returncode}")</code></pre>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">./chall; echo $?
+echo $?                        # 직전 명령 종료 코드
+dmesg | tail -20               # 커널이 기록한 segfault 정보
+ulimit -c unlimited            # core dump 활성화 (REV-0113과 연계)</code></pre>
+<pre><code class="language-c">WIFEXITED(status)
+WEXITSTATUS(status)
+WIFSIGNALED(status)
+WTERMSIG(status)</code></pre>
+<h2>출력 해석</h2>
+<pre><code class="language-bash">$ ./chall
+Segmentation fault (core dumped)
+$ echo $?
+139</code></pre>
+<p><code>139 - 128 = 11</code> → SIGSEGV. <code>(core dumped)</code>가 붙어 있으므로 <code>ulimit -c unlimited</code>가 설정돼 있었다면 <code>core</code> 파일이 생성됐을 것이다(REV-0113에서 core dump를 GDB로 여는 절차 참고).</p>
+<pre><code class="language-bash">$ ./chall
+Aborted (core dumped)
+$ echo $?
+134</code></pre>
+<p><code>134 - 128 = 6</code> → SIGABRT. glibc 힙 오류 메시지(<code>free(): invalid pointer</code> 등)나 스택 카나리 실패 메시지(<code>*** stack smashing detected ***</code>)가 stderr에 함께 출력됐는지 다시 확인해야 정확한 원인을 알 수 있다 — SIGABRT는 원인이 여러 갈래이므로 exit code만으로는 "abort가 호출됐다"까지만 알 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li>exit code <code>1</code>이나 <code>0</code>처럼 128 이하인 값을 시그널로 착각하는 것 — 128 이하는 프로그램이 명시적으로 <code>exit(n)</code>/<code>return n</code>한 정상 종료 경로다.</li><li>SIGABRT(134)를 보고 무조건 스택 카나리 문제라고 단정하는 것 — malloc/free 무결성 검사 실패, <code>assert()</code> 실패 등 원인이 다양하므로 stderr 메시지를 반드시 같이 봐야 한다.</li><li>파이프라인(<code>prog1 | prog2</code>)에서 <code>echo $?</code>가 마지막 명령(<code>prog2</code>)의 종료 코드만 보여준다는 걸 잊고 <code>prog1</code>이 크래시 났는데 못 알아채는 것 — bash에서는 <code>${PIPESTATUS[@]}</code> 배열로 파이프라인 전체의 종료 코드를 확인해야 한다.</li><li>Python <code>subprocess.run().returncode</code>가 시그널로 죽었을 때 <strong>음수</strong>로 나온다는 걸 모르고 <code>if returncode != 0</code>으로만 정상/비정상만 판별하고 시그널 종류를 놓치는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>SIGSEGV/SIGABRT의 정확한 크래시 지점(명령어 주소, 레지스터 상태)을 보고 싶다면 → REV-0113 Core dump와 크래시 지점 분석 기초</li><li>시스템 콜 수준에서 시그널이 어떻게 전달되는지 더 자세히 보고 싶다면 → REV-0662 strace 결과를 파일/네트워크 시스템콜로 필터링해서 노이즈 줄이기(strace는 <code>--- SIGSEGV {...} ---</code> 형태로 시그널도 함께 보여준다)</li><li>pwntools로 이 판별을 자동화하고 싶다면 → REV-0266 pwntools process 기초</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ printf 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA' | ./vuln
+Segmentation fault (core dumped)
+$ echo $?
+139
+$ dmesg | tail -1
+[12345.678] vuln[9821]: segfault at 4141414141414141 ip 0000000000401234 sp 00007ffd12340000 error 4 in vuln[401000+1000]</code></pre>
+<p><code>segfault at 4141414141414141</code>은 <code>A</code>(0x41) 바이트로 덮인 주소로 리턴하려다 실패했다는 뜻 — 스택 버퍼 오버플로우로 리턴 주소를 덮어썼다는 강력한 신호이며, exit code 139만 보고도 "메모리 손상 계열"이라는 큰 방향을 코드 분석 전에 잡을 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0113-core-dump-basics.html">REV-0113 — Core dump와 크래시 지점 분석 기초</a></li><li><a href="rev-0662-strace-filter-file-network-syscalls.html">REV-0662 — strace 결과를 파일/네트워크 시스템콜로 필터링해서 노이즈 줄이기</a></li><li><a href="rev-0053-idiv.html">REV-0053 — IDIV: Signed 나눗셈</a></li><li><a href="rev-0442-stack-canary-check.html">REV-0442 — 스택 카나리(Stack Canary) 체크 시퀀스 분석</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>쉘의 <code>128+시그널번호</code> exit code 관례: bash 매뉴얼 "EXIT STATUS" 절 및 POSIX 쉘 관례 기준.</li><li>시그널 번호(SIGILL=4, SIGTRAP=5, SIGABRT=6, SIGBUS=7, SIGFPE=8, SIGKILL=9, SIGSEGV=11)와 <code>WIFEXITED</code>/<code>WEXITSTATUS</code>/<code>WIFSIGNALED</code>/<code>WTERMSIG</code> 매크로: <code>signal(7)</code> 및 <code>wait(2)</code> man page 기준.</li><li>Python <code>subprocess.run().returncode</code>가 시그널 종료 시 음수(<code>-시그널번호</code>)로 반환되는 동작: Python 공식 문서 <code>subprocess</code> 모듈 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

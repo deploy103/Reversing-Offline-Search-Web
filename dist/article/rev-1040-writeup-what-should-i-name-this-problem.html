@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Write-up] 아 문제 이름 뭘로하지 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / writeup</div>
+<article class="article-body">
+<h1>[Write-up] 아 문제 이름 뭘로하지</h1>
+<div class="article-meta"><span class="tag">writeup</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>"아 문제 이름 뭘로하지"(Bronze 2, dreamhack.io/wargame/challenges/1825)는 드림핵 문제 소개란에 스스로 "simple reversing challenge(간단한 리버싱 챌린지)"라고 소개하고 있으며, 플래그 형식이 <code>DH{...}</code>라는 것과 2025.02.27에 버그 수정이 있었다는 것까지는 공개적으로 확인되지만 구체적인 코드/로직을 다루는 write-up은 찾지 못했다. 문제 이름 자체는 제작자가 이름을 짓기 귀찮아서(혹은 일부러 장난스럽게) 붙인 것으로 보이며 문제 로직에 직접적인 힌트를 담고 있지 않을 가능성이 높다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>드림핵 워게임에서 "아 문제 이름 뭘로하지"라는 제목의 문제를 발견하고 제목이 힌트인지 아닌지 헷갈릴 때</li><li>문제를 풀어서 얻은 것 같은 문자열을 제출했는데 오답 처리가 되어서 무엇이 잘못됐는지 확인하고 싶을 때</li><li>"simple reversing challenge"라는 소개만 보고 실제로 얼마나 단순한지 가늠이 안 될 때</li></ul>
+<h2>핵심 개념</h2>
+<p>WebSearch로 확인한 공개 정보는 다음과 같다. 드림핵 워게임 챌린지 페이지(challenges/1825)의 소개문에는 이 문제가 "simple reversing challenge"라고 명시되어 있고, 플래그 형식은 <code>DH{...}</code>이며, 2025년 2월 27일에 버그 수정이 있었다는 공지가 있다. 또한 같은 제목으로 작성된 드림핵 Q&amp;A 게시글(2025.03.04, 리버싱 태그)에서 한 사용자가 "바이너리를 실행해 얻은 결과를 제출했지만 정답 처리가 되지 않는다"는 질문을 올렸고, 답변자는 "문제 자체에는 오류가 없어 보이니 플래그 형식이나 출력 방식을 다시 확인해보라"는 취지로 답했다는 것도 확인되었다.</p>
+<p>이 두 가지 공개 정보에서 얻을 수 있는 실질적인 힌트는 다음과 같다.</p>
+<ul><li>이 문제는 "simple"이라는 표현대로 로직 자체는 복잡하지 않을 가능성이 높다.</li><li>실제로 겪은 사람이 있는 실수 유형은 "바이너리를 실행해서 나온 값 자체가 정답이라고 생각했지만 그 값을 <code>DH{}</code>로 감싸지 않았거나, 출력된 문자열에 공백/줄바꿈이 섞여 있는데 그대로 제출한 경우"일 가능성이 크다. Q&amp;A의 답변이 "문제 자체는 정상"이라는 방향이었다는 것은, 문제를 실제로 다 풀었는데도 제출 형식 실수로 오답이 나는 사례가 있었다는 것을 암시한다.</li><li>2025.02.27 버그 수정 이력이 있다는 것은 이 문제가 한 번 이상 패치되었다는 뜻이므로, 아주 오래된 스크린샷/캐시된 정보를 참고하면 현재 배포된 바이너리와 다를 수 있다는 점도 주의해야 한다.</li></ul>
+<p>실제 검증 로직(어떤 알고리즘으로 값이 계산되는지)에 대한 정보는 확인되지 않았으므로, 이 부분은 일반적인 Bronze 2 수준 리버싱 문제의 통상적 접근법(문자열 비교, 간단한 변환 후 비교)으로 접근해야 한다는 것을 이 글에서는 추정으로만 남긴다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>실행 시 어떤 값(플래그로 추정되는 문자열 또는 숫자)이 화면에 그대로 출력됨</li><li>출력된 값에 <code>DH{</code>와 <code>}</code>가 이미 포함되어 있을 수도 있고, 감싸지 않은 순수 내용만 나올 수도 있음</li><li>문제 설명에 "simple reversing challenge"라는 표현 외에 별다른 힌트 텍스트가 없음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>바이너리를 실행해 정확히 어떤 문자열/숫자가 출력되는지, 그 값 앞뒤에 공백이나 개행문자가 섞여 있지 않은지 hex 덤프 수준으로 확인한다. 제출 실수가 실제로 보고된 문제이므로, 로직을 다 풀었다고 생각되면 제출 형식부터 재확인하는 것이 중요하다.</p>
+<h2>단계별 절차</h2>
+<ol><li>바이너리를 실행해 출력값을 그대로 파일로 리다이렉트(<code>./chall &gt; out.txt</code>)해 정확한 바이트를 확인</li><li>IDA/Ghidra로 <code>main</code>을 열어 출력값이 계산되는 과정(하드코딩인지, 어떤 연산의 결과인지) 확인</li><li>계산 로직이 있다면 그 로직을 따라가며 최종 값을 도출</li><li>최종 값에 <code>DH{}</code>가 이미 붙어 있는지, 붙어 있지 않다면 직접 감싸야 하는지 확인</li><li>제출 전 값에 불필요한 개행/공백이 섞여 있지 않은지 재확인 후 제출</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">쉘: ./chall | xxd 로 정확한 출력 바이트(개행 포함 여부) 확인
+IDA: main에서 printf/puts 호출 인자를 추적(Ctrl+X로 xref)</code></pre>
+<h2>출력 해석</h2>
+<p>프로그램이 출력하는 값이 그대로 정답인지, 아니면 그 값을 가지고 추가 계산을 해야 하는지가 이 유형 문제의 핵심 분기점이다. Q&amp;A에서 보고된 "결과와 정답이 다르다"는 사례가 실제 로직 오류가 아니라 제출 형식 문제로 정리되었다는 점을 보면, 출력값을 있는 그대로 신뢰하고 형식만 맞춰 제출하는 것이 우선순위가 높은 시도라고 볼 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li>프로그램이 출력한 값에 이미 붙어 있는 <code>DH{}</code>를 중복으로 한 번 더 감싸서 제출하는 것</li><li>출력값 끝에 붙는 개행문자(<code>\n</code>)나 공백을 그대로 포함해서 제출하는 것</li><li>문제 이름에 숨은 의미를 찾으려고 시간을 쓰는 것 — 확인된 정보상 이름 자체는 실제 힌트가 아니라 제작자가 이름을 짓지 못해 붙인 문구로 보임</li><li>2025.02.27 이전에 작성된 캐시/스크린샷 정보를 최신 바이너리 기준이라고 오해하는 것</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>출력값 계산 로직을 못 찾겠으면 → REV-0196 strcmp 기반 Flag 검증 패턴, REV-0198 문자별 for 루프 검증 패턴</li><li>그래도 오답이 나온다면 드림핵 자체 Q&amp;A 게시판(dreamhack.io/forum/qna)에서 같은 제목으로 검색해 다른 사람의 질문/답변 확인</li><li>정적 분석으로 안 풀리면 동적 분석으로 전환하는 기준을 다시 점검 → REV-0005 문제를 정적 분석부터 할지 동적 분석부터 할지 결정하는 법</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">$ ./chall &gt; out.txt
+$ xxd out.txt
+00000000: 4448 7b30 6161 6161 7d0a              DH{0aaaa}.</code></pre>
+<p>이 예제는 "출력 바이트를 그대로 확인해 개행 문자 포함 여부를 점검한다"는 절차를 보여주기 위한 가상의 예시이며, 실제 "아 문제 이름 뭘로하지" 바이너리의 실제 출력값이 아니다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0196-strcmp-check-pattern.html">REV-0196 — strcmp 기반 Flag 검증 패턴</a></li><li><a href="rev-0198-char-by-char-loop-pattern.html">REV-0198 — 문자별 for 루프 검증 패턴</a></li><li><a href="rev-0005-static-vs-dynamic.html">REV-0005 — 문제를 정적 분석부터 할지 동적 분석부터 할지 결정하는 법</a></li><li>[REV-1033 — [Write-up] please, please, please](rev-1033-writeup-please-please-please.html)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>드림핵 워게임 챌린지 페이지(dreamhack.io/wargame/challenges/1825)의 공개 소개문("simple reversing challenge", 플래그 형식 <code>DH{~}</code>, 2025.02.27 버그 수정 공지)을 WebSearch로 확인했다(2026-09-10 검증).</li><li>드림핵 Q&amp;A 게시판(dreamhack.io/forum/qna, 2025.03.04, 리버싱 태그)에 같은 제목으로 "결과와 정답이 다릅니다"라는 질문과, 문제 자체에는 오류가 없어 보인다는 취지의 답변이 있었음을 확인했다(2026-09-10 검증). 이 게시글의 정확한 문장을 그대로 인용하지 않고 취지만 재서술했다.</li><li>실제 검증 로직(알고리즘 상세)은 공개된 자료로 확인하지 못했으며, 본문의 절차는 Bronze 2 등급 문제에 일반적으로 적용되는 접근법을 정리한 것이다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

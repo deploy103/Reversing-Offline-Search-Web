@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA 그래프 뷰가 너무 복잡해서 못 읽을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA 그래프 뷰가 너무 복잡해서 못 읽을 때</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>그래프 뷰(<code>Space</code>)를 열었을 때 화살표가 사방으로 엉켜서 도저히 눈으로 따라갈 수 없다면, 원인은 대부분 (1) 함수가 원래 크고 분기가 많거나, (2) 컴파일러 최적화/난독화로 블록이 인위적으로 잘게 쪼개진 것(control flow flattening)이므로, 전체를 한 번에 이해하려 하지 말고 F5 디컴파일 결과를 먼저 보거나 그래프를 부분적으로 접어가며 읽는 전략으로 바꿔야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>Space</code>로 그래프 뷰를 열었더니 블록과 화살표가 화면을 가득 채우고 스크롤해도 끝이 안 보일 때</li><li>그래프 안의 분기 구조가 정상적인 if/for/while로 보이지 않고, 하나의 큰 <code>switch</code>문 형태로 중앙에 모든 블록이 모이는 이상한 패턴일 때</li><li>화살표 선이 서로 교차해서 어디서 어디로 가는 연결인지 눈으로 구분이 안 될 때</li><li>이 함수가 안티 리버싱 목적의 control flow flattening(제어 흐름 평탄화)으로 난독화된 것 같다고 의심될 때</li></ul>
+<h2>핵심 개념</h2>
+<p>그래프 뷰는 함수 안의 기본 블록(basic block, 분기 없이 순차 실행되는 명령어 묶음)을 노드로, 그 사이의 점프/분기 관계를 화살표로 그려준다. 이 그래프가 못 읽을 정도로 복잡해지는 원인은 크게 두 가지다.</p>
+<ul><li><strong>함수가 실제로 크고 분기가 많음</strong>: 상태 머신, 파서, 큰 <code>switch</code>문을 가진 함수는 원래부터 블록 수가 많다. 이건 난독화가 아니라 그냥 복잡한 로직이 그대로 시각화된 것이다.</li><li><strong>Control Flow Flattening(제어 흐름 평탄화)</strong>: 난독화 도구나 컴파일러 패스가 원래의 자연스러운 분기 구조(if/for)를 하나의 큰 <code>switch</code>문과 상태 변수로 재작성하는 기법이다. 이렇게 바뀐 코드는 원래는 순서대로 실행되던 블록들이 전부 하나의 디스패처(dispatcher) 블록을 거쳐서 이동하는 형태가 되어, 그래프에서 보면 중앙의 디스패처 블록에서 사방으로 화살표가 뻗어나가는 별 모양(star topology)에 가까운 패턴으로 나타난다. 이 경우 실제 로직의 순서는 코드 배치 순서와 무관해지고, 오직 "상태 변수 값 → 다음에 실행될 블록"이라는 매핑을 통해서만 진짜 흐름을 알 수 있다.</li><li><strong>불투명 조건식(opaque predicate)</strong>: 항상 참이거나 항상 거짓인 조건 분기를 추가해서 실제로는 실행되지 않을 가짜 경로를 만들어 그래프를 부풀리는 기법도 있다. 이 경우 실제로 의미 있는 블록보다 훨씬 많은 블록이 그래프에 나타난다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>그래프 뷰를 열자마자 화면 확대/축소를 여러 번 해도 전체가 한 화면에 안 들어올 정도로 블록이 많음.</li><li>특정 블록 하나에서 여러 개(5개 이상)의 화살표가 다른 여러 블록으로 뻗어나가고, 그 여러 블록에서 다시 화살표가 같은 블록 하나로 되돌아오는 패턴이 반복됨(디스패처 블록 의심).</li><li>Pseudocode(F5) 결과를 보면 큰 <code>switch (state)</code> 문 안에 <code>state = N;</code>으로 상태를 바꾸는 코드가 각 case마다 반복되는 패턴이 보임 — 이는 flattening이 디컴파일 결과에도 그대로 드러난 것이다.</li><li>화면 우측 하단(또는 View 메뉴)에 있는 작은 오버뷰(bird's eye view) 축소 지도를 보면 노드가 격자처럼 빽빽하게 들어차 있음.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>Space</code>로 그래프와 텍스트 뷰를 전환해가며, 우선 F5로 Pseudocode를 먼저 열어본다. 그래프가 복잡해도 Hex-Rays가 어느 정도 구조를 정리해서 보여주는 경우가 많아, 그래프보다 Pseudocode가 훨씬 읽기 쉬운 경우가 많다.</p>
+<h2>단계별 절차</h2>
+<ol><li>F5를 눌러 Pseudocode 결과를 먼저 확인한다. 큰 <code>switch</code>문이나 <code>while(1) { switch(state) {...} }</code> 형태로 어느 정도 정리되어 보인다면, 그래프를 직접 읽기보다 이 Pseudocode 위에서 각 <code>case</code>가 어떤 상태값을 다음 상태로 설정하는지 표로 정리하는 편이 훨씬 빠르다.</li><li>그래프 뷰가 꼭 필요하다면, 관심 없는 블록들을 접어서 화면을 단순화한다. 블록을 우클릭 → <code>Collapse node</code>(또는 여러 블록을 선택 후 그룹화)로 접으면 당장 안 볼 부분을 숨겨 핵심 경로만 남길 수 있다.</li><li>마우스 휠/<code>Ctrl+마우스휠</code>로 확대·축소하면서, 화면 우측 하단의 오버뷰 축소 지도를 이용해 지금 보고 있는 위치가 전체 그래프의 어디쯤인지 파악한다.</li><li>Pseudocode에서 <code>switch(state)</code> 패턴이 실제로 확인되어 control flow flattening이 맞다고 판단되면, 이 글의 범위(그래프를 어떻게 읽고 다룰지)를 넘어서는 전용 디옵퍼스케이션 절차가 필요하다 — REV-0231(Control Flow Flattening 기초)에서 상태 변수 매핑표 작성, 원래 순서 복원 절차를 자세히 다루므로 그쪽으로 넘어간다.</li><li>함수가 단순히 크기만 큰 것(난독화가 아닌 것)으로 판단되면, 굳이 전체를 한 번에 이해하려 하지 말고 REV-0166(Call Graph로 핵심 로직 좁히기)에서처럼 관심 있는 부분(예: 검증에 실패했을 때 출력하는 문자열과 연결된 블록)부터 역으로 좁혀 들어간다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li><code>Space</code> : 그래프 뷰 ↔ 텍스트 뷰 전환</li><li><code>F5</code> : Pseudocode(정리된 형태로 먼저 읽어보기)</li><li>노드 우클릭 → <code>Collapse node</code> / <code>Group nodes</code> : 관심 없는 블록 접기</li><li><code>Ctrl + 마우스 휠</code> 또는 <code>+</code>/<code>-</code> : 확대/축소</li><li>화면 우측 하단 오버뷰(축소 지도) : 전체에서 현재 위치 파악</li><li><code>N</code> : 변수/함수 이름 바꾸기(상태 변수에 의미 있는 이름 붙이기)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Pseudocode에서 <code>switch(state)</code> 각 <code>case</code> 끝에 <code>state = 상수;</code> 패턴이 반복된다면 control flow flattening이 거의 확실하다 — 이 상수들의 매핑 관계가 진짜 실행 순서다.</li><li>그래프에서 한 블록으로 여러 화살표가 모였다가 다시 여러 곳으로 흩어지는 노드가 하나(또는 소수) 있다면, 그게 디스패처이고 그 디스패처를 기준으로 앞뒤 블록들을 분류하면 구조가 명확해진다.</li><li>오버뷰 지도에서 노드가 규칙적인 격자 패턴으로 촘촘히 배열되어 있다면 자동 배치 알고리즘이 최선을 다한 결과일 뿐 실제 로직의 복잡도와 항상 비례하지는 않는다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>그래프 뷰만으로 전체 로직을 한 번에 파악하려고 계속 스크롤/확대만 반복하는 것 — 큰 함수일수록 그래프보다 Pseudocode와 손으로 그린 상태 매핑 표가 더 효율적이다.</li><li>Control flow flattening을 진짜 복잡한 로직이라고 오해하고 코드 순서대로 이해하려는 것 — flattening된 코드는 배치 순서가 실행 순서와 무관하다.</li><li>불투명 조건식으로 만들어진 죽은 경로까지 전부 진짜 로직이라 믿고 분석하는 것 — 실제로 도달 가능한지 디버거로 한 번 확인해보는 것이 시간을 아낀다.</li><li>블록을 접어서(Collapse) 화면을 단순화하는 기능이 있다는 것을 모르고 매번 전체 그래프를 스크롤하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>그래프 뷰의 기본 사용법(분기 읽는 법)이 처음이라면 → REV-0150 IDA Graph View에서 분기 읽기</li><li>Pseudocode 자체가 이상하게 나온다면 → REV-0152 IDA Decompiler Failed가 뜰 때, 또는 REV-0774 IDA에서 특정 함수만 계속 디컴파일이 실패할 때</li><li>핵심 로직만 좁혀서 보고 싶다면 → REV-0166 함수 Call Graph로 핵심 로직 좁히기</li><li>패킹/난독화 여부 자체가 궁금하다면 관련 패킹/안티디버깅 카테고리 문서를 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p><code>verify_serial</code> 함수의 그래프 뷰를 열었더니 블록 40개가 하나의 중앙 블록을 중심으로 별 모양으로 연결되어 있는 상황.</p>
+<pre><code class="language-text">1. Space로 텍스트 뷰 전환 대신 F5로 Pseudocode 확인 → while(1) { switch(state) {...} } 형태 발견, control flow flattening으로 확정
+2. 그래프 뷰로 돌아가 디스패처 블록을 기준으로 앞뒤에 붙은 관심 없는 초기화/정리 블록들을 Collapse node로 접어 화면을 단순화
+3. 이 함수는 CFF로 확정됐으므로, 상태값 매핑과 원래 순서 복원은 REV-0231의 절차를 그대로 적용해 진행
+4. 복원된 순서(예: 입력 문자 하나씩 비교하는 반복문)를 바탕으로 나머지 검증 로직을 이어서 분석</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0231-control-flow-flattening.html">REV-0231 — Control Flow Flattening 기초</a></li><li><a href="rev-0150-ida-graph-view.html">REV-0150 — IDA Graph View에서 분기 읽기</a></li><li><a href="rev-0166-call-graph-narrowing.html">REV-0166 — 함수 Call Graph로 핵심 로직 좁히기</a></li><li><a href="rev-0152-ida-decompiler-failed.html">REV-0152 — IDA Decompiler Failed가 뜰 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>그래프 뷰의 노드/화살표 구성과 Collapse/Group 기능: Hex-Rays 공식 사용자 가이드 "Graph view" 섹션 기준.</li><li>Control flow flattening과 opaque predicate는 소프트웨어 난독화 분야에서 널리 알려진 기법으로, 다수의 공개 리버싱/디옵퍼스케이션 연구 자료에서 공통적으로 설명하는 개념을 정리한 것이다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

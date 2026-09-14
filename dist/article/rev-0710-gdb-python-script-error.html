@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GDB Python 스크립트가 오류로 안 돌아갈 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>GDB Python 스크립트가 오류로 안 돌아갈 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>GDB Python 스크립트가 실행되지 않는 원인은 거의 항상 다음 세 가지 중 하나다: (1) GDB 바이너리 자체가 Python 지원 없이 빌드되어 <code>python</code> 명령이 원천적으로 없거나, (2) 스크립트가 실행되는 시점에 아직 프로세스가 시작되지 않아 <code>gdb.execute</code>가 요구하는 프레임/레지스터/심볼 정보가 없어서 <code>gdb.error</code>가 발생하거나, (3) <code>source script.py</code>로 불러온 모듈이 시스템 Python과 GDB에 내장된 Python 인터프리터의 경로/버전이 달라 <code>ModuleNotFoundError</code>가 나는 경우이며, <code>gdb -q --batch -ex "python print(1)"</code>로 Python 지원 여부부터 확인하는 것이 첫 단계다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>GDB 안에서 <code>python</code>으로 시작하는 명령을 쳤는데 <code>Undefined command: "python"</code>이 뜰 때</li><li><code>source myscript.py</code>로 스크립트를 불러왔는데 <code>Traceback (most recent call last):</code>와 함께 에러가 출력될 때</li><li><code>gdb.Breakpoint</code>를 상속해서 만든 커스텀 브레이크포인트 클래스가 동작 안 하거나 <code>stop()</code> 메서드가 호출 안 될 때</li><li>스크립트 안에서 <code>import pwn</code>이나 다른 외부 패키지를 썼는데 <code>ModuleNotFoundError: No module named 'pwn'</code>이 뜰 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>GDB의 Python 지원은 빌드 옵션에 달려있다</h3>
+<p>GDB는 <code>--with-python</code> 옵션으로 빌드될 때만 Python 스크립팅을 지원한다. 대부분의 배포판 패키지(<code>apt install gdb</code>)는 Python 지원이 포함되어 있지만, 일부 최소 설치 이미지나 직접 소스 빌드한 GDB는 Python 없이 빌드될 수 있다. 이 경우 <code>python</code>, <code>pi</code>(python-interactive), <code>source *.py</code> 명령 자체가 존재하지 않는다.</p>
+<pre><code class="language-gdb">(gdb) python print("hello")
+Undefined command: "python".  Try "help".</code></pre>
+<h3>GDB 내장 Python과 시스템 Python은 별개의 인터프리터다</h3>
+<p>GDB는 빌드 시점에 링크한 특정 libpython 버전을 내장해서 사용한다. 시스템에 <code>pip install</code>로 설치한 패키지(예: <code>pwntools</code>)는 시스템 기본 <code>python3</code>가 사용하는 <code>site-packages</code> 경로에 설치되는데, GDB가 내장한 Python 인터프리터의 <code>sys.path</code>가 그 경로를 포함하지 않으면 <code>import</code>가 실패한다. <code>gdb -q -ex "python import sys; print(sys.version)"</code>으로 GDB가 어떤 Python 버전을 쓰는지, <code>python import sys; print(sys.path)</code>로 어떤 경로를 뒤지는지 확인할 수 있다.</p>
+<h3>gdb.execute/gdb.Breakpoint는 "실행 컨텍스트"를 요구한다</h3>
+<p><code>gdb.execute("info registers")</code>나 <code>gdb.selected_frame()</code> 같은 API는 <strong>현재 실행 중인 inferior(대상 프로세스)가 있고, 그 프레임 정보가 유효할 때만</strong> 정상 동작한다. 프로세스가 아직 시작되지 않았거나(<code>run</code> 전) 이미 종료된 상태에서 이런 API를 호출하면 <code>gdb.error: No frame selected.</code>나 <code>gdb.error: No registers.</code> 같은 예외가 발생한다. 커스텀 <code>gdb.Breakpoint</code> 클래스의 <code>stop()</code> 메서드 안에서 레지스터를 읽는 코드를 짤 때 특히 자주 만나는 문제다.</p>
+<h3>source 명령의 확장자 인식</h3>
+<p><code>source script.py</code>처럼 <code>.py</code> 확장자면 GDB가 Python으로 해석하고, <code>.gdb</code> 확장자거나 확장자가 없으면 기존 GDB 스크립트 언어로 해석한다. <code>.py</code> 확장자를 빠뜨리고 <code>source script</code>처럼 쓰면 GDB 커맨드 언어로 잘못 해석되어 알 수 없는 명령 에러가 난다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>Undefined command: "python".</code> — Python 미지원 GDB 빌드</li><li><code>Traceback (most recent call last): ... ModuleNotFoundError: No module named 'xxx'</code> — 경로/버전 불일치</li><li><code>gdb.error: No frame selected.</code> — 프로세스가 실행 중이 아닌데 프레임/레지스터 접근 시도</li><li><code>Python Exception &lt;class 'gdb.error'&gt;: No symbol "xxx" in current context.</code> — 아직 로드 안 된 심볼 참조</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>gdb -q --batch -ex "python print(1)"</code>로 Python 지원 여부부터 확인한다.</li><li>에러 메시지의 <code>Traceback</code> 마지막 줄(가장 구체적인 예외 타입/메시지)을 정확히 읽는다 — GDB Python 에러도 일반 Python 예외와 동일한 형식으로 출력된다.</li><li><code>gdb.execute</code>/<code>gdb.selected_frame()</code> 관련 에러라면, 그 코드가 실행되는 시점에 inferior가 실제로 실행 중이었는지(<code>run</code> 이후인지)부터 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) Python 지원 여부 확인</strong></p>
+<pre><code class="language-bash">$ gdb -q --batch -ex "python print(gdb.VERSION)"
+14.1</code></pre>
+<p>버전이 정상 출력되면 Python 지원 O. <code>Undefined command</code>가 뜨면 Python 없이 빌드된 GDB다 — <code>apt install gdb</code>로 배포판 패키지를 다시 설치하거나, <code>--with-python</code>으로 다시 빌드해야 한다.</p>
+<p><strong>2) GDB가 사용하는 Python 인터프리터와 경로 확인</strong></p>
+<pre><code class="language-gdb">(gdb) python import sys; print(sys.version)
+3.11.6 (main, ...) [GCC ...]
+(gdb) python import sys; print(sys.path)
+['/usr/lib/python3.11', ..., '/usr/lib/python3/dist-packages']</code></pre>
+<p><code>pip install --user pwntools</code>로 설치했다면 그 패키지가 설치된 경로(<code>~/.local/lib/python3.11/site-packages</code>)가 이 목록에 없을 수 있다. 없다면 스크립트 맨 앞에 다음을 추가한다.</p>
+<pre><code class="language-python">import sys, site
+sys.path.append(site.getusersitepackages())</code></pre>
+<p><strong>3) source로 스크립트 불러올 때 확장자와 경로 확인</strong></p>
+<pre><code class="language-gdb">(gdb) source ./myscript.py</code></pre>
+<p>상대 경로는 GDB를 실행한 현재 작업 디렉터리 기준이다. 절대 경로를 쓰면 헷갈림을 줄일 수 있다. <code>~/.gdbinit</code>에 <code>source</code>를 넣어 자동 로드할 수도 있다.</p>
+<p><strong>4) 실행 컨텍스트 에러(No frame selected 등) 대응</strong></p>
+<pre><code class="language-python">import gdb
+
+class MyBreakpoint(gdb.Breakpoint):
+    def stop(self):
+        try:
+            rax = gdb.selected_frame().read_register("rax")
+            print(f"rax = {rax}")
+        except gdb.error as e:
+            print(f"[!] register read failed: {e}")
+        return False  # 계속 실행
+
+MyBreakpoint("vuln_func")</code></pre>
+<p><code>stop()</code> 메서드는 브레이크포인트가 실제로 히트했을 때만 호출되므로 이 시점에는 프레임이 유효하다. 반대로 스크립트 최상단(모듈 로드 시점)에서 바로 <code>gdb.selected_frame()</code>을 호출하면 아직 <code>run</code> 전이라 실패한다 — 이런 호출은 반드시 <code>stop()</code>처럼 실제로 프로세스가 멈춘 시점의 콜백 안에 넣어야 한다.</p>
+<p><strong>5) 에러 스택트레이스를 그대로 읽고 줄 번호 대조</strong></p>
+<pre><code>Traceback (most recent call last):
+  File "myscript.py", line 12, in stop
+    rax = gdb.selected_frame().read_register("rax")
+gdb.error: No frame selected.</code></pre>
+<p><code>line 12</code>가 실제 문제 지점이다. 일반 Python 디버깅과 동일하게 접근하면 된다.</p>
+<p><strong>6) pwndbg와 함께 쓸 때의 주의</strong> pwndbg 자체가 방대한 Python 코드로 구현되어 있어, 커스텀 스크립트에서 pwndbg 내부 모듈을 import하려면 pwndbg의 <code>sys.path</code> 설정이 먼저 로드된 이후여야 한다. <code>~/.gdbinit</code>에서 pwndbg <code>source</code> 이후에 자신의 스크립트를 <code>source</code>하도록 순서를 맞춘다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">gdb -q --batch -ex "python print(gdb.VERSION)"   # Python 지원 여부 확인</code></pre>
+<pre><code class="language-gdb">python import sys; print(sys.path)   # GDB 내장 파이썬 모듈 경로 확인
+source ./script.py                    # 파이썬 스크립트 로드
+pi                                    # python-interactive, REPL 진입</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>Undefined command: "python".</code> → GDB가 Python 없이 빌드됨. 패키지 재설치가 가장 빠른 해결책.</li><li><code>ModuleNotFoundError</code> → <code>sys.path</code>에 해당 패키지 경로가 없음. 경로 추가 또는 시스템 전역(<code>sudo pip install</code>) 설치로 해결.</li><li><code>gdb.error: No frame selected.</code> / <code>No registers.</code> → 프로세스가 실행 중이 아닌 시점에 프레임/레지스터를 읽으려 한 것. 콜백 위치를 점검.</li><li><code>Python Exception &lt;class 'gdb.error'&gt;: No symbol "xxx" in current context.</code> → 심볼이 아직 로드되지 않았거나(공유 라이브러리 로드 전) strip되어 없는 심볼을 참조한 것.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>시스템 <code>python3 script.py</code>로 먼저 테스트하고 잘 되니까 GDB 안에서도 그대로 될 거라 가정하는 것 — <code>gdb</code>, <code>import gdb</code> API는 시스템 Python 스크립트에서 쓸 수 없고, 반드시 GDB 안에서 <code>source</code>로 실행해야 <code>gdb</code> 모듈이 존재한다.</li><li><code>pip install</code>로 설치한 패키지가 GDB 내장 Python과 다른 버전/경로를 가리켜서 계속 <code>ModuleNotFoundError</code>가 나는데 원인을 못 찾는 것 — <code>python import sys; print(sys.path)</code>로 직접 확인하는 습관이 중요하다.</li><li>브레이크포인트 콜백 밖에서 레지스터/프레임 API를 호출해서 <code>No frame selected</code> 에러를 계속 만나는 것.</li><li>에러가 나면 무조건 스크립트를 처음부터 다시 쓰는 것 — Traceback의 마지막 줄(예외 타입과 메시지)과 줄 번호만 봐도 원인의 8할은 바로 드러난다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>GDB Python API로 무엇부터 시작해야 할지 개요가 필요하다면 → REV-0656(GDB Python 스크립팅 기초)</li><li>Pwndbg 명령 자체가 이상하게 동작한다면 → REV-0709(Pwndbg에서 heap 명령이 이 glibc 버전에서 지원 안 된다고 할 때)</li><li>심볼 자체가 안 보여서 스크립트가 실패하는 것 같다면 → REV-0093(nm으로 심볼 찾기)</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-gdb">(gdb) source hook.py
+Traceback (most recent call last):
+  File "hook.py", line 3, in &lt;module&gt;
+    import pwn
+ModuleNotFoundError: No module named 'pwn'</code></pre>
+<pre><code class="language-gdb">(gdb) python import sys; print(sys.path)
+['/usr/lib/python3.11', '/usr/lib/python3.11/lib-dynload']</code></pre>
+<pre><code class="language-python"># hook.py 맨 위에 추가
+import sys, site
+sys.path.append(site.getusersitepackages())
+import pwn</code></pre>
+<pre><code class="language-gdb">(gdb) source hook.py
+(gdb)</code></pre>
+<p>경로를 추가한 뒤 재실행하면 정상적으로 로드된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0709-pwndbg-heap-not-supported.html">REV-0709 — Pwndbg에서 heap 명령이 이 glibc 버전에서 지원 안 된다고 할 때</a></li><li><a href="rev-0093-nm-basics.html">REV-0093 — nm으로 심볼 찾기</a></li><li><a href="rev-0713-gdb-register-write-not-applied.html">REV-0713 — GDB에서 레지스터를 수정했는데 반영이 안 되는 것처럼 보일 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>GDB Python API(<code>gdb.execute</code>, <code>gdb.Breakpoint</code>, <code>gdb.error</code>, <code>gdb.selected_frame</code>) 동작: GDB 공식 문서(sourceware.org) "Extending GDB" &gt; "Python API" 챕터 기준.</li><li><code>--with-python</code> 빌드 옵션과 Python 미지원 시 <code>python</code> 명령 부재: GDB 공식 문서 "Python Support" 섹션 기준.</li><li><code>source</code> 명령의 확장자 기반 언어 판별(.py는 Python으로 해석): GDB 공식 문서 "Command Files" 섹션 기준 (2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

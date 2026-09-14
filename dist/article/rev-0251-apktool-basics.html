@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>apktool 기본 사용법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dotnet-android</div>
+<article class="article-body">
+<h1>apktool 기본 사용법</h1>
+<div class="article-meta"><span class="tag">dotnet-android</span><span class="tag">입문</span><span class="tag">android</span><span class="tag">APK</span><span class="tag">apktool</span><span class="tag">JADX</span><span class="tag">adb</span></div>
+<h2>한 줄 요약</h2>
+<p><code>apktool</code>은 APK를 리소스(이미지, XML, 매니페스트)와 smali 코드(Dalvik 바이트코드를 사람이 편집 가능한 텍스트로 표현한 것)로 분해(<code>d</code>, decode)했다가 다시 APK로 조립(<code>b</code>, build)해주는 도구로, 코드를 직접 수정해서 재패키징해야 하거나 원본 리소스 파일에 접근해야 할 때 반드시 필요하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>APK 파일을 받았는데 어떤 도구로 어떻게 열어야 할지 모를 때</li><li>JADX로 자바 코드는 봤는데 smali 코드나 원본 리소스 XML도 봐야 할 때</li><li>앱의 로직을 바꿔서(예: 검증 조건을 우회하도록 smali를 수정) 다시 설치 가능한 APK로 만들어야 할 때</li><li><code>apktool d</code>, <code>apktool b</code> 명령을 실행했는데 오류가 나서 원인을 모를 때</li><li>apktool과 JADX 중 어떤 걸 먼저 써야 하는지 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<p>APK 파일은 사실 ZIP 압축 포맷이므로 압축 프로그램으로 그냥 열 수도 있지만, 그렇게 열면 두 가지 문제가 있다. 첫째, <code>AndroidManifest.xml</code>이나 <code>res/</code> 안의 XML 파일들이 AXML이라는 바이너리 포맷으로 압축돼 있어서 텍스트 에디터로 보면 알아볼 수 없다. 둘째, 실행 코드가 담긴 <code>classes.dex</code>는 Dalvik 바이트코드라는 이진 형식이라 사람이 직접 읽거나 고칠 수 없다.</p>
+<p><code>apktool</code>은 이 두 문제를 모두 해결해준다.</p>
+<ul><li>바이너리 XML(AXML)을 사람이 읽고 편집할 수 있는 텍스트 XML로 복원한다.</li><li><code>classes.dex</code>를 <strong>smali</strong>라는 사람이 읽고 쓸 수 있는 어셈블리 스타일 텍스트 코드로 역어셈블한다(smali 문법 자체는 <a href="rev-0252-smali-basics.html">REV-0252</a>에서 다룬다).</li><li>리소스(이미지, 레이아웃 XML, values 등)를 원본과 거의 동일한 형태로 복원한다.</li><li>이렇게 수정한 결과물을 다시 APK로 조립(build)할 수 있다.</li></ul>
+<p>이 도구가 하는 일은 딱 "분해와 재조립"이지, 자바/코틀린 소스코드로 복원해주는 것은 아니다. 자바 소스처럼 읽고 싶다면 JADX(<a href="rev-0249-jadx-basics.html">REV-0249</a>)를 써야 한다.</p>
+<h3>apktool vs JADX — 언제 무엇을 쓰나</h3>
+<p>초보자가 가장 헷갈리는 부분이 "둘 다 APK를 여는 도구인데 뭐가 다르냐"이다. 역할이 다르다.</p>
+<table><thead><tr><th>상황</th><th>도구</th></tr></thead><tbody><tr><td>로직을 빠르게 읽고 이해하고 싶다 (읽기 전용)</td><td>JADX</td></tr><tr><td>원본 리소스 파일(이미지, XML 레이아웃, 매니페스트 원문)에 접근하고 싶다</td><td>apktool</td></tr><tr><td>코드를 수정해서 다시 설치 가능한 APK로 만들어야 한다</td><td>apktool (smali 수정 후 build)</td></tr><tr><td>코틀린 문법이 뒤섞인 자바 코드를 그나마 읽기 편하게 보고 싶다</td><td>JADX</td></tr><tr><td>JADX 디컴파일이 실패하거나 깨진 부분을 원본 바이트코드 수준에서 확인하고 싶다</td><td>apktool (smali)</td></tr></tbody></table>
+<p>실무에서는 두 도구를 같이 쓰는 경우가 훨씬 많다. 처음엔 JADX로 전체 구조와 로직을 빠르게 파악하고, 실제로 코드를 고쳐서 검증 로직을 우회해야 하는 문제라면 apktool로 다시 디코딩해서 해당 smali 파일만 정확히 찾아 수정한 뒤 재조립한다. JADX도 "Save as Gradle project" 기능이 있어 코드 수정이 아예 불가능한 건 아니지만, 실제 CTF 워크플로우에서는 smali를 직접 고치는 방식이 훨씬 안정적이고 널리 쓰인다.</p>
+<h3>설치</h3>
+<p>apktool은 자바로 만들어졌으므로 JRE가 필요하다. 공식 GitHub(<code>ibotpeaches/Apktool</code>)에서 실행 가능한 jar 파일과 wrapper 스크립트(<code>apktool.bat</code>, <code>apktool</code>)를 받아 PATH에 넣으면 <code>apktool</code> 명령을 어디서든 쓸 수 있다. Windows에서는 <code>apktool.bat</code>를 PATH 안의 폴더에 두고, jar 파일 이름을 <code>apktool.jar</code>로 맞춰야 wrapper 스크립트가 정상 동작한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>apktool로 정상 디코딩하면 다음과 같은 폴더 구조가 만들어진다.</p>
+<pre><code>out/
+├── AndroidManifest.xml       (사람이 읽을 수 있는 텍스트 XML)
+├── apktool.yml                (디코딩 메타정보 - 재조립 시 필요)
+├── res/                        (리소스: 레이아웃, 문자열, 이미지 등)
+│   ├── layout/
+│   ├── values/
+│   │   └── strings.xml
+│   └── drawable/
+├── smali/                      (classes.dex를 역어셈블한 smali 코드)
+│   └── com/example/ctf/
+│       ├── MainActivity.smali
+│       └── CheckService.smali
+├── smali_classes2/             (dex 파일이 여러 개면 classes2.dex → smali_classes2)
+└── original/                   (서명 정보 등 원본 메타데이터)</code></pre>
+<p><code>smali_classes2</code>, <code>smali_classes3</code>처럼 숫자가 붙은 폴더가 여러 개 있다면, 이 앱이 멀티덱스(multidex, 메서드 수가 6만 5천 개를 넘어 dex 파일을 여러 개로 나눈 경우)라는 뜻이다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>APK 파일이 있는 폴더에서 <code>apktool d app.apk -o out</code> 한 줄만 실행해본다. 몇 초~수십 초 안에 <code>out</code> 폴더가 생기고 그 안에 <code>smali/</code>와 <code>res/</code>가 보이면 정상 동작한 것이다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 디코딩(decode)</strong></p>
+<pre><code class="language-bash">apktool d app.apk -o out</code></pre>
+<ul><li><code>-o out</code>은 결과물을 <code>out</code> 폴더에 저장하라는 뜻이다. 생략하면 APK 파일명으로 폴더가 자동 생성된다.</li><li>이미 같은 이름의 폴더가 있으면 오류가 나므로, 다시 하려면 <code>-f</code>(force, 기존 폴더 덮어쓰기) 옵션을 추가한다: <code>apktool d app.apk -o out -f</code></li></ul>
+<p><strong>2) 내용 확인</strong> <code>out/AndroidManifest.xml</code>(<a href="rev-0250-androidmanifest-clues.html">REV-0250</a> 참고), <code>out/res/</code>, <code>out/smali/</code> 순서로 열어본다. 특히 <code>MainActivity.smali</code>처럼 매니페스트에서 찾은 클래스 이름의 smali 파일을 열어 실제 코드가 어떻게 생겼는지 확인한다.</p>
+<p><strong>3) (필요시) smali 수정</strong> 텍스트 에디터로 <code>.smali</code> 파일을 열어 직접 코드를 편집한다. 조건 분기를 강제로 통과시키거나, 로그를 추가하는 식의 수정이 흔하다. smali 문법은 <a href="rev-0252-smali-basics.html">REV-0252</a>를 참고한다.</p>
+<p><strong>4) 재조립(build)</strong></p>
+<pre><code class="language-bash">apktool b out -o app_modified.apk</code></pre>
+<p><code>out</code> 폴더(디코딩 시 만든 폴더, <code>apktool.yml</code>이 있어야 함)를 다시 APK로 조립해서 <code>app_modified.apk</code>를 만든다.</p>
+<p><strong>5) 서명</strong> 재조립된 APK는 서명이 없으므로 그대로는 설치되지 않는다. <code>apksigner</code>나 <code>uber-apk-signer</code> 같은 도구로 디버그 키 서명을 해야 <code>adb install</code>이 가능하다.</p>
+<pre><code class="language-bash">apksigner sign --ks debug.keystore --ks-pass pass:android app_modified.apk</code></pre>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">apktool d app.apk -o out          # 디코딩
+apktool d app.apk -o out -f       # 기존 폴더 덮어쓰고 디코딩
+apktool d app.apk -o out -r       # 리소스 디코딩 생략(smali만 빠르게 필요할 때)
+apktool d app.apk -o out -s       # smali 디코딩 생략(리소스만 필요할 때)
+apktool b out -o rebuilt.apk      # 재조립
+apktool --version                 # 버전 확인
+apktool empty-framework-dir --force   # 프레임워크 캐시 문제 해결용</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>I: Baksmaling classes.dex...</code> 로그가 보이면 정상적으로 smali 역어셈블이 진행 중이라는 뜻이다.</li><li><code>W: ... Cannot find resource...</code> 같은 경고는 대부분 무시해도 되는 경미한 리소스 참조 문제인 경우가 많지만, 재조립 후 앱이 크래시나면 이 경고 근처를 다시 살펴봐야 한다.</li><li><code>brut.androlib.exceptions.AndrolibException</code> 계열의 예외가 뜨면 대부분 프레임워크 리소스(예: 특정 제조사 커스텀 APK)를 못 찾는 경우이며, <code>-r</code> 옵션으로 리소스 디코딩을 생략하거나 <code>1: framework-res.apk</code>를 별도로 설치해야 할 수 있다.</li><li>재조립 후 APK 크기가 원본보다 눈에 띄게 작다면 리소스 압축 방식이 달라진 것일 수 있으니, 필요하면 원본 리소스 압축 옵션(<code>apktool.yml</code>의 <code>doNotCompress</code>)을 확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>디코딩만 하고 재조립 없이 smali 파일만 고쳐서 "왜 앱이 안 바뀌었냐"고 착각하는 것. 수정 후 반드시 <code>apktool b</code>로 재조립하고, <code>apksigner</code>로 서명한 뒤, 기존 앱을 <code>adb uninstall</code>로 지우고 새로 <code>adb install</code>해야 한다(서명이 다르면 업데이트 설치가 거부된다).</li><li><code>apktool d</code>를 두 번째 실행할 때 <code>-f</code> 없이 실행해서 "폴더가 이미 존재합니다" 오류를 만나는 것.</li><li>smali 파일 안의 레지스터 개수(<code>.registers N</code>)를 안 맞추고 코드를 추가해서 재조립은 성공했는데 실행 시 <code>VerifyError</code>로 크래시나는 것 — 이 부분은 <a href="rev-0252-smali-basics.html">REV-0252</a>에서 자세히 다룬다.</li><li>JADX로 볼 수 있는 걸 굳이 apktool 텍스트 smali로만 읽으려다 시간을 낭비하는 것. 로직 이해가 목적이면 JADX가 압도적으로 빠르다. apktool은 "고쳐야 할 때" 쓰는 도구라고 기억하면 된다.</li><li>재조립한 APK를 서명 없이 그냥 설치하려다 <code>INSTALL_PARSE_FAILED_NO_CERTIFICATES</code> 오류를 만나는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>smali 문법 자체를 모르겠다면 → <a href="rev-0252-smali-basics.html">REV-0252 smali 기초 문법</a></li><li>매니페스트 해석이 궁금하면 → <a href="rev-0250-androidmanifest-clues.html">REV-0250 AndroidManifest.xml에서 단서 찾기</a></li><li>코드를 그냥 읽기만 하고 싶다면 → <a href="rev-0249-jadx-basics.html">REV-0249 JADX로 APK 분석 시작</a></li><li>수정한 APK를 기기/에뮬레이터에 설치하고 싶다면 → <a href="rev-0255-adb-cheatsheet.html">REV-0255 adb 기본 명령 치트시트</a></li></ul>
+<h2>미니 예제</h2>
+<p>간단한 검증 로직이 있는 <code>CheckActivity.smali</code>를 apktool로 열었더니 다음과 같았다고 하자.</p>
+<pre><code class="language-smali">.method private checkPassword(Ljava/lang/String;)Z
+    .locals 2
+    const-string v0, "correct_password"
+    invoke-virtual {p1, v0}, Ljava/lang/String;-&gt;equals(Ljava/lang/Object;)Z
+    move-result v1
+    return v1
+.method end</code></pre>
+<p>이 메서드는 인자로 받은 문자열(<code>p1</code>)이 <code>"correct_password"</code>와 같은지 비교해서 그 결과를 그대로 반환한다. 즉 <code>p1</code>(사용자 입력)이 <code>"correct_password"</code>이면 참(1)을 반환한다는 뜻이다. 이 예제처럼 smali는 짧은 메서드라면 자바 코드보다 오히려 검증 로직이 한눈에 더 명확하게 보이는 경우도 많다. 만약 이 검사 자체를 강제로 항상 통과시키고 싶다면, <code>return v1</code>을 <code>const/4 v1, 0x1</code> 다음 <code>return v1</code>로 바꿔서 무조건 참을 반환하도록 패치하고 <code>apktool b</code>로 재조립하면 된다(smali 명령어의 의미는 REV-0252에서 자세히 설명한다).</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0248-apk-structure.html">REV-0248 — APK 파일 구조 기초</a></li><li><a href="rev-0249-jadx-basics.html">REV-0249 — JADX로 APK 분석 시작</a></li><li><a href="rev-0250-androidmanifest-clues.html">REV-0250 — AndroidManifest.xml에서 단서 찾기</a></li><li><a href="rev-0252-smali-basics.html">REV-0252 — smali 기초 문법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>apktool 명령어 및 옵션은 공식 저장소(<code>ibotpeaches/Apktool</code>, GitHub) 및 공식 문서(apktool.org)를 기준으로 정리했다.</li><li>APK/AXML/멀티덱스 개념은 Android 공식 개발자 문서를 기준으로 설명했다.</li><li>재서명 절차는 Android 공식 <code>apksigner</code> 문서를 기준으로 정리했다(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

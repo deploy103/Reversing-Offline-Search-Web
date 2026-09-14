@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>radare2 비주얼 모드(V)로 그래프 보기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>radare2 비주얼 모드(V)로 그래프 보기</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">radare2</span></div>
+<h2>한 줄 요약</h2>
+<p>radare2 프롬프트에서 <code>V</code>를 누르면 커맨드라인 안에서 동작하는 반쪽짜리 GUI인 Visual mode로 들어가고, 그 안에서 다시 <code>V</code>를 한 번 더 누르면(<code>VV</code>) IDA Graph View(REV-0150)나 Ghidra 그래프와 같은 개념의 <strong>함수 제어 흐름 그래프</strong>를 볼 수 있어, <code>pdf</code> 텍스트만으로는 잘 안 잡히던 조건 분기 구조를 한눈에 파악할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>pdf</code>로 디스어셈블리를 쭉 읽었는데 <code>jz</code>/<code>jnz</code>가 여러 번 중첩되어 있어서 어느 경로가 성공이고 어느 경로가 실패인지 텍스트만으로는 헷갈릴 때</li><li>GUI 도구(IDA/Ghidra/Cutter) 없이 radare2만 있는 환경(SSH 세션, 컨테이너 등)에서도 그래프 형태로 분기를 보고 싶을 때</li><li><code>V</code>를 눌렀는데 화면이 낯설게 바뀌어서 어떻게 나가야 할지, 그래프는 어떻게 보는지 몰라 당황했을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>radare2는 원래 텍스트 프롬프트 기반 도구이지만, 터미널 안에서 화면을 전체 장악해 방향키로 스크롤하고 화면을 여러 모드로 전환할 수 있는 <strong>Visual mode</strong>를 내장하고 있다. <code>V</code> 한 글자로 진입하며, 진입 직후에는 하나의 화면 모드(기본은 디스어셈블리)만 보이지만 그 안에서 <code>p</code>를 누르면 hex/디스어셈블리/디버그 등 여러 표시 모드를 순환할 수 있다.</p>
+<p>Visual mode 안에서 다시 <code>V</code>를 누르면(단축 표기로 <code>VV</code>) <strong>그래프 모드</strong>로 전환된다. 그래프 모드는 현재 함수를 기본 블록(basic block) 단위로 쪼개 박스로 그리고, 조건 분기의 두 갈래를 화살표로 연결해 보여준다. 이는 IDA의 Flow chart(REV-0150)나 Ghidra의 그래프 뷰와 동일한 개념 — "한 줄씩 읽는 대신 블록과 화살표로 구조를 본다"는 아이디어를 커맨드라인 환경에서 구현한 것이다.</p>
+<p>그래프 모드에서는 통상적으로:</p>
+<ul><li>조건이 참일 때 이어지는 경로와 거짓일 때 이어지는 경로가 서로 다른 화살표/색으로 구분된다(터미널 색상 지원 여부에 따라 다름).</li><li>Space 키로 블록을 "크게 보기/작게 보기(summarized)" 형태로 토글할 수 있어, 함수가 커도 전체 구조를 먼저 조망한 뒤 필요한 블록만 확대해서 볼 수 있다.</li><li>방향키/<code>hjkl</code>로 그래프 안을 이동하며 각 블록의 명령어를 확인한다.</li></ul>
+<p>GUI 도구가 없는 환경에서 이 기능은 특히 값어치가 크다. Cutter(REV-0293)의 Graph 뷰도 내부적으로는 같은 분석 엔진의 결과를 그리는 것이므로, <code>VV</code>로 보는 그래프와 근본적으로 같은 정보를 담고 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>pdf</code> 결과에 <code>jz</code>, <code>jnz</code>, <code>je</code>, <code>jne</code> 같은 조건 분기가 3개 이상 중첩되어 있어 어떤 경로가 어디로 이어지는지 눈으로 따라가기 번거롭다.</li><li>함수 하나가 유난히 길고(<code>afl</code>에서 블록 수가 두 자릿수 이상), 텍스트로는 전체 흐름이 한눈에 안 들어온다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>확인하고 싶은 함수로 <code>s</code>(seek)를 이용해 이동한 뒤 <code>V</code>를 눌러 Visual mode로 들어가고, 곧바로 <code>V</code>를 한 번 더 눌러(<code>VV</code>) 그래프 모드로 전환한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>r2 -A ./chall</code>로 파일을 열고 <code>aaa</code>까지 마친다.</li><li><code>s main</code>(또는 확인하려는 함수 이름/주소)으로 커서를 이동한다.</li><li><code>V</code>를 눌러 Visual mode로 진입한다. 화면이 프롬프트에서 전체 화면 디스어셈블리 뷰로 바뀐다.</li><li>그 상태에서 <code>V</code>를 한 번 더 눌러 그래프 모드(<code>VV</code>)로 전환한다. 현재 함수가 블록-화살표 그래프로 다시 그려진다.</li><li>방향키 또는 <code>hjkl</code>로 그래프 안을 이동하며 각 블록 안의 명령어를 읽는다.</li><li>Space를 눌러 블록을 요약/확대 상태로 토글하며, 큰 함수는 먼저 요약 상태로 전체 구조를 본 뒤 관심 블록만 확대한다.</li><li>확인이 끝나면 <code>q</code>를 여러 번 눌러 그래프 모드 → Visual mode → 원래 프롬프트 순서로 단계적으로 빠져나온다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code>V           Visual mode 진입
+VV          (Visual mode 안에서 V 한 번 더) 그래프 모드 전환
+p           화면 표시 모드 순환(hex / disasm / debug 등)
+Space       그래프 모드에서 블록 요약/확대 토글
+hjkl / 방향키   그래프·화면 안 이동
+q           현재 모드 나가기(반복하면 프롬프트로 복귀)</code></pre>
+<h2>출력 해석</h2>
+<ul><li>그래프의 각 박스는 하나의 기본 블록(중간에 분기 없이 순서대로 실행되는 명령어 묶음)이다. 박스 끝에서 뻗어나가는 화살표가 두 개면 조건 분기(<code>jz</code>/<code>jnz</code> 등)가 있다는 뜻이고, 하나면 무조건 분기(<code>jmp</code>) 또는 다음 블록으로 순차 진행이다.</li><li>화살표가 다시 위쪽 블록으로 돌아가는 형태(루프백)가 보이면 그 구간이 반복문이라는 뜻이다 — <code>for</code>/<code>while</code>이 컴파일된 결과가 이런 형태로 나타난다.</li><li>여러 블록에서 하나의 블록으로 화살표가 몰리는 형태는 여러 조건 분기가 결국 같은 지점(예: 공통 리턴 경로)으로 합류한다는 의미다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Visual/그래프 모드에서 나가는 법을 몰라 <code>Ctrl+C</code>로 radare2 세션 자체를 강제 종료해버리는 것 — <code>q</code>를 여러 번 누르면 단계적으로 빠져나올 수 있다.</li><li><code>V</code>를 한 번만 누르고 그래프가 안 보인다고 당황하는 것 — 그래프는 <code>V</code>를 두 번(<code>VV</code>) 눌러야 나온다. 첫 <code>V</code>는 Visual mode 진입, 두 번째 <code>V</code>가 그래프 전환이다.</li><li>큰 함수에서 그래프를 처음부터 확대 상태로 보려다 화면이 복잡해 포기하는 것 — Space로 요약 상태를 유지한 채 전체 구조부터 먼저 훑는 것이 실전적이다.</li><li>그래프 모드가 IDA/Ghidra 그래프와 100% 똑같은 배치 알고리즘일 거라 기대하는 것 — 블록/화살표라는 개념은 같지만 레이아웃 방식은 도구마다 달라 보이는 모양이 다를 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>radare2 명령어 자체가 낯설다면 → REV-0291 radare2 설치와 첫 명령</li><li>함수 목록/xref 확인이 먼저 필요하면 → REV-0751 radare2로 함수 목록과 XREF 확인하기(afl, axt)</li><li>마우스 기반 GUI 그래프가 더 편하다면 → REV-0293 Cutter 설치와 기본 사용법</li><li>IDA의 그래프 뷰 개념과 비교하고 싶다면 → REV-0150 IDA Graph View에서 분기 읽기</li></ul>
+<h2>미니 예제</h2>
+<pre><code>[0x00001149]&gt; s main
+[0x00001149]&gt; V</code></pre>
+<p>전체 화면 디스어셈블리 뷰로 전환된 상태에서 <code>V</code>를 한 번 더 누르면, <code>main</code> 함수가 조건 분기마다 박스로 나뉜 그래프로 다시 그려진다. <code>cmp eax, 0</code> 다음 <code>jz</code>가 있는 블록에서 화살표가 두 갈래로 갈라지는 것을 확인하면, 참/거짓 각각의 경로가 어디로 이어지는지 텍스트 없이 그림만으로 짐작할 수 있다. 확인 후 <code>q</code>를 두 번 눌러 원래 프롬프트로 돌아온다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0291-radare2-install-first-command.html">REV-0291 — radare2 설치와 첫 명령</a></li><li><a href="rev-0292-radare2-commands-cheatsheet.html">REV-0292 — radare2 명령어 치트시트</a></li><li><a href="rev-0751-radare2-afl-axt-xref.html">REV-0751 — radare2로 함수 목록과 XREF 확인하기(afl, axt)</a></li><li><a href="rev-0293-cutter-install-usage.html">REV-0293 — Cutter 설치와 기본 사용법</a></li><li><a href="rev-0150-ida-graph-view.html">REV-0150 — IDA Graph View에서 분기 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Visual mode(<code>V</code>)와 그래프 모드(<code>VV</code>) 진입 방식, Space를 통한 블록 요약 토글: radare2 공식 문서 "The Radare2 Book"(https://book.rada.re)의 Visual mode 관련 chapter 기준.</li><li>그래프 모드가 기본 블록/조건 분기를 시각화한다는 개념적 설명은 IDA Flow chart, Ghidra 그래프 뷰와 공통되는 "제어 흐름 그래프(CFG)" 일반 개념을 기준으로 정리했다.</li><li>단축키는 radare2 버전에 따라 일부 달라질 수 있어, 실제 세션에서 <code>V</code> 진입 후 <code>?</code>로 현재 버전의 도움말을 다시 확인할 것을 권장한다(2026-09-09 검증, 실기 재현은 하지 못함).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>루프 언롤링(Loop Unrolling) 알아보는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>루프 언롤링(Loop Unrolling) 알아보는 법</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>루프 언롤링은 반복문의 몸체를 여러 번(2/4/8회 등) 복사해서 한 번의 분기(branch)로 여러 원소를 처리하게 만드는 컴파일러 최적화로, 소스에는 <code>for</code> 한 줄이었던 코드가 어셈블리에서는 offset이 다른 여러 블록으로 "펼쳐져" 보인다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>하나의 루프 안에 <code>[rax]</code>, <code>[rax+4]</code>, <code>[rax+8]</code>, <code>[rax+0xc]</code>처럼 오프셋만 다른 거의 똑같은 코드 블록이 여러 개 반복될 때</li><li>루프 카운터가 1이 아니라 4나 8씩 증가하는데 원본 소스에는 그런 스텝이 없었을 때</li><li>메인 루프 뒤에 카운터를 1씩 증가시키는 작은 루프가 하나 더 붙어 있어서 "루프가 두 개"처럼 보일 때(remainder/tail loop)</li><li>함수가 소스 코드보다 훨씬 길어 보여서 실제 로직보다 복잡하다고 착각하게 될 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 컴파일러가 루프를 펼치는가</h3>
+<p>루프 한 번을 돌 때마다 카운터 증가, 종료 조건 비교, 분기(<code>jmp</code>/<code>jl</code> 등)가 실행되는데, 이 오버헤드는 루프 몸체 자체가 짧을수록 상대적으로 비중이 커진다. 루프 언롤링은 몸체를 N번 복사해서 <strong>분기 횟수를 1/N로 줄이고</strong>, 동시에 CPU가 명령어를 더 잘 파이프라이닝/재배치할 수 있게 해서 성능을 높인다. <code>-O2</code>/<code>-O3</code>(GCC/Clang), MSVC <code>/O2</code> 등 최적화 옵션에서 자동으로 적용되며, GCC는 <code>-funroll-loops</code>로 더 적극적인 언롤링을 강제할 수도 있다.</p>
+<h3>완전 언롤(Full Unroll) vs 부분 언롤(Partial Unroll)</h3>
+<ul><li><strong>완전 언롤</strong>: 반복 횟수가 컴파일 시점에 고정된 작은 상수라면(<code>for(i=0;i&lt;4;i++)</code>), 컴파일러가 루프 구조 자체를 통째로 없애버리고 몸체를 4번 그대로 나열한다. 카운터도, 분기도 남지 않는다.</li><li><strong>부분 언롤</strong>: 반복 횟수가 실행 시점에야 정해지는 변수(<code>for(i=0;i&lt;n;i++)</code>)라면, 루프 자체는 남지만 몸체를 k번(보통 4 또는 8) 겹쳐 넣고 카운터를 k씩 증가시킨다. 이때 <code>n</code>이 k의 배수가 아닐 수 있으므로, 메인 언롤 루프가 끝난 뒤 <strong>나머지(remainder/tail) 루프</strong>가 하나 더 붙어서 남은 <code>n % k</code>개를 1개씩 마저 처리한다.</li></ul>
+<h3>전형적인 어셈블리 패턴 (부분 언롤, 4배)</h3>
+<pre><code class="language-c">long sum = 0;
+for (int i = 0; i &lt; n; i++)
+    sum += arr[i];</code></pre>
+<pre><code class="language-asm">xor     eax, eax          ; sum = 0
+xor     ecx, ecx          ; i = 0
+mov     edx, n
+and     edx, ~3           ; n을 4의 배수로 내림 (main_count = n &amp; ~3)
+test    edx, edx
+je      .remainder_start
+
+.main_loop:                        ; 4개씩 처리하는 메인 루프
+    add     rax, [rdi+rcx*8]        ; sum += arr[i]
+    add     rax, [rdi+rcx*8+8]      ; sum += arr[i+1]
+    add     rax, [rdi+rcx*8+16]     ; sum += arr[i+2]
+    add     rax, [rdi+rcx*8+24]     ; sum += arr[i+3]
+    add     rcx, 4
+    cmp     rcx, rdx
+    jl      .main_loop
+
+.remainder_start:
+    mov     r8d, n
+    and     r8d, 3                  ; 남은 개수 = n % 4
+    test    r8d, r8d
+    je      .done
+
+.remainder_loop:                   ; 나머지 1개씩 처리하는 작은 루프
+    add     rax, [rdi+rcx*8]
+    inc     rcx
+    dec     r8d
+    jnz     .remainder_loop
+
+.done:
+    ; rax = sum</code></pre>
+<p><code>.main_loop</code> 하나가 원소 4개(<code>i</code>, <code>i+1</code>, <code>i+2</code>, <code>i+3</code>)를 처리하고, <code>rcx</code>가 4씩 증가하며 분기(<code>jl</code>)가 반복 횟수의 1/4만 실행된다는 것이 핵심이다. 이후 <code>.remainder_loop</code>가 <code>n</code>이 4의 배수가 아닐 때 남는 부분을 처리한다 — 이 작은 루프를 놓치고 "메인 루프만 있다"고 오해하면, <code>n % 4 != 0</code>인 경우의 처리 로직을 빠뜨리게 된다.</p>
+<h3>완전 언롤 예시 (컴파일 시점 상수 반복 횟수)</h3>
+<pre><code class="language-c">int sum = 0;
+for (int i = 0; i &lt; 4; i++)
+    sum += arr[i];</code></pre>
+<pre><code class="language-asm">mov     eax, [rdi]
+add     eax, [rdi+4]
+add     eax, [rdi+8]
+add     eax, [rdi+0xc]
+; 루프 구조, 카운터, 분기 자체가 완전히 사라짐</code></pre>
+<h3>SIMD와 결합된 언롤</h3>
+<p>언롤링은 REV-0447/REV-0448에서 다루는 SIMD 자동 벡터화(auto-vectorization)와 흔히 함께 나타난다. <code>movdqu</code>/<code>paddd</code> 같은 SIMD 명령이 한 번에 4개(32비트 정수 기준 128비트 레지스터) 또는 8개(256비트 YMM)를 처리하기 때문에, "SIMD 레지스터 폭만큼 자연스럽게 언롤된 것"으로 볼 수 있다. 이런 코드는 <code>add rax, [rdi+rcx*8]</code>류의 반복 대신 <code>paddd xmm0, [rdi+rcx*4]</code> 같은 벡터 명령이 한 블록에 여러 번(또는 그 자체로 4~8개를 한 번에) 나타난다.</p>
+<h3>IDA/Ghidra 디컴파일에서 보이는 형태</h3>
+<p>Hex-Rays/Ghidra는 언롤된 루프를 두 가지 방식 중 하나로 보여준다.</p>
+<ol><li><strong>깔끔하게 복원</strong>: 언롤 패턴을 인식해서 원래의 단순한 <code>for (i = 0; i &lt; n; i++) sum += arr[i];</code> 형태로 되돌려 보여준다(비교적 자주 성공).</li><li><strong>펼쳐진 형태 그대로 노출</strong>: 인식에 실패하면 <code>sum += arr[i]; sum += arr[i+1]; sum += arr[i+2]; sum += arr[i+3];</code>처럼 한 블록 안에 여러 줄로 된 로직과, 그 아래 별도의 "나머지 처리" <code>for</code>/<code>while</code> 루프가 따로 보이는 지저분한 형태로 나온다.</li></ol>
+<p>두 번째 형태를 만났을 때, 이것이 서로 다른 로직 4개가 아니라 "같은 몸체가 4번 반복된 것"임을 알아채는 것이 이 글의 핵심이다.</p>
+<h3>리버싱 관점에서의 의미</h3>
+<p>루프 언롤링은 함수를 소스 코드보다 훨씬 길고 복잡해 보이게 만드는 대표적인 원인이다. 반복되는 오프셋 패턴(<code>+0</code>, <code>+4</code>, <code>+8</code>, <code>+0xc</code> 또는 <code>+0</code>, <code>+8</code>, <code>+16</code>, <code>+24</code>)을 발견하면, "이건 새로운 로직이 아니라 루프 몸체 반복이다"라고 즉시 인식하고 하나의 몸체만 분석한 뒤 나머지는 건너뛸 수 있다. 또한 언롤링이 보인다는 것 자체가 <code>-O2</code> 이상의 최적화가 적용됐다는 강한 신호이므로, 다른 곳에서도 REV-0037류의 디컴파일 이상 현상(변수 소실, 인라이닝 등)이 함께 나타날 가능성을 미리 예상할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>한 루프 몸체 안에 오프셋만 <code>+0</code>, <code>+4</code>, <code>+8</code>, <code>+0xc</code>(또는 <code>+8</code>, <code>+16</code>, <code>+24</code>)로 다른 거의 동일한 명령 블록이 반복됨</li><li>루프 카운터가 <code>add rcx, 4</code>, <code>add rcx, 8</code>처럼 1이 아닌 수로 증가</li><li>메인 루프 바로 뒤에 카운터를 1씩 증가시키는 작고 단순한 두 번째 루프(remainder loop)가 이어짐</li><li><code>and reg, ~3</code>, <code>and reg, ~7</code>처럼 반복 횟수를 언롤 배수로 내림 처리하는 코드</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>루프 몸체 안에서 반복되는 블록들이 오프셋만 다른 동일 패턴인지 먼저 확인한다.</li><li>카운터 증가 폭(1, 4, 8 등)을 확인해서 언롤 배수를 짐작한다.</li><li>메인 루프 뒤에 작은 루프가 하나 더 있는지 확인해서, 그것이 remainder 처리인지 판단한다.</li></ol>
+<h2>단계별 절차</h2>
+<ol><li>반복되는 코드 블록이 있는지, 그리고 그 블록이 조건 분기 없이 여러 번 연달아 나열되어 있는지 확인한다.</li><li>인덱스가 매 블록마다 고정 값(1, 2, 3...)만큼 증가하는 패턴인지 확인한다 — 컴파일러가 루프를 펼친 흔적이다.</li><li>블록 개수를 세어 원래 루프의 언롤 팩터(2배/4배/8배 등)를 추정한다.</li><li>나머지 처리(remainder loop, 언롤 팩터로 안 나누어떨어지는 나머지 반복)를 위한 별도의 작은 루프가 뒤에 붙어 있는지 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: F5로 디컴파일해서 언롤 인식에 성공했는지 먼저 확인 — 실패 시 그래프 뷰(스페이스바)에서 반복 블록 개수를 눈으로 센다.</li><li>Ghidra: Decompile 창에서 유사하게 언롤 여부 확인, "Edit Function Signature"로 반복 변수 이름을 정리하면 가독성이 좋아진다.</li><li>x64dbg/GDB: 루프 진입부에 브레이크포인트를 걸고 카운터 레지스터 값이 몇 씩 증가하는지 몇 번 반복해서 관찰(<code>p $rcx</code> 반복 조회).</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>언롤된 4개(또는 8개)의 블록을 서로 다른 case/분기로 착각해서 각각 별도로 분석 노트를 작성하는 것 — 실제로는 완전히 동일한 로직이 인덱스만 다르게 반복된 것이다.</li><li>메인 언롤 루프만 보고 분석을 끝내서, 그 뒤에 붙은 나머지(remainder) 루프를 놓치는 것 — 배열 크기가 언롤 배수가 아닐 때만 실행되는 이 부분에 경계 조건 버그나 별도 처리 로직이 숨어 있을 수 있다.</li><li>컴파일 시점 상수 반복 횟수로 인해 루프 구조 자체가 사라진(완전 언롤) 코드를 보고 "이 함수엔 반복문이 없다"고 오판하는 것 — 소스 레벨에는 분명 루프가 있었지만 어셈블리에는 흔적이 안 남을 수 있다.</li><li>SIMD 명령과 결합된 언롤을 보고 "복잡한 암호화 로직"으로 오인하는 것 — 실제로는 단순 반복 연산(합계, 복사, 비교 등)을 벡터화·언롤한 것일 뿐인 경우가 많다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>반복되는 블록의 배열 접근 표기(<code>[base+idx*4]</code>)가 헷갈리면 → REV-0440, REV-0034.</li><li>이게 정말 언롤인지 아니면 다른 최적화 부작용인지 헷갈리면 → REV-0037에서 컴파일러 최적화 전반을 먼저 확인.</li><li>SIMD 명령(<code>movdqu</code>, <code>paddd</code> 등)이 왜 나오는지 궁금하면 → REV-0447/REV-0448(memset/memcpy SIMD 패턴)에서 벡터화까지 이어서 확인.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 부분 언롤(4배) + 나머지 루프</strong></p>
+<pre><code class="language-c">long sum = 0;
+for (int i = 0; i &lt; n; i++) sum += arr[i];</code></pre>
+<p>위 "전형적인 어셈블리 패턴" 절의 전체 코드 참고. 메인 루프가 4개씩, remainder 루프가 1개씩 처리한다.</p>
+<p><strong>예제 2 — 완전 언롤 (컴파일 시점 상수)</strong></p>
+<pre><code class="language-c">for (int i = 0; i &lt; 4; i++) sum += arr[i];</code></pre>
+<pre><code class="language-asm">mov     eax, [rdi]
+add     eax, [rdi+4]
+add     eax, [rdi+8]
+add     eax, [rdi+0xc]</code></pre>
+<p><strong>예제 3 — SIMD와 결합된 8배 언롤 힌트 (자동 벡터화)</strong></p>
+<pre><code class="language-asm">.loop:
+    movdqu  xmm0, [rdi+rcx*4]       ; 4개씩 한 번에 로드
+    paddd   xmm1, xmm0
+    add     rcx, 4                  ; 카운터가 4씩 증가 → 언롤/벡터화 신호
+    cmp     rcx, r8
+    jl      .loop</code></pre>
+<p><strong>예제 4 — IDA 디컴파일이 언롤을 그대로 노출한 예</strong></p>
+<pre><code class="language-c">// Hex-Rays가 언롤 패턴 인식에 실패한 경우
+for ( i = 0; i &lt; main_count; i += 4 )
+{
+    sum += arr[i];
+    sum += arr[i + 1];
+    sum += arr[i + 2];
+    sum += arr[i + 3];
+}
+for ( ; i &lt; n; i++ )
+    sum += arr[i];</code></pre>
+<p>이 형태를 보면 바로 "이건 언롤된 단일 합산 루프다"라고 판단하고 <code>sum += arr[i]</code>라는 원래 로직 한 줄로 압축해서 이해하면 된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0441-switch-jump-table.html">REV-0441 — Switch문 점프 테이블(Jump Table) 완전 분석</a></li><li><a href="rev-0034-array-access-in-asm.html">REV-0034 — 배열 접근이 어셈블리로 변하는 방식</a></li><li><a href="rev-0037-optimization-weirdness.html">REV-0037 — 컴파일러 최적화가 디컴파일 결과를 이상하게 만드는 이유</a></li><li><a href="rev-0047-add.html">REV-0047 — ADD: 덧셈과 플래그</a></li><li><a href="rev-0066-jmp.html">REV-0066 — JMP: 무조건 분기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>루프 언롤링 개념과 GCC <code>-funroll-loops</code>/<code>-O2</code>/<code>-O3</code> 관계: GCC 공식 문서 "Options That Control Optimization" 기준 (2026-09-08 검증).</li><li>부분 언롤 시 나머지(remainder/epilogue) 루프 생성 패턴: LLVM 공식 문서 "LoopUnrollPass" 및 다수의 컴파일러 최적화 교재 기준.</li><li>SIMD 자동 벡터화와 언롤의 관계: Intel 64 and IA-32 Architectures Optimization Reference Manual, "Loop Unrolling and Vectorization" 관련 절 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

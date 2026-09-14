@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>glibc 버전이 안 맞아서 바이너리가 실행이 안 될 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>glibc 버전이 안 맞아서 바이너리가 실행이 안 될 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">patchelf</span><span class="tag">pwninit</span><span class="tag">ld.so</span></div>
+<h2>한 줄 요약</h2>
+<p><code>./chall: /lib/x86_64-linux-gnu/libc.so.6: version 'GLIBC_2.34' not found</code>처럼 바이너리가 아예 실행조차 안 되는 오류는 그 바이너리가 컴파일된 서버의 glibc가 로컬 시스템의 glibc보다 최신이라서 필요한 심볼 버전을 못 찾는 것이며, 함께 배포된 <code>libc.so.6</code>과 <code>ld-linux.so</code>를 명시적으로 지정해서 실행하거나 <code>patchelf</code>로 인터프리터/RPATH를 그 libc로 고정하면 해결된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>CTF 문제에서 <code>chall</code>, <code>libc.so.6</code>, <code>ld-linux-x86-64.so.2</code>를 함께 받았는데 <code>./chall</code>을 그냥 실행하면 <code>version 'GLIBC_2.xx' not found</code> 오류가 뜰 때</li><li>로컬 우분투/데비안 버전이 오래되어 최신 glibc로 컴파일된 CTF 바이너리가 실행 자체가 안 될 때</li><li><code>ldd ./chall</code> 결과에 <code>libc.so.6 =&gt; /lib/.../libc.so.6 (버전 안 맞음)</code> 경고가 보일 때</li><li>이미 실행은 되는데 익스플로잇 오프셋이 서버와 안 맞는 문제라면 이 글이 아니라 REV-0711을 봐야 하는 상황과 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 이 오류가 나는가 — glibc의 심볼 버전 관리</h3>
+<p>glibc는 함수마다 <code>GLIBC_2.2.5</code>, <code>GLIBC_2.34</code>처럼 심볼 버전 태그를 붙여 관리한다(symbol versioning). 바이너리는 컴파일 당시 링크된 glibc 버전의 심볼을 참조하도록 새겨지는데, 런타임에 로드되는 <code>libc.so.6</code>이 그 심볼 버전을 갖고 있지 않으면(즉 로컬 glibc가 컴파일 서버 glibc보다 오래됐으면) 동적 로더(<code>ld.so</code>)가 <code>version 'GLIBC_2.34' not found</code>라며 실행 자체를 거부한다. glibc는 기본적으로 <strong>하위 호환은 보장하지만 상위 호환은 보장하지 않는다</strong> — 즉 새 glibc로 컴파일된 바이너리는 오래된 glibc에서 돌아가지 않는다.</p>
+<h3>해결 전략 — 함께 배포된 libc/ld를 그대로 사용</h3>
+<p>CTF 문제는 보통 서버와 동일한 <code>libc.so.6</code>, 그리고 그에 대응하는 <code>ld-linux-x86-64.so.2</code>(또는 <code>ld-2.xx.so</code>)를 함께 제공한다. 이 두 파일을 이용해 시스템 기본 로더 대신 그 로더로 직접 실행하면, 시스템 libc가 아니라 배포받은 libc를 사용하게 되어 버전 문제가 사라진다.</p>
+<h3>patchelf로 인터프리터/RPATH 고정</h3>
+<p>매번 명령줄에서 <code>ld.so</code>를 지정하기 번거롭다면 <code>patchelf</code>로 바이너리 자체의 <code>INTERP</code>(ELF Interpreter, REV-0649)와 <code>RPATH</code>를 바꿔서, <code>./chall</code>을 그냥 실행해도 원하는 libc/ld 세트를 쓰도록 고정할 수 있다. <code>pwninit</code> 같은 도구는 이 과정(다운로드한 libc/ld 권한 설정, patchelf 적용, GDB script까지)을 자동화해준다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code>$ ./chall
+./chall: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.34' not found (required by ./chall)</code></pre>
+<p>또는</p>
+<pre><code>$ ldd ./chall
+	libc.so.6 =&gt; /lib/x86_64-linux-gnu/libc.so.6 (0x00007f...)
+	/lib64/ld-linux-x86-64.so.2 (0x00007f...)</code></pre>
+<p><code>ldd</code> 자체는 별문제 없어 보여도 실제 실행 시 위와 같은 버전 오류가 날 수 있다는 점에 주의한다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>문제 폴더에 <code>libc.so.6</code>과 <code>ld-linux*.so*</code>(또는 이름이 다른 <code>ld-*.so</code>)가 함께 왔는지 확인한다. 있다면 시스템 로더 대신 그 로더로 직접 실행해본다.</p>
+<h2>단계별 절차</h2>
+<ol><li>배포된 파일 목록 확인 (<code>ls</code>) — <code>chall</code>, <code>libc.so.6</code>, <code>ld-2.xx.so</code> 등</li><li><code>chmod +x ./ld-2.xx.so</code> (실행 비트 확인, REV-0702 참고)</li><li>배포된 로더로 직접 실행: <code>./ld-2.xx.so --library-path . ./chall</code></li><li>매번 이렇게 실행하기 번거로우면 <code>patchelf</code>로 고정</li></ol>
+<pre><code class="language-bash">   patchelf --set-interpreter ./ld-2.xx.so ./chall
+   patchelf --set-rpath . ./chall</code></pre>
+<ol><li>이후 <code>./chall</code>만으로 정상 실행되는지 확인</li><li><code>pwninit</code>이 설치되어 있다면 <code>pwninit</code> 한 번으로 위 과정 자동화 가능</li><li>그래도 안 되면 배포된 libc 버전과 바이너리가 실제로 링크된 버전이 일치하는지 <code>strings ./libc.so.6 | grep "GNU C Library"</code>로 재확인</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">ldd ./chall
+strings ./libc.so.6 | grep "GNU C Library"
+./ld-2.xx.so --library-path . ./chall
+patchelf --set-interpreter ./ld-2.xx.so ./chall
+patchelf --set-rpath . ./chall
+pwninit</code></pre>
+<h2>출력 해석</h2>
+<p><code>version 'GLIBC_2.34' not found (required by ./chall)</code>에서 <code>GLIBC_2.34</code>는 바이너리가 요구하는 최소 심볼 버전이다. 시스템 <code>libc.so.6</code>의 버전은 <code>strings /lib/x86_64-linux-gnu/libc.so.6 | grep "release version"</code>으로 확인할 수 있으며, 이 값이 요구 버전보다 낮으면 반드시 배포된 libc로 교체 실행해야 한다. <code>patchelf</code> 적용 후 <code>readelf -d ./chall | grep -E 'NEEDED|RPATH|RUNPATH'</code>로 실제 인터프리터/RPATH가 원하는 경로로 바뀌었는지 확인할 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li>시스템 glibc를 강제로 업그레이드하려다가 시스템 전체(다른 프로그램들이 의존하는 libc)를 망가뜨리는 것 — 시스템 libc는 절대 건드리지 말고 로컬 디렉터리 안의 사본만 사용해야 한다.</li><li>배포된 <code>ld-*.so</code>에 실행 비트가 없어서 "이 방법도 안 되네"라고 오해하는 것(REV-0702의 Permission denied 문제와 겹칠 수 있다).</li><li><code>patchelf</code> 적용 후 원본 바이너리를 덮어써서 되돌릴 수 없게 만드는 것 — 항상 원본을 백업해두고 사본에 적용한다.</li><li>이미 정상 실행되고 있는데 서버와 익스플로잇 결과(오프셋)가 안 맞는 상황을 이 글의 "실행 자체가 안 되는" 문제와 혼동하는 것 — 그 경우는 REV-0711을 봐야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>실행은 되는데 오프셋/one_gadget 결과가 서버와 안 맞는 문제라면 → REV-0711 서버 환경 glibc와 로컬 glibc가 달라 분석이 안 맞을 때.</li><li>ELF Interpreter(<code>ld-linux.so</code>)가 정확히 무슨 역할을 하는지 궁금하면 → REV-0649 ELF Interpreter(ld-linux.so)가 하는 일.</li><li>애초에 정적 링킹으로 만들어서 이런 문제 자체를 피하고 싶다면 → REV-0646 정적 링킹된(Statically Linked) ELF 분석 접근법.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ ./chall
+./chall: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.34' not found (required by ./chall)
+$ chmod +x ld-2.35.so
+$ ./ld-2.35.so --library-path . ./chall
+Welcome to the challenge!
+$ patchelf --set-interpreter ./ld-2.35.so ./chall
+$ patchelf --set-rpath . ./chall
+$ ./chall
+Welcome to the challenge!</code></pre>
+<p>배포된 로더로 직접 실행하면 바로 성공하고, <code>patchelf</code>로 고정한 뒤에는 <code>./chall</code>만으로도 동일하게 동작한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0711-server-vs-local-glibc-mismatch.html">REV-0711 — 서버 환경 glibc와 로컬 glibc가 달라 분석이 안 맞을 때</a></li><li><a href="rev-0649-ld-linux-so-interpreter.html">REV-0649 — ELF Interpreter(ld-linux.so)가 하는 일</a></li><li><a href="rev-0646-statically-linked-elf-analysis.html">REV-0646 — 정적 링킹된(Statically Linked) ELF 분석 접근법</a></li><li><a href="rev-0702-permission-denied-execution.html">REV-0702 — Permission denied로 바이너리 실행이 안 될 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>glibc의 심볼 버전 관리(symbol versioning)와 하위 호환/상위 비호환 정책: GNU glibc 공식 문서("Library Interfaces" 및 ABI 관리 문서) 기준.</li><li>동적 로더를 직접 지정해 실행하는 <code>ld.so --library-path</code> 방식: <code>ld.so(8)</code> 공식 매뉴얼 기준.</li><li><code>patchelf</code>의 <code>--set-interpreter</code>/<code>--set-rpath</code> 옵션 동작: patchelf 공식 저장소(NixOS/patchelf) 문서 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

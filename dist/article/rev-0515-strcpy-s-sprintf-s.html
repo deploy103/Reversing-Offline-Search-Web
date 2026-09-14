@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windows CRT 문자열 함수 사전: strcpy_s sprintf_s · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>Windows CRT 문자열 함수 사전: strcpy_s sprintf_s</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>strcpy_s</code>/<code>sprintf_s</code>는 기존 <code>strcpy</code>/<code>sprintf</code>에 목적지 버퍼 크기 인자를 추가로 요구하는 Microsoft Secure CRT 함수로, 이 이름들이 Import/문자열에 보인다면 컴파일러가 버퍼 크기 검사를 강제하고 있다는 뜻이므로 (같은 지점에서) 고전적인 <code>strcpy</code> 스타일 오버플로우를 찾기는 더 어렵지만, 대신 크기 인자 자체가 잘못 계산되는 2차적인 취약점 패턴을 봐야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Import 목록이나 IDA 디컴파일 결과에 <code>strcpy_s</code>/<code>sprintf_s</code>/<code>strncpy_s</code> 등 <code>_s</code> 접미사가 붙은 함수가 보여서 일반 <code>strcpy</code>/<code>sprintf</code>와 무엇이 다른지 알아야 할 때</li><li>CTF pwn/리버싱 문제에서 이 바이너리가 Secure CRT를 쓰는지 확인해 오버플로우 공략 가능성을 가늠해야 할 때</li><li><code>sprintf_s</code>의 크기 인자와 포맷 문자열이 실제로 만들어내는 최대 길이가 목적지 버퍼보다 큰지 검토해야 할 때</li><li>Visual Studio 소스 코드에서 <code>C4996</code>(이 함수는 안전하지 않을 수 있습니다) 경고를 보고 왜 뜨는지, <code>_s</code> 버전과 무슨 관계인지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>함수 시그니처</h3>
+<pre><code class="language-c">errno_t strcpy_s(
+    char       *strDestination,    // 1. 복사될 목적지 버퍼
+    rsize_t    numberOfElements,   // 2. 목적지 버퍼의 전체 크기(바이트 수) — 반드시 정확히 지정
+    const char *strSource          // 3. 복사할 원본 문자열
+);
+
+int sprintf_s(
+    char       *buffer,       // 1. 결과가 쓰일 목적지 버퍼
+    size_t     sizeOfBuffer,  // 2. 목적지 버퍼의 전체 크기
+    const char *format,       // 3. printf 스타일 포맷 문자열
+    ...                       // 4. 가변 인자
+);</code></pre>
+<p><code>strcpy_s</code>는 성공 시 <code>0</code>을 반환하는 <code>errno_t</code>(정수) 값이다 — 일반 <code>strcpy</code>가 목적지 포인터를 그대로 반환하는 것과 다르다. <code>sprintf_s</code>는 성공 시 기록된 문자 수(널 종료 문자 제외)를, 버퍼가 부족하면 음수를 반환한다.</p>
+<h3>무엇이 "안전"해지는가</h3>
+<ul><li>원본(<code>strSource</code>)이 목적지 크기(<code>numberOfElements</code>)보다 길면, <code>strcpy_s</code>는 조용히 넘치는 대신 <strong>유효하지 않은 매개변수 핸들러(invalid parameter handler)</strong> 를 호출한다. 기본 동작은 목적지 버퍼를 빈 문자열로 만들고 <code>errno_t</code>로 <code>ERANGE</code>(34) 등을 반환하며, 디버그 빌드에서는 <code>assert</code>/<code>abort</code>로 즉시 종료되도록 구성되는 경우가 많다.</li><li>즉 "덮어써지는" 대신 "그 자리에서 감지되어 처리가 중단"되므로, 공격자 입장에서 <code>strcpy_s</code> 호출 자체를 통한 스택/힙 오버플로우는 <code>strcpy</code>보다 훨씬 어렵다.</li></ul>
+<h3>그래도 남아있는 취약점 패턴</h3>
+<p>Secure CRT라고 해서 코드가 무조건 안전한 것은 아니다. 실전에서 여전히 자주 나타나는 버그는 다음과 같다.</p>
+<ul><li><code>numberOfElements</code>(크기 인자)를 목적지 버퍼의 <strong>실제 크기가 아니라</strong> 원본 문자열의 크기나 잘못된 상수로 잘못 넘기는 경우 — 이러면 함수 자체는 "안전"해도 결과적으로 버퍼를 초과해서 쓸 수 있다.</li><li><code>sprintf_s</code>의 포맷 문자열이 사용자 입력을 그대로 받는 포맷 스트링 버그(<code>%n</code> 등)는 크기 인자와 무관하게 여전히 위험할 수 있다.</li><li><code>strncpy_s</code>/<code>strcat_s</code> 등 형제 함수들과 인자 순서를 혼동해서 실제로는 검사되지 않는 크기를 넘기는 실수.</li></ul>
+<h3>x86/x64 스택 보호(_GS)와의 관계</h3>
+<p><code>_s</code> 함수 자체와는 별개로, MSVC의 <code>/GS</code>(기본 활성화) 스택 보호 쿠키도 함께 보이는 경우가 많다. 함수 프롤로그에서 <code>mov eax, ___security_cookie</code> 후 스택에 저장하고, 에필로그에서 <code>call __security_check_cookie</code>로 검증하는 패턴이 있다면 이것도 별도의 스택 오버플로우 완화 장치이며, <code>_s</code> 함수의 크기 검사와는 독립적으로 동작한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">push offset src
+push 20h              ; numberOfElements — 여기 값이 dst의 실제 크기와 일치하는지가 핵심
+push offset dst
+call strcpy_s
+test eax, eax
+jnz  error_handler     ; errno_t != 0이면 실패 처리</code></pre>
+<ul><li>디컴파일 결과에서 <code>strcpy_s(dst, 32, src)</code>처럼 크기 인자가 명시적으로 보인다.</li><li>호출 직후 반환값(<code>eax</code>)을 검사해서 실패 시 별도 처리로 분기하는 코드가 있으면, 실패 처리 로직이 무엇을 하는지(그냥 무시/로그/종료)도 함께 확인할 가치가 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>strcpy_s</code>/<code>sprintf_s</code> 호출을 발견하면 두 번째 인자(크기)가 상수인지 변수인지, 그리고 그 값이 목적지 버퍼(첫 번째 인자)의 실제 선언 크기와 정확히 일치하는지부터 확인한다. 여기서 불일치가 있으면 "안전한 함수"임에도 실질적 취약점이 존재하는 지점이다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 목적지 버퍼 크기 확인(IDA)</strong> 스택 프레임(<code>F5</code> 디컴파일 결과의 지역 변수 크기, 또는 <code>.data</code>/<code>.bss</code>의 전역 배열 선언 크기)에서 <code>dst</code>가 실제로 몇 바이트인지 확인한다.</p>
+<p><strong>2) 크기 인자와 대조</strong> <code>strcpy_s</code>/<code>sprintf_s</code>의 두 번째 인자가 그 값과 정확히 같은지 비교한다. 더 큰 값이 넘어간다면 그 자체가 버그다.</p>
+<p><strong>3) x64dbg로 실제 길이 확인</strong></p>
+<pre><code class="language-text">bp strcpy_s
+run
+; x64: RDX = numberOfElements(크기), R8 = strSource
+; R8을 Follow in Dump해서 원본 문자열의 실제 길이를 눈으로 확인</code></pre>
+<p>원본 문자열 길이가 <code>RDX</code> 값보다 긴 경우, 실행을 이어가면 실패 처리 분기로 가는지 실제로 관찰한다.</p>
+<p><strong>4) sprintf_s 포맷 문자열 확인</strong> 세 번째 인자(포맷 문자열)에 <code>%s</code>가 여러 개 있거나 사용자 제어 문자열이 그대로 포맷으로 쓰이는지(포맷 스트링 버그 가능성) 확인한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp strcpy_s</code>, <code>bp sprintf_s</code>, <code>Ctrl+F9</code>(Execute till return)</li><li>x64dbg: 버퍼 주소 우클릭 → <code>Follow in Dump</code></li><li>IDA: <code>F5</code>(디컴파일, 스택 변수 크기 확인), <code>Structures</code>/지역 변수 창에서 배열 크기 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>strcpy_s</code> 반환값(<code>errno_t</code>)이 <code>0</code>이면 성공이고, <code>0</code>이 아니면(대개 <code>EINVAL</code>=22 또는 <code>ERANGE</code>=34) 실패이며 목적지 버퍼는 빈 문자열(<code>dst[0]=0</code>)로 초기화되어 있을 가능성이 높다.</li><li><code>sprintf_s</code>가 음수를 반환하면 버퍼가 부족해 아무것도 쓰이지 않은 것이다(일반 <code>sprintf</code>처럼 잘린 채로 쓰이지 않는다는 점이 중요한 차이).</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>_s</code> 함수가 보이면 "이 바이너리는 오버플로우가 절대 불가능하다"고 성급히 단정하는 것 — 크기 인자 자체가 잘못 계산된 2차적 취약점은 여전히 존재할 수 있다.</li><li><code>strcpy_s</code>의 반환값을 목적지 포인터로 착각하는 것 — 일반 <code>strcpy</code>와 달리 <code>errno_t</code>(정수 상태 코드)를 반환한다.</li><li><code>sprintf_s</code>의 두 번째 인자(버퍼 크기)와 세 번째 인자(포맷 문자열) 순서를 헷갈려서 잘못 해석하는 것 — 항상 시그니처 순서(<code>buffer, sizeOfBuffer, format, ...</code>)를 확인한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>와이드 문자(유니코드) 버전 함수가 궁금하다면 → REV-0516 Windows CRT 문자열 함수 사전: wcscpy wcscat 계열(와이드 문자)</li><li>메모리 복사 계열의 안전 함수가 궁금하다면 → REV-0517 Windows CRT 메모리 함수 사전: memcpy_s memmove_s</li><li>이 함수들이 다루는 문자열이 ASCII인지 UTF-16인지 헷갈린다면 → REV-0128 Windows 문자열 ASCII와 UTF-16 찾기</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">char dst[16];
+char userInput[64];
+gets(userInput); // 별개의 취약점(별도 문서에서 다룸)
+
+errno_t err = strcpy_s(dst, sizeof(dst), userInput); // sizeof(dst)=16으로 정확히 넘김
+if (err != 0) {
+    printf("copy failed, buffer too small\n");
+    return -1;
+}</code></pre>
+<p>이 예제에서는 <code>sizeof(dst)</code>를 정확히 넘겼으므로 <code>userInput</code>이 16바이트보다 길면 <code>strcpy_s</code>가 실패 처리로 빠지며 오버플로우가 발생하지 않는다. 만약 이 자리에 <code>sizeof(dst)</code> 대신 <code>sizeof(userInput)</code>(64)처럼 잘못된 상수가 들어갔다면, 함수는 "성공"으로 리턴하면서도 <code>dst</code>를 최대 64바이트까지 덮어쓸 수 있어 실질적인 오버플로우가 된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0516-wcscpy-wcscat.html">REV-0516 — Windows CRT 문자열 함수 사전: wcscpy wcscat 계열(와이드 문자)</a></li><li><a href="rev-0517-memcpy-s-memmove-s.html">REV-0517 — Windows CRT 메모리 함수 사전: memcpy_s memmove_s</a></li><li><a href="rev-0128-windows-string-encoding.html">REV-0128 — Windows 문자열 ASCII와 UTF-16 찾기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>strcpy_s</code>/<code>sprintf_s</code>의 시그니처, 반환값(<code>errno_t</code>), 실패 시 동작(invalid parameter handler 호출)은 Microsoft 공식 문서(learn.microsoft.com, "strcpy_s, wcscpy_s, _mbscpy_s, _mbscpy_s_l" / "sprintf_s, _sprintf_s_l, swprintf_s, _swprintf_s_l") 기준이다(2026-09-08 확인).</li><li>MSVC <code>/GS</code> 스택 보호 쿠키 메커니즘과 <code>_s</code> 함수 검사는 서로 독립적인 별개의 완화 기법이라는 점은 Microsoft 공식 문서의 일반적인 보안 기능 설명 기준이다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

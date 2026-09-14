@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ELF Dynamic Section 태그(DT_*) 빠른 참조 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>ELF Dynamic Section 태그(DT_*) 빠른 참조</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">readelf</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>.dynamic</code> 섹션은 <code>(태그, 값)</code> 쌍의 배열(<code>Elf64_Dyn</code> 구조체 리스트)이며, 각 태그(<code>DT_NEEDED</code>, <code>DT_SYMTAB</code>, <code>DT_PLTGOT</code> 등)는 동적 링커(<code>ld-linux.so</code>)가 라이브러리를 찾고 심볼을 해석하고 재배치를 수행하는 데 필요한 정보를 하나씩 알려주는 "설정값 목록"이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>readelf -d ./chall</code> 출력에 나오는 태그 이름이 낯설어서 뜻을 찾아볼 때</li><li><code>checksec</code>이 어떻게 <code>RELRO</code>/<code>BIND_NOW</code> 상태를 판단하는지 그 근거(<code>DT_FLAGS</code>, <code>DT_FLAGS_1</code>)가 궁금할 때</li><li>GDB가 라이브러리 베이스 주소를 어떻게 알아내는지(<code>DT_DEBUG</code>) 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Elf64_Dyn 구조체</h3>
+<pre><code class="language-c">typedef struct {
+    Elf64_Sxword d_tag;
+    union {
+        Elf64_Xword d_val;   // 정수 값 해석(크기, 플래그, 카운트 등)
+        Elf64_Addr  d_ptr;   // 가상 주소 해석(테이블 시작 주소 등)
+    } d_un;
+} Elf64_Dyn;</code></pre>
+<p>어떤 필드로 해석할지는 태그 종류에 따라 정해져 있다. 배열은 <code>DT_NULL</code>(0) 태그로 끝난다.</p>
+<h3>자주 보이는 태그 목록</h3>
+<table><thead><tr><th>태그</th><th>값</th><th>의미</th></tr></thead><tbody><tr><td><code>DT_NULL</code></td><td>0</td><td>배열의 끝 표시</td></tr><tr><td><code>DT_NEEDED</code></td><td>1</td><td>이 오브젝트가 필요로 하는 공유 라이브러리 이름(<code>.dynstr</code> 오프셋). 여러 개 있을 수 있음 — <code>readelf -d</code>에 <code>Shared library: [libc.so.6]</code> 형태로 나옴</td></tr><tr><td><code>DT_PLTRELSZ</code></td><td>2</td><td>PLT 관련 재배치 테이블의 총 바이트 크기</td></tr><tr><td><code>DT_PLTGOT</code></td><td>3</td><td>GOT(정확히는 <code>.got.plt</code>) 시작 주소</td></tr><tr><td><code>DT_HASH</code></td><td>4</td><td>SysV 스타일 심볼 해시 테이블 주소</td></tr><tr><td><code>DT_STRTAB</code></td><td>5</td><td>동적 문자열 테이블(<code>.dynstr</code>) 주소</td></tr><tr><td><code>DT_SYMTAB</code></td><td>6</td><td>동적 심볼 테이블(<code>.dynsym</code>) 주소</td></tr><tr><td><code>DT_RELA</code> / <code>DT_REL</code></td><td>7 / 17</td><td>재배치 엔트리 테이블 주소(Addend 있는 버전/없는 버전)</td></tr><tr><td><code>DT_STRSZ</code></td><td>10</td><td><code>.dynstr</code> 전체 크기</td></tr><tr><td><code>DT_SYMENT</code></td><td>11</td><td>심볼 테이블 엔트리 하나의 크기</td></tr><tr><td><code>DT_INIT</code> / <code>DT_FINI</code></td><td>12 / 13</td><td>초기화/종료 함수 주소(레거시 단일 함수 방식)</td></tr><tr><td><code>DT_SONAME</code></td><td>14</td><td>이 오브젝트 자신의 공유 라이브러리 이름(예: <code>libc.so.6</code>)</td></tr><tr><td><code>DT_RPATH</code> / <code>DT_RUNPATH</code></td><td>15 / 29</td><td>라이브러리 검색 경로 하드코딩(구식/신식)</td></tr><tr><td><code>DT_SYMBOLIC</code></td><td>16</td><td>심볼 해석 시 자기 자신을 먼저 찾도록 지시</td></tr><tr><td><code>DT_PLTREL</code></td><td>20</td><td>PLT 재배치가 <code>DT_REL</code>/<code>DT_RELA</code> 중 어떤 형식인지</td></tr><tr><td><code>DT_DEBUG</code></td><td>21</td><td>실행 중 동적 링커가 채우는 디버그 정보 주소. 여기를 따라가면 <code>r_debug</code>/<code>link_map</code> 연결 리스트가 나오고, <strong>이것이 GDB/Pwndbg가 로드된 공유 라이브러리들의 베이스 주소를 알아내는 표준 경로</strong>다</td></tr><tr><td><code>DT_JMPREL</code></td><td>23</td><td>PLT용 재배치 테이블(<code>.rela.plt</code>) 시작 주소</td></tr><tr><td><code>DT_BIND_NOW</code></td><td>24</td><td>존재하면 지연 바인딩(lazy binding) 없이 시작 시 즉시 전부 바인딩</td></tr><tr><td><code>DT_INIT_ARRAY</code> / <code>DT_FINI_ARRAY</code></td><td>25 / 26</td><td>초기화/종료 함수 포인터 배열 주소(<code>.init_array</code>/<code>.fini_array</code>, 현대 표준 방식)</td></tr><tr><td><code>DT_INIT_ARRAYSZ</code> / <code>DT_FINI_ARRAYSZ</code></td><td>27 / 28</td><td>위 배열들의 바이트 크기</td></tr><tr><td><code>DT_FLAGS</code></td><td>30</td><td><code>DF_ORIGIN</code>, <code>DF_SYMBOLIC</code>, <code>DF_TEXTREL</code>, <code>DF_BIND_NOW</code>, <code>DF_STATIC_TLS</code> 등 플래그 비트</td></tr><tr><td><code>DT_GNU_HASH</code></td><td>0x6ffffef5</td><td>GNU 확장 해시 테이블(SysV <code>DT_HASH</code>보다 빠름, 최신 바이너리 대부분 이걸 씀)</td></tr><tr><td><code>DT_VERSYM</code> / <code>DT_VERNEED</code> / <code>DT_VERDEF</code></td><td>0x6ffffff0대</td><td>심볼 버전 관리(<code>GLIBC_2.2.5</code> 같은 버전 문자열) 관련</td></tr><tr><td><code>DT_FLAGS_1</code></td><td>0x6ffffffb</td><td>GNU 확장 플래그. <strong><code>DF_1_NOW</code>가 켜져 있으면 Full RELRO의 핵심 조건 중 하나</strong>(checksec이 이 비트를 확인)</td></tr><tr><td><code>DT_RELACOUNT</code></td><td>0x6ffffff9</td><td><code>R_*_RELATIVE</code> 타입 재배치 개수(주로 PIE ASLR 재배치 최적화용)</td></tr></tbody></table>
+<h3>RELRO와의 관계</h3>
+<p><code>checksec</code>이 <code>Full RELRO</code>라고 판정하는 조건은 두 가지가 겹칠 때다: ① 프로그램 헤더에 <code>GNU_RELRO</code> 세그먼트가 있고(GOT를 매핑 후 읽기 전용으로 재설정할 범위 지정), ② <code>.dynamic</code>에 <code>DT_FLAGS_1</code>의 <code>DF_1_NOW</code> 비트(또는 <code>DT_BIND_NOW</code>)가 설정되어 있어 시작 시 모든 GOT 엔트리가 즉시 채워짐(eager binding). 둘 중 <code>GNU_RELRO</code>만 있고 즉시 바인딩이 없으면 <code>Partial RELRO</code>다(REV-0102 참고).</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>readelf -d ./chall</code> 실행 시 <code>Tag Type Name/Value</code> 표 형태로 위 태그들이 나열됨</li><li>GDB에서 <code>info sharedlibrary</code> 또는 Pwndbg <code>piebase</code>가 라이브러리 베이스를 보여줄 때, 내부적으로 <code>DT_DEBUG</code> → <code>r_debug</code> → <code>link_map</code> 체인을 따라간 결과</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>readelf -d ./chall</code>을 한 번 실행해서 <code>NEEDED</code>(필요 라이브러리 목록), <code>BIND_NOW</code>/<code>FLAGS_1</code> 유무(RELRO 판단), <code>SONAME</code>(자기 자신이 라이브러리인 경우)을 먼저 확인한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 전체 동적 섹션 덤프</strong></p>
+<pre><code class="language-bash">readelf -d ./chall</code></pre>
+<p><strong>2) 필요 라이브러리만 추출</strong></p>
+<pre><code class="language-bash">readelf -d ./chall | grep NEEDED</code></pre>
+<p><strong>3) RELRO/BIND_NOW 관련 플래그만 확인</strong></p>
+<pre><code class="language-bash">readelf -d ./chall | grep -E 'FLAGS|BIND_NOW'
+checksec --file=./chall</code></pre>
+<p><strong>4) GDB에서 DT_DEBUG를 통해 로드된 라이브러리 베이스 확인</strong></p>
+<pre><code class="language-gdb">info sharedlibrary</code></pre>
+<p>Pwndbg에서는 더 간단히:</p>
+<pre><code class="language-gdb">piebase
+vmmap</code></pre>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">readelf -d ./chall
+readelf -d ./chall | grep NEEDED
+checksec --file=./chall</code></pre>
+<p>GDB/Pwndbg: <code>info sharedlibrary</code>, <code>piebase</code>, <code>vmmap</code></p>
+<h2>출력 해석</h2>
+<p><code>readelf -d</code> 예시:</p>
+<pre><code> 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x000000000000000c (INIT)               0x1000
+ 0x0000000000000019 (INIT_ARRAY)         0x3db8
+ 0x000000000000001b (INIT_ARRAYSZ)       8 (bytes)
+ 0x000000006ffffffb (FLAGS_1)            Flags: NOW PIE</code></pre>
+<p><code>FLAGS_1</code>에 <code>NOW</code>가 보이면 즉시 바인딩(Full RELRO의 필요조건 충족), <code>PIE</code>가 보이면 이 오브젝트가 Position-Independent Executable임을 나타낸다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>DT_NEEDED</code>에 나열된 이름이 실제 파일 경로라고 착각하는 것 — 이건 단순 이름(<code>libc.so.6</code>)일 뿐이고, 실제 파일 위치는 런타임에 <code>ld.so</code>가 <code>LD_LIBRARY_PATH</code>, <code>/etc/ld.so.cache</code>, 기본 경로 등을 뒤져서 찾는다.</li><li><code>DT_BIND_NOW</code> 태그가 없으면 무조건 lazy binding이라고 단정하는 것 — <code>DT_FLAGS_1</code>의 <code>DF_1_NOW</code> 비트로도 동일한 효과를 낼 수 있어 두 곳을 모두 확인해야 한다.</li><li><code>.dynamic</code> 섹션이 스트립되면 아예 동적 링킹 정보가 없다고 착각하는 것 — <code>.dynamic</code>은 런타임에 반드시 필요한 정보라 일반적인 <code>strip</code> 명령으로는 제거되지 않는다(제거하면 바이너리가 실행 자체가 안 됨).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>RELRO 자체의 의미와 pwn 관점 영향이 궁금하면 → REV-0102 RELRO가 리버싱에 의미하는 것.</li><li>PLT/GOT와 <code>DT_PLTGOT</code>/<code>DT_JMPREL</code>의 관계가 궁금하면 → REV-0100 PLT와 GOT 기초.</li><li>섹션 이름 전반이 궁금하면 → REV-0640 ELF Section 이름 관례 사전.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ readelf -d ./chall | head -8
+Dynamic section at offset 0x2dd8 contains 24 entries:
+  Tag        Type                         Name/Value
+ 0x0000000000000001 (NEEDED)             Shared library: [libc.so.6]
+ 0x000000000000000c (INIT)               0x1000
+ 0x000000000000000d (FINI)               0x11f8
+ 0x0000000000000019 (INIT_ARRAY)         0x3db8
+ 0x000000006ffffef5 (GNU_HASH)           0x3b8
+ 0x0000000000000006 (SYMTAB)             0x3d8</code></pre>
+<p><code>NEEDED</code>로 <code>libc.so.6</code> 하나만 링크되어 있고, <code>GNU_HASH</code>가 있으므로 최신 방식 해시 테이블을 사용하는 바이너리임을 알 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0100-plt-got.html">REV-0100 — PLT와 GOT 기초</a></li><li><a href="rev-0101-dynamic-linking.html">REV-0101 — Dynamic Linking과 Import 함수 추적</a></li><li><a href="rev-0102-relro.html">REV-0102 — RELRO가 리버싱에 의미하는 것</a></li><li><a href="rev-0640-elf-section-naming-convention.html">REV-0640 — ELF Section 이름 관례 사전(.text .rodata .bss 등)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>Elf64_Dyn</code> 구조체 및 <code>DT_*</code> 태그 정의: System V Application Binary Interface(generic ABI) "Dynamic Section" 챕터 및 Linux Foundation Referenced Specifications(refspecs.linuxbase.org, ELF gABI ch5.dynamic) 기준 (2026-09-08 검증).</li><li><code>DT_GNU_HASH</code>, <code>DT_FLAGS_1</code>(<code>DF_1_NOW</code>) 등 GNU 확장 태그: GNU Binutils/glibc 동적 로더 구현 및 RELRO 관련 배포판 문서 기준.</li><li><code>DT_DEBUG</code>와 <code>r_debug</code>/<code>link_map</code>을 통한 라이브러리 베이스 추적: glibc <code>elf/link.h</code>, <code>elf/rtld.c</code> 및 GDB <code>solib-svr4.c</code> 구현 개념 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

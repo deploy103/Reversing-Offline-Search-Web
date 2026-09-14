@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shadow Space를 안 챙겨서 인자 해석을 잘못했을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>Shadow Space를 안 챙겨서 인자 해석을 잘못했을 때</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>Microsoft x64 호출 규약에서 호출자는 <code>CALL</code> 직전에 항상 <strong>0x20(32바이트)의 섀도우 스페이스</strong>를 스택에 예약해야 하며, 함수 진입 직후 기준으로 <code>[rsp]</code>가 리턴 주소, <code>[rsp+8]</code>~<code>[rsp+0x20]</code>이 섀도우 스페이스(레지스터 인자의 홈 공간), 그리고 <strong>5번째 인자부터가 <code>[rsp+0x28]</code></strong>에서 시작한다. 이 0x20~0x28 오프셋을 빼먹고 스택을 그냥 <code>[rsp+8]</code>부터 5번째 인자로 착각하면 실제로는 섀도우 스페이스 자리의 쓰레기 값(또는 레지스터가 스필된 값)을 5번째 인자로 잘못 읽게 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>x64 함수를 분석하는데 5번째 이상 인자를 스택에서 찾아야 할 때</li><li>x64dbg로 함수 진입점(또는 <code>CALL</code> 직후)에 멈춰서 Stack 창을 볼 때 오프셋 계산이 헷갈릴 때</li><li>IDA 디컴파일 결과에서 <code>a5</code>, <code>a6</code> 같은 인자가 이상한 값으로 보일 때</li><li><code>RCX</code>/<code>RDX</code>/<code>R8</code>/<code>R9</code>에 담긴 앞 4개 인자는 잘 찾았는데, 5번째부터 값이 안 맞을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Microsoft x64 호출 규약(REV-0122)은 정수/포인터 인자 앞 4개를 <code>RCX</code>, <code>RDX</code>, <code>R8</code>, <code>R9</code>에 담아 전달한다. 하지만 여기서 끝이 아니다. <strong>호출자(caller)는 <code>CALL</code> 명령을 실행하기 전에 반드시 32바이트(0x20)의 스택 공간을 추가로 예약</strong>해야 한다. 이를 <strong>섀도우 스페이스(shadow space, 또는 home space)</strong>라고 부른다.</p>
+<p>섀도우 스페이스가 존재하는 이유는, 피호출 함수(callee)가 필요하다면 레지스터에 담긴 인자값을 이 스택 공간에 "복사(스필, spill)"해서 저장해둘 수 있게 하기 위함이다(디버깅 시 스택에서 인자를 쉽게 확인하거나, 레지스터를 다른 용도로 재사용해야 할 때 씀). 함수가 실제로 이 공간에 값을 저장하든 안 하든, <strong>호출자는 항상 이 공간을 예약해야 한다.</strong> 이는 인자 개수와 무관하게(인자가 0개여도) x64 호출 규약의 고정 요구사항이다.</p>
+<p>함수 진입 직후(아직 프롤로그가 실행되기 전) 기준으로 스택 레이아웃은 다음과 같다.</p>
+<pre><code class="language-text">[rsp + 0x00]  리턴 주소 (CALL이 push한 8바이트)
+[rsp + 0x08]  섀도우 스페이스 (RCX의 home, 1번째 인자 스필 공간)
+[rsp + 0x10]  섀도우 스페이스 (RDX의 home, 2번째 인자 스필 공간)
+[rsp + 0x18]  섀도우 스페이스 (R8의 home, 3번째 인자 스필 공간)
+[rsp + 0x20]  섀도우 스페이스 (R9의 home, 4번째 인자 스필 공간)
+[rsp + 0x28]  5번째 인자 (스택으로 전달된 첫 인자)
+[rsp + 0x30]  6번째 인자
+...</code></pre>
+<p>즉 리턴 주소(8바이트) + 섀도우 스페이스(0x20바이트) = 0x28바이트를 지나야 비로소 "진짜 5번째 인자"가 나온다. 이걸 빼먹고 <code>[rsp+8]</code>을 곧바로 5번째 인자라고 읽으면, 실제로는 섀도우 스페이스(1번째 인자의 스필 공간, 함수가 아직 값을 저장 안 했다면 이전 스택 프레임의 쓰레기 값)를 읽는 것이므로 완전히 틀린 값을 얻는다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>함수 진입 직후 코드에 <code>mov [rsp+8], rcx</code> / <code>mov [rsp+10h], rdx</code> / <code>mov [rsp+18h], r8</code> / <code>mov [rsp+20h], r9</code>처럼 레지스터 인자를 섀도우 스페이스로 스필하는 프롤로그 패턴(디버그 빌드나 최적화가 낮은 빌드에서 흔함)</li><li>호출부(caller) 쪽에서 <code>sub rsp, 28h</code>(또는 <code>20h</code>+정렬용 추가 바이트) 후 <code>CALL</code>이 이어지는 패턴, 함수가 인자를 5개 이상 받거나 지역 변수를 위해 스택을 늘렸을 때</li><li>5번째 인자를 확인하려고 <code>[rsp+8]</code>을 봤는데 문자열 포인터나 정상적인 값이 아니라 이상한 값이 나오는 경우</li><li>x64dbg Stack 창에서 리턴 주소 바로 다음 4개의 8바이트 슬롯(0x08~0x20)이 함수 시작 직후에는 대개 비어있거나 이전 프레임의 값이 남아있는 것처럼 보이는 경우(아직 스필 전이라 그럴 수 있음)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>스택 오프셋을 계산할 때 항상 <strong>"함수 진입 직후, 프롤로그 실행 전"</strong>이라는 고정된 기준점을 먼저 잡는다. 이 시점에서 <code>[rsp]</code>=리턴 주소, <code>[rsp+8]~[rsp+0x20]</code>=섀도우 스페이스, <code>[rsp+0x28]</code>=5번째 인자라는 공식을 그대로 적용한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><strong>기준점 확정</strong>: x64dbg에서 함수 시작 주소(첫 명령어)에 정확히 브레이크포인트를 건다. <code>push rbp</code>, <code>sub rsp, N</code> 같은 프롤로그가 실행되기 <strong>전</strong> 상태에서 확인해야 오프셋 계산이 단순해진다.</li><li><strong>리턴 주소 확인</strong>: <code>[rsp]</code>가 호출부(caller)로 돌아갈 주소인지 Disassembly 창과 대조해 확인한다.</li><li><strong>섀도우 스페이스 건너뛰기</strong>: <code>[rsp+8]</code>, <code>[rsp+0x10]</code>, <code>[rsp+0x18]</code>, <code>[rsp+0x20]</code>은 1~4번째 인자의 스필 공간이다. 이 값들은 함수가 실제로 그 값을 저장했을 때만 의미가 있으며, 저장 안 했다면 신경 쓸 필요 없다.</li><li><strong>5번째 인자부터 확인</strong>: <code>[rsp+0x28]</code>이 5번째 인자, <code>[rsp+0x30]</code>이 6번째 인자다. x64dbg Stack 창에서 8바이트씩 내려가며 확인한다.</li><li><strong>프롤로그 실행 후라면 오프셋 재계산</strong>: 이미 <code>sub rsp, 0x40</code> 같은 프롤로그가 실행된 뒤라면, 그 감소한 만큼(<code>0x40</code>)을 위 오프셋에 추가로 더해야 한다. 즉 실제 5번째 인자는 <code>[rsp+0x40+0x28]</code> = <code>[rsp+0x68]</code>이 된다. IDA의 스택 프레임 뷰(함수 내부에서 <code>Ctrl+K</code> 등으로 여는 stack frame 창)가 이 계산을 자동으로 해준다.</li><li><strong>IDA 디컴파일과 대조</strong>: <code>F5</code> 결과에서 5번째 인자(<code>a5</code>)로 표시되는 변수가 스택 어느 오프셋에서 로드되는지 어셈블리 뷰와 함께 대조하면 계산이 맞는지 검증할 수 있다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: 함수 진입점 <code>bp</code>, Stack 창에서 8바이트 단위 오프셋 확인</li><li>IDA: 함수 내부에서 스택 프레임 뷰 열기(Stack Frame 창), <code>F5</code> 디컴파일로 인자 개수/순서 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>함수 진입 직후 <code>[rsp+0x28]</code>에 있는 값이 포인터처럼 보이면(예: <code>0x000001F2...</code>) 이것이 5번째 인자일 가능성이 높으며, Follow in Dump로 실제 데이터를 확인할 수 있다.</li><li>프롤로그 실행 후 <code>RSP</code>가 얼마나 감소했는지는 <code>sub rsp, N</code> 명령의 N 값으로 바로 알 수 있으며, 모든 이후 스택 오프셋 계산에 이 N을 더해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>리턴 주소(8바이트)를 빼먹고 섀도우 스페이스가 <code>[rsp]</code>부터 시작한다고 착각하는 것. 리턴 주소가 항상 먼저 온다.</li><li>섀도우 스페이스(0x20바이트)를 통째로 빼먹고 <code>[rsp+8]</code>을 곧바로 5번째 인자라고 읽는 것(이 문서의 핵심 실수).</li><li>함수 프롤로그가 이미 실행된 이후 시점에서 확인하면서, 프롤로그가 늘린 스택 크기를 오프셋 계산에 더하지 않는 것.</li><li>섀도우 스페이스를 x86의 개념(REV-0623의 <code>ECX</code>/<code>EDX</code> 2개 레지스터 규약)과 섞어서, x86 함수에도 섀도우 스페이스가 있다고 착각하는 것. 섀도우 스페이스는 x64 전용 개념이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>애초에 x64 레지스터 인자(<code>RCX</code>/<code>RDX</code>/<code>R8</code>/<code>R9</code>) 규칙 자체가 헷갈린다면 → REV-0122(Microsoft x64 Calling Convention)를 먼저 읽는다.</li><li>Shadow Space 개념 자체를 처음부터 다시 보고 싶다면 → REV-0124(Shadow Space가 무엇인지)를 확인한다.</li><li>x86 <code>__fastcall</code>과 헷갈리고 있다면 → REV-0623(32비트 PE에서 fastcall 인자 위치가 헷갈릴 때)을 함께 본다.</li></ul>
+<h2>미니 예제</h2>
+<p>x64dbg에서 어떤 함수 진입점에 브레이크포인트가 걸렸다. Stack 창에 다음과 같이 보였다.</p>
+<pre><code class="language-text">[rsp+0x00] = 0x00007FF6A1B02310   ; 리턴 주소
+[rsp+0x08] = 0x000000A1F2C03E00   ; 섀도우 스페이스 (RCX home, 아직 미사용/이전 값)
+[rsp+0x10] = 0x0000000000000005   ; 섀도우 스페이스 (RDX home)
+[rsp+0x18] = 0x0000000000000000   ; 섀도우 스페이스 (R8 home)
+[rsp+0x20] = 0x0000000000000000   ; 섀도우 스페이스 (R9 home)
+[rsp+0x28] = 0x000001F2A3C04010   ; 진짜 5번째 인자
+[rsp+0x30] = 0x0000000000000020   ; 6번째 인자</code></pre>
+<p>처음에 <code>[rsp+8]</code>을 5번째 인자로 착각해 <code>0x000000A1F2C03E00</code>을 분석했더니 전혀 말이 안 되는 주소였다. 0x20(섀도우 스페이스) + 0x8(리턴 주소) = 0x28을 더해 <code>[rsp+0x28]</code>을 다시 확인하니 <code>0x000001F2A3C04010</code>이라는 유효한 힙 포인터가 나왔고, 이것이 실제 5번째 인자였다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0122-ms-x64-calling-convention.html">REV-0122 — Microsoft x64 Calling Convention</a></li><li><a href="rev-0124-shadow-space.html">REV-0124 — Shadow Space가 무엇인지</a></li><li><a href="rev-0623-x86-fastcall-arg-confusion.html">REV-0623 — 32비트 PE에서 fastcall 인자 위치가 헷갈릴 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Microsoft x64 호출 규약의 섀도우 스페이스(32바이트 예약, 리턴 주소 8바이트, 5번째 인자부터 <code>[rsp+0x28]</code>) 규칙은 Microsoft 공식 문서(x64 Software Conventions, Calling Convention) 기준이다.</li><li>미니 예제의 구체적 스택 값은 설명을 위해 구성한 예시다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

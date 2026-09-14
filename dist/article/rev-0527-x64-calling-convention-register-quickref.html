@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>x64 Calling Convention 레지스터 사용 빠른 참조표 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>x64 Calling Convention 레지스터 사용 빠른 참조표</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>Windows x64 호출 규약은 처음 네 개의 정수/포인터 인자를 <code>RCX, RDX, R8, R9</code> 순서로 넘기고, 다섯 번째부터는 스택에 쌓으며, 어떤 레지스터가 함수 호출 후에도 값이 보존되는지(nonvolatile)와 그렇지 않은지(volatile)를 표로 외워두면 디스어셈블리를 읽을 때 "이 레지스터 값이 왜 갑자기 바뀌었지"를 훨씬 빠르게 판단할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA/x64dbg에서 <code>call</code> 직전에 <code>RCX</code>, <code>RDX</code>, <code>R8</code>, <code>R9</code>에 값을 채우는 코드를 보고 이게 몇 번째 인자인지 바로 확인하고 싶을 때</li><li>함수 호출 이후 어떤 레지스터 값을 믿고 계속 써도 되는지(nonvolatile), 다시 읽어야 하는지(volatile) 헷갈릴 때</li><li>다섯 번째 이상 인자가 어디 있는지 찾다가 스택 어디를 봐야 하는지 모를 때</li><li>부동소수점 인자(<code>float</code>/<code>double</code>)가 <code>RCX</code>가 아니라 <code>XMM0</code>에 들어있는 이유를 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>정수/포인터 인자 레지스터 순서</h3>
+<p>Windows x64 호출 규약(REV-0122에서 상세히 다룸)은 왼쪽부터 순서대로 처음 4개의 정수형/포인터 인자를 다음 레지스터에 담는다.</p>
+<table><thead><tr><th>인자 순번</th><th>레지스터(64비트)</th><th>32비트 별칭</th><th>16비트 별칭</th><th>8비트 별칭</th></tr></thead><tbody><tr><td>1번째</td><td><code>RCX</code></td><td><code>ECX</code></td><td><code>CX</code></td><td><code>CL</code></td></tr><tr><td>2번째</td><td><code>RDX</code></td><td><code>EDX</code></td><td><code>DX</code></td><td><code>DL</code></td></tr><tr><td>3번째</td><td><code>R8</code></td><td><code>R8D</code></td><td><code>R8W</code></td><td><code>R8B</code></td></tr><tr><td>4번째</td><td><code>R9</code></td><td><code>R9D</code></td><td><code>R9W</code></td><td><code>R9B</code></td></tr><tr><td>5번째 이상</td><td>스택(REV-0124 Shadow Space 다음 위치)</td><td>—</td><td>—</td><td>—</td></tr></tbody></table>
+<p>부동소수점 인자(<code>float</code>, <code>double</code>)는 같은 순번이라도 정수 레지스터가 아니라 <code>XMM0</code>~<code>XMM3</code>에 담긴다. 즉 인자가 <code>(int, double, int, double)</code>이면 정수용 레지스터와 XMM 레지스터가 순번은 같지만 종류가 나뉘어 각각 채워진다(정수는 RCX/R8, 부동소수점은 XMM1/XMM3 — 순번 슬롯 자체는 공유하되 타입에 따라 다른 레지스터 파일을 쓴다).</p>
+<h3>volatile(호출 시 파괴됨) vs nonvolatile(호출 후 보존됨) 레지스터</h3>
+<table><thead><tr><th>분류</th><th>레지스터 목록</th><th>의미</th></tr></thead><tbody><tr><td>Volatile(휘발성)</td><td><code>RAX, RCX, RDX, R8, R9, R10, R11</code>, <code>XMM0</code>~<code>XMM5</code></td><td>함수 호출(<code>call</code>) 후 값이 보존된다는 보장이 없음. 호출된 함수가 자유롭게 덮어써도 됨</td></tr><tr><td>Nonvolatile(비휘발성)</td><td><code>RBX, RBP, RDI, RSI, RSP, R12, R13, R14, R15</code>, <code>XMM6</code>~<code>XMM15</code></td><td>함수가 이 레지스터를 사용하려면 진입 시 저장(<code>push</code>)하고 리턴 전 복원해야 함. 호출자는 <code>call</code> 이후에도 이 값들이 그대로라고 믿어도 됨</td></tr></tbody></table>
+<p><code>RAX</code>는 반환값을 담는 용도이면서 동시에 volatile이므로, <code>call</code> 직후 <code>RAX</code>를 즉시 확인하지 않고 다른 코드를 거치면 값이 덮어써질 수 있다는 점을 기억해야 한다.</p>
+<h3>Shadow Space와의 관계</h3>
+<p>호출자는 인자 개수와 무관하게 <code>call</code> 이전에 최소 32바이트(<code>RCX</code>/<code>RDX</code>/<code>R8</code>/<code>R9</code> 각각을 위한 8바이트씩)의 스택 공간, 즉 Shadow Space를 확보해야 한다(REV-0124). 다섯 번째 이상 인자는 이 Shadow Space 위쪽(<code>RSP+0x20</code> 이후 위치)에 스택으로 쌓인다.</p>
+<h3>RSP 정렬 규칙</h3>
+<p><code>call</code> 명령이 실행되는 시점에서 <code>RSP</code>는 16바이트 정렬되어 있어야 한다(<code>call</code> 자체가 8바이트 반환 주소를 푸시하므로, 함수 진입 직후 <code>RSP</code>는 <code>16의 배수 - 8</code> 상태가 정상). 디스어셈블리에서 <code>sub rsp, 0x28</code>처럼 딱 떨어지지 않는 홀수 배수의 값을 보게 되는 이유가 바로 이 정렬 요구사항과 Shadow Space 확보가 함께 계산된 결과다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>call</code> 직전 코드에서 <code>mov rcx, ...</code>, <code>mov rdx, ...</code>, <code>mov r8d, ...</code>, <code>mov r9, ...</code> 순서로 값을 채우는 패턴이 반복된다.</li><li>함수 프롤로그에서 <code>push rbx</code>, <code>push rsi</code>, <code>push rdi</code> 등이 보이면 이 함수가 nonvolatile 레지스터를 내부적으로 사용하고, 대신 진입 시 저장해두고 있다는 뜻이다.</li><li>IDA의 의사코드(Hex-Rays)에서는 이런 레지스터 배치가 이미 <code>func(a1, a2, a3, a4)</code> 형태의 인자 목록으로 정리되어 보이므로, 레지스터를 직접 볼 필요가 어셈블리 뷰보다는 적다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>분석 중인 <code>call</code> 직전 최대 4줄 정도를 확인해 <code>RCX/RDX/R8/R9</code>(또는 그 하위 별칭)에 어떤 값이 들어가는지부터 확인한다. 이 네 레지스터만 봐도 대부분의 Win32 API 호출 인자를 바로 읽어낼 수 있다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) call 직전 역순으로 스캔</strong></p>
+<p><code>call</code> 명령 바로 위부터 위쪽으로 훑으며 <code>rcx</code>, <code>edx</code>, <code>r8d</code>, <code>r9</code> 등이 나오는 줄을 찾는다. 보통 컴파일러는 이 순서를 지키지 않고 뒤섞어 배치하기도 하므로, 등장 순서가 아니라 어떤 레지스터인지로 인자 번호를 판단한다.</p>
+<p><strong>2) 각 레지스터를 인자 번호로 매핑</strong></p>
+<p><code>RCX</code>→1번째, <code>RDX</code>→2번째, <code>R8</code>→3번째, <code>R9</code>→4번째로 즉시 매핑한다. IDA에서 해당 API의 원형(prototype)이 인식되어 있다면 Hex-Rays 의사코드에서 이미 이름이 붙은 인자로 보이므로 이 단계를 생략할 수 있다.</p>
+<p><strong>3) 5번째 이상 인자는 스택에서 찾기</strong></p>
+<p><code>RSP+0x20</code>, <code>RSP+0x28</code> 등으로 접근하는 <code>mov [rsp+0x20], ...</code> 코드가 있으면 5번째 인자부터 여기 쌓인다.</p>
+<p><strong>4) 호출 후 어떤 레지스터를 신뢰할지 판단</strong></p>
+<p><code>call</code> 직후 이어지는 코드가 <code>RAX</code>가 아닌 다른 레지스터(예: <code>RBX</code>)를 그대로 참조한다면, 그 값은 호출 전에 저장돼 있던 nonvolatile 레지스터 값일 가능성이 높다 — 즉 이 함수 호출과 무관하게 유지된 값이다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 함수 원형이 인식되면 인자에 자동으로 이름이 붙음(<code>Y</code>로 타입 강제 지정 가능)</li><li>x64dbg: Registers 창에서 <code>call</code> 직전 <code>RCX/RDX/R8/R9</code> 값을 직접 확인, <code>F7</code>(Step Into)로 호출된 함수 내부까지 들어가서 프롤로그의 <code>push</code> 목록 확인</li><li>x64dbg: 스택 창에서 <code>RSP+0x20</code> 이후 영역을 보면 5번째 이상 인자 확인 가능</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>RCX</code>에 포인터 같은 값(작은 정수가 아니라 유효 주소로 보이는 값)이 들어있다면 대부분 <code>this</code> 포인터(멤버 함수) 또는 문자열/버퍼 주소다.</li><li><code>call</code> 직후 <code>test rax, rax</code>나 <code>cmp eax, ...</code>가 바로 이어진다면 반환값을 즉시 검사하는 전형적인 패턴이므로, 그 함수의 반환 의미(성공/실패, 개수, 포인터 등)를 확인하면 이후 분기를 바로 이해할 수 있다.</li><li>함수 프롤로그에 <code>push rbx</code>가 있는데 본문 어디에도 <code>rbx</code>를 쓰는 코드가 안 보인다면, 컴파일러가 최적화 과정에서 레지스터 스케줄링을 위해 형식적으로 남겨둔 경우도 있으니 실제 사용처를 끝까지 확인 후 판단한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>RCX</code>가 항상 1번째 인자라고 외웠다가, 멤버 함수(<code>this</code> 포인터가 암묵적 1번째 인자)나 특수 호출 규약(<code>__fastcall</code>이 아닌 다른 규약)에서는 다를 수 있다는 점을 놓치는 것.</li><li>volatile 레지스터(<code>R10</code>, <code>R11</code> 등)의 값을 <code>call</code> 이후에도 그대로 유지된다고 가정하고 분석을 이어가는 것 — 반드시 nonvolatile 목록과 대조해야 한다.</li><li>5번째 인자를 찾을 때 Shadow Space(32바이트)를 빼먹고 <code>RSP+0x0</code>부터 세는 것 — 5번째 인자는 보통 <code>RSP+0x20</code>부터 시작한다.</li><li>x86(32비트) 호출 규약(REV-0123)과 x64 규약을 혼동해서, 32비트 코드에서도 <code>RCX/RDX</code>에 인자가 들어있을 거라 기대하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>이 표의 배경이 되는 전체 규약 설명이 필요하다면 → REV-0122 Microsoft x64 Calling Convention</li><li>Shadow Space가 왜 필요한지 더 자세히 알고 싶다면 → REV-0124(Shadow Space) 문서 참고</li><li>32비트(x86) 호출 규약과의 차이가 궁금하다면 → REV-0123 Windows x86 stdcall cdecl fastcall thiscall</li><li>실제 도구에서 레지스터 값을 확인하는 법이 낯설다면 → REV-0127 x64dbg로 EXE 첫 분석 시작</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">// CreateFileW(lpFileName, dwDesiredAccess, dwShareMode, lpSecurityAttributes,
+//             dwCreationDisposition, dwFlagsAndAttributes, hTemplateFile)</code></pre>
+<p>7개 인자 중 처음 4개만 레지스터로 넘어가고 나머지는 스택에 쌓인다.</p>
+<pre><code class="language-asm">lea  rcx, [file_path]      ; 1번째: lpFileName
+mov  edx, 0x80000000       ; 2번째: dwDesiredAccess (GENERIC_READ)
+mov  r8d, 1                ; 3번째: dwShareMode (FILE_SHARE_READ)
+xor  r9d, r9d               ; 4번째: lpSecurityAttributes (NULL)
+mov  [rsp+0x20], 3          ; 5번째: dwCreationDisposition (OPEN_EXISTING) - Shadow Space 바로 위
+mov  dword ptr [rsp+0x28], 0x80   ; 6번째: dwFlagsAndAttributes (FILE_ATTRIBUTE_NORMAL)
+mov  qword ptr [rsp+0x30], 0      ; 7번째: hTemplateFile (NULL)
+call CreateFileW
+; 반환값(HANDLE)은 RAX에 담김</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0122-ms-x64-calling-convention.html">REV-0122 — Microsoft x64 Calling Convention</a></li><li><a href="rev-0123-x86-calling-conventions.html">REV-0123 — Windows x86 stdcall cdecl fastcall thiscall</a></li><li><a href="rev-0526-pe-characteristics-flags.html">REV-0526 — PE Characteristics 플래그 사전</a></li><li><a href="rev-0139-createfile-readfile-writefile.html">REV-0139 — CreateFile ReadFile WriteFile 입력 데이터 추적</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Windows x64 호출 규약, volatile/nonvolatile 레지스터 목록, Shadow Space 및 스택 정렬 규칙은 Microsoft 공식 문서(learn.microsoft.com, "x64 calling convention", "x64 software conventions") 기준(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

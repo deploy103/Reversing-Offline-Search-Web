@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>32비트 프로세스와 64비트 프로세스 혼용 환경 이해(WOW64) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>32비트 프로세스와 64비트 프로세스 혼용 환경 이해(WOW64)</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>WOW64(Windows-on-Windows 64-bit)는 64비트 Windows가 32비트(x86) 애플리케이션을 그대로 실행할 수 있게 해주는 호환 계층으로, 32비트 프로세스가 32비트 코드로 실행되다가 시스템 콜(syscall) 시점에는 64비트 커널 모드로 전환되는 방식으로 동작하며, 이 전환 지점 때문에 디버거나 분석 도구가 32비트/64비트 문맥을 혼동해서 예상과 다른 동작을 보일 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>64비트 Windows에서 32비트 EXE(PE32)를 실행했는데 정상적으로 동작해서 "32비트 코드가 64비트 CPU에서 어떻게 그대로 돌아가는가" 궁금할 때</li><li><code>C:\Windows\SysWOW64</code> 폴더에서 DLL이 로드되는 것을 보고 <code>System32</code>와 뭐가 다른지 헷갈릴 때</li><li>x64dbg/WinDbg로 32비트 프로세스를 분석하다가 특정 지점(API 호출 등)에서 디버거가 갑자기 이상한 모드로 전환되거나 스택이 예상과 다르게 보일 때</li><li>32비트 프로세스의 메모리에서 64비트처럼 보이는 코드 조각(레지스터 이름이 <code>RAX</code> 형태 등)을 발견해서 "이게 왜 여기 있지?" 싶을 때(heaven's gate 기법 관련)</li><li>API 후킹 도구가 32비트 프로세스에서 제대로 작동하지 않아서 WOW64 관련 이슈인지 확인하고 싶을 때(REV-0597 참고)</li></ul>
+<h2>핵심 개념</h2>
+<h3>WOW64가 필요한 이유</h3>
+<p>64비트 Windows의 커널은 원래 64비트 코드만 직접 실행할 수 있다. 하지만 수많은 기존 32비트(x86) 프로그램을 그대로 돌릴 수 있어야 하므로, Microsoft는 <strong>WOW64</strong>라는 호환 계층을 만들었다. WOW64는 32비트 프로세스를 위한 "가짜 32비트 환경"을 제공한다 — 32비트 프로세스는 자신이 32비트 Windows에서 실행되고 있다고 착각한 채로 동작하지만, 실제로는 그 아래에 64비트 커널이 깔려 있다.</p>
+<h3>32비트 프로세스가 로드되는 과정</h3>
+<p>64비트 Windows에서 32비트 EXE를 실행하면:</p>
+<ol><li>Windows 로더가 이 EXE가 PE32(32비트)임을 감지한다.</li><li>프로세스의 코드/데이터는 32비트 주소 공간(4GB 이하)에 매핑된다.</li><li>WOW64 계층(<code>wow64.dll</code>, <code>wow64cpu.dll</code>, <code>wow64win.dll</code> 등)이 이 프로세스에 함께 로드되어, 32비트 API 호출을 64비트 커널이 이해할 수 있는 형태로 변환(thunk)해주는 중개 역할을 한다.</li><li>32비트 프로세스가 사용하는 시스템 DLL(<code>kernel32.dll</code>, <code>user32.dll</code> 등)은 <code>C:\Windows\System32</code>가 아니라 <strong><code>C:\Windows\SysWOW64</code></strong>에서 로드된다.</li></ol>
+<h3>SysWOW64와 System32의 역설적인 이름</h3>
+<p>초보자가 가장 헷갈리는 부분이다 — 이름과 반대로 동작한다.</p>
+<ul><li><strong><code>C:\Windows\System32</code></strong>: 실제로는 <strong>64비트</strong> DLL이 들어있다(64비트 프로세스용).</li><li><strong><code>C:\Windows\SysWOW64</code></strong>: 실제로는 <strong>32비트</strong> DLL이 들어있다(WOW64 프로세스용).</li></ul>
+<p>이 이름은 역사적인 이유(과거 32비트 시스템에서 <code>System32</code>가 표준 시스템 폴더였던 관례를 유지하기 위함)로 남아있으며, 파일 시스템 리디렉터(File System Redirector)가 32비트 프로세스의 <code>System32</code> 경로 접근을 자동으로 <code>SysWOW64</code>로 바꿔치기해준다. 그래서 32비트 프로그램 코드 안에서는 <code>C:\Windows\System32\kernel32.dll</code>이라고 경로를 써도, 실제로는 <code>SysWOW64</code>의 DLL이 로드된다.</p>
+<h3>32비트 코드에서 시스템 콜로의 전환 (Wow64 Transition)</h3>
+<p>64비트 CPU는 32비트 모드(호환 모드, compatibility mode)와 64비트 모드(long mode)를 오갈 수 있다. 32비트 프로세스의 일반 계산 코드는 32비트 모드에서 그대로 실행되지만, 실제 커널 서비스(파일 읽기/쓰기, 메모리 할당 등)를 요청하는 시스템 콜 지점에서는 다음과 같은 전환이 일어난다.</p>
+<ol><li>32비트 API(예: <code>ReadFile</code>)가 <code>SysWOW64\kernel32.dll</code> 안에서 실행된다.</li><li>이 API는 결국 <code>wow64cpu.dll</code>의 전환 루틴(<code>Wow64Transition</code>, <code>Wow64SystemServiceCall</code> 등)을 거친다.</li><li>CPU가 32비트 호환 모드에서 64비트 모드로 전환되고, 64비트 커널의 실제 시스템 콜 핸들러가 요청을 처리한다.</li><li>처리가 끝나면 다시 32비트 모드로 복귀해 원래 프로세스 코드로 돌아온다.</li></ol>
+<p>이 전환 메커니즘 때문에 32비트 프로세스를 디버깅하다가 시스템 콜 경계 근처에서 디버거가 잠깐 64비트 문맥을 스치듯 보여주거나(대부분의 사용자 디버거는 이 부분을 자동으로 감춰서 사용자에게는 32비트로만 보이게 처리한다), 낮은 레벨 분석 도구가 혼동을 일으킬 수 있다.</p>
+<h3>Heaven's Gate — 32비트 코드가 직접 64비트 모드로 넘어가는 기법</h3>
+<p>악성코드나 일부 특수한 프로그램은 WOW64의 정상적인 전환 경로를 거치지 않고, <code>far jmp</code>/<code>far call</code> 명령어로 <strong>직접 64비트 코드 세그먼트(0x33)로 점프</strong>해서 임의의 64비트 코드를 실행하는 기법을 쓴다. 이를 "Heaven's Gate"라 부른다. 이 기법은 32비트 프로세스인 것처럼 보이지만 실제로는 일부 코드가 64비트로 실행되어, 32비트 전용 후킹/분석 도구를 우회하는 데 악용되기도 한다. 32비트 바이너리인데 <code>jmp far 0x33:target</code> 같은 코드나 <code>cs</code> 세그먼트 값이 이상하게 바뀌는 코드를 만나면 이 기법을 의심해야 한다.</p>
+<h3>레지스트리/파일 시스템 리디렉션</h3>
+<p>WOW64는 API 경로뿐 아니라 레지스트리도 리디렉션한다. 32비트 프로세스가 <code>HKEY_LOCAL_MACHINE\SOFTWARE</code>에 접근하면, 실제로는 <code>HKEY_LOCAL_MACHINE\SOFTWARE\WOW6432Node</code> 아래로 자동 리디렉션된다. 이는 32비트/64비트 버전이 같은 소프트웨어의 설정을 서로 침범하지 않게 하기 위한 격리 장치다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>32비트 EXE(PE32, <code>IMAGE_FILE_MACHINE_I386</code>)를 64비트 Windows에서 실행했는데 정상 동작</li><li>프로세스 모듈 목록(Process Explorer, <code>EnumProcessModules</code>)에 <code>wow64.dll</code>, <code>wow64cpu.dll</code>, <code>wow64win.dll</code>이 로드되어 있음(64비트 프로세스에는 이 DLL들이 없음)</li><li>파일 접근 시 <code>System32</code>가 아니라 <code>SysWOW64</code>에서 DLL이 로드됨</li><li>32비트 프로세스인데 코드 어딘가에 <code>jmp far</code> / 세그먼트 셀렉터 <code>0x33</code> 관련 코드(Heaven's Gate 의심)</li><li>x64dbg/WinDbg에서 32비트 프로세스 attach 시 자동으로 x32dbg(또는 32비트 모드)로 전환되거나, 그렇게 처리되지 않으면 레지스터/스택 해석이 어긋남</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>분석 대상 프로세스가 32비트인지 64비트인지부터 확인한다(Process Explorer의 "Image Type" 컬럼, 또는 <code>file</code>/PE 헤더의 Machine 필드). 32비트 프로세스를 64비트 Windows에서 분석 중이라면, 반드시 32비트 전용 디버거(x32dbg)나 디버거의 32비트 모드를 사용해야 레지스터/콜스택 해석이 어긋나지 않는다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 대상 프로세스의 비트수 확인</strong></p>
+<p>Process Explorer/작업 관리자의 "Platform" 또는 "Image Type" 컬럼(32-bit/64-bit)을 확인하거나, PE 헤더의 <code>Machine</code> 필드(<code>0x14c</code>=x86, <code>0x8664</code>=x64)를 확인한다.</p>
+<p><strong>2) 로드된 모듈 목록에서 WOW64 흔적 확인</strong></p>
+<p><code>wow64.dll</code>, <code>wow64cpu.dll</code>, <code>wow64win.dll</code>이 로드되어 있으면 이 프로세스는 32비트로 실행 중인 WOW64 프로세스임을 확실히 알 수 있다.</p>
+<p><strong>3) 알맞은 디버거/도구 선택</strong></p>
+<p>32비트 프로세스는 x32dbg, IDA의 32비트 디버거 모드 등 32비트 전용 도구로 분석해야 레지스터(<code>EAX</code> 등)와 콜스택이 올바르게 해석된다. 64비트 도구로 32비트 프로세스를 억지로 attach하면 스택/레지스터 해석이 어긋날 수 있다(REV-0596 참고).</p>
+<p><strong>4) 파일/레지스트리 경로 리디렉션 감안</strong></p>
+<p>프로세스 모니터링 도구(Process Monitor)로 관찰할 때, 32비트 프로세스가 요청한 <code>System32</code>/<code>HKLM\SOFTWARE</code> 경로가 실제로는 <code>SysWOW64</code>/<code>WOW6432Node</code>로 리디렉션되는 로그를 확인해서 실제 접근 대상을 정확히 파악한다.</p>
+<p><strong>5) Heaven's Gate 의심 시 세그먼트 전환 코드 확인</strong></p>
+<p>32비트 프로세스인데 API 후킹이 자꾸 우회되거나 코드 흐름이 끊기면, <code>jmp far</code>/세그먼트 셀렉터 변경 코드가 있는지 디스어셈블리에서 찾아본다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">; Process Explorer: Image Type 컬럼 확인(32-bit / 64-bit)
+; Process Monitor: 32비트 프로세스의 System32 -&gt; SysWOW64 리디렉션 로그 확인</code></pre>
+<pre><code class="language-powershell"># PowerShell로 프로세스 비트수 확인
+Get-Process -Id &lt;PID&gt; | Select-Object Id, ProcessName, @{n='Is32bit';e={$_.Modules[0].FileName -match 'SysWOW64'}}</code></pre>
+<p>x64dbg: 32비트 프로세스는 별도 실행 파일인 x32dbg로 열어야 한다(같은 창에서 통합 지원되지 않음). IDA: 디버거 선택 시 프로세스 비트수에 맞는 디버거 플러그인 선택.</p>
+<h2>출력 해석</h2>
+<ul><li>모듈 목록에 <code>wow64*.dll</code>이 있으면 이 프로세스는 확실히 32비트로 실행 중이며, 시스템 콜 시점마다 내부적으로 64비트 커널을 거친다는 뜻이지만 사용자 코드 레벨에서는 이 전환이 대부분 감춰진다.</li><li><code>SysWOW64</code>에서 DLL이 로드된 로그가 보이면 이는 정상적인 WOW64 리디렉션이지 오류가 아니다.</li><li><code>jmp far 0x33:addr</code> 같은 코드를 발견했다면, 그 대상 주소부터는 64비트 모드로 실행되는 코드일 가능성이 높으므로 그 지점부터 디스어셈블러의 아키텍처 모드를 64비트로 전환해서 다시 봐야 올바르게 해석된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>64비트 Windows에서 실행되는 모든 프로세스가 64비트 코드라고 가정하는 것 — 작업 관리자의 "32비트" 표시나 모듈 목록의 <code>wow64*.dll</code> 유무를 확인하지 않으면 잘못된 도구로 분석하게 된다.</li><li><code>System32</code>와 <code>SysWOW64</code>의 이름을 문자 그대로 믿고 "System32 = 32비트"라고 착각하는 것 — 정반대다.</li><li>32비트 프로세스에 64비트 전용 디버거/후킹 도구를 그대로 적용하려다가 알 수 없는 오류를 겪고 원인을 못 찾는 것(REV-0597에서 다루는 후킹 이슈의 흔한 원인).</li><li>Heaven's Gate 같은 예외적인 기법을 만나지 않았는데도 모든 32비트 코드에 64비트 전환이 코드 레벨로 노출되어 있을 거라 기대하는 것 — 정상적인 WOW64 전환은 사용자 코드에서 대부분 보이지 않게 처리된다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>32비트 바이너리를 64비트 도구로 열어서 실제로 이상 동작을 겪고 있다면 → REV-0596 32비트 바이너리를 64비트 도구로 열어서 이상해질 때</li><li>WOW64 환경에서 API 후킹/분석이 꼬이는 구체적인 사례가 궁금하면 → REV-0597 Wow64 환경에서 API 후킹/분석이 꼬일 때</li><li>x86과 x64를 애초에 어떻게 구분하는지 기초가 헷갈리면 → REV-0021 x86와 x64를 구분하는 법</li><li>32비트/64비트 각각의 호출 규약(레지스터 사용, 스택 정렬)이 헷갈리면 → REV-0123 Windows x86 stdcall cdecl fastcall thiscall / REV-0122 Microsoft x64 Calling Convention</li></ul>
+<h2>미니 예제</h2>
+<p>32비트 프로세스에서 <code>ReadFile</code> API를 호출하는 흐름을 개념적으로 보면 다음과 같다.</p>
+<pre><code class="language-c">// 32비트로 컴파일된 코드
+HANDLE h = CreateFileA("C:\\data.txt", GENERIC_READ, 0, NULL, OPEN_EXISTING, 0, NULL);
+char buf[256];
+DWORD read;
+ReadFile(h, buf, sizeof(buf), &amp;read, NULL);</code></pre>
+<p>이 코드가 32비트 프로세스 안에서 실행되면:</p>
+<ol><li><code>CreateFileA</code>/<code>ReadFile</code> 호출은 <code>SysWOW64\kernel32.dll</code>의 32비트 코드로 간다(경로에 <code>System32</code>라고 썼어도 파일 시스템 리디렉터가 <code>SysWOW64</code>로 바꿔준다).</li><li>실제 파일 I/O를 수행하려면 커널 서비스가 필요하므로, <code>kernel32.dll</code> 내부에서 <code>wow64cpu.dll</code>의 전환 루틴을 거쳐 32비트 모드에서 64비트 모드로 전환된다.</li><li>64비트 커널이 실제 파일 읽기 요청을 처리한다.</li><li>결과가 다시 32비트 모드로 복귀해 <code>buf</code>에 채워지고, 애플리케이션 코드는 자신이 줄곧 32비트 환경에서 실행된 것처럼 이어서 동작한다.</li></ol>
+<p>애플리케이션 개발자나 리버서가 이 전환을 직접 코드에서 마주치는 경우는 드물다 — 그러나 디버거가 시스템 콜 지점에서 이상하게 멈추거나, API 후킹이 예상과 다르게 동작한다면 바로 이 WOW64 전환 계층이 원인일 수 있다는 것을 기억해야 한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0596-32bit-binary-64bit-tool.html">REV-0596 — 32비트 바이너리를 64비트 도구로 열어서 이상해질 때</a></li><li><a href="rev-0597-wow64-api-hooking-issues.html">REV-0597 — Wow64 환경에서 API 후킹/분석이 꼬일 때</a></li><li><a href="rev-0021-x86-vs-x64.html">REV-0021 — x86와 x64를 구분하는 법</a></li><li><a href="rev-0122-ms-x64-calling-convention.html">REV-0122 — Microsoft x64 Calling Convention</a></li><li><a href="rev-0123-x86-calling-conventions.html">REV-0123 — Windows x86 stdcall cdecl fastcall thiscall</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>WOW64 아키텍처(<code>wow64.dll</code>, <code>wow64cpu.dll</code>, <code>wow64win.dll</code>, 파일/레지스트리 리디렉션): Microsoft Learn "WOW64 Implementation Details" 공식 문서 기준.</li><li>Heaven's Gate 기법(32비트 프로세스의 far jmp를 통한 64비트 모드 전환): 다수의 보안 연구자(Roy G. Biv, 2009년 최초 공개 자료 계열) 및 이후 백신/EDR 업계 분석 문서에서 반복 확인된 패턴 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

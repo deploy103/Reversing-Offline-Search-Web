@@ -1,0 +1,64 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>x64dbg 패치 후 저장했는데 실행하면 크래시 날 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>x64dbg 패치 후 저장했는데 실행하면 크래시 날 때</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>x64dbg에서 코드를 고친 뒤 File → "Patch File..."로 저장한 실행 파일이 바로 실행되면 크래시가 난다면, 대부분 원인은 패치로 인해 명령어 길이가 원본과 달라져 뒤따르는 바이트가 밀렸거나, 저장 전 Patches 목록을 확인하지 않고 의도치 않은 바이트까지 함께 저장했거나, 프로그램 자체의 무결성(체크섬) 검사가 변조를 감지해 의도적으로 죽인 경우이므로 저장 전 Patches 창에서 변경 목록을 반드시 검토해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>x64dbg에서 몇 바이트를 고치고 File → "Patch File..."로 새 실행 파일을 저장했는데, 그 파일을 실행하면 즉시 크래시하거나 오류 대화상자가 뜰 때</li><li>디버거 안에서 패치를 적용했을 때는 정상 동작했는데, 저장된 파일만 실행하면 다르게 동작할 때</li><li>명령어 하나를 NOP으로 바꿨을 뿐인데 그 근처의 다른 코드까지 이상하게 깨진 것처럼 보일 때</li><li>패치가 잘 됐는지 저장 전에 검증하는 방법이 필요할 때</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>저장하기 전에 View → Patches(또는 <code>Ctrl+P</code>)로 현재까지 적용된 모든 변경 목록을 연다. 여기에 의도한 주소와 바이트 변경만 있는지, 의도치 않은 항목이 섞여 있지 않은지부터 확인한다. 이미 저장해버렸다면 원본 파일 백업이 있는지부터 확인해 되돌릴 수 있게 한다(항상 패치 전에 원본을 복사해두는 것이 안전하다).</p>
+<h2>핵심 개념</h2>
+<p>x64dbg의 "패치"는 디버깅 중 메모리에 적용한 바이트 수정 내역을 추적해두었다가, File → "Patch File..."을 실행하면 그 변경 내역을 디스크의 실행 파일 사본에 그대로 반영해 새 파일을 만들어주는 기능이다. 크래시가 나는 원인은 크게 세 가지로 나뉜다.</p>
+<ol><li><strong>명령어 길이 불일치</strong>: 예를 들어 <code>jnz 0x401050</code>(2바이트 <code>74 XX</code>)을 <code>jmp 0x401050</code>(같은 2바이트 <code>EB XX</code>)으로 바꾸는 것은 안전하지만, 5바이트짜리 <code>cmp eax, 0</code>(<code>83 F8 00</code>, 3바이트)를 더 긴 명령어로 바꾸면서 뒤쪽 바이트를 실수로 덮어쓰면, 그 뒤에 있던 원래 명령어의 앞부분이 잘려나가 디스어셈블리 전체가 깨진다. x64dbg의 Assemble 기능(<code>스페이스바</code>)은 원본보다 짧은 명령어로 바꾸면 남는 공간을 자동으로 <code>NOP</code>(<code>90</code>)으로 채워주지만, 원본보다 긴 명령어로 바꾸려 하면 경고 없이 뒤 바이트를 덮어쓸 수 있으므로 항상 바이트 수를 직접 확인해야 한다.</li><li><strong>의도치 않은 패치가 섞임</strong>: 디버깅하며 여러 번 값을 바꿔보고 되돌리는 과정에서, "되돌렸다"고 생각했지만 실제로는 되돌리기 전의 값이 Patches 목록에 남아 있는 경우가 있다. 저장 시점에 이 목록 전체가 그대로 파일에 반영되므로, 확인 없이 저장하면 예상치 못한 조합이 만들어진다.</li><li><strong>프로그램 자체의 무결성 검사</strong>: 패치와 무관하게, 대상 프로그램이 자기 코드 섹션의 체크섬(CRC32 등)을 계산해 원본과 비교하는 자체 보호 로직을 갖고 있을 수 있다. 이 경우 패치 자체는 바이트 수준에서 완벽하게 올바르더라도, 프로그램이 "누군가 나를 고쳤다"는 것을 감지해 의도적으로 비정상 종료하거나 다른 분기로 빠진다. 이는 파일 손상이 아니라 안티 변조 로직이 정상적으로 작동한 것이다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>패치된 파일을 실행하면 즉시 "이 프로그램이 작동을 멈췄습니다" 대화상자가 뜨거나 콘솔이 순간적으로 열렸다 닫힌다.</li><li>x64dbg로 원본 대신 패치된 파일을 다시 열어 디스어셈블리를 보면, 패치한 지점 근처의 명령어들이 원래와 다른 엉뚱한 니모닉으로 깨져 보인다.</li><li>Patches 창(<code>Ctrl+P</code>)을 열어보면 기억나지 않는 주소의 변경 항목이 함께 들어 있다.</li><li>디버거 안에서 F9로 실행할 때는 멀쩡한데, 저장된 파일을 디버거 없이 더블클릭하면 죽는다(무결성 체크가 디버거 유무와 무관하게 코드 자체를 검사하는 경우).</li></ul>
+<h2>단계별 절차</h2>
+<ol><li><code>Ctrl+P</code>(또는 View → Patches)로 현재 패치 목록을 연다. 각 항목의 주소, 원본 바이트, 변경된 바이트를 하나씩 검토한다.</li><li>의도치 않은 항목이 있으면 그 항목을 선택해 "Restore selection"(원본으로 되돌리기)으로 제거한다.</li><li>명령어를 직접 어셈블한 패치라면, 변경 전후의 바이트 길이가 같은지 CPU 창에서 직접 눈으로 대조한다. 스페이스바로 어셈블할 때 x64dbg가 "여러 개의 NOP으로 채워집니다" 같은 안내를 하면 이는 정상 동작이다.</li><li>확인이 끝나면 File → "Patch File..."로 새 사본을 저장한다(원본 파일을 직접 덮어쓰지 않는 것이 안전하다).</li><li>저장된 사본을 DIE나 PE-bear로 열어 섹션 크기, 엔트로피, 헤더가 원본과 크게 달라지지 않았는지 확인한다.</li><li>그래도 크래시가 난다면, 원본에서 패치 지점과 관계없는 곳에 코드 무결성 검사 함수(반복문으로 바이트를 합산/XOR하는 패턴)가 있는지 정적으로 검색한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li><code>Ctrl+P</code>: Patches 창 열기(적용된 모든 바이트 변경 목록)</li><li><code>스페이스바</code>: 현재 라인 어셈블(Assemble) — 짧아지면 자동 NOP 패딩</li><li>File → "Patch File...": 현재까지의 패치를 반영한 새 실행 파일 저장</li><li>Patches 창에서 항목 우클릭 → "Restore selection": 선택한 패치를 원본 바이트로 되돌리기</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Patches 목록의 항목 수가 예상보다 많다면 의도치 않은 패치가 섞여 있다는 신호다.</li><li>저장된 파일의 섹션별 크기가 원본과 다르다면(x64dbg의 인라인 패치는 보통 크기를 바꾸지 않으므로) 저장 과정에 문제가 있었거나 다른 방식으로 파일을 건드렸다는 뜻이다.</li><li>크래시 위치가 패치한 주소와 무관한 곳(전혀 다른 함수)이라면 무결성 체크 로직이 별도로 존재할 가능성이 높다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>원본보다 긴 명령어로 바꾸면서 뒤에 있는 다음 명령어의 바이트까지 덮어쓰는 것을 인지하지 못하는 것 — 항상 원본과 새 명령어의 바이트 길이를 비교한다.</li><li>저장 전에 Patches 목록을 한 번도 열어보지 않고 바로 "Patch File..."을 누르는 것.</li><li>원본 파일을 백업해두지 않고 바로 덮어써서, 문제가 생겼을 때 되돌릴 방법이 없어지는 것.</li><li>크래시의 원인을 항상 "내 패치가 잘못됐다"고만 생각하고, 프로그램 자체의 무결성 검사 가능성을 고려하지 않는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>패치 자체는 맞는데 조건부 브레이크포인트와 함께 쓰다가 꼬였다면 → REV-0600(x64dbg 조건부 브레이크포인트 표현식 오류)을 확인한다.</li><li>패치 대상 주소가 실행마다 달라진다면 → REV-0589(ASLR 때문에 브레이크포인트 주소가 안 맞을 때)를 확인한다.</li><li>패치와 무관하게 원본 파일 헤더/섹션 구조 자체가 의심스럽다면 → REV-0592, REV-0593을 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p><code>cmp eax, 1</code> 뒤에 있던 <code>jnz 0x401080</code>(2바이트, <code>75 XX</code>)을 항상 통과하도록 <code>jmp 0x401080</code>(마찬가지로 2바이트, <code>EB XX</code>)으로 바꾸고 저장했다. 두 명령어 모두 2바이트로 길이가 같았기 때문에 뒤따르는 코드가 밀리지 않았고, 저장된 파일을 실행하자 의도한 대로 조건 검사를 항상 통과했다. 반대로 같은 자리에 5바이트짜리 <code>mov eax, 1</code>을 억지로 욱여넣었다면, 원래 2바이트였던 자리에서 3바이트가 다음 명령어를 침범해 그 이후 코드가 완전히 다른 니모닉으로 깨졌을 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0600-x64dbg-conditional-breakpoint-expression-error.html">REV-0600 — x64dbg에서 조건부 브레이크포인트 표현식 오류가 날 때</a></li><li><a href="rev-0589-aslr-breakpoint-mismatch.html">REV-0589 — ASLR 때문에 x64dbg 브레이크포인트 주소가 안 맞을 때</a></li><li><a href="rev-0592-pe-header-corruption-parsing.html">REV-0592 — PE 헤더가 조작되어 도구가 잘못 파싱할 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>x64dbg의 Patches 기능(<code>Ctrl+P</code>), Assemble 시 짧은 명령어로 대체될 때 자동 NOP 패딩, File → "Patch File..." 저장 흐름은 x64dbg 공식 문서 및 UI 동작 기준이다.</li><li>x86/x64 명령어가 가변 길이이며 길이 변경이 이후 바이트 스트림 전체의 디스어셈블리를 어긋나게 만들 수 있다는 원리는 Intel 64 and IA-32 Architectures Software Developer's Manual 기준의 일반적인 명령어 인코딩 원리다.</li><li>자체 코드 무결성(체크섬) 검사가 패치 감지에 쓰일 수 있다는 설명은 일반적인 안티 변조 기법 레퍼런스 기준이다.</li><li>2026-09-08 기준 서술.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

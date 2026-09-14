@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ELF에서 디버그 심볼(.debug_info)이 남아있는 경우 활용하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>ELF에서 디버그 심볼(.debug_info)이 남아있는 경우 활용하기</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">readelf</span><span class="tag">objdump</span></div>
+<h2>한 줄 요약</h2>
+<p><code>-g</code> 옵션으로 컴파일되고 <code>strip</code>되지 않은 ELF는 <code>.debug_info</code>, <code>.debug_line</code> 등 DWARF 디버그 섹션에 원본 소스 파일 이름, 변수 이름, 함수 이름과 정확한 줄 번호까지 남아있어서, 이런 바이너리를 만나면 GDB에서 소스 라인 단위로 바로 디버깅할 수 있는 사실상 "치트키" 상황이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>file ./chall</code> 결과에 <code>with debug_info, not stripped</code>라는 문구가 보일 때</li><li>GDB로 <code>run</code>을 했더니 갑자기 어셈블리가 아니라 C 소스 코드 줄이 화면에 나와서 당황스러울 때</li><li><code>readelf -S ./chall</code> 결과에 <code>.debug_info</code>, <code>.debug_line</code>, <code>.debug_str</code> 같은 섹션이 여러 개 보일 때, 이걸 어떻게 활용해야 할지 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>DWARF란 무엇인가</h3>
+<p>DWARF는 컴파일러(GCC/Clang)가 디버거를 위해 만들어 넣는 디버그 정보 포맷으로, ELF 안에 다음과 같은 섹션들로 저장된다.</p>
+<ul><li><code>.debug_info</code>: 타입, 변수, 함수에 대한 핵심 디버그 정보(DIE, Debugging Information Entry 트리)</li><li><code>.debug_abbrev</code>: <code>.debug_info</code>를 압축해서 표현하기 위한 약어 테이블</li><li><code>.debug_line</code>: 기계어 주소 ↔ 소스 파일명:줄번호 매핑 테이블(라인 넘버 프로그램)</li><li><code>.debug_str</code>: <code>.debug_info</code>에서 참조하는 문자열들(함수 이름, 변수 이름, 파일 경로 등)</li><li><code>.debug_ranges</code> / <code>.debug_rnglists</code>, <code>.debug_loc</code> / <code>.debug_loclists</code>: 코드 범위, 변수가 어느 레지스터/스택 위치에 있는지에 대한 정보</li></ul>
+<p>이 정보는 <code>.symtab</code>(REV-0666)보다 훨씬 풍부해서, 단순히 "이 주소가 <code>main</code>이다" 수준이 아니라 "이 주소는 <code>chall.c</code>의 42번째 줄에 해당하고, 이 시점에 지역 변수 <code>buf</code>는 <code>rbp-0x40</code>에 있다"까지 알려준다.</p>
+<h3>왜 CTF 문제에 디버그 정보가 남아있나</h3>
+<p>문제 출제자가 GCC로 컴파일할 때 실수로 <code>-g</code>를 빼먹지 않았거나, 디버깅 편의를 위해 일부러 남겨두는 경우, 또는 <code>strip</code> 단계를 생략한 경우다. 상용 소프트웨어와 달리 CTF 바이너리는 이런 실수가 종종 있으며, 있으면 반드시 활용해야 하는 큰 이점이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code>$ file ./chall
+./chall: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), dynamically linked,
+interpreter /lib64/ld-linux-x86-64.so.2, ... with debug_info, not stripped</code></pre>
+<p><code>with debug_info</code>라는 문구가 결정적인 신호다. <code>readelf -S ./chall | grep debug</code>로도 확인 가능하며, <code>.debug_info</code>, <code>.debug_line</code> 등이 나오면 확실하다.</p>
+<h2>가장 먼저 할 것</h2>
+<pre><code class="language-bash">file ./chall</code></pre>
+<p><code>with debug_info</code>가 보이면, 바로 GDB로 실행해서 소스 레벨 디버깅이 되는지 확인한다.</p>
+<pre><code class="language-bash">gdb ./chall
+(gdb) list main</code></pre>
+<p>소스 코드가 그대로 출력되면(원본 <code>.c</code> 파일이 배포에 포함되어 있거나 GDB가 경로를 찾을 수 있는 경우) 소스와 함께 분석할 수 있고, 소스 파일 자체는 없어도 DWARF 정보만으로 <code>break</code>, <code>next</code>, <code>step</code>, 변수 이름 조회는 가능하다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 디버그 섹션 존재 확인</strong></p>
+<pre><code class="language-bash">readelf -S ./chall | grep debug</code></pre>
+<p><strong>2) 컴파일에 쓰인 소스 파일 이름과 컴파일러 정보 확인</strong></p>
+<pre><code class="language-bash">readelf --debug-dump=info ./chall | head -40</code></pre>
+<p>출력 초반에 <code>DW_AT_producer</code> (예: <code>GNU C17 11.4.0 -g</code>), <code>DW_AT_name</code> (원본 <code>.c</code> 파일 이름), <code>DW_AT_comp_dir</code> (컴파일 당시 디렉터리 경로)가 나온다. 이것만으로도 출제자의 빌드 환경을 유추할 수 있다.</p>
+<p><strong>3) 주소 ↔ 소스 줄 매핑 확인</strong></p>
+<pre><code class="language-bash">objdump --dwarf=decodedline ./chall | less</code></pre>
+<p>또는</p>
+<pre><code class="language-bash">readelf --debug-dump=decodedline ./chall | less</code></pre>
+<p>어떤 기계어 주소가 소스 코드 몇 번째 줄에 해당하는지 표를 볼 수 있다. <code>addr2line</code>도 같은 정보를 뽑는 전용 도구다.</p>
+<pre><code class="language-bash">addr2line -e ./chall -f -C 0x401256</code></pre>
+<p><strong>4) GDB에서 함수/변수 목록 확인</strong></p>
+<pre><code class="language-bash">gdb ./chall
+(gdb) info functions
+(gdb) info variables
+(gdb) info line main
+(gdb) break main
+(gdb) run
+(gdb) next
+(gdb) print buf
+(gdb) print password</code></pre>
+<p>디버그 정보가 있으면 <code>print 변수이름</code>으로 지역 변수 값을 이름 그대로 조회할 수 있다 — <code>x/s $rbp-0x40</code> 같은 오프셋 계산 없이 바로 값이 보인다.</p>
+<p><strong>5) GDB TUI로 소스와 어셈블리 동시에 보기</strong></p>
+<pre><code class="language-bash">(gdb) layout src
+(gdb) layout split</code></pre>
+<p>원본 소스 파일이 실제로 존재하면 <code>layout src</code>로 소스 코드 창을 띄운 채 <code>next</code>/<code>step</code>으로 따라갈 수 있다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">readelf -S ./chall | grep debug
+readelf --debug-dump=info ./chall
+readelf --debug-dump=decodedline ./chall
+objdump --dwarf=decodedline ./chall
+addr2line -e ./chall -f -C 0x401256
+gdb ./chall
+  (gdb) list main
+  (gdb) info functions
+  (gdb) break main
+  (gdb) next / step
+  (gdb) print &lt;변수명&gt;
+  (gdb) layout src</code></pre>
+<h2>출력 해석</h2>
+<pre><code>$ addr2line -e ./chall -f -C 0x401256
+check_password
+/home/build/chall/chall.c:27</code></pre>
+<p>첫 줄은 그 주소가 속한 함수 이름(<code>-f</code>), 둘째 줄은 원본 소스 파일 경로와 줄 번호다. 이 한 줄만으로 IDA/Ghidra의 무명 <code>sub_401256</code> 대신 정확한 함수 이름과 소스 위치를 바로 얻을 수 있다.</p>
+<pre><code>(gdb) info line check_password
+Line 27 of "chall.c" starts at address 0x401256 &lt;check_password&gt; and ends at 0x40125d &lt;check_password+7&gt;.</code></pre>
+<p>GDB가 특정 소스 줄과 어셈블리 주소 구간을 직접 매핑해서 보여준다.</p>
+<h2>흔한 실수</h2>
+<ul><li>디버그 정보가 있다는 걸 확인하고도 여전히 IDA/Ghidra에서 <code>sub_</code> 이름만 보고 분석하는 것 — Ghidra는 DWARF를 상당 부분 자동으로 임포트해 함수/변수 이름을 채워주고, IDA도 ELF 로더가 DWARF를 읽어 이름을 붙여준다. 디버그 정보가 있는데 이름이 안 보인다면 로더 설정이나 임포트 옵션을 다시 확인해야 한다.</li><li><code>.debug_info</code>가 있다고 소스 코드 원본 파일까지 같이 배포된 것으로 착각하는 것 — DWARF는 파일 이름과 줄 번호를 알려줄 뿐, 실제 <code>.c</code> 파일 내용은 원본 파일이 로컬에 있어야 GDB <code>list</code>로 볼 수 있다. 파일이 없으면 GDB는 <code>27	in chall.c</code> 처럼 줄 번호만 보여주고 실제 코드 내용은 못 보여준다.</li><li>디버그 정보만 믿고 <code>.debug_info</code>가 없는(strip된) 라이브러리 부분까지 소스 레벨로 보일 거라 기대하는 것 — 정적 링킹된 glibc 부분은 별도로 디버그 정보가 없는 경우가 대부분이라 여전히 어셈블리로 봐야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>.debug_info</code>가 아예 없다면 → REV-0666 nm으로 정적 바이너리에서 원하는 심볼 찾기, REV-0668 strip된 정적 바이너리에서 libc 함수 식별 개념</li><li>디버그 정보로 얻은 함수 이름을 GDB 브레이크포인트에 바로 쓰고 싶다면 → REV-0186 GDB break와 address breakpoint</li><li>전체 심볼 구조를 다시 짚고 싶다면 → REV-0038 심볼이 있는 바이너리와 Stripped 바이너리 차이</li><li>GDB 기본 명령이 헷갈린다면 → REV-0284 GDB 명령어 치트시트</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ file ./chall
+./chall: ELF 64-bit LSB executable, x86-64, ... with debug_info, not stripped
+
+$ gdb -q ./chall
+Reading symbols from ./chall...
+(gdb) break check_password
+Breakpoint 1 at 0x401260: file chall.c, line 29.
+(gdb) run
+Starting program: /home/user/chall
+Enter password: test
+
+Breakpoint 1, check_password (input=0x7ffd1234 "test") at chall.c:29
+29          if (strcmp(input, secret) == 0) {
+(gdb) print secret
+$1 = 0x402008 "s3cr3t_flag_value"</code></pre>
+<p>브레이크포인트가 함수 이름과 파일:줄 번호로 바로 걸리고, <code>print secret</code>으로 지역 변수 값이 이름 그대로 즉시 노출된다 — 디버그 정보가 남아있을 때 리버싱이 얼마나 빨라지는지 보여주는 전형적인 예다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0666-nm-static-binary-symbol-search.html">REV-0666 — nm으로 정적 바이너리에서 원하는 심볼 찾기</a></li><li><a href="rev-0668-stripped-static-libc-signature-matching.html">REV-0668 — strip된 정적 바이너리에서 libc 함수 식별 개념(시그니처 매칭)</a></li><li><a href="rev-0038-symbols-vs-stripped.html">REV-0038 — 심볼이 있는 바이너리와 Stripped 바이너리 차이</a></li><li><a href="rev-0186-gdb-break.html">REV-0186 — GDB break와 address breakpoint</a></li><li><a href="rev-0284-gdb-commands-cheatsheet.html">REV-0284 — GDB 명령어 치트시트</a></li><li><a href="rev-0091-readelf-basics.html">REV-0091 — readelf 기본 사용법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>DWARF 섹션 구조(<code>.debug_info</code>, <code>.debug_line</code>, <code>.debug_str</code> 등) 및 <code>DW_AT_*</code> 속성: DWARF Debugging Information Format 공식 스펙(DWARF Standards Committee) 기준.</li><li><code>readelf --debug-dump</code>, <code>objdump --dwarf</code>, <code>addr2line</code> 옵션: GNU Binutils 공식 man page 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,130 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>스택 vs 힙: 리버싱에서 구분하는 실전 기준 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>스택 vs 힙: 리버싱에서 구분하는 실전 기준</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>스택과 힙은 둘 다 "런타임에 값을 저장하는 메모리 영역"이라는 점은 같지만, 스택은 <strong>함수 호출과 함께 자동으로 생기고 사라지는 고정 크기의 지역 변수 공간</strong>(REV-0031)이고 힙은 <strong><code>malloc</code>/<code>new</code> 등으로 프로그래머가 명시적으로 요청해서 얻고 <code>free</code>/<code>delete</code>로 직접 반납해야 하는 임의 크기의 공간</strong>이므로, 리버싱에서는 "이 값을 누가 요청해서 얻었는가"와 "주소가 어느 범위에 속하는가" 두 가지 기준으로 실전에서 빠르게 구분한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디버거로 크래시가 난 주소나 의심스러운 포인터 값을 봤는데, 이게 스택 위 지역 변수를 가리키는지 힙에 할당된 메모리를 가리키는지 판단해야 할 때</li><li><code>gdb</code>/<code>pwndbg</code>의 <code>vmmap</code> 출력에서 여러 개의 메모리 영역이 나열되는데 어느 게 스택이고 어느 게 힙인지 헷갈릴 때</li><li>스택 오버플로우(REV-0031 계열)와 힙 오버플로우/UAF(Use-After-Free) 같은 힙 취약점을 구분해서 접근해야 하는 CTF pwn 문제를 풀 때</li><li>IDA/Ghidra 디컴파일 결과에서 어떤 포인터가 <code>malloc()</code>의 반환값인지, 아니면 그냥 지역 배열의 주소(<code>&amp;buf</code>)인지 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>스택 — "함수가 알아서 관리하는" 임시 공간</h3>
+<p>스택은 함수가 호출될 때 <code>rsp</code>(스택 포인터)를 감소시켜 확보하고, 함수가 리턴하면 <code>rsp</code>를 원래대로 되돌려 자동으로 반납되는 영역이다(REV-0031). 프로그래머가 별도로 "몇 바이트를 달라"고 요청하는 함수 호출이 없다 — 컴파일러가 함수 진입부(<code>sub rsp, N</code>)에서 필요한 만큼 미리 계산해 확보해준다. 스택에 저장된 값은 그 함수가 리턴하는 순간 더 이상 유효하지 않다(값 자체는 메모리에 잠깐 남아있을 수 있지만, "그 함수의 지역 변수"로서의 의미는 사라진다).</p>
+<h3>힙 — "프로그래머가 직접 요청하고 반납하는" 공간</h3>
+<p>힙은 <code>malloc</code>, <code>calloc</code>, <code>realloc</code>(C) 또는 <code>new</code>(C++), <code>HeapAlloc</code>(Windows API) 같은 <strong>명시적인 함수 호출</strong>을 통해서만 얻을 수 있다. 이 함수들은 힙 관리자(glibc의 ptmalloc, Windows의 힙 매니저 등)가 내부적으로 관리하는 큰 메모리 영역에서 요청한 크기만큼을 잘라 그 시작 주소를 반환한다. 이 주소를 담은 포인터는 함수가 리턴해도 계속 유효하며, 프로그래머가 <code>free</code>/<code>delete</code>를 직접 호출하기 전까지는 그 메모리가 살아있다(REV-0030 참고). 함수 호출로 얻은 값이라는 점이 스택 변수와의 결정적 차이다.</p>
+<h3>실전 구분 기준 1 — "이 값이 어디서 왔는가"</h3>
+<p>어셈블리/디컴파일 코드를 볼 때 가장 확실한 기준은 그 포인터가 어떻게 만들어졌는지 추적하는 것이다.</p>
+<pre><code class="language-c">void example(void) {
+    char stack_buf[16];              // 스택: 그냥 선언, 함수 호출 없음
+    char *heap_buf = malloc(16);     // 힙: malloc() 호출의 반환값
+
+    use(stack_buf);
+    use(heap_buf);
+    free(heap_buf);
+}</code></pre>
+<pre><code class="language-asm">example:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 0x20              ; stack_buf를 위한 스택 공간 확보 (호출 없이 그냥 산술)
+    lea     rax, [rbp-0x10]        ; &amp;stack_buf  (lea만으로 주소 획득, 함수 호출 없음)
+    mov     rdi, rax
+    call    use
+
+    mov     edi, 16
+    call    malloc                  ; call malloc!  반환값(rax)이 heap_buf
+    mov     [rbp-0x18], rax
+    mov     rdi, [rbp-0x18]
+    call    use
+
+    mov     rdi, [rbp-0x18]
+    call    free                     ; 힙은 반드시 명시적으로 반납하는 호출이 있음
+    leave
+    ret</code></pre>
+<p><code>lea reg, [rbp-N]</code>처럼 <strong>함수 호출 없이 <code>lea</code>만으로 주소를 얻으면 스택</strong>, <code>call malloc</code>(또는 <code>calloc</code>, <code>operator new</code>, <code>HeapAlloc</code> 등)의 <strong>반환값(<code>rax</code>)을 그대로 쓰면 힙</strong>이라는 것이 코드만 보고 판단하는 가장 확실한 방법이다. 마찬가지로 <code>call free</code>(또는 <code>operator delete</code>, <code>HeapFree</code>)가 그 포인터에 대해 호출된다면 그 포인터는 힙 메모리라는 강력한 증거다.</p>
+<h3>실전 구분 기준 2 — "주소값이 어느 범위에 있는가"</h3>
+<p>실행 중인 프로세스의 메모리 주소는 영역별로 대략적인 범위가 나뉘어 있다(정확한 값은 ASLR과 플랫폼에 따라 다르지만, 상대적인 위치 관계는 대체로 일정하다).</p>
+<ul><li><strong>스택</strong>: 보통 가상 메모리 주소 공간의 <strong>높은 주소</strong> 쪽에 위치하고(x64 Linux 기준 <code>0x7ffxxxxxxxxx</code> 대) 프로그램 실행 중 <strong>아래 방향(주소가 감소하는 방향)</strong>으로 자란다.</li><li><strong>힙</strong>: 보통 프로그램 코드/데이터 영역 바로 위쪽, 스택보다는 훨씬 낮은 주소 대(전통적 브레이크 힙 기준)에서 시작해 <strong>위 방향(주소가 증가하는 방향)</strong>으로 자란다. glibc의 <code>mmap</code>으로 확보되는 큰 힙 청크는 별도의 임의 위치(라이브러리 매핑 근처)에 있을 수도 있다.</li><li><strong>코드(<code>.text</code>)/전역 데이터(<code>.data</code>/<code>.bss</code>)</strong>: 실행 파일 자체가 로드된 영역으로, PIE 여부에 따라 낮은 고정 주소이거나 무작위화된 베이스 + 고정 오프셋이다.</li></ul>
+<p>디버거의 메모리 맵 명령(<code>vmmap</code>)을 쓰면 이 영역들을 이름과 함께 바로 확인할 수 있으므로, 정적 추적이 어려운 상황에서는 이 방법이 가장 빠르다.</p>
+<h3>실전 구분 기준 3 — 크기 유연성과 해제 시점</h3>
+<p>스택 변수는 크기가 컴파일 시점에 대부분 고정된다(가변 길이 배열(VLA)이나 <code>alloca()</code> 같은 예외는 있지만 흔치 않다). 힙은 <code>malloc(n)</code>의 <code>n</code>이 런타임에 계산된 임의의 값일 수 있다. 또한 스택은 함수 리턴 시 "자동"으로 사라지지만, 힙은 <code>free()</code>를 호출하지 않으면 프로그램이 끝날 때까지(또는 메모리가 부족해질 때까지) 계속 남아있는다 — 이것이 메모리 누수(memory leak)의 원인이다. 반대로 <code>free()</code>한 힙 메모리를 또 쓰면 Use-After-Free 취약점이 된다. 스택에는 이런 "이미 반납된 공간을 또 쓴다"는 개념 자체가 코드 레벨에서 명시적으로 드러나지 않는다(함수가 리턴한 뒤에도 그 스택 프레임 자리를 다른 호출이 재사용할 뿐이다).</p>
+<h3>왜 이 구분이 리버싱/CTF에서 중요한가</h3>
+<p>스택 취약점(스택 버퍼 오버플로우, 리턴 주소 변조)과 힙 취약점(힙 오버플로우, UAF, Double Free)은 분석 방법과 익스플로잇 기법이 완전히 다르다. 스택은 인접한 지역 변수/저장된 레지스터/리턴 주소의 배치(REV-0031)를 알아야 하고, 힙은 힙 청크(chunk) 구조와 힙 관리자의 내부 동작(glibc라면 tcache/fastbin 등)을 알아야 한다. 크래시가 난 주소나 깨진 포인터를 보고 "이게 스택 문제인지 힙 문제인지"를 가장 먼저 구분하는 것이 이후 분석 방향을 완전히 갈라놓는다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>주소를 얻는 코드가 <code>lea reg, [rbp/rsp ± N]</code>이면 스택, <code>call malloc</code>/<code>call operator new</code>/<code>call HeapAlloc</code> 뒤 <code>rax</code>(또는 <code>eax</code>)를 그대로 쓰면 힙이다.</li><li>디버거의 <code>vmmap</code>(pwndbg) 또는 <code>info proc mappings</code>(gdb) 결과에 <code>[stack]</code>, <code>[heap]</code> 같은 이름표가 붙은 영역이 명시적으로 표시된다.</li><li>크래시 주소가 스택 영역 범위(높은 주소, <code>[stack]</code> 근처)에 있으면 스택 관련 문제, 힙 영역 범위(<code>[heap]</code> 근처 또는 <code>malloc</code> 관련 매핑)에 있으면 힙 관련 문제로 우선 의심한다.</li><li><code>free()</code>가 호출된 뒤에도 같은 포인터가 다시 참조되는 코드가 있으면 Use-After-Free 패턴을 의심한다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>의심스러운 포인터/주소를 만나면 먼저 그 값이 어떻게 만들어졌는지(<code>lea</code> vs <code>call malloc</code> 계열) 코드를 거슬러 확인하고, 그래도 애매하면 디버거의 <code>vmmap</code>으로 그 주소가 어느 메모리 영역에 속하는지 바로 조회한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>문제의 포인터 값을 확인한다(레지스터 또는 메모리에서).</li><li>그 값이 만들어진 코드를 역추적해 <code>lea</code>(스택/전역) 계열인지 <code>call malloc</code>(힙) 계열인지 확인한다.</li><li>확실치 않으면 디버거를 <code>vmmap</code>/<code>info proc mappings</code>로 실제 주소 범위를 조회해 스택/힙/전역 영역 중 어디에 속하는지 확인한다.</li><li>힙이라면 <code>free()</code>가 이미 호출된 적이 있는지 확인해 UAF 가능성을 점검한다.</li><li>스택이라면 그 변수가 속한 함수의 스택 프레임 레이아웃(REV-0031)을 그려 인접한 리턴 주소/저장된 레지스터와의 거리를 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code>(pwndbg) vmmap                 # 전체 메모리 맵을 이름표(stack, heap, 라이브러리 등)와 함께 출력
+(gdb) info proc mappings        # gdb 기본 명령으로도 비슷한 정보 확인 가능
+(pwndbg) vmmap $rax              # 특정 주소가 어느 영역에 속하는지 바로 확인
+(gdb) print $rsp                 # 현재 스택 포인터 값 확인 (스택 영역 범위 판단 기준점)
+(pwndbg) heap                     # 힙 청크 구조를 정리해서 보여줌 (glibc 힙 전용)</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>vmmap</code> 결과에서 해당 주소가 포함된 줄의 경로/이름이 <code>[stack]</code>이면 스택, <code>[heap]</code>이나 별도 이름 없이 <code>malloc</code>이 사용하는 익명 매핑(주로 <code>.bss</code> 바로 위 또는 별도 mmap 영역)이면 힙이다.</li><li>주소가 실행 파일 자체의 경로(예: <code>/path/to/binary</code>)와 매칭되는 매핑에 속하면 전역 변수/코드 영역(REV-0353)이지 스택도 힙도 아니다.</li><li><code>heap</code> 명령으로 청크 목록을 봤을 때 크래시 주소가 어느 청크의 헤더/데이터 영역에 걸치는지 확인하면 힙 오버플로우 여부를 판단할 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>주소 값의 "크기"만 보고(예: 무조건 큰 주소는 스택이라고) 판단하는 것 — ASLR과 매핑 순서에 따라 예외가 있을 수 있으므로 <code>vmmap</code>으로 실제 확인하는 습관이 안전하다.</li><li><code>malloc</code>이 반환한 포인터를 지역 변수에 저장했다는 이유로(예: <code>char *p = malloc(16);</code>에서 <code>p</code> 자체가 <code>rbp-8</code>에 저장됨) "이 데이터는 스택에 있다"고 착각하는 것 — <code>p</code>라는 <strong>포인터 변수</strong>의 저장 위치와 <code>p</code>가 <strong>가리키는 데이터</strong>의 위치는 완전히 다른 이야기다. 포인터 변수 자체는 스택에 있어도, 그 포인터가 가리키는 실제 버퍼는 힙에 있을 수 있다.</li><li><code>free()</code> 이후에도 포인터 변수의 "값"이 메모리에 남아있는 것을 보고 "아직 유효한 데이터"라고 착각하는 것 — <code>free()</code>는 그 메모리를 힙 관리자에게 반납할 뿐, 포인터 변수 자체를 자동으로 <code>NULL</code>로 만들어주지 않는다(댕글링 포인터, dangling pointer).</li><li>스택 오버플로우 취약점 분석 기법을 그대로 힙 오버플로우에 적용하려는 것 — 힙은 청크 헤더, 메타데이터, 프리리스트 구조 등 완전히 다른 내부 구조를 갖고 있어 별도의 분석이 필요하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>스택 프레임의 정확한 구조(리턴 주소, 저장된 레지스터, 지역 변수의 상대 위치)가 헷갈리면 → REV-0031 스택 프레임이 무엇인지</li><li>전역/static 변수와 스택 변수를 어셈블리 레벨에서 구분하는 기준이 헷갈리면 → REV-0353 전역 변수와 지역 변수를 메모리 위치로 구분하는 법</li><li>Code/Data/BSS/Stack/Heap 전체 메모리 레이아웃의 기본 개념이 헷갈리면 → REV-0030 Code Data BSS Stack Heap 기초</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">#include &lt;stdlib.h&gt;
+
+void example(void) {
+    char stack_buf[16];
+    char *heap_buf = malloc(16);
+
+    stack_buf[0] = 'A';
+    heap_buf[0]  = 'B';
+
+    free(heap_buf);
+}</code></pre>
+<p>디버거로 이 함수를 실행하며 두 주소를 <code>vmmap</code>으로 조회하면 다음과 같은 대조가 나타난다.</p>
+<pre><code>(pwndbg) print $rsp
+$1 = (void *) 0x7ffd12345670          # 스택 포인터 근처, 높은 주소 대
+
+(pwndbg) print heap_buf
+$2 = 0x55a1234a52a0 "B"                 # malloc이 반환한 힙 주소, 스택과는 전혀 다른 영역
+
+(pwndbg) vmmap 0x7ffd12345670
+...   0x7ffd12326000  0x7ffd12347000  rw-p  [stack]
+
+(pwndbg) vmmap 0x55a1234a52a0
+...   0x55a1234a5000  0x55a1234c6000  rw-p  [heap]</code></pre>
+<p><code>stack_buf</code>의 주소는 <code>[stack]</code> 영역에, <code>heap_buf</code>(malloc 반환값)의 주소는 <code>[heap]</code> 영역에 속한다는 것을 <code>vmmap</code> 한 번으로 명확히 확인할 수 있다. 어셈블리 레벨에서는 <code>stack_buf</code>가 <code>lea rax, [rbp-0x10]</code>(호출 없음)로, <code>heap_buf</code>가 <code>call malloc</code> 뒤 <code>rax</code>를 그대로 받아서(<code>mov [rbp-0x18], rax</code>) 만들어진다는 차이로 정적 분석 단계에서부터 미리 구분할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0030-memory-layout.html">REV-0030 — Code Data BSS Stack Heap 기초</a></li><li><a href="rev-0031-stack-frame.html">REV-0031 — 스택 프레임이 무엇인지</a></li><li><a href="rev-0353-global-vs-local-variable-location.html">REV-0353 — 전역 변수와 지역 변수를 메모리 위치로 구분하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>자동 저장 기간(스택)과 동적 할당(힙)의 의미 차이 및 <code>malloc</code>/<code>free</code>의 계약: ISO C 표준(C11) 6.2.4 Storage durations of objects, 7.22.3 Memory management functions 섹션 기준.</li><li>프로세스 가상 메모리 레이아웃(스택/힙/코드/데이터 영역 배치)과 <code>vmmap</code>/<code>info proc mappings</code>의 동작: Linux <code>proc(5)</code> 매뉴얼(<code>/proc/[pid]/maps</code>) 및 GDB/Pwndbg 공식 문서 기준 (2026-09-09 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

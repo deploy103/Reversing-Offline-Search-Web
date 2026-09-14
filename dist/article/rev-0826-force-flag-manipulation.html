@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>디버거에서 분기 조건을 강제로 바꿔서 실험하기(Flag 조작) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>디버거에서 분기 조건을 강제로 바꿔서 실험하기(Flag 조작)</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>CMP</code>/<code>TEST</code> 다음에 오는 조건 분기(<code>JE</code>, <code>JNE</code>, <code>JG</code> 등)는 EFLAGS 레지스터의 개별 비트(ZF, CF, SF, OF, PF)를 읽어서 방향을 정하므로, 그 분기 직전에 x64dbg의 Flags 표시를 클릭하거나 GDB <code>set $eflags</code>로 해당 비트를 강제로 뒤집으면 바이너리를 패치하지 않고도 그 분기가 반대로 타는지 즉석에서 실험할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>비밀번호/시리얼 체크 직후의 조건 분기가 실패 경로로 가는데, 그 분기만 강제로 뒤집으면 성공 경로에서 무엇이 나오는지 미리 확인하고 싶을 때</li><li>조건 분기 앞의 비교 로직이 복잡해서 입력값을 원하는 대로 만들기 번거로울 때, 입력 대신 플래그를 직접 조작해 원하는 경로를 임시로 타보고 싶을 때</li><li>REV-0174(조건 분기 직전 확인)에서 어떤 플래그가 분기를 결정하는지 파악한 다음, 그 플래그를 실제로 바꿔서 결과를 검증하고 싶을 때</li><li>안티디버깅/체크섬 검증 분기를 우회해서 그 뒤 로직(예: 복호화된 플래그)이 무엇을 하는지 살짝 들여다보고 싶을 때(영구 패치 전 임시 확인 용도)</li></ul>
+<h2>핵심 개념</h2>
+<h3>조건 분기는 플래그 비트 하나(또는 조합)를 읽을 뿐이다</h3>
+<p><code>CMP A, B</code>는 내부적으로 <code>A - B</code>를 계산하고 그 결과에 따라 ZF(Zero Flag), SF(Sign Flag), CF(Carry Flag), OF(Overflow Flag)를 갱신한다. 그 다음에 오는 조건 분기 명령은 실제로 A와 B를 다시 비교하는 게 아니라, 이미 세팅된 플래그 비트만 검사한다.</p>
+<ul><li><code>JE</code>/<code>JZ</code>: ZF == 1이면 분기</li><li><code>JNE</code>/<code>JNZ</code>: ZF == 0이면 분기</li><li><code>JG</code>(부호 있음, greater): ZF == 0 그리고 SF == OF</li><li><code>JL</code>(부호 있음, less): SF != OF</li><li><code>JA</code>(부호 없음, above): CF == 0 그리고 ZF == 0</li><li><code>JB</code>(부호 없음, below): CF == 1</li></ul>
+<p>즉 실제 비교 대상 값(A, B)을 바꾸지 않고 EFLAGS 레지스터의 해당 비트만 강제로 뒤집어도 분기 결과는 똑같이 바뀐다. 이것이 "플래그 조작으로 분기를 강제한다"는 것의 원리다.</p>
+<h3>플래그를 바꾸는 방법</h3>
+<ul><li><strong>x64dbg</strong>: Registers 패널 하단에 <code>ZF</code>, <code>CF</code>, <code>SF</code>, <code>OF</code>, <code>PF</code> 등 개별 플래그가 체크박스/텍스트로 표시된다. 이 값을 클릭하면 0↔1로 즉시 토글된다. 별도 명령 없이 마우스 클릭만으로 가능하다.</li><li><strong>GDB</strong>: 개별 플래그 전용 변수는 없으므로 EFLAGS 전체 레지스터를 비트마스크로 다뤄야 한다. <code>p $eflags</code>로 현재 값을 확인하고, 예를 들어 ZF는 비트 6(<code>0x40</code>)이므로 <code>set $eflags = $eflags | 0x40</code>으로 켜거나 <code>set $eflags = $eflags &amp; ~0x40</code>으로 끌 수 있다. GDB는 <code>p/x $eflags</code>의 출력 옆에 <code>[ ZF IF ]</code>처럼 세팅된 플래그 이름을 같이 보여주므로 비트 위치를 외우지 않아도 현재 상태를 확인하기 쉽다.</li></ul>
+<h3>실험 후에는 원래대로 되돌리거나, 결과를 이해하고 다음 단계로</h3>
+<p>플래그를 뒤집는 것도 REV-0825의 인자 조작과 마찬가지로 그 실행 한 번에만 적용되는 임시 조작이다. "이 분기를 반대로 타면 무슨 일이 일어나는가"를 확인하는 정찰 목적으로 쓰고, 결과가 확정되면 실제 입력을 그렇게 만드는 방법을 찾거나(알고리즘 역산) 필요하다면 이 조건 분기 자체를 영구 패치(REV-0184)하는 다음 단계로 넘어간다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>디스어셈블리에 <code>cmp eax, 1</code> 다음 <code>jne fail_label</code> 같은 패턴이 있고, <code>fail_label</code> 쪽에 "Wrong password" 류 문자열이 보임</li><li>x64dbg Registers 패널 하단에 <code>ZF 0</code>, <code>CF 0</code> 같은 플래그 값이 나열되어 있고, 옆에 조건 분기 명령이 대기 중</li><li>GDB에서 <code>p $eflags</code>를 찍으면 <code>$1 = [ IF ]</code>처럼 세팅된 플래그 목록이 대괄호 안에 나열됨</li><li>분기 명령 위에 브레이크포인트를 걸고 멈췄을 때, 그 줄의 배경색/화살표로 "아직 실행 안 된 분기"임을 표시하는 UI</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>조건 분기 명령 바로 위(아직 분기가 실행되기 전)에 브레이크포인트를 걸고, REV-0174에서 설명한 방식으로 그 분기가 어떤 플래그를 검사하는지부터 특정한다(니모닉만 보고도 알 수 있다 — 예: <code>JNE</code>는 ZF). 그 다음 현재 플래그 값을 확인하고, 뒤집었을 때 분기가 어느 쪽으로 갈지 예측해본다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>CMP</code>/<code>TEST</code> 명령과 그 다음 조건 분기 명령의 위치를 확인(REV-0174)</li><li>분기 명령 앞줄에 브레이크포인트를 걸고 실행</li><li>니모닉으로 어떤 플래그가 이 분기를 결정하는지 확인(예: <code>JG</code>는 ZF, SF, OF 조합)</li><li>x64dbg는 Registers 패널에서 해당 플래그 클릭으로 토글, GDB는 <code>set $eflags</code> 비트 연산으로 토글</li><li>Step Into(F7 또는 <code>si</code>/<code>stepi</code>)로 분기 명령 한 줄만 실행해서 실제로 원하는 쪽으로 갔는지 확인</li><li>원하는 쪽으로 갔다면 그 이후 코드를 계속 따라가며 무엇이 나오는지 관찰</li><li>실험이 끝나면 프로그램을 재시작하거나 필요하면 플래그를 원래 값으로 복원</li></ol>
+<h2>명령어/단축키</h2>
+<p>GDB(Linux):</p>
+<pre><code>p/x $eflags
+set $eflags = $eflags | 0x40      # ZF 켜기 (비트6)
+set $eflags = $eflags &amp; ~0x40     # ZF 끄기
+stepi</code></pre>
+<p>x64dbg(Windows):</p>
+<pre><code>Registers 패널 하단 ZF/CF/SF/OF 값 클릭 → 토글
+F7 (Step Into) 로 분기 한 줄 실행</code></pre>
+<h2>출력 해석</h2>
+<ul><li>GDB <code>p/x $eflags</code> 출력의 대괄호 안 목록(<code>[ ZF PF IF ]</code> 등)에 원하는 플래그 이름이 있으면 그 플래그는 이미 1(세팅됨)이다. 목록에 없으면 0이다.</li><li>플래그를 토글한 직후 <code>stepi</code> 한 줄만 실행했을 때 <code>$pc</code>(또는 x64dbg의 명령어 포인터 하이라이트)가 예상한 분기 대상 주소로 이동했다면 조작이 성공적으로 반영된 것이다.</li><li>분기가 원하는 쪽으로 갔는데도 그 다음 로직에서 곧바로 다른 검증에 걸려 실패한다면, 이 함수 하나만 통과했을 뿐 REV-0833에서 다루는 멀티스텝 검증의 다음 단계가 남아있다는 뜻이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>분기 명령이 검사하는 플래그를 잘못 짚어서(예: <code>JG</code>인데 ZF만 바꾸고 SF/OF 조합을 놓쳐서) 원하는 결과가 안 나오는 것</li><li>플래그를 바꾼 뒤 Step Into가 아니라 Step Over(F8)를 눌러서, 원하는 분기 명령 자체를 건너뛰고 그 다음 줄까지 실행해버려 정확히 어디서 갈렸는지 확인을 놓치는 것</li><li>EFLAGS 전체를 통째로 덮어써서(<code>set $eflags = 0x40</code>처럼) 원래 켜져 있던 다른 플래그(IF 등)까지 같이 꺼버려 예상치 못한 부작용이 생기는 것 — 항상 OR/AND 비트 연산으로 원하는 비트만 바꿔야 안전함</li><li>이 실험으로 "우회 가능하다"는 것만 확인하고 그 결과를 실제 정답 입력값으로 착각하는 것 — 플래그 조작은 실제 입력으로는 재현되지 않는 인위적 상태이므로, 진짜 통과 조건은 별도로 역산해야 함</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>어떤 플래그가 이 분기를 결정하는지부터 다시 확인하려면 → REV-0174 조건 분기 직전에 무엇을 봐야 하는가</li><li>플래그가 아니라 함수 인자 자체를 바꿔서 실험하고 싶다면 → REV-0825 디버거에서 함수 인자를 실행 중 값으로 바꿔서 실험하기</li><li>분기 대신 아예 실행 위치(RIP)를 다른 곳으로 옮기고 싶다면 → REV-0827 루프를 건너뛰기 위해 RIP를 강제로 옮기는 법</li><li>실험이 끝나고 이 분기를 영구적으로 바꾸고 싶다면 → REV-0184 x64dbg CTF용 간단 패치와 저장</li><li>GDB에서 레지스터 수정이 반영 안 되는 것처럼 보이면 → REV-0713 GDB에서 레지스터를 수정했는데 반영이 안 되는 것처럼 보일 때</li></ul>
+<h2>미니 예제</h2>
+<pre><code>(gdb) disassemble
+   0x00401180 &lt;+16&gt;:   cmp    eax,0x1
+   0x00401183 &lt;+19&gt;:   jne    0x4011a0 &lt;fail_path&gt;
+(gdb) break *0x00401183
+(gdb) run
+Breakpoint 1, 0x0000000000401183 in check ()
+(gdb) p/x $eflags
+$1 = 0x246
+$2 = [ PF ZF IF ]        ; ZF가 이미 1이라 원래는 jne가 타지 않아야 정상 통과 경로
+(gdb) set $eflags = $eflags &amp; ~0x40   ; 강제로 ZF를 0으로
+(gdb) p/x $eflags
+$3 = 0x206
+(gdb) stepi
+0x00000000004011a0 in fail_path ()</code></pre>
+<p>ZF를 강제로 꺼버리자 원래는 통과했어야 할 흐름이 실패 경로(<code>fail_path</code>)로 튀는 것을 확인했다. 반대로 실패해야 할 상황에서 ZF를 강제로 켜서 성공 경로로 보내는 실험도 같은 방식으로 할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0174-before-conditional-branch.html">REV-0174 — 조건 분기 직전에 무엇을 봐야 하는가</a></li><li><a href="rev-0825-modify-function-args-runtime.html">REV-0825 — 디버거에서 함수 인자를 실행 중 값으로 바꿔서 실험하기</a></li><li><a href="rev-0827-force-rip-skip-loop.html">REV-0827 — 루프를 건너뛰기 위해 RIP를 강제로 옮기는 법</a></li><li><a href="rev-0184-x64dbg-patching.html">REV-0184 — x64dbg CTF용 간단 패치와 저장</a></li><li><a href="rev-0713-gdb-register-write-not-applied.html">REV-0713 — GDB에서 레지스터를 수정했는데 반영이 안 되는 것처럼 보일 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>EFLAGS 개별 비트(ZF, CF, SF, OF, PF)와 조건 분기 니모닉의 대응 관계: Intel 64 and IA-32 Architectures Software Developer's Manual Volume 1(EFLAGS) 및 Volume 2(Jcc 명령) 기준.</li><li>GDB <code>$eflags</code> 레지스터 변수와 플래그 이름 출력 형식: GNU GDB 공식 매뉴얼 및 실제 x86-64 GDB 세션에서 반복 확인되는 동작.</li><li>x64dbg Registers 패널의 플래그 토글 기능: x64dbg 공식 GitHub Wiki 문서 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

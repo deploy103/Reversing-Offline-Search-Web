@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>문제 파일이 손상된 것처럼 안 열릴 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>문제 파일이 손상된 것처럼 안 열릴 때</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">HxD</span><span class="tag">ImHex</span><span class="tag">IDA</span><span class="tag">DIE</span></div>
+<h2>한 줄 요약</h2>
+<p>IDA/Ghidra가 파일을 열지 못하거나 도구가 "인식할 수 없는 형식"이라고 할 때는, 정말로 다운로드/전송 중 파일이 손상됐을 수도 있지만 그보다 훨씬 자주 <strong>압축 해제 방식이 잘못됐거나, 파일이 실제로는 다른 포맷(패킹/암호화/래핑)이라서</strong> 그렇게 보이는 것이므로 헥스 에디터로 처음 몇 바이트부터 직접 확인해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA/Ghidra에 파일을 드래그했는데 "Unknown format" 또는 로더 목록에 아무것도 안 뜰 때</li><li><code>file</code> 명령이 <code>data</code>라고만 답하고 ELF/PE로 인식하지 못할 때</li><li>문제에서 제공한 zip을 풀었더니 파일 크기가 이상하게 작거나 0바이트에 가까울 때</li><li>문제 페이지에 적힌 SHA256/MD5 해시와 내 파일의 해시가 다를 때</li></ul>
+<h2>핵심 개념</h2>
+<p>"손상된 것처럼 보인다"는 신호가 나올 때 확인해야 할 원인은 우선순위 순서로 다음과 같다.</p>
+<ol><li><strong>전송/압축 과정에서의 실수</strong> — 텍스트 모드로 FTP 전송되어 개행 문자가 바뀌었거나(주로 과거 이슈지만 여전히 발생), zip을 완전히 다 못 받고 압축 해제해서 파일이 잘린 경우, 혹은 압축 파일 자체가 여러 겹(zip 안에 zip)인데 한 겹만 풀고 그 안의 zip을 실행 파일로 착각한 경우.</li><li><strong>파일 자체가 진짜로 손상되지 않았고, 형식이 다를 뿐</strong> — 확장자가 <code>.exe</code>인데 실제로는 ELF이거나(REV-0002 참고), 헤더 앞에 의도적으로 몇 바이트가 붙어있는 CTF 트릭(polyglot 파일), 혹은 처음 N바이트가 원본과 다르게 패치되어 매직 바이트가 깨진 경우.</li><li><strong>패킹/암호화로 헤더까지 가려진 경우</strong> — 일부 커스텀 패커나 로더는 원본 헤더를 암호화하거나 자체 스텁으로 덮어써서, 표준 파서가 아예 인식하지 못하게 만든다.</li><li><strong>정말로 손상된 다운로드</strong> — 네트워크 오류로 파일 일부가 누락되어 크기가 원본과 다른 경우. 이건 해시 비교로 가장 확실하게 확인된다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA: "The selected file does not appear to be executable format." 또는 로더 선택 창에 <code>Binary File</code>만 남고 <code>ELF64</code>, <code>Portable executable</code> 같은 옵션이 안 뜸</li><li><code>file</code>이 <code>data</code>, <code>ASCII text</code>, 혹은 <code>empty</code> 라고 답함</li><li>헥스 에디터로 첫 4바이트를 봤을 때 ELF(<code>7F 45 4C 46</code>)나 PE(<code>4D 5A</code>, "MZ")로 시작하지 않음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>헥스 에디터(HxD/ImHex)로 파일을 열어 <strong>첫 16바이트</strong>와 <strong>파일 크기</strong>부터 확인한다. 동시에 문제 페이지에 제공된 해시가 있다면 즉시 대조한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 해시 대조로 다운로드 손상 여부부터 배제</strong></p>
+<pre><code class="language-bash">sha256sum ./chall</code></pre>
+<p>문제 설명/플랫폼에 적힌 해시와 다르면 재다운로드부터 한다. 여기서 원인이 밝혀지면 나머지 단계는 필요 없다.</p>
+<p><strong>2) <code>file</code>과 헥스 에디터로 실제 매직 바이트 확인</strong></p>
+<pre><code class="language-bash">file ./chall
+xxd ./chall | head -5</code></pre>
+<ul><li>ELF: <code>7f 45 4c 46</code> (<code>\x7fELF</code>)로 시작해야 한다.</li><li>PE: <code>4d 5a</code> (<code>MZ</code>)로 시작해야 한다.</li></ul>
+<p>전혀 다른 바이트로 시작한다면 다음 단계로.</p>
+<p><strong>3) 파일 앞에 불필요한 데이터가 붙어있는지 확인</strong> CTF에서는 종종 PNG/ZIP 같은 다른 파일 뒤에 실행 파일을 이어붙이는 polyglot 트릭을 쓴다. 파일 내부 아무 데서나 ELF/PE 매직 바이트(<code>7f 45 4c 46</code> 또는 <code>4d 5a</code>)가 나타나는지 검색해본다.</p>
+<pre><code class="language-bash">xxd ./chall | grep -n "7f45 4c46"</code></pre>
+<p>발견되면 그 오프셋부터 다시 잘라서(<code>dd</code>) 별도 파일로 저장한다.</p>
+<pre><code class="language-bash">dd if=./chall of=./chall_real bs=1 skip=&lt;offset&gt;</code></pre>
+<p><strong>4) 압축을 여러 겹으로 풀었는지 재확인</strong> <code>file</code>로 원본 다운로드 파일 자체의 형식을 확인한다. zip 안에 zip, 혹은 tar.gz인데 확장자만 바꿔놓은 경우가 있다.</p>
+<pre><code class="language-bash">file ./downloaded.zip
+unzip -l ./downloaded.zip</code></pre>
+<p><strong>5) 여기까지도 안 되면 패킹/암호화 의심</strong> 표준 헤더가 아예 안 보이고 파일 크기도 정상적인데 특별히 손상 흔적(해시 불일치, 잘린 크기)이 없다면, 커스텀 로더가 원본 헤더를 암호화했을 가능성이 있다. DIE로 엔트로피를 확인하고 REV-0224(패킹된 바이너리인지 의심하는 기준)로 이동한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">sha256sum ./chall
+file ./chall
+xxd ./chall | head -5
+xxd ./chall | grep -n "7f45 4c46"
+dd if=./chall of=./chall_real bs=1 skip=&lt;offset&gt;
+unzip -l ./archive.zip</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>xxd</code>로 첫 줄이 <code>0000000: 504b 0304 ...</code> (<code>PK..</code>)로 보이면 사실 zip 파일인데 확장자만 실행 파일처럼 바뀐 것이다.</li><li><code>sha256sum</code> 결과가 문제 페이지 값과 다르면 100% 다운로드/전송 문제이며 코드 분석은 의미가 없다. 재다운로드가 우선이다.</li><li>ELF 매직 바이트가 파일 중간(오프셋 0이 아닌 곳)에서 발견되면, 앞부분은 CTF에서 흔히 쓰는 "위장용 헤더"이고 실제 바이너리는 그 뒤부터 시작한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>해시를 확인하지 않고 파일이 손상됐다고 가정한 채 몇 시간을 헥스 에디터로 헤매는 것 — 해시 비교가 가장 빠른 확인법이다.</li><li>확장자만 보고 "이건 실행 파일이니 ELF/PE여야 한다"고 단정하는 것 — 실제로는 다른 포맷일 수 있다(REV-0002, REV-0335 참고).</li><li>zip 안에 zip이 있는 걸 못 보고 첫 번째 압축 해제 결과만 보고 "파일이 깨졌다"고 결론짓는 것.</li><li>polyglot 파일에서 앞부분 위장 헤더까지 통째로 IDA에 넣고 "이상하게 열린다"고 헤매는 것 — 진짜 바이너리 시작 오프셋을 찾아 잘라내야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>확장자와 실제 형식이 다른 것 같다면 → REV-0002 확장자를 믿으면 안 되는 이유와 실제 파일 형식 확인법.</li><li>문제 설명의 힌트와 실제 형식이 충돌한다면 → REV-0335 힌트로 준 파일 형식이 실제와 다를 때.</li><li>매직 바이트 자체 개념이 헷갈리면 → REV-0020 Magic Byte와 파일 시그니처.</li><li>헤더는 있는데 함수가 거의 안 보인다면(별개 증상) → REV-0328 함수 개수가 비정상적으로 적게 잡힐 때.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ file chall
+chall: data
+
+$ xxd chall | head -3
+00000000: 504b 0304 1400 0000 0800 3a5c ...  PK........:\..
+00000010: ...
+
+$ unzip -l chall
+Archive:  chall
+  Length      Date    Time    Name
+---------  ---------- -----   ----
+    45678  2026-09-01 12:00   chall_real</code></pre>
+<p>확장자 없이 받은 <code>chall</code>이 사실은 zip 파일이었고, 그 안에 진짜 바이너리(<code>chall_real</code>)가 들어있었던 경우다. <code>file</code>이 <code>data</code>라고만 답한 것은 손상이 아니라 그냥 확장자와 실제 포맷이 안 맞았던 것뿐이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0002-dont-trust-extension.html">REV-0002 — 확장자를 믿으면 안 되는 이유와 실제 파일 형식 확인법</a></li><li><a href="rev-0335-hinted-format-mismatch.html">REV-0335 — 힌트로 준 파일 형식이 실제와 다를 때</a></li><li><a href="rev-0020-magic-bytes.html">REV-0020 — Magic Byte와 파일 시그니처</a></li><li><a href="rev-0224-packing-indicators.html">REV-0224 — 패킹된 바이너리인지 의심하는 기준</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>ELF/PE 매직 바이트 값(<code>\x7fELF</code>, <code>MZ</code>): ELF 사양(System V ABI) 및 Microsoft PE/COFF Specification 기준 (2026-09-09 검증).</li><li>zip 파일 시그니처(<code>PK\x03\x04</code>): PKWARE ZIP File Format Specification 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

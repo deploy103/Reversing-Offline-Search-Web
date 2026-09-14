@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PE-bear 설치와 사용법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / tools</div>
+<article class="article-body">
+<h1>PE-bear 설치와 사용법</h1>
+<div class="article-meta"><span class="tag">tools</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">PE-bear</span></div>
+<h2>한 줄 요약</h2>
+<p>PE-bear는 Windows PE 실행 파일의 헤더, 섹션 테이블, Import/Export 테이블, 리소스를 시각적으로 파싱해서 보여주는 무료 오픈소스 GUI 도구로, IDA/Ghidra로 들어가기 전에 파일 구조를 빠르게 훑어보는 "PE 전용 X-ray" 역할을 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>PE 헤더(DOS 헤더, NT 헤더, 섹션 테이블)를 직접 파싱해서 눈으로 확인하고 싶을 때</li><li>어떤 DLL의 어떤 함수를 import하는지(Import Table) 빠르게 보고 싶을 때</li><li>손상되거나 비정상적으로 조작된(malformed) PE 파일이 IDA에서 제대로 안 열릴 때</li><li>섹션의 RVA/파일 오프셋 변환을 손으로 계산하지 않고 도구로 확인하고 싶을 때</li><li>리소스 섹션에 숨겨진 데이터(아이콘, 문자열 테이블, 커스텀 리소스)를 훑어보고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>PE-bear는 무엇을 위한 도구인가</h3>
+<p>PE-bear는 "PE 파일을 빠르게 첫눈에(first view) 파악하는 것"을 목표로 만들어진 도구다. IDA/Ghidra처럼 코드를 디스어셈블하지는 않지만, PE 포맷 자체(DOS 헤더 → NT 헤더 → 섹션 테이블 → 각 디렉터리)를 매우 안정적으로 파싱해서 시각적으로 보여준다. 특히 악성코드 분석에서 자주 만나는 <strong>일부러 망가뜨린(malformed) PE 파일</strong>도 잘 견디도록 설계되어 있어서, IDA가 파싱 에러로 열리지 않는 파일도 PE-bear에서는 구조를 확인할 수 있는 경우가 많다.</p>
+<h3>개발 히스토리와 배포 형태</h3>
+<p>PE-bear는 개발자 <code>hasherezade</code>가 만들었으며, 2022년 9월부터 완전한 오픈소스로 전환되어 코드와 빌드가 공식 GitHub 저장소(<code>hasherezade/pe-bear</code>)에서 함께 관리된다. 이전에는 별도의 릴리스 저장소(<code>hasherezade/pe-bear-releases</code>)에 컴파일된 파일만 올라왔지만, 지금은 메인 저장소의 Releases 탭에서 최신 빌드를 받는 것이 표준이다. Windows용 빌드는 컴파일에 사용된 Visual Studio 버전에 따라 접미사가 붙는다(<code>vs17</code>, <code>vs19</code> 등은 별도 재배포 패키지 필요, <code>vs13</code> 빌드는 외부 의존성 없이 바로 실행 가능).</p>
+<h3>정적 뷰어이지 디스어셈블러가 아니다</h3>
+<p>PE-bear는 코드 섹션의 바이트를 헥스와 기초적인 디스어셈블리로 보여주긴 하지만, 함수 경계 인식이나 xref, 디컴파일 같은 깊은 정적 분석 기능은 없다. "구조를 빠르게 파악하고 다음 도구(IDA/Ghidra)로 넘어가기 전 사전 점검"이 이 도구의 역할이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA/Ghidra에서 PE 파일을 열었는데 "corrupted file" 또는 헤더 파싱 오류로 정상적으로 안 열릴 때</li><li>어떤 함수가 어느 DLL에서 온 것인지(예: <code>kernel32.dll!CreateFileA</code>) 빠르게 목록으로 보고 싶을 때</li><li>섹션 개수, 각 섹션의 가상 크기(Virtual Size)와 파일상 크기(Raw Size)가 다른 것이 패킹/난독화 흔적인지 의심될 때</li><li>Entry Point RVA가 <code>.text</code> 섹션이 아니라 이상한 섹션(예: 마지막에 추가된 섹션)을 가리킬 때(패킹 흔적)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>PE 파일을 PE-bear 창에 드래그&amp;드롭한다. 왼쪽 트리에서 <code>DOS Header</code> → <code>NT Headers</code> → <code>Section Headers</code> 순서로 클릭해보며 전체 구조를 훑는다. 그다음 <code>Imports</code> 탭에서 이 프로그램이 어떤 API를 쓰는지 확인해서 대략적인 기능을 추측한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 공식 다운로드 (인터넷 되는 곳에서, 한 번만)</strong></p>
+<ul><li><code>https://github.com/hasherezade/pe-bear/releases</code>에서 Windows용 최신 빌드(zip)를 받는다</li><li>접미사(vs13/vs17/vs19)를 확인 — 외부 의존성 없이 바로 쓰고 싶다면 vs13 계열, 최신 빌드가 필요하면 해당 Visual C++ 재배포 패키지도 함께 준비</li><li>WinGet을 쓸 수 있는 환경이면 <code>winget install pe-bear</code>로도 설치 가능(단, 이 역시 인터넷 필요)</li></ul>
+<p><strong>2) 오프라인 반입</strong></p>
+<ul><li>받은 zip을 그대로 USB로 옮겨 대회 PC에 압축 해제</li><li>vs17/vs19 빌드를 쓴다면 Visual C++ 재배포 패키지(<code>vc_redist.x64.exe</code> 등)도 함께 오프라인 설치해둔다</li></ul>
+<p><strong>3) 첫 실행</strong></p>
+<ul><li>압축을 푼 폴더의 <code>PE-bear.exe</code>를 더블클릭하면 바로 실행된다(설치 프로그램 없이 포터블 형태)</li></ul>
+<p><strong>4) 바이너리 로드</strong></p>
+<ul><li><code>File → Open</code> 메뉴 또는 창에 파일을 드래그&amp;드롭</li><li>여러 파일을 동시에 열어 좌측 탭으로 전환하며 비교 분석도 가능</li></ul>
+<p><strong>5) 구조 훑어보기</strong></p>
+<ul><li>좌측 트리에서 헤더/섹션/디렉터리를 순서대로 클릭</li><li><code>Imports</code>, <code>Exports</code>, <code>Resources</code> 탭에서 각각의 목록 확인</li><li>하단/우측 헥스 뷰에서 선택한 필드가 실제 파일의 어느 바이트에 해당하는지 하이라이트로 확인</li></ul>
+<h2>명령어/단축키</h2>
+<table><thead><tr><th>목적</th><th>조작</th></tr></thead><tbody><tr><td>파일 열기</td><td><code>File → Open</code> 또는 드래그&amp;드롭</td></tr><tr><td>헤더 트리 이동</td><td>좌측 트리 클릭 (DOS Header / NT Headers / Section Headers)</td></tr><tr><td>Import 목록</td><td>좌측 트리 <code>Imports</code> 또는 상단 탭</td></tr><tr><td>Export 목록</td><td>좌측 트리 <code>Exports</code></td></tr><tr><td>리소스 보기</td><td>좌측 트리 <code>Resources</code></td></tr><tr><td>RVA ↔ 파일 오프셋 변환</td><td>필드를 클릭하면 하단 헥스 뷰에서 해당 오프셋이 자동 하이라이트</td></tr><tr><td>패턴/바이트 검색</td><td>우클릭 메뉴 또는 상단 검색 아이콘으로 시그니처 검색</td></tr><tr><td>헥스 값 직접 수정</td><td>헥스 뷰에서 클릭 후 바로 편집 가능(패치 실험용)</td></tr><tr><td>수정 내용 저장</td><td><code>File → Save as...</code></td></tr></tbody></table>
+<h2>출력 해석</h2>
+<ul><li><code>NT Headers → File Header → NumberOfSections</code>: 실제 섹션 테이블 항목 개수와 이 값이 다르면 조작 의심</li><li><code>Section Headers</code>에서 <code>Virtual Size</code>가 <code>Raw Size</code>보다 훨씬 크면 실행 시 메모리에서 압축 해제/언패킹되는 영역일 가능성이 높음</li><li><code>Imports</code> 탭에 함수가 거의 없거나(정상 프로그램치고 너무 적음) <code>LoadLibrary</code>/<code>GetProcAddress</code>만 있으면 나머지 API를 런타임에 동적으로 resolve하는 패턴(패킹/난독화 흔적)</li><li><code>Entry Point</code>가 가리키는 섹션이 <code>.text</code>가 아니면 정상 컴파일러가 만든 배치가 아닐 가능성이 높음 (패커가 추가한 섹션일 수 있음)</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>PE-bear로 구조만 보고 실제 코드 로직까지 다 파악했다고 착각하는 경우 — 디스어셈블/디컴파일은 IDA/Ghidra의 역할</li><li>vs17/vs19 빌드를 받았는데 재배포 패키지 없이 실행해서 "실행이 안 됨"으로 오인하는 경우</li><li>헥스 뷰에서 실수로 값을 수정한 뒤 저장(<code>Save as</code>)해서 원본 파일이 훼손되는 경우 — 항상 원본 사본을 따로 보관</li><li>Import Table을 볼 때 Ordinal(이름 없이 번호로만 import)로 표시된 함수를 그냥 지나치는 경우 — 별도로 DLL 문서에서 번호-이름 매핑 확인 필요</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ol><li>파일이 아예 안 열리면 정말 PE 포맷이 맞는지 DIE(REV-0287)로 먼저 확인</li><li>vs17/vs19 빌드 실행 오류 시 Visual C++ 재배포 패키지 설치 여부 확인</li><li>Import 목록이 이상하게 적으면 DIE로 패커 여부부터 확인</li><li>헥스 뷰 값과 트리에 표시된 필드 값이 안 맞으면 리틀 엔디안 해석을 다시 확인(PE 필드는 대부분 리틀 엔디안)</li></ol>
+<h2>미니 예제</h2>
+<pre><code class="language-text">1. chall.exe를 PE-bear 창에 드래그&amp;드롭
+2. 좌측 트리 → NT Headers → File Header 클릭
+   → NumberOfSections: 5, TimeDateStamp: 확인
+3. 좌측 트리 → Imports 클릭
+   → KERNEL32.dll: CreateFileA, ReadFile, WriteFile
+   → USER32.dll: MessageBoxA
+4. 콘솔 입출력/메시지박스를 쓰는 일반적인 GUI 프로그램으로 추정
+5. 이후 IDA/Ghidra로 넘어가 실제 로직 분석</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0287-die-install-usage.html">REV-0287 — Detect It Easy 설치와 사용법</a></li><li><a href="rev-0289-imhex-install-usage.html">REV-0289 — ImHex 설치와 기본 사용법</a></li><li><a href="rev-0125-pe-bear-basics.html">REV-0125 — PE-bear로 헤더 분석하는 방법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>공식 GitHub 저장소 <code>hasherezade/pe-bear</code>(릴리스, 빌드 변형 안내)를 기준으로 배포 방식과 기능을 확인했다.</li><li>최종 확인일: 2026-09-08</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

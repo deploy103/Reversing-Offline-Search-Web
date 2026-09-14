@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>음수 상수를 Unsigned Hex로 다시 읽기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>음수 상수를 Unsigned Hex로 다시 읽기</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>IDA/Ghidra 디컴파일러가 <code>v1 = v1 + -1520786223;</code>처럼 이상하게 큰 음수 상수를 보여줄 때는, 이 값이 실제로는 <strong>32비트(또는 64비트) unsigned hex 상수를 signed int로 잘못(?) 해석해서 출력한 것</strong>뿐이므로, <code>&amp; 0xFFFFFFFF</code>로 부호를 unsigned로 되돌리면 원래의 "낯익은" hex 상수(해시 초기값, 매직 넘버 등)가 그대로 드러난다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디컴파일 코드에 <code>+ -1234567890</code> 같은 이상한 음수 덧셈/뺄셈 상수가 보일 때</li><li><code>cmp eax, 0xFFFFFF9Ch</code>처럼 disassembly의 hex 상수가 디컴파일러에서는 <code>-100</code>처럼 음수로 표시될 때</li><li>곱셈 상수(해시 계산으로 의심되는 부분)가 음수로 나와서 "이게 무슨 상수인지" 감이 안 잡힐 때</li><li><code>-87097619</code> 같은 이상한 음수를 그대로 검색창에 넣고 의미를 확인하려는 상황</li></ul>
+<h2>핵심 개념</h2>
+<p>x86/x64는 부호 있는 정수를 <strong>2의 보수(two's complement)</strong> 방식으로 표현한다(REV-0024 참고). 32비트 레지스터의 최상위 비트가 1이면, CPU 입장에서는 이 값이 "아주 큰 unsigned 수"일 수도 있고 "음수"일 수도 있다 — 비트 패턴 자체는 완전히 동일하고, 오직 <strong>그 값을 signed로 해석하느냐 unsigned로 해석하느냐</strong>에 따라 사람이 읽는 표현만 달라진다.</p>
+<p>디스어셈블리(asm)는 보통 상수를 hex로 그대로 보여주지만(<code>0xFFFFFF9C</code>), 디컴파일러(IDA/Ghidra)가 C 코드를 생성할 때는 변수의 선언 타입(<code>int</code> vs <code>unsigned int</code>)에 따라 그 값을 <strong>부호 있는 10진수</strong>로 바꿔서 보여주는 경우가 많다. 이때 <code>0xFFFFFF9C</code>가 <code>-100</code>으로 둔갑해서 나타난다.</p>
+<p>변환 공식(32비트 기준):</p>
+<pre><code>signed_value = unsigned_value          (unsigned_value &lt; 0x80000000일 때)
+signed_value = unsigned_value - 0x100000000   (unsigned_value &gt;= 0x80000000일 때)
+
+역변환:
+unsigned_value = signed_value &amp; 0xFFFFFFFF</code></pre>
+<p>64비트는 <code>0x100000000</code> 대신 <code>0x10000000000000000</code>(2^64)을 쓴다.</p>
+<p>이게 왜 리버싱에서 중요한가 — 해시 알고리즘의 매직 넘버(FNV offset basis, CRC 초기값, MurmurHash 상수 등)는 원래 unsigned hex로 정의되지만, 디컴파일러가 이를 signed int 변수에 대입하는 코드로 표현하면 전혀 못 알아볼 음수로 바뀌어 버린다. 이 변환을 모르면 "익숙한 상수를 보고도 못 알아채는" 상황이 발생한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p><strong>디스어셈블리(원본):</strong></p>
+<pre><code class="language-asm">mov     eax, 811C9DC5h    ; unsigned hex 그대로 보임</code></pre>
+<p><strong>같은 값을 IDA/Ghidra가 디컴파일할 때(signed로 표시):</strong></p>
+<pre><code class="language-c">int h = -2128831035;      // 0x811C9DC5를 signed int로 읽으면 이 값</code></pre>
+<p><strong>비교 상수도 마찬가지:</strong></p>
+<pre><code class="language-asm">cmp     eax, 0FFFFFF9Ch   ; asm은 hex 그대로</code></pre>
+<pre><code class="language-c">if (v == -100)            // 디컴파일러가 signed로 표시</code></pre>
+<h2>가장 먼저 할 것</h2>
+<p>디컴파일 코드에 낯선 큰 음수가 보이면, <strong>가장 먼저 32비트인지 64비트인지 변수 타입을 확인</strong>하고, 파이썬으로 즉시 unsigned hex로 변환해서 "혹시 아는 상수인지" 확인한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 변수 타입(비트 폭) 확인</strong>: IDA에서 변수 위에 커서를 놓고 <code>Y</code>(타입 지정)를 누르거나, 선언부의 <code>int</code>/<code>__int64</code> 여부를 확인.</p>
+<p><strong>2) 파이썬으로 unsigned hex 변환</strong></p>
+<pre><code class="language-python">def to_u32(n: int) -&gt; int:
+    return n &amp; 0xFFFFFFFF
+
+def to_s32(n: int) -&gt; int:
+    n &amp;= 0xFFFFFFFF
+    return n - 0x100000000 if n &gt;= 0x80000000 else n
+
+def to_u64(n: int) -&gt; int:
+    return n &amp; 0xFFFFFFFFFFFFFFFF
+
+print(hex(to_u32(-2128831035)))   # 0x811c9dc5  -&gt; FNV offset basis!
+print(hex(to_u32(-100)))          # 0xffffff9c</code></pre>
+<p><strong>3) 알려진 상수 목록과 대조</strong></p>
+<table><thead><tr><th>unsigned hex</th><th>알려진 알고리즘</th></tr></thead><tbody><tr><td><code>0x811C9DC5</code></td><td>FNV-1/1a 32비트 offset basis</td></tr><tr><td><code>0x01000193</code></td><td>FNV-1/1a 32비트 prime</td></tr><tr><td><code>0xEDB88320</code></td><td>CRC-32(reflected) 다항식</td></tr><tr><td><code>0x04C11DB7</code></td><td>CRC-32(normal) 다항식</td></tr><tr><td><code>0x9E3779B9</code></td><td>황금비 기반 해시 상수(예: Boost hash_combine)</td></tr><tr><td><code>0xFFFFFFFF</code> (=<code>-1</code>)</td><td>에러 코드/EOF 센티널로 흔히 쓰임</td></tr></tbody></table>
+<p><strong>4) IDA 자체 기능으로도 확인 가능</strong>: 디스어셈블리 뷰(F5 이전의 원본 asm)로 돌아가 같은 위치의 hex 값을 직접 대조하면, 파이썬 변환 없이도 원본 hex를 바로 볼 수 있다. <code>Space</code>로 그래프뷰/텍스트뷰 전환, 디컴파일 창에서는 상수 위에서 <code>\</code>(백슬래시) 또는 우클릭 → "Number format" → "Hexadecimal"로 표시 형식을 바꿀 수 있는 경우도 있다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 디컴파일 창에서 상수 위 우클릭 → <code>Hexadecimal</code>(또는 단축키 <code>\</code>, 버전에 따라 다름)로 즉시 hex 표시 전환 — 파이썬 변환 없이 가장 빠른 방법</li><li>Python: <code>n &amp; 0xFFFFFFFF</code>(32비트), <code>n &amp; 0xFFFFFFFFFFFFFFFF</code>(64비트)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>변환한 unsigned hex가 알려진 표(위 목록)와 일치하면 해당 알고리즘 확정.</li><li>일치하는 게 없다면 커스텀 상수이므로, 최소한 "이 값이 32비트 unsigned로 어떤 값인지"는 확정해두고 다음 단계(해당 값이 곱셈 상수인지 초기값인지) 분석을 이어간다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>IDA 디컴파일 창의 숫자를 보고 "음수가 나왔으니 이 변수는 실제로 음수 값을 갖는다"고 그대로 믿어버리는 것 — 이건 표시 방식의 문제일 뿐, 비트 패턴 자체는 CPU 입장에서 unsigned로 쓰였을 수도 있다.</li><li>32비트와 64비트 변환 공식을 헷갈려서 <code>&amp; 0xFFFFFFFF</code>를 64비트 값에 써버리는 것(상위 32비트를 실수로 날림) — 반드시 변수 크기(<code>int</code> vs <code>int64</code>/<code>long long</code>)를 먼저 확인.</li><li>변환 방향을 반대로 하는 것(unsigned를 signed로 바꿔야 하는데 반대로 계산) — 두 함수(<code>to_u32</code>/<code>to_s32</code>)를 명확히 구분해서 사용.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>변환한 값이 <code>0xFF</code>, <code>0xFFFF</code>, <code>0xFFFFFF</code>, <code>0xFFFFFFFF</code> 패턴이면 → REV-0203/REV-0204(마스크)를 의심.</li><li>변환한 값이 <code>16777619</code>나 <code>0x811C9DC5</code>라면 → REV-0207/REV-0208(FNV).</li><li>값이 2의 보수 자체가 왜 이렇게 동작하는지 원리부터 다시 보고 싶다면 → <code>../binary-basics/rev-0024-twos-complement.md</code>(2의 보수와 음수 표현).</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — FNV 초기값을 못 알아본 경우</strong></p>
+<pre><code class="language-c">unsigned int h = -2128831035;</code></pre>
+<pre><code class="language-python">print(hex(-2128831035 &amp; 0xFFFFFFFF))  # 0x811c9dc5</code></pre>
+<p>→ FNV offset basis 확정, REV-0208 참고.</p>
+<p><strong>예제 2 — 에러 코드 비교</strong></p>
+<pre><code class="language-c">if (ret == -1)</code></pre>
+<p><code>-1</code>을 32비트 unsigned hex로 바꾸면 <code>0xFFFFFFFF</code> — 흔히 "실패/EOF" 센티널 값으로 쓰인다는 걸 바로 알 수 있다.</p>
+<p><strong>예제 3 — 64비트 상수 변환</strong></p>
+<pre><code class="language-python">val = -3819410105021120000  # 디컴파일러가 보여준 __int64 값
+print(hex(val &amp; 0xFFFFFFFFFFFFFFFF))</code></pre>
+<p><strong>예제 4 — 처음부터 끝까지 실행되는 전체 스크립트 (여러 음수 상수를 한 번에 표로 대조)</strong></p>
+<p>디컴파일 코드에서 낯선 음수 상수를 여러 개 발견했을 때, 하나씩 손으로 계산하지 않고 표를 만들어 한 번에 대조하는 실전 스크립트다.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0206 실전 스크립트: 디컴파일러가 보여준 이상한 음수 상수들을 전부 unsigned hex로 되돌려서
+# 알려진 해시/에러코드 상수와 대조한다.
+
+def to_u32(n: int) -&gt; int:
+    # 32비트 signed 값을 32비트 unsigned 값으로 재해석한다(비트 패턴은 그대로, 해석만 바뀜).
+    return n &amp; 0xFFFFFFFF
+
+def to_s32(n: int) -&gt; int:
+    # 반대로 32비트 unsigned 값을 32비트 signed 값으로 재해석한다.
+    n &amp;= 0xFFFFFFFF
+    return n - 0x100000000 if n &gt;= 0x80000000 else n
+
+def to_u64(n: int) -&gt; int:
+    # 64비트 버전. __int64/long long 변수에는 이 함수를 써야 한다(0xFFFFFFFF만 쓰면 상위 32비트가 날아간다).
+    return n &amp; 0xFFFFFFFFFFFFFFFF
+
+# 알려진 상수표(각 알고리즘 공식 스펙 기준으로 미리 정리해둔 값)
+KNOWN = {
+    0x811C9DC5: "FNV-1/1a 32비트 offset basis",
+    0x01000193: "FNV-1/1a 32비트 prime",
+    0xEDB88320: "CRC-32(reflected) 다항식",
+    0xFFFFFFFF: "-1, 에러코드/EOF 센티널",
+}
+
+# 디컴파일러 창에서 그대로 복사해온 이상한 음수들
+samples = [-2128831035, -100, -1]
+
+for s in samples:
+    u = to_u32(s)
+    label = KNOWN.get(u, "알려진 표에 없음 -&gt; 커스텀 상수로 취급")
+    print(f"{s:&gt;12} -&gt; {hex(u)}  ({label})")
+# 실행 결과:
+#   -2128831035 -&gt; 0x811c9dc5  (FNV-1/1a 32비트 offset basis)
+#          -100 -&gt; 0xffffff9c  (알려진 표에 없음 -&gt; 커스텀 상수로 취급)
+#            -1 -&gt; 0xffffffff  (-1, 에러코드/EOF 센티널)
+
+# 64비트 상수도 같은 방식으로 처리한다.
+val64 = -3819410105021120000
+print("64비트 예시:", hex(to_u64(val64)))
+# 실행 결과: 64비트 예시: 0xcafebabedeadc200</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0203-and-0xff-mask.html">REV-0203 — AND 0xFF 마스크 이해</a></li><li><a href="rev-0204-and-0xffffff-mask.html">REV-0204 — AND 0xFFFFFF 24비트 마스크 이해</a></li><li><a href="rev-0207-fnv1-fnv1a.html">REV-0207 — FNV-1과 FNV-1a 해시 패턴</a></li><li>./rev-0208-fnv-16777619.md — 16777619 상수가 보일 때 FNV 의심하기</li><li>../binary-basics/rev-0024-twos-complement.md — 2의 보수와 음수 표현</li></ul>
+<h2>출처/검증</h2>
+<ul><li>2의 보수 표현과 signed/unsigned 재해석 규칙은 Intel 64 and IA-32 Architectures Software Developer's Manual의 정수 표현 및 ISO C 정수 타입 규칙 기준.</li><li>FNV/CRC 등 상수표는 각 알고리즘 공식 스펙 기준(2026-09-08 확인, REV-0208 출처 항목과 동일 자료 참고).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

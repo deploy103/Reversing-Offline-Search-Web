@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghidra 추가 단축키 참조(고급) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>Ghidra 추가 단축키 참조(고급)</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>REV-0278에서 다룬 핵심 단축키(G/L/Ctrl+L/X/D/C/T/Y 등) 외에도, Ghidra에는 빠른 주석 입력(<code>;</code>), 변수 강조(가운데 클릭), 목록 필터링, 실행 취소(<code>Ctrl+Z</code>/<code>Ctrl+Y</code>), 창 복제 같은 고급 작업 편의 기능이 있어 큰 바이너리를 오래 붙잡고 분석할 때 훨씬 수월해진다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Decompile/Listing 창에서 한 줄 주석을 매번 우클릭 메뉴로 다는 게 느리게 느껴질 때</li><li>변수 하나가 함수 안에서 어디어디에 쓰이는지 색으로 한눈에 보고 싶을 때</li><li>Symbol Tree나 Functions 목록에 항목이 너무 많아서 이름으로 걸러 찾고 싶을 때</li><li>방금 한 이름 변경/타입 지정을 실수로 잘못 적용해서 되돌리고 싶을 때</li><li>두 함수를 나란히 띄워두고 비교하면서 분석하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>빠른 EOL 주석 — <code>;</code></h3>
+<p>Listing이나 Decompile 창에서 줄을 선택하고 <code>;</code>를 누르면 그 줄 끝에 바로 주석(End Of Line comment)을 입력하는 창이 뜬다. 우클릭 → <code>Comments</code> → <code>Set EOL Comment</code>로 가는 것과 같은 기능을 키 하나로 바로 부를 수 있다.</p>
+<h3>변수 강조(하이라이트) — 가운데 클릭</h3>
+<p>Decompile 창에서 변수나 레지스터를 마우스 가운데 버튼(휠 클릭)으로 클릭하면, 그 함수 안에서 같은 변수가 쓰인 모든 위치가 같은 색으로 강조된다. 다시 가운데 클릭하면 강조가 해제된다. 변수의 생존 범위(어디서 읽고 어디서 쓰는지)를 한눈에 훑을 때 매우 유용하다.</p>
+<h3>목록 필터링(Filter) — 깔때기 아이콘</h3>
+<p>Symbol Tree, Data Type Manager, Functions 목록 같은 트리/테이블 뷰 상단에는 대개 필터 입력창(또는 깔때기 모양 아이콘)이 있다. 여기에 이름 일부를 입력하면 그 텍스트를 포함하는 항목만 실시간으로 걸러서 보여준다. 함수/심볼이 수백 개 이상인 큰 바이너리에서 스크롤로 찾는 대신 이 필터를 먼저 쓰는 것이 훨씬 빠르다.</p>
+<h3>Undo/Redo — Ctrl+Z / Ctrl+Y</h3>
+<p>이름 변경, 타입 재지정, 구조체 편집 등 대부분의 분석 작업은 <code>Ctrl+Z</code>(실행 취소)/<code>Ctrl+Y</code>(다시 실행)로 되돌리거나 재적용할 수 있다. 실수로 잘못된 이름/타입을 적용했을 때 처음부터 다시 하지 않아도 된다.</p>
+<h3>창 복제 — Clone Window</h3>
+<p>현재 보고 있는 Listing이나 Decompile 창 탭을 우클릭하면 <code>Clone Window</code>(또는 유사한 이름) 옵션으로 같은 종류의 창을 하나 더 띄울 수 있다. 이렇게 복제된 창은 서로 독립적으로 다른 함수를 보여줄 수 있어서, 호출하는 함수와 호출되는 함수를 화면 양쪽에 동시에 띄워두고 비교하며 분석할 때 유용하다.</p>
+<h3>Copy Special — 다양한 형식으로 복사</h3>
+<p>바이트/주소를 다른 도구(파이썬 스크립트, 메모)에 붙여넣을 형식으로 복사하고 싶을 때, 선택 영역을 우클릭해 <code>Copy Special</code> 메뉴를 쓰면 hex 문자열, C 배열 등 여러 형식 중 골라서 클립보드에 복사할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>분석하던 함수의 변수 흐름이 복잡해서 눈으로 다 따라가기 힘들거나, Symbol Tree 스크롤이 끝없이 이어지거나, 실수로 이름을 잘못 바꿔서 원상복구하고 싶을 때 이 표를 참고한다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>Decompile 창에서 변수 하나를 가운데 클릭해 강조 기능부터 시험해본다 — 가장 즉각적으로 효과를 체감할 수 있는 기능이다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 빠른 주석</strong></p>
+<p>Listing/Decompile에서 줄 선택 → <code>;</code> → 주석 입력 → Enter.</p>
+<p><strong>2) 변수 강조</strong></p>
+<p>Decompile 창에서 추적하고 싶은 변수를 가운데 클릭 → 같은 색으로 강조된 다른 위치들을 스크롤하며 확인 → 다시 가운데 클릭으로 해제.</p>
+<p><strong>3) 목록 필터링</strong></p>
+<p>Symbol Tree나 Data Type Manager 상단 필터 입력창에 이름 일부(예: <code>check</code>) 입력 → 일치하는 항목만 남는지 확인.</p>
+<p><strong>4) 실행 취소 연습</strong></p>
+<p>변수 이름을 하나 바꿔본 뒤 <code>Ctrl+Z</code>로 되돌리고, <code>Ctrl+Y</code>로 다시 적용해본다.</p>
+<p><strong>5) 창 복제로 비교 분석</strong></p>
+<p>현재 Decompile 탭 우클릭 → <code>Clone Window</code> → 복제된 창에서 다른 함수로 이동 → 원래 창과 나란히 배치해서 두 함수를 동시에 확인.</p>
+<h2>명령어/단축키</h2>
+<table><thead><tr><th>단축키/조작</th><th>동작</th></tr></thead><tbody><tr><td><code>;</code></td><td>현재 줄에 EOL 주석 빠르게 입력</td></tr><tr><td>가운데 클릭(휠 클릭)</td><td>변수/레지스터의 모든 사용 위치 강조(다시 클릭 시 해제)</td></tr><tr><td>필터 입력창(깔때기 아이콘)</td><td>Symbol Tree/Data Type Manager/Functions 목록 실시간 필터링</td></tr><tr><td><code>Ctrl+Z</code></td><td>실행 취소(Undo)</td></tr><tr><td><code>Ctrl+Y</code></td><td>다시 실행(Redo)</td></tr><tr><td>탭 우클릭 → <code>Clone Window</code></td><td>같은 종류의 창을 복제해 다른 위치를 동시에 표시</td></tr><tr><td>우클릭 선택 영역 → <code>Copy Special</code></td><td>hex/C 배열 등 다양한 형식으로 복사</td></tr></tbody></table>
+<h2>출력 해석</h2>
+<ul><li>가운데 클릭 강조는 함수 범위(scope) 안에서만 적용된다 — 다른 함수로 이동하면 강조가 풀린 것처럼 보이는데, 이는 정상이며 그 함수 안에서 다시 가운데 클릭해야 한다.</li><li>필터 입력창에 아무것도 안 걸리면(결과 0개) 오타이거나, 찾는 항목이 다른 Archive/카테고리에 있을 수 있다 — 필터 범위(전체 vs 현재 폴더)를 확인한다.</li><li><code>Ctrl+Z</code>를 여러 번 눌러도 되돌려지지 않는 특정 작업(예: 자동 분석 재실행 같은 대규모 작업)은 Undo 스택에 안 잡히는 경우가 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>가운데 클릭 강조 기능을 몰라서 변수 하나의 흐름을 눈으로 스크롤하며 일일이 찾는 것.</li><li>필터 입력창의 범위(현재 폴더만 vs 전체 트리)를 착각해서 "분명히 있는데 필터에 안 걸린다"고 헷갈리는 것.</li><li>큰 규모의 되돌릴 수 없는 작업(예: Auto Analysis 재실행) 전에 프로젝트를 저장/백업해두지 않아 <code>Ctrl+Z</code>로도 복구가 안 되는 상황을 만드는 것.</li><li><code>Clone Window</code>로 여러 창을 띄운 뒤 어느 창이 어떤 함수를 보여주고 있는지 헷갈리는 것 — 탭 제목이나 창 배치를 신경 써서 정리해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>핵심 단축키(G/L/Ctrl+L/X/D/C/T/Y) 자체가 헷갈리면 → REV-0278 Ghidra 핵심 단축키 치트시트.</li><li>구조체/타입 편집 자체가 궁금하면 → REV-0724 Ghidra Data Type Manager 빠른 참조.</li><li>xref 추적이 필요하면 → REV-0160 Ghidra XREF 따라가기.</li><li>반복 작업을 아예 스크립트로 자동화하고 싶다면 → REV-0725 Ghidra 스크립트 API 빠른 참조(기초).</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">1. Decompile 창에서 param_1 가운데 클릭 → 함수 안의 모든 param_1 사용 위치가 강조됨
+2. 강조된 위치 중 의심스러운 줄에서 ; → "여기서 길이 체크함" 주석 입력
+3. Symbol Tree 필터에 "verify" 입력 → verify_password 등 관련 함수만 추려짐
+4. verify_password 우클릭(탭) → Clone Window → 새 창에서 그 함수를 계속 열어둔 채
+   원래 창에서 main으로 돌아가 호출부와 나란히 비교</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0278-ghidra-shortcuts-cheatsheet.html">REV-0278 — Ghidra 핵심 단축키 치트시트</a></li><li><a href="rev-0724-ghidra-data-type-manager-quickref.html">REV-0724 — Ghidra Data Type Manager 빠른 참조</a></li><li><a href="rev-0160-ghidra-xref.html">REV-0160 — Ghidra XREF 따라가기</a></li><li><a href="rev-0725-ghidra-script-api-quickref.html">REV-0725 — Ghidra 스크립트 API 빠른 참조(기초)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>EOL 주석 단축키(<code>;</code>), 변수 강조(가운데 클릭), 목록 필터 입력창, <code>Ctrl+Z</code>/<code>Ctrl+Y</code> Undo/Redo, 탭 <code>Clone Window</code>, <code>Copy Special</code> 기능은 Ghidra 공식 문서(Ghidra Help)와 공개된 Ghidra 사용 가이드/치트시트 자료에서 공통적으로 설명하는 기본 동작을 기준으로 정리했다(2026-09-09 검증).</li><li>일부 조작(필터 아이콘 위치, Clone Window 메뉴 문구)은 Ghidra 버전에 따라 표현이 다를 수 있어, 실제 설치본에서 우클릭 메뉴와 상단 툴바를 직접 확인할 것을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

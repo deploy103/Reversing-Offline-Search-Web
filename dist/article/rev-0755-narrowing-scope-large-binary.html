@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>큰 바이너리에서 분석 범위를 좁히는 실전 전략 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>큰 바이너리에서 분석 범위를 좁히는 실전 전략</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">radare2</span><span class="tag">Cutter</span></div>
+<h2>한 줄 요약</h2>
+<p>함수 수백~수천 개짜리 큰 바이너리를 만나면 처음부터 순서대로 읽지 말고, 문자열·Import·상수·Call Graph·함수 크기 같은 여러 "필터"를 동시에 겹쳐서 후보 함수 집합을 단계적으로 좁혀나가는 깔때기(funnel) 전략이 실전에서 가장 시간을 절약한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA/Ghidra/radare2로 파일을 열었는데 함수 목록(REV-0143, REV-0159, <code>afl</code>)이 수백 줄 이상 나와서 어디부터 봐야 할지 막막할 때</li><li>정적 링킹된 바이너리(REV-0646)라 함수 수가 폭증해 있고, 그 안에서 실제 문제 로직이 어디 있는지 감이 안 잡힐 때</li><li>이미 문자열(REV-0163), Import(REV-0164), 상수(REV-0165), Call Graph(REV-0166) 등을 개별적으로는 알고 있지만, 이걸 어떤 순서와 조합으로 적용해야 가장 빠른지 전체 전략이 필요할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>큰 바이너리를 분석할 때 초보자가 가장 자주 하는 실수는 "함수 목록 맨 위부터 하나씩 읽는 것"이다. 이는 함수가 10~20개 수준일 때는 통하지만, 수백 개가 넘어가면 시간 안에 끝내기 어렵다. 실전에서는 여러 <strong>독립적인 단서(필터)</strong>를 동시에 활용해 교집합을 좁히는 방식이 훨씬 효율적이다.</p>
+<h3>깔때기(funnel) 전략의 축들</h3>
+<ol><li><strong>문자열 단서(REV-0163)</strong>: 출력 메시지, 에러 문자열, 포맷 문자열 근처의 xref는 사람이 보는 화면과 직접 연결되어 있어 신뢰도가 가장 높은 시작점이다.</li><li><strong>Import/API 단서(REV-0164)</strong>: <code>strcmp</code>, <code>memcmp</code>, <code>system</code> 같은 특정 목적이 뚜렷한 함수를 호출하는 지점은 검증/실행 로직일 가능성이 크다.</li><li><strong>상수 단서(REV-0165)</strong>: CRC/MD5/SHA/TEA 같은 표준 알고리즘의 매직 넘버가 보이면 그 함수의 정체가 즉시 확정된다.</li><li><strong>함수 크기/블록 수</strong>: 너무 작은 함수(1~2블록)는 단순 wrapper일 가능성이, 중간 크기에 반복문이 있는 함수(블록 수 5개 이상)는 알고리즘 로직일 가능성이 크다. radare2의 <code>afl</code> 출력이나 IDA/Ghidra의 함수 목록에서 크기 열로 바로 확인할 수 있다.</li><li><strong>Call Graph상의 위치(REV-0166, REV-0757)</strong>: <code>main</code>에서 몇 단계 이내인지, 호출하는 곳이 한 곳뿐인지(전용 함수) 여러 곳인지(범용 유틸리티)를 본다.</li><li><strong>엔트로피/패턴</strong>: 반복되는 XOR/시프트 연산이 몰려 있는 함수는 암호화/인코딩 루틴일 가능성이 크다.</li></ol>
+<p>이 여섯 축을 <strong>동시에</strong> 적용해 "여러 단서에서 공통으로 지목되는 함수"를 우선순위 1순위로 둔다. 예를 들어 크기가 적당히 크고, <code>main</code>에서 직접 호출되며, <code>strcmp</code>를 import하고, 근처에 "Wrong password" 문자열의 xref가 있는 함수라면 거의 확실한 검증 로직 후보다.</p>
+<h3>시간 배분 원칙</h3>
+<p>CTF처럼 시간 제한이 있는 상황에서는 "완벽히 이해"보다 "문제를 풀기에 충분한 만큼만 이해"가 목표다. 후보 함수가 좁혀지면 그 함수만 REV-0158(Decompiler)로 깊이 읽고, 나머지 수백 개 함수는 이름도 모른 채로 남겨두어도 무방하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>함수 목록 스크롤이 화면 여러 페이지에 걸쳐 이어진다.</li><li>문자열 목록도 수십~수백 개라 어떤 문자열이 핵심인지 바로 안 보인다.</li><li>이미 REV-0163~0166 중 하나만 적용해봤는데 후보가 여전히 여러 개(5개 이상) 남아 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>file</code>/<code>checksec</code>(REV-0096)으로 바이너리 기본 정보(정적/동적, strip 여부, 아키텍처)를 먼저 확인하고, 문자열 목록(REV-0094, <code>iz</code>/<code>izz</code>)을 훑어 사람이 볼 법한 메시지가 있는지부터 확인한다. 문자열 단서가 있으면 그 문자열의 xref부터 시작한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>file</code>, <code>checksec</code>으로 기본 정보를 확인하고, 정적 링킹(REV-0646)이나 패킹 여부를 먼저 판단한다.</li><li>문자열 목록을 확인해 사람이 읽는 메시지(성공/실패/프롬프트) 후보를 표시해둔다.</li><li>Import 목록(REV-0164)에서 <code>strcmp</code>, <code>memcmp</code>, <code>system</code>, <code>fopen</code> 등 목적이 뚜렷한 함수를 확인한다.</li><li>함수 목록에서 크기/블록 수를 기준으로 "너무 작지도 크지도 않은" 함수들을 별도로 표시한다.</li><li>위 2~4에서 나온 후보들의 xref(REV-0160, REV-0751)를 따라가며, 여러 단서가 겹치는 함수가 있는지 확인한다.</li><li>겹치는 함수가 없다면 상수 검색(REV-0165)과 Call Graph(REV-0166, REV-0757)를 추가로 적용해 범위를 더 좁힌다.</li><li>최종 후보(보통 1~5개 수준)만 REV-0158/REV-0146으로 정밀하게 읽는다.</li><li>후보가 틀렸다고 판명되면 무리해서 그 함수에 매달리지 말고, 2~6단계로 돌아가 다른 조합을 다시 시도한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code>file ./chall
+checksec --file=./chall
+strings ./chall | less
+r2 -A ./chall
+[0x...]&gt; iz
+[0x...]&gt; ii
+[0x...]&gt; afl~+       ; 크기순 정렬 등 grep 필터 활용</code></pre>
+<p>IDA: Strings window(Shift+F12), Imports window, Functions window(크기 열 클릭으로 정렬). Ghidra: Window → Defined Strings, Symbol Tree → Imports, Function 목록(크기 열 정렬).</p>
+<h2>출력 해석</h2>
+<ul><li>여러 단서(문자열+Import+크기)가 동시에 가리키는 함수가 하나뿐이라면 시간을 아낄 수 있는 명확한 승리 조건이다.</li><li>단서들이 서로 다른 함수를 가리킨다면(예: 문자열은 A 함수 근처, 상수는 B 함수 안), 프로그램이 여러 단계의 검증을 거치는 구조일 수 있다 — 이 경우 두 후보 모두 조사 대상에 남겨둔다.</li><li>후보가 5개를 넘는데도 안 좁혀진다면, 필터 자체가 너무 느슨한 것이다 — 크기 기준을 더 좁히거나(예: 특정 범위로 한정), Call Graph상 <code>main</code>과의 거리(hop 수)를 추가 기준으로 걸어본다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>함수 목록 맨 위부터 순서대로 하나씩 다 읽으려 하는 것 — 함수가 많을수록 이 방식은 시간 대비 효율이 급격히 떨어진다.</li><li>단서 하나(예: 문자열)만 보고 바로 결론을 내려 다른 단서와 교차검증하지 않는 것 — 우연히 같은 문자열을 참조하는 무관한 로깅 함수일 수도 있다.</li><li>정적 링킹 바이너리에서 라이브러리 함수(<code>malloc</code>, <code>printf</code> 내부 구현 등)까지 전부 사용자 로직으로 착각해 분석하는 것 — REV-0646에서 다루는 시그니처 매칭으로 먼저 라이브러리 함수를 걸러내야 한다.</li><li>후보를 못 찾았다고 바로 포기하는 것 — 상수 검색(REV-0165)이나 Call Graph의 사이클/재귀(REV-0758) 같은 덜 흔한 축까지 하나씩 추가로 시도해봐야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>문자열/Import 단서 자체가 부족하면 → REV-0163 문자열에서 검증 함수로 이동하는 정적 분석, REV-0164 Imports에서 검증 함수 후보 좁히기</li><li>상수 기반 접근이 필요하면 → REV-0165 상수 검색으로 알고리즘 찾기</li><li>Call Graph로 구조를 조망하고 싶다면 → REV-0166 함수 Call Graph로 핵심 로직 좁히기, REV-0757 Cross Reference Graph로 핵심 함수 찾기</li><li>정적 링킹으로 함수가 폭증한 경우라면 → REV-0646 정적 링킹된(Statically Linked) ELF 분석 접근법</li><li>여러 도구 결과가 엇갈려 판단이 안 서면 → REV-0754 여러 정적분석 도구 결과를 교차검증하는 이유와 방법</li></ul>
+<h2>미니 예제</h2>
+<p>함수 320개짜리 strip된 정적 바이너리를 받았다고 하자. 먼저 <code>strings</code>에서 <code>"Access Denied"</code>라는 문자열을 발견하고 xref를 따라가니 <code>sub_402100</code>에 도달했다. 동시에 Import 목록을 보니 <code>strncmp</code>가 이 함수 근처에서 호출되고 있었고, <code>afl</code>(또는 함수 목록 크기 열)로 확인하니 <code>sub_402100</code>은 블록 수 4개짜리 중간 크기 함수였다. 세 단서(문자열, Import, 크기)가 모두 같은 함수를 가리키므로, 320개 중 나머지 함수는 읽지 않고 이 함수 하나만 REV-0158 방식으로 정밀 분석해 문제를 풀 수 있었다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0163-strings-to-check-function.html">REV-0163 — 문자열에서 검증 함수로 이동하는 정적 분석</a></li><li><a href="rev-0164-imports-narrowing.html">REV-0164 — Imports에서 검증 함수 후보 좁히기</a></li><li><a href="rev-0165-constant-search.html">REV-0165 — 상수 검색으로 알고리즘 찾기</a></li><li><a href="rev-0166-call-graph-narrowing.html">REV-0166 — 함수 Call Graph로 핵심 로직 좁히기</a></li><li><a href="rev-0646-statically-linked-elf-analysis.html">REV-0646 — 정적 링킹된(Statically Linked) ELF 분석 접근법</a></li><li><a href="rev-0754-cross-validate-static-analysis-tools.html">REV-0754 — 여러 정적분석 도구 결과를 교차검증하는 이유와 방법</a></li><li><a href="rev-0757-xref-graph-key-functions.html">REV-0757 — Cross Reference Graph로 핵심 함수 찾기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>문자열/Import/상수/Call Graph를 조합해 분석 범위를 좁히는 접근법은 CTF 리버싱 교육 자료 및 공개 writeup에서 공통적으로 권장되는 일반적 방법론을 기준으로 정리했다.</li><li>IDA/Ghidra/radare2 각 도구의 개별 기능(Strings window, Imports window, <code>iz</code>/<code>ii</code>)에 대한 세부 설명은 각 도구 공식 문서 기준이다.</li><li>이 문서는 특정 CTF 문제를 재현해 검증한 것이 아니라, 여러 실전 전략을 일반화한 방법론 문서이며, 실제 바이너리마다 최적의 필터 조합은 달라질 수 있다(2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Segmentation fault가 나는데 원인 위치를 못 찾을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>Segmentation fault가 나는데 원인 위치를 못 찾을 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">dmesg</span></div>
+<h2>한 줄 요약</h2>
+<p>그냥 <code>./chall</code>을 실행해서 나오는 <code>Segmentation fault (core dumped)</code>라는 한 줄만으로는 어디서 죽었는지 알 수 없으므로, GDB로 직접 실행해 <code>catch signal SIGSEGV</code> 또는 <code>run</code>으로 크래시 순간을 붙잡고 <code>bt</code>(백트레이스)와 <code>x/i $pc</code>로 죽은 정확한 명령어와 호출 스택을 확인하는 절차가 필요하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>터미널에 <code>Segmentation fault (core dumped)</code>만 뜨고 어떤 함수, 어떤 줄에서 죽었는지 전혀 모를 때</li><li>GDB로 실행했을 때도 그냥 멈추기만 하고 어디를 봐야 할지 막막할 때</li><li>strip된 바이너리라서 크래시 지점의 함수 이름이 안 보이고 주소만 나올 때</li><li>REV-0704에서 core dump 생성 자체는 됐는데, 그 안에서 실제로 원인 위치를 어떻게 읽어야 할지 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 기본 실행만으로는 정보가 없나</h3>
+<p>셸이 보여주는 <code>Segmentation fault (core dumped)</code>는 커널이 프로세스에 <code>SIGSEGV</code>를 보냈고 기본 동작(core dump 생성 후 종료)이 일어났다는 뜻일 뿐, 셸 자체는 어떤 주소·어떤 함수에서 문제가 생겼는지 알려주지 않는다. 이 정보를 얻으려면 디버거로 그 순간을 직접 붙잡아야 한다.</p>
+<h3>GDB로 크래시 순간을 붙잡는 두 가지 방법</h3>
+<ol><li><strong>그냥 <code>run</code></strong>: GDB 안에서 <code>run</code>으로 실행하면, 프로그램이 <code>SIGSEGV</code>를 받는 순간 GDB가 자동으로 그 지점에서 실행을 멈추고 프롬프트를 돌려준다. 별도 설정 없이 기본 동작이다.</li><li><strong><code>catch signal SIGSEGV</code></strong>: 여러 종류의 시그널을 처리하는 핸들러가 등록된 프로그램이거나, 정확히 어느 시점에 시그널이 전달되는지 명시적으로 잡고 싶을 때 사용한다.</li></ol>
+<p>멈춘 직후 확인할 것은 세 가지다 — 어떤 명령어에서 죽었는지(<code>$pc</code>/<code>$rip</code>), 그 명령어가 어떤 메모리를 건드리려 했는지(레지스터 값), 그리고 그 지점까지 어떤 함수들을 거쳐왔는지(콜스택)다.</p>
+<h3>백트레이스(bt)로 콜스택 확인</h3>
+<p><code>bt</code>(backtrace)는 크래시 지점부터 <code>main</code>까지 호출된 함수들을 순서대로 보여준다. 심볼이 남아있는 바이너리라면 함수 이름과 인자까지 보이고, strip된 바이너리라면 주소만 나오는데 이 경우에도 "몇 단계를 거쳐 왔는지"와 "어느 주소 범위인지"는 여전히 유용한 단서다.</p>
+<h3>잘못된 메모리 접근의 흔한 패턴</h3>
+<p><code>x/i $pc</code>로 죽은 명령어를 보면 대개 <code>mov</code>, <code>movzx</code> 계열처럼 메모리를 읽거나 쓰는 명령어다. 그 명령어의 피연산자 레지스터(<code>info registers</code>로 값 확인) 값이 <code>0x0</code>에 가깝거나(널 포인터 역참조), 말이 안 되게 크거나 이상한 패턴(<code>0x4141414141414141</code> 등 버퍼 오버플로우로 덮인 값)이면 그것이 바로 원인 단서다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code>$ ./chall
+Segmentation fault (core dumped)</code></pre>
+<p>아무 정보 없이 이 한 줄만 뜨는 것이 전형적인 증상이다.</p>
+<h2>가장 먼저 할 것</h2>
+<p><code>gdb ./chall</code>로 실행한 뒤 <code>run</code>(필요하면 인자 포함 <code>run &lt;args&gt;</code>)으로 그대로 재현한다. GDB가 자동으로 멈추면 바로 <code>bt</code>와 <code>info registers</code>, <code>x/i $pc</code>부터 확인한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>gdb ./chall</code> 실행 후 <code>run</code>(입력이 필요하면 <code>run &lt; input.txt</code>)</li><li>크래시로 멈추면 우선 <code>bt</code>로 콜스택 확인</li><li><code>info registers</code>로 각 레지스터 값 확인, 특히 <code>$rip</code> 근처와 접근하려던 주소로 추정되는 레지스터</li><li><code>x/i $pc</code>로 죽은 명령어 자체를 디스어셈블해서 확인</li><li><code>x/i $pc</code>에서 참조하는 레지스터가 널(0)이면 널 포인터 역참조, <code>0x4141...</code> 같은 패턴이면 버퍼 오버플로우로 덮인 값 의심</li><li>strip되어 함수 이름이 안 보이면 <code>bt</code>에 나온 주소를 <code>objdump -d ./chall</code>에서 검색해 함수 경계 확인, 또는 REV-0668의 시그니처 매칭 기법 적용</li><li>원인이 애매하면 <code>main</code> 등에 <code>break</code>를 걸고 <code>next</code>/<code>step</code>으로 한 줄씩 따라가며 어느 시점부터 값이 이상해지는지 좁힌다(REV-0642의 <code>watch</code> 활용)</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-gdb">gdb ./chall
+run
+run &lt; input.txt
+bt
+bt full
+info registers
+x/i $pc
+x/20xg $rsp
+watch VAR</code></pre>
+<h2>출력 해석</h2>
+<pre><code>Program received signal SIGSEGV, Segmentation fault.
+0x0000000000401235 in copy_data (dst=0x0, src=0x7ffd1234) at chall.c:30
+30          *dst = *src;</code></pre>
+<p><code>0x0000000000401235</code>는 죽은 명령어 주소, <code>copy_data</code>는 그 명령어가 속한 함수(심볼이 있을 때), <code>dst=0x0</code>은 널 포인터가 인자로 들어왔다는 뜻이다. 이 한 줄만으로도 "널 포인터 역참조가 <code>copy_data</code> 함수 30번째 줄에서 발생했다"는 원인을 바로 특정할 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li>GDB 없이 셸에서 <code>Segmentation fault</code>만 보고 원인을 추측으로 때려 맞추려는 것 — 반드시 GDB로 재현해서 확인해야 한다.</li><li><code>bt</code> 결과에서 가장 위(크래시 지점)가 아니라 <code>main</code>부터 거꾸로 읽으며 헷갈리는 것 — <code>bt</code>는 위에서부터 크래시에 가장 가까운 프레임 순이다.</li><li>입력값에 따라 크래시 여부가 달라지는데 GDB 안에서 재현 조건(파일 리다이렉션, 인자)을 빠뜨려서 크래시 자체가 재현이 안 되는 것.</li><li>core dump 설정 문제(REV-0704)와 이 문제(GDB로 직접 원인 위치 찾기)를 혼동해서, core dump가 아예 안 생기는 상황에서 core 파일부터 찾으려 하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>core dump 자체가 생성되지 않아서 사후 분석용 파일이 없다면 → REV-0704 Core dump가 생성되지 않을 때 설정 확인하기.</li><li>종료 코드만으로 대략적인 원인(시그널 종류)을 먼저 좁히고 싶다면 → REV-0661 리눅스 프로세스 종료 코드(Exit Code)로 크래시 원인 좁히기.</li><li>SIGSEGV 자체의 의미와 다른 시그널과의 차이가 궁금하면 → REV-0671 Linux 시그널(SIGSEGV 등)과 리버싱에서의 의미.</li><li>GDB에서 특정 변수가 바뀌는 시점을 추적하고 싶다면 → REV-0642 GDB 명령어 심화 치트시트(watch/catch/tbreak).</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-gdb">(gdb) run
+Starting program: /home/user/chall
+
+Program received signal SIGSEGV, Segmentation fault.
+0x0000000000401235 in copy_data (dst=0x0, src=0x7ffd1234) at chall.c:30
+30          *dst = *src;
+(gdb) bt
+#0  copy_data (dst=0x0, src=0x7ffd1234) at chall.c:30
+#1  0x0000000000401290 in main () at chall.c:12
+(gdb) info registers rdi rsi
+rdi            0x0                 0
+rsi            0x7ffd1234          2147627572</code></pre>
+<p><code>bt</code> 한 번으로 <code>main</code>이 <code>copy_data</code>를 호출했고 그 안에서 죽었다는 흐름이 드러나고, <code>rdi</code>(첫 번째 인자, <code>dst</code>)가 <code>0</code>이라는 것으로 널 포인터 전달이 원인임을 확정할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0704-core-dump-not-generated.html">REV-0704 — Core dump가 생성되지 않을 때 설정 확인하기</a></li><li><a href="rev-0661-linux-exit-code-crash-narrowing.html">REV-0661 — 리눅스 프로세스 종료 코드(Exit Code)로 크래시 원인 좁히기</a></li><li><a href="rev-0671-linux-signals-reversing.html">REV-0671 — Linux 시그널(SIGSEGV 등)과 리버싱에서의 의미</a></li><li><a href="rev-0642-gdb-advanced-cheatsheet.html">REV-0642 — GDB 명령어 심화 치트시트(watch/catch/tbreak)</a></li><li><a href="rev-0113-core-dump-basics.html">REV-0113 — Core dump와 크래시 지점 분석 기초</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>GDB가 <code>SIGSEGV</code> 수신 시 자동으로 실행을 멈추는 기본 동작과 <code>catch signal</code>, <code>bt</code>, <code>info registers</code>, <code>x/i</code> 명령: GDB 공식 매뉴얼("Debugging with GDB") "Signals"/"Backtrace"/"Registers" 챕터 기준 (2026-09-09 검증).</li><li>널 포인터 역참조 및 버퍼 오버플로우로 인한 SIGSEGV 발생 패턴: 일반적인 x86-64 메모리 손상 취약점 분석 관행 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

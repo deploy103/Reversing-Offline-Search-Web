@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>문자열 리터럴이 합쳐지는 컴파일러 최적화(String Pooling) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>문자열 리터럴이 합쳐지는 컴파일러 최적화(String Pooling)</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>소스 코드에서 완전히 동일한 문자열 리터럴(예: <code>"Error"</code>)을 여러 함수에서 각각 따로 썼더라도, 컴파일러/링커는 이를 <code>.rodata</code>(ELF) 또는 <code>.rdata</code>(PE)에 <strong>단 한 벌만 저장</strong>하고 모든 사용처가 그 하나의 주소를 가리키게 만드는데, 이를 문자열 풀링(String Pooling, 또는 literal pooling/string interning)이라 하며, 이 때문에 서로 무관해 보이는 두 함수가 완전히 같은 문자열 주소를 참조하는 경우가 흔하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>서로 다른 함수 두 개(또는 그 이상)의 디스어셈블리에서 문자열을 로드하는 코드가 <strong>정확히 같은 주소</strong>를 가리키고 있어서 "이 함수들이 관련이 있나?"라고 혼동될 때</li><li>소스 코드에 분명 여러 번 등장하는 문자열 리터럴인데, <code>.rodata</code>/<code>.rdata</code> 섹션을 훑어보면 그 개수보다 훨씬 적은 문자열만 보일 때</li><li>문자열 하나의 뒷부분(접미사)이 다른 더 긴 문자열의 중간 지점을 정확히 가리키는 것을 발견했을 때(suffix string merging)</li><li>익스포트/함수 이름은 다른데 참조하는 에러 메시지 문자열 주소가 같아서, 두 함수가 같은 원본 소스에서 왔는지 추적하고 싶을 때</li><li>문자열을 기준으로 함수를 찾는(REV-0006 등) 전략을 쓰는데, 하나의 문자열이 여러 곳에서 xref되어 있어 어떤 호출이 진짜 관심 대상인지 판단해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>문자열 리터럴도 결국 상수다</h3>
+<p><code>printf("Error\n")</code>처럼 코드 안에 직접 쓴 문자열 리터럴은, 컴파일러 입장에서는 배열 형태의 <strong>상수 데이터</strong>일 뿐이다. 정수 상수 <code>5</code>가 여러 곳에서 쓰여도 특별할 게 없는 것처럼, 문자열 상수도 내용이 완전히 같다면 굳이 메모리에 여러 벌을 중복해서 저장할 이유가 없다. 그래서 링커(또는 컴파일러의 리터럴 풀 관리 단계)는 <strong>완전히 동일한 바이트 시퀀스를 가진 문자열 리터럴을 하나로 병합</strong>하고, 이를 참조하는 모든 코드가 같은 주소를 가리키도록 재배치 정보를 조정한다.</p>
+<pre><code class="language-c">void log_error_a(void) {
+    printf("Error\n");
+}
+
+void log_error_b(void) {
+    fprintf(stderr, "Error\n");
+}</code></pre>
+<p>두 함수가 완전히 다른 목적으로 작성됐어도, <code>"Error\n"</code>이라는 리터럴은 내용이 똑같으므로 다음처럼 컴파일된다.</p>
+<pre><code class="language-asm">; .rodata (또는 .rdata) 섹션에는 "Error\n"이 단 한 번만 존재
+str_error:
+    db "Error", 0xA, 0
+
+log_error_a:
+    lea     rdi, [str_error]     ; 같은 주소를 가리킴
+    call    printf
+    ret
+
+log_error_b:
+    lea     rsi, [str_error]      ; 역시 같은 주소를 가리킴
+    mov     rdi, [stderr]
+    call    fprintf
+    ret</code></pre>
+<h3>왜 이런 최적화를 하는가</h3>
+<ol><li><strong>바이너리 크기 절감</strong> — 같은 문자열을 매번 새로 저장하면 소스 파일이 많고 공통 메시지가 많을수록 실행 파일이 불필요하게 커진다.</li><li><strong>캐시 효율</strong> — 여러 함수가 자주 참조하는 문자열이 메모리에 한 벌만 있으면, 같은 캐시 라인을 재사용할 가능성이 높아진다.</li><li><strong>디버그 정보/PDB에서도 동일한 관례</strong> — 컴파일러/링커의 상수 폴딩(constant folding) 철학의 연장선으로, 문자열도 "내용이 같으면 하나로 취급"하는 것이 일관적이다.</li></ol>
+<h3>MSVC의 COMDAT 문자열 풀링 — <code>/GF</code>, ICF</h3>
+<p>MSVC는 문자열 풀링을 <code>/GF</code>(Eliminate Duplicate Strings) 컴파일러 옵션으로 제어하며, 기본적으로 릴리즈 빌드에서 활성화되어 있다. 링커 단에서는 <code>/OPT:ICF</code>(Identical COMDAT Folding)라는 별도의 최적화가 있는데, 이는 문자열뿐 아니라 <strong>완전히 동일한 함수 코드</strong>까지 하나로 합쳐버린다 — 서로 다른 이름의 함수 두 개가 컴파일 후 바이트 단위로 완전히 같은 코드를 생성했다면, 링커가 둘을 하나로 합치고 한쪽 이름의 호출을 다른 쪽 주소로 리다이렉트한다. 이 때문에 함수 이름은 다른데 실제 코드 주소가 완전히 같은 경우도 발생할 수 있다(REV-0466의 함수 복제와는 정반대 방향의 현상).</p>
+<h3>GCC/Clang의 접미사 병합 — Suffix Merging</h3>
+<p>GCC/Clang의 링커(특히 <code>--icf</code>를 지원하는 lld, gold 등)는 문자열 풀링을 한 단계 더 발전시켜, 한 문자열이 다른 문자열의 <strong>접미사(suffix)와 완전히 일치</strong>하면 그 부분을 별도로 저장하지 않고 긴 문자열의 중간 지점을 가리키게 만들기도 한다.</p>
+<pre><code class="language-c">const char *msg1 = "File not found";
+const char *msg2 = "not found";</code></pre>
+<p><code>"not found"</code>는 <code>"File not found"</code>의 뒷부분과 완전히 일치하므로, 링커는 다음처럼 배치할 수 있다.</p>
+<pre><code>.rodata:
+  "File not found\0"
+                ^
+                |
+   msg2는 이 위치(offset +5)를 직접 가리킴, 별도 저장 없음</code></pre>
+<p>이 경우 <code>msg2</code>가 가리키는 주소는 <code>.rodata</code> 섹션 안의 독립된 문자열 시작 지점이 아니라, 더 긴 문자열의 중간 오프셋이 된다. 처음 보면 "왜 문자열 주소가 이상한 위치를 가리키지?"라고 혼란스러울 수 있는데, 이는 버그가 아니라 접미사 병합 최적화의 정상적인 결과다.</p>
+<h3>C++ 템플릿/인라인 함수와 문자열 풀링의 상호작용</h3>
+<p>같은 헤더의 인라인 함수나 템플릿이 여러 번역 단위(.cpp 파일)에서 각각 컴파일되면, 그 안의 문자열 리터럴도 각 번역 단위마다 별도 사본으로 생성됐다가, 최종 링크 단계에서 문자열 풀링/ICF에 의해 다시 하나로 합쳐지는 경우가 흔하다. 이는 여러 오브젝트 파일(.obj/.o)에 흩어져 있던 동일한 상수가 최종 실행 파일 단계에서 정리되는 과정이라고 이해하면 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>서로 다른 함수의 문자열 로드 명령(<code>lea rdi, [addr]</code>, <code>mov eax, offset addr</code> 등)이 정확히 같은 주소를 참조</li><li><code>.rodata</code>/<code>.rdata</code> 섹션의 문자열 개수가 소스 코드에서 세어본 리터럴 개수보다 뚜렷하게 적음</li><li>어떤 문자열의 참조 주소가 다른(더 긴) 문자열의 시작 주소 + 특정 오프셋과 정확히 일치(접미사 병합)</li><li>MSVC 빌드에서 서로 다른 이름의 함수 두 개가 완전히 같은 코드 주소를 가리키거나 완전히 동일한 바이트로 구성됨(ICF)</li><li>IDA/Ghidra의 Xref to 결과에서, 한 문자열에 대해 관련 없어 보이는 여러 함수가 동시에 나열됨</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문자열 xref가 여러 함수에 걸쳐 있는 것을 발견하면, 먼저 그 문자열의 정확한 바이트 내용을 확인해서 "정말 완전히 같은 문자열인가"를 확인한다. 완전히 같다면 이는 문자열 풀링에 의한 정상적인 공유이므로, 그 문자열 하나로 여러 호출자를 한꺼번에 특정하려 하지 말고 각 호출자의 문맥(주변 코드)으로 구분해서 분석해야 한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 문자열 참조 주소가 같은지 정확히 비교</strong></p>
+<p>두 함수가 같은 문자열을 쓰는 것처럼 보이면, 실제 참조하는 절대/상대 주소가 정말 동일한지 IDA/Ghidra의 주소 표시로 재확인한다.</p>
+<p><strong>2) 그 문자열의 Xref 목록 전체 확인</strong></p>
+<p>문자열에 커서를 두고 Xref(교차 참조) 목록을 열어, 몇 개의 서로 다른 함수가 이 문자열을 참조하는지 전부 나열해본다.</p>
+<p><strong>3) 접미사 병합 의심 시 주변 바이트 확인</strong></p>
+<p>문자열 시작 주소가 이상하게 다른 문자열의 중간처럼 보이면, 그 앞쪽 메모리를 몇 바이트 더 살펴봐서 실제로 더 긴 문자열의 일부인지 확인한다.</p>
+<p><strong>4) ICF/COMDAT folding 의심 시 함수 바이트 비교</strong></p>
+<p>이름이 다른 두 함수의 코드가 완전히 동일해 보이면, 실제 시작 주소가 같은지 확인해서 링커가 두 함수를 하나로 합쳤는지(ICF) 판단한다.</p>
+<p><strong>5) 각 호출자를 문맥으로 구분해서 분석 계속</strong></p>
+<p>문자열 자체는 공유되므로, 각 호출자 함수의 역할은 그 문자열이 아니라 주변 로직(어떤 조건에서 이 문자열을 쓰는지)으로 구분해서 분석을 이어간다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">readelf -x .rodata ./bin | less     # rodata 섹션 원시 바이트 확인(리눅스)
+strings -t x ./bin | grep "Error"    # 문자열과 오프셋을 함께 출력
+objdump -s -j .rodata ./bin           # 섹션 전체 hex dump</code></pre>
+<p>IDA: 문자열 창(<code>Shift+F12</code>)에서 문자열 더블클릭 후 <code>Ctrl+X</code>(Xref to)로 참조하는 모든 함수 확인. Ghidra: Defined Strings 창에서 동일하게 References 확인.</p>
+<h2>출력 해석</h2>
+<ul><li>하나의 문자열에 대해 Xref가 여러 개 나오는 것 자체는 이상 현상이 아니다 — 오히려 흔한 문자열(에러 메시지, 포맷 문자열)일수록 여러 함수가 공유하는 게 정상이다.</li><li>문자열 주소가 다른 문자열의 중간 오프셋과 일치한다면 접미사 병합이며, 그 문자열의 "진짜 시작"과 "실제로 쓰이는 시작 주소"가 다르다는 점을 기록해두면 나중에 혼동을 줄일 수 있다.</li><li>이름이 다른 두 함수의 시작 주소가 완전히 같다면 ICF로 병합된 것이며, 원본 소스에서는 별개의 함수였다는 것을 심볼 테이블이나 디버그 정보로 확인할 수 있다(둘 중 하나만 실제 코드로 남고, 다른 이름은 그 주소의 별칭(alias)으로 남는 경우가 많다).</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>같은 문자열을 참조하는 여러 함수를 보고 "이 함수들이 서로 호출 관계가 있다"고 오해하는 것 — 문자열 공유는 코드 흐름상의 연관성을 의미하지 않는다. 단지 같은 텍스트를 우연히 함께 썼을 뿐일 수 있다.</li><li>문자열 개수가 예상보다 적다고 "코드가 일부 빠졌다"고 착각하는 것 — 대부분은 중복 제거일 뿐, 실제 사용되는 문자열 내용은 그대로 보존되어 있다.</li><li>접미사 병합으로 다른 문자열의 중간을 가리키는 주소를 보고 "포인터 계산 버그"나 "취약점"으로 오판하는 것 — 정상적인 링커 최적화의 결과다.</li><li>ICF로 합쳐진 두 함수를 보고 "하나가 다른 하나를 감싸는 wrapper 함수"라고 오해하는 것 — 실제로는 원본이 서로 다른 두 함수였는데 우연히(또는 의도적으로 유사하게 작성되어) 코드가 완전히 같아져서 링커가 합친 것뿐이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>문자열을 단서로 관심 있는 함수를 찾아가는 기본 전략이 궁금하면 → REV-0006 체크 함수 찾는 법</li><li>문자열이 메모리에 저장되는 인코딩 방식(ASCII/UTF-8/UTF-16) 자체가 궁금하면 → REV-0036 문자열이 메모리에 저장되는 방식 ASCII UTF-8 UTF-16</li><li>컴파일러의 다른 상수/코드 병합 최적화(상수 폴딩, 죽은 코드 제거 등)가 궁금하면 → REV-0037 컴파일러 최적화가 디컴파일 결과를 이상하게 만드는 이유</li><li>코드 레벨에서 함수가 여러 번 복제되어 보이는 반대 현상(Function Cloning)이 궁금하면 → REV-0466 함수가 여러 번 복제된 것처럼 보이는 이유(Function Cloning)</li><li>PE의 <code>.rdata</code> 섹션 관례 자체가 궁금하면 → REV-0525 PE Section 이름 관례 사전(.text .rdata .data .rsrc 등)</li></ul>
+<h2>미니 예제</h2>
+<p>여러 함수가 공통 에러 메시지를 재사용하는 경우를 보자.</p>
+<pre><code class="language-c">void check_a(int x) {
+    if (x &lt; 0) {
+        printf("Invalid input\n");
+        return;
+    }
+}
+
+void check_b(int y) {
+    if (y &gt; 100) {
+        printf("Invalid input\n");
+        return;
+    }
+}</code></pre>
+<p>두 함수 모두 <code>"Invalid input\n"</code>을 쓰지만, 링커는 이를 한 벌만 저장한다.</p>
+<pre><code class="language-asm">; .rodata
+str_invalid:
+    db "Invalid input", 0xA, 0
+
+check_a:
+    cmp     edi, 0
+    jge     .ret_a
+    lea     rdi, [str_invalid]   ; str_invalid 참조
+    call    printf
+.ret_a:
+    ret
+
+check_b:
+    cmp     edi, 100
+    jle     .ret_b
+    lea     rdi, [str_invalid]    ; check_a와 완전히 같은 주소
+    call    printf
+.ret_b:
+    ret</code></pre>
+<p><code>str_invalid</code>의 Xref를 확인하면 <code>check_a</code>와 <code>check_b</code> 둘 다 나타난다. 두 함수는 서로 다른 조건(<code>x &lt; 0</code> vs <code>y &gt; 100</code>)을 검사하는 완전히 독립적인 로직이지만, 우연히 같은 에러 메시지를 재사용했기 때문에 문자열 참조만으로는 두 함수가 관련 있어 보이는 착시가 생길 수 있다 — 실제 관계 여부는 각 함수의 조건문과 호출 문맥을 봐야 판단할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0036-string-encoding.html">REV-0036 — 문자열이 메모리에 저장되는 방식 ASCII UTF-8 UTF-16</a></li><li><a href="rev-0037-optimization-weirdness.html">REV-0037 — 컴파일러 최적화가 디컴파일 결과를 이상하게 만드는 이유</a></li><li><a href="rev-0466-function-cloning.html">REV-0466 — 함수가 여러 번 복제된 것처럼 보이는 이유(Function Cloning)</a></li><li><a href="rev-0525-pe-section-naming-conventions.html">REV-0525 — PE Section 이름 관례 사전(.text .rdata .data .rsrc 등)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>MSVC 문자열 풀링(<code>/GF</code>, Eliminate Duplicate Strings)과 링커의 Identical COMDAT Folding(<code>/OPT:ICF</code>): Microsoft Learn "/GF (Eliminate Duplicate Strings)" 및 "/OPT (Optimizations)" 공식 문서 기준.</li><li>GNU 링커(gold, lld)의 문자열/COMDAT 병합 및 identical code folding(<code>--icf</code>) 옵션: GNU Binutils 및 LLVM lld 공식 문서 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

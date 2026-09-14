@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Write-up] flag printer · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / writeup</div>
+<article class="article-body">
+<h1>[Write-up] flag printer</h1>
+<div class="article-meta"><span class="tag">writeup</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>"flag printer"라는 이름을 가진 리버싱 문제는 CTF 세계에 여러 대회(TMUCTF, AlpacaHack 등)에 같은 이름으로 존재하지만 드림핵 워게임 Bronze 2의 "flag printer"와는 별개의 문제이며, 드림핵 판의 상세 write-up은 찾지 못했다. 이름 그대로 "플래그를 출력하는 함수"를 찾아 그 함수가 실행되는 조건 또는 그 함수가 계산하는 값 자체를 역산하는 문제로 추정하고 접근하는 것이 합리적이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>"flag printer"를 검색했는데 TMUCTF나 AlpacaHack 같은 다른 대회의 동명 문제 write-up만 나오고 드림핵 문제와는 맞지 않을 때</li><li>바이너리를 열어보니 <code>print_flag</code>, <code>show_flag</code> 같은 이름의 함수가 있는데 그 함수가 호출되는 조건을 못 찾겠을 때</li><li>함수 이름만 보고 "플래그 출력 함수만 실행하면 되겠네"라고 생각했지만 실행 흐름상 그 함수에 도달하지 못할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>검색 결과 "flag printer"라는 제목의 리버싱 문제는 TMUCTF 2021과 AlpacaHack(Daily Challenge, "Flag Printer 2100")에도 각각 존재한다. 이 두 문제는 드림핵과 무관한 별도 대회의 문제이므로 여기서 그대로 인용해 정답처럼 서술하는 것은 부적절하다. 다만 동일한 제목의 문제들이 공유하는 일반적인 설계 패턴은 참고할 가치가 있다.</p>
+<p>다른 대회의 "flag printer"류 문제들에서 반복적으로 나타나는 설계는 다음과 같다.</p>
+<ul><li>프로그램이 시작하면 어떤 조건(타이머, 반복 연산, 특정 함수 호출) 뒤에 플래그를 출력하는 함수가 실행되도록 되어 있다.</li><li>그 조건이 지나치게 느리게 계산되도록 일부러 비효율적인 알고리즘(예: 메모이제이션 없는 재귀 피보나치 스타일 계산)으로 구현되어 있어서, 얼핏 보면 "그냥 기다리면 되는" 문제처럼 보이지만 사실상 현실적인 시간 안에 끝나지 않도록 설계된 경우가 있다.</li><li>이런 경우 해법은 프로그램을 그대로 기다리는 것이 아니라, 그 계산 로직을 코드로 재구현해 memoization(중복 계산 결과 캐싱)을 적용하거나, 타이머/조건 검사 지점을 디버거로 건너뛰는 패치를 하는 것이다.</li></ul>
+<p>드림핵의 "flag printer"(Bronze 2)가 정확히 이 구조인지는 확인되지 않았다. 다만 이름이 강하게 "플래그를 출력하는 로직 자체를 분석하라"는 것을 암시하므로, <code>print</code>/<code>show</code>/<code>flag</code> 등의 키워드로 문자열/함수 참조를 먼저 찾는 전략은 문제 구조와 무관하게 항상 유효한 첫걸음이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>실행 시 아무 것도 출력되지 않거나, 입력을 요구하지 않고 조용히 끝나거나 멈춰있는 것처럼 보임</li><li>IDA/Ghidra에서 <code>flag</code>, <code>print</code>, <code>show</code> 등의 이름을 포함한 함수나 문자열이 존재함(strip 안 된 경우)</li><li>특정 함수가 호출되기까지 반복 루프나 재귀 호출이 과도하게 많아 실행 시간이 비정상적으로 길게 느껴짐</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>Strings 창과 함수 목록에서 <code>flag</code>, <code>print</code>, <code>show</code>, <code>puts</code> 관련 이름을 모두 찾아 그 함수로의 xref(누가 호출하는지)를 추적한다. 호출하는 지점이 어떤 조건 뒤에 있는지 확인하는 것이 핵심이다.</p>
+<h2>단계별 절차</h2>
+<ol><li>실행해서 실제로 아무 반응이 없는지, 시간이 걸리는지, 입력을 요구하는지 관찰</li><li>IDA/Ghidra에서 플래그 관련 이름의 함수/문자열을 찾고 xref로 호출 지점 추적</li><li>호출 지점 위쪽의 조건문(비교, 타이머, 반복 횟수 카운터)을 확인</li><li>조건이 단순 비교라면 값을 맞춰 입력하고, 반복/재귀 연산이라면 그 알고리즘을 Python 등으로 재구현해 시간을 줄이거나 정확한 값을 미리 계산</li><li>x64dbg로 조건 통과 지점에 브레이크포인트를 걸어 우회 또는 값 확인으로 검증</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">IDA: Shift+F12(Strings) → 더블클릭 xref, Shift+F4(문자열 참조된 함수 뷰)
+x64dbg: 플래그 출력 함수 시작 주소에 F2 → EIP/RIP를 직접 그 주소로 이동(우회 시)</code></pre>
+<h2>출력 해석</h2>
+<p>플래그 출력 함수 진입 직전에 항상 실패하고 있다면, 그 위쪽 조건이 무엇을 비교하는지가 핵심이다. 조건이 반복 연산 결과라면 결과를 눈으로 예측하기보다 동일한 로직을 스크립트로 재구현해 정확한 가능한 값을 얻는 편이 안전하다.</p>
+<h2>흔한 실수</h2>
+<ul><li>이름이 같다는 이유로 다른 대회(TMUCTF, AlpacaHack)의 "flag printer" 풀이를 그대로 드림핵 문제에 대입해 시간을 낭비하는 것</li><li>반복/재귀 계산이 원인인데 그냥 프로그램을 오래 기다리기만 하다가 포기하는 것 — 현실적인 시간 안에 끝나지 않게 설계되었을 수 있음</li><li>플래그 함수 자체만 보고 그 함수를 호출하는 조건을 살펴보지 않는 것</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>반복/재귀 연산이 원인인 것 같다면 → REV-0911 여러 알고리즘이 순차적으로 합성된 문제 풀어내기</li><li>같은 입력에도 결과가 다르거나 시간이 오래 걸리는 것처럼 보이면 → REV-0331 같은 입력인데 실행마다 다른 결과가 나올 때</li><li>특정 함수로의 진입 조건을 우회하는 패치 방법이 헷갈리면 → REV-0282 x64dbg 10분 실전 워크플로</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">// 다른 대회의 "flag printer" 계열에서 흔히 보이는 설계를 일반화한 예시(실제 드림핵 코드 아님)
+long long slow_calc(int n) {
+    if (n &lt;= 1) return n;
+    return slow_calc(n - 1) + slow_calc(n - 2); // memoization 없는 재귀
+}
+if (slow_calc(input) == target) print_flag();</code></pre>
+<p>이 예제는 다른 CTF의 동명 문제에서 보이는 설계 원리를 일반화한 것으로, 드림핵의 "flag printer" 실제 코드가 확인된 것은 아니다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0911-chained-algorithm-composition.html">REV-0911 — 여러 알고리즘이 순차적으로 합성된 문제 풀어내기</a></li><li><a href="rev-0331-nondeterministic-output-same-input.html">REV-0331 — 같은 입력인데 실행마다 다른 결과가 나올 때</a></li><li><a href="rev-0282-x64dbg-10min-workflow.html">REV-0282 — x64dbg 10분 실전 워크플로</a></li><li>[REV-1042 — [Write-up] my rand](rev-1042-writeup-my-rand.html)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>WebSearch로 "dreamhack flag printer reversing writeup"을 검색한 결과 드림핵 자체 문제의 write-up은 찾지 못했고, TMUCTF 2021과 AlpacaHack의 동명 문제 write-up만 확인되었다(2026-09-10 검증). 두 문제는 드림핵 워게임과 무관한 별도 대회 문제로 판단해 정답으로 인용하지 않았다.</li><li>본문에 인용한 "느린 재귀 + memoization" 설계 패턴은 위 타대회 write-up들에서 공통적으로 관찰된 일반적 CTF 설계 아이디어를 재서술한 것이며, 드림핵 "flag printer"의 실제 로직으로 확정된 것은 아니다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

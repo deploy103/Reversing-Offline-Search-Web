@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>상수 하나를 잘못 읽어서 전체 알고리즘이 안 맞을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>상수 하나를 잘못 읽어서 전체 알고리즘이 안 맞을 때</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>알고리즘 로직 전체를 정확히 옮겼는데도 결과가 안 맞는다면, 의외로 원인은 로직이 아니라 <strong>상수 하나를 눈으로 잘못 옮겨 적은 것</strong>인 경우가 매우 많다 — 16진수/10진수 혼동, 자릿수 누락, 부호 있는 표시로 인한 오독, 64비트 값을 32비트로 잘라 읽는 실수가 대표적이며, 이 글은 그런 실수들과 함께 <code>algorithms</code> 카테고리 전체를 마무리하는 디버깅 체크리스트를 겸한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>로직, 오버플로우 마스킹, 엔디안, 패딩, 라운드 수까지 다 확인했는데도 결과가 안 맞을 때</li><li>디컴파일 창에 보이는 상수와 디스어셈블리의 상수가 다르게 표시될 때</li><li>상수를 옮겨 적을 때 손으로 타이핑하다가 자릿수를 빼먹었을 가능성이 있을 때</li><li><code>algorithms</code> 카테고리의 다른 글로 원인을 다 좁혀봤는데도 여전히 안 맞을 때, 마지막으로 상수 자체를 재검증하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>상수 오독은 크게 네 가지 형태로 나타난다.</p>
+<p><strong>1) signed/unsigned 표시로 인한 오독</strong>: 디컴파일러가 32비트 unsigned 상수를 signed로 표시해서 <code>-1520786223</code>처럼 낯선 음수로 보여주는 경우. 이 값을 그대로 옮기면 부호만 다른 게 아니라 완전히 다른 비트 패턴으로 착각하기 쉽다.</p>
+<p><strong>2) 64비트 값을 32비트로 잘라 읽는 실수</strong>: <code>mov eax, imm32</code> 같은 명령은 32비트 즉시값만 가지지만, 64비트 레지스터 전체(<code>rax</code>)에 값을 넣는 <code>movabs rax, imm64</code> 계열 명령은 8바이트 전체가 상수다. 디스어셈블리 뷰나 IDA의 특정 표시 모드에서 이 둘을 혼동하면, 64비트 상수의 상위 32비트를 통째로 놓치고 하위 32비트만 옮겨 적는 실수가 생긴다.</p>
+<p><strong>3) 16진수/10진수 혼동</strong>: 소스나 라이트업에 <code>0x10</code>이라고 적힌 걸 10으로 옮기거나, 반대로 디컴파일러가 보여주는 순수 10진수 상수(<code>803406689</code>)를 16진수 자릿수처럼 착각해서 앞에 <code>0x</code>를 붙여버리는 실수. 상수를 옮길 때는 항상 진법 표시(<code>0x</code> 유무)를 소스와 정확히 대조해야 한다.</p>
+<p><strong>4) 손으로 옮겨 적다가 생기는 단순 오타</strong>: 자릿수 하나를 빠뜨리거나(<code>0x1A2B3C4D</code>를 <code>0x1A2B3C4</code>로), 비슷하게 생긴 문자를 바꿔 쓰는(<code>0</code>과 <code>O</code>, <code>1</code>과 <code>l</code>) 것처럼 순수한 타이핑 실수. 상수가 길수록 확률이 높아진다.</p>
+<p>이 네 가지는 전부 "값 자체는 완전히 틀렸지만 로직은 완벽하게 맞는" 상황을 만들기 때문에, 로직만 아무리 재확인해도 못 찾는다. <strong>상수는 항상 복사(copy)로 옮기고, 손으로 타이핑하지 않는 것</strong>이 가장 확실한 예방책이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>파이썬 코드의 상수 리터럴과 IDA/Ghidra 화면에 표시된 상수를 나란히 놓고 봤을 때 자릿수나 부호가 다름</li><li><code>cmp</code> 명령의 오퍼랜드(어셈블리, hex)와 디컴파일 창의 비교 상수(C 코드, 종종 signed 10진수)가 겉보기에 다른 표기로 보임</li><li>64비트 레지스터에 대입되는 명령(<code>movabs</code>, <code>mov reg64, imm64</code>)인데 상수를 8바이트가 아니라 4바이트로 옮겨 적음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>로직을 다른 REV 문서들의 체크리스트로 다 확인했는데도 안 맞는다면, 코드에 쓰인 <strong>모든 상수를 하나하나 디스어셈블리와 다시 대조</strong>한다. 이때 절대 눈으로 보고 타이핑하지 말고, IDA/Ghidra에서 값을 직접 복사해서 붙여넣는다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 상수 목록 뽑기</strong></p>
+<p>재구현 코드에 등장하는 모든 리터럴 상수(초기값, 곱셈/시프트 상수, 목표 비교값)를 리스트로 뽑는다.</p>
+<p><strong>2) 원본 디스어셈블리에서 같은 상수를 복사로 재확인</strong></p>
+<p>IDA/Ghidra에서 해당 상수 위에 커서를 놓고 값을 복사(<code>Ctrl+C</code> 또는 우클릭 → Copy)해서, 재구현 코드의 값과 문자열 그대로 비교한다.</p>
+<p><strong>3) signed로 표시된 상수는 unsigned로 변환해서 대조</strong></p>
+<pre><code class="language-python">def to_u32(n: int) -&gt; int:
+    return n &amp; 0xFFFFFFFF
+
+# 디컴파일러가 -1520786223으로 보여준 상수
+print(hex(to_u32(-1520786223)))</code></pre>
+<p><strong>4) 64비트 상수는 명령어 종류부터 확인</strong></p>
+<p><code>mov eax, imm32</code>인지 <code>movabs rax, imm64</code>(또는 <code>mov rax, imm64</code>)인지 옵코드/피연산자 크기를 먼저 확인하고, 64비트라면 8바이트 전체를 옮긴다.</p>
+<p><strong>5) 진법 표시를 소스와 한 글자씩 대조</strong></p>
+<p><code>0x</code> 접두어 유무, 자릿수 개수를 원본과 정확히 맞춘다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python">hex(n &amp; 0xFFFFFFFF)              # signed로 보이는 값 -&gt; unsigned 32비트로 환원
+hex(n &amp; 0xFFFFFFFFFFFFFFFF)      # signed로 보이는 값 -&gt; unsigned 64비트로 환원
+assert my_constant == 0x1A2B3C4D # 상수 하나하나에 assert를 걸어 오타를 조기에 잡기</code></pre>
+<p>IDA: 상수 위 우클릭 → <code>Copy</code> 또는 <code>Yank</code>로 값을 직접 복사(손 타이핑 대신).</p>
+<h2>출력 해석</h2>
+<ul><li>상수를 하나씩 <code>assert</code>로 걸어두면, 재구현 코드를 실행하는 순간 어떤 상수가 틀렸는지 그 줄 번호로 바로 알 수 있다.</li><li>모든 상수가 assert를 통과했는데도 결과가 안 맞으면, 상수 문제가 아니라 로직/순서 문제이므로 이진 탐색 절차로 되돌아간다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>상수를 눈으로 보고 손으로 타이핑하는 것 — 8자리, 16자리 hex 상수는 반드시 복사-붙여넣기로 옮긴다.</li><li>signed로 표시된 상수를 "이 프로그램은 원래 음수를 쓰나보다"라고 그대로 믿고 옮기는 것 — 항상 unsigned 여부를 먼저 확인한다.</li><li>여러 상수 중 하나만 확인하고 나머지는 "맞겠지"라고 넘어가는 것 — 상수가 여러 개라면 전부 assert로 걸어서 한 번에 검증한다.</li><li>상수 오독을 의심하지 않고 로직만 계속 다시 짜는 것 — 로직 재작성은 이미 맞는 부분에 새 버그를 심을 위험이 있으므로, 상수부터 먼저 배제하는 게 안전하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<p>아래는 <code>algorithms</code> 카테고리를 마무리하는 디버깅 체크리스트다. 알고리즘 복원 결과가 원본과 안 맞을 때는 이 순서로 하나씩 배제해나가는 것이 가장 효율적이다.</p>
+<ol><li>오라클(체크 함수) 자체가 맞는지 알려진 입력으로 교차검증했는가? → REV-0924 브루트포스를 돌렸는데 답이 안 나올 때</li><li>모든 곱셈/덧셈/시프트 뒤에 원본 비트폭에 맞는 마스킹을 걸었는가? → REV-0926 정수 오버플로를 빼먹어서 계산이 계속 안 맞을 때</li><li>여러 바이트를 하나의 워드로 합치는 지점의 바이트 순서(엔디안)를 확인했는가? → REV-0927 엔디안을 잘못 적용해서 해시 값이 안 맞을 때</li><li>데이터에 필요한 패딩(PKCS7, 길이-강화 패딩 등)을 정확히 적용했는가? → REV-0928 패딩(Padding) 처리를 빼먹어서 결과가 어긋날 때</li><li>루프 반복 횟수와 마지막 라운드의 예외 처리를 디스어셈블리로 직접 세어 확인했는가? → REV-0929 라운드 수나 반복 횟수를 잘못 세어서 결과가 다를 때</li><li>모든 상수를 손 타이핑이 아니라 복사로 옮겼고, signed/unsigned 표시를 확인했는가? → 이 글(REV-0930)</li><li>XOR 키처럼 부분적으로만 복구된 값이 있다면 주기적 오류 패턴을 확인했는가? → REV-0922 XOR 키를 구했는데 일부만 맞을 때</li><li>Z3를 쓴다면 unsat/틀린 해가 나올 때 unsat_core와 부호 비교부터 재확인했는가? → REV-0925 Z3에게 조건을 걸었는데 unsat이 뜰 때</li><li>여전히 원인을 못 찾겠다면, 최종 출력이 아니라 중간값을 단계별로 비교하는 이진 탐색으로 되돌아갔는가? → REV-0921 알고리즘을 복원했는데 출력이 원본과 안 맞을 때</li></ol>
+<p>이 아홉 단계를 순서대로 배제하면, 대부분의 "로직은 맞는 것 같은데 결과가 안 맞는" 상황의 원인을 찾아낼 수 있다.</p>
+<h2>미니 예제</h2>
+<p>어떤 검증 함수의 목표 상수를 디컴파일 창에서 다음과 같이 봤다고 하자.</p>
+<pre><code class="language-c">if (hash == -1640531527) return SUCCESS;</code></pre>
+<p>이 값을 그대로 파이썬에 <code>-1640531527</code>로 옮겨서 비교했더니 절대 통과하지 못했다. unsigned로 변환해본다.</p>
+<pre><code class="language-python">print(hex(-1640531527 &amp; 0xFFFFFFFF))   # 0x9e3779b9</code></pre>
+<p><code>0x9E3779B9</code>는 TEA의 델타 상수(REV-0210)다. <code>hash</code>는 애초에 <code>unsigned int</code>로 선언된 변수인데 디컴파일러가 signed 10진수로 보여준 것뿐이었고, 이를 그대로(signed 그대로) 옮긴 것이 원인이었다. <code>hash == 0x9E3779B9</code>로 고치자 검증 로직이 원본과 정확히 일치했다.</p>
+<h3>추가 예제 — 손으로 옮겨 적다가 한 자리를 잘못 옮긴 경우(타이핑 오타)</h3>
+<p>이번엔 signed/unsigned 문제가 아니라, <strong>긴 16진수 상수를 손으로 타이핑하다가 자릿수 하나를 잘못 옮긴</strong> 아주 순수한 오타 사례를 재현해본다.</p>
+<pre><code class="language-python">def h(s: bytes) -&gt; int:
+    """검증 로직에서 쓰는 단순 누산 해시 (실습용)."""
+    v = 0
+    for b in s:                       # 입력 바이트를 하나씩 처리
+        v = (v * 31 + b) &amp; 0xFFFFFFFF  # 31을 곱하고 바이트를 더한 뒤 32비트로 마스킹
+    return v
+
+
+def check_wrong(s: bytes) -&gt; bool:
+    """[틀린 코드] IDA 화면의 상수를 손으로 옮기다가 첫 자리 '2'를 '8'로 잘못 입력함."""
+    TARGET = 0x8325c2   # 원본은 0x2325c2인데 자릿수 하나를 잘못 옮김
+    return h(s) == TARGET
+
+
+def check_right(s: bytes) -&gt; bool:
+    """[고친 코드] IDA에서 값을 직접 복사(Ctrl+C)해서 붙여넣은 정확한 상수."""
+    TARGET = 0x2325c2
+    return h(s) == TARGET
+
+
+answer = b"KEY!"   # 실제 정답이라고 가정한 입력
+
+print("[틀린 코드] 검증 결과:", check_wrong(answer))   # False (진짜 정답을 넣어도 실패)
+print("[고친 코드] 검증 결과:", check_right(answer))   # True
+
+# 상수 하나하나에 assert를 걸어두면 실행하는 순간 바로 어떤 상수가 문제인지 드러난다
+assert h(answer) == 0x2325c2, f"상수가 여전히 틀렸다: 실제 계산값 {hex(h(answer))}"
+print("상수 검증 통과 - 실제 계산값도", hex(h(answer)), "으로 일치")</code></pre>
+<p><code>check_wrong</code>과 <code>check_right</code>는 로직(해시 계산 방식)이 완전히 동일하고 딱 하나, 목표 상수의 <strong>첫 번째 16진수 자릿수(<code>2</code> vs <code>8</code>)</strong> 만 다르다. 그런데도 진짜 정답(<code>b"KEY!"</code>)을 넣었을 때 결과가 <code>False</code>에서 <code>True</code>로 완전히 뒤바뀐다 — 이것이 바로 "로직은 완벽한데 상수 하나 때문에 전체가 안 맞는" 상황을 코드로 직접 보여주는 사례이며, <code>assert</code>를 상수마다 걸어두면 이런 오타를 실행 즉시 잡아낼 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0206-negative-to-unsigned-hex.html">REV-0206 — 음수 상수를 Unsigned Hex로 다시 읽기</a></li><li><a href="rev-0210-tea-xtea.html">REV-0210 — TEA와 XTEA 상수 패턴</a></li><li><a href="rev-0921-recovered-algorithm-output-mismatch.html">REV-0921 — 알고리즘을 복원했는데 출력이 원본과 안 맞을 때</a></li><li><a href="rev-0922-xor-key-partially-correct.html">REV-0922 — XOR 키를 구했는데 일부만 맞을 때</a></li><li><a href="rev-0924-bruteforce-no-answer.html">REV-0924 — 브루트포스를 돌렸는데 답이 안 나올 때</a></li><li><a href="rev-0925-z3-unsat-algorithm-recovery.html">REV-0925 — Z3에게 조건을 걸었는데 unsat이 뜰 때</a></li><li><a href="rev-0926-integer-overflow-missed.html">REV-0926 — 정수 오버플로를 빼먹어서 계산이 계속 안 맞을 때</a></li><li><a href="rev-0927-endianness-hash-mismatch.html">REV-0927 — 엔디안을 잘못 적용해서 해시 값이 안 맞을 때</a></li><li><a href="rev-0928-padding-missed-mismatch.html">REV-0928 — 패딩(Padding) 처리를 빼먹어서 결과가 어긋날 때</a></li><li><a href="rev-0929-round-count-miscounted.html">REV-0929 — 라운드 수나 반복 횟수를 잘못 세어서 결과가 다를 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>x86/x64의 <code>mov reg32, imm32</code>와 <code>movabs</code>/<code>mov reg64, imm64</code> 명령어의 즉시값 크기 차이: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2(MOV 명령어 정의) 기준 (2026-09-09 검증).</li><li>signed/unsigned 상수 표시 문제의 근본 원리는 REV-0206 문서와 동일한 2의 보수 표현 규칙에 기반한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

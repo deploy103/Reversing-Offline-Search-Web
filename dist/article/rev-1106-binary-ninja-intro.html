@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Binary Ninja 기초 소개(IDA/Ghidra 대비 언제 쓰는지) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / tools</div>
+<article class="article-body">
+<h1>Binary Ninja 기초 소개(IDA/Ghidra 대비 언제 쓰는지)</h1>
+<div class="article-meta"><span class="tag">tools</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Binary Ninja</span><span class="tag">IDA</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>Binary Ninja는 Vector 35가 만든 상용 디스어셈블러/디컴파일러로, IDA·Ghidra와 달리 자체 IL(중간 표현)을 저수준→고수준 3단계(LLIL → MLIL → HLIL)로 분리해 놓아서 분석 자동화 스크립트를 짤 때 원하는 추상화 단계를 정확히 골라 조작할 수 있다는 점이 가장 큰 차별점이며, <code>Binary Ninja Free</code>(x86/x64/ARM만 지원, 비상업 전용, API/플러그인 불가)라는 무료 데스크톱판과 <code>Binary Ninja Cloud</code>(브라우저 기반, 바이너리를 Vector 35 서버에 업로드해야 함)도 존재한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>CTF writeup이나 툴 목록에서 "Binary Ninja", "binja"라는 이름이 나왔는데 IDA/Ghidra랑 뭐가 다른지 모를 때</li><li>기본 툴 목록에는 Binary Ninja가 없는데, 누군가 "무료로 쓸 수 있는 디스어셈블러"를 찾다가 발견했을 때</li><li>Python으로 분석을 자동화하고 싶은데 IDAPython/Ghidra 스크립팅이 번거롭게 느껴져서 대안을 찾을 때</li><li>writeup에 <code>MLIL</code>, <code>HLIL</code> 같은 낯선 용어가 나와서 뜻을 확인해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Binary Ninja는 무엇인가</h3>
+<p>Binary Ninja는 Vector 35가 개발한 상용 리버스 엔지니어링 플랫폼이다. IDA, Ghidra와 마찬가지로 바이너리를 디스어셈블하고 함수를 인식하며, 디컴파일(의사 C코드) 결과도 보여준다. 가장 큰 특징은 자체 IL 체계인 <strong>BNIL(Binary Ninja Intermediate Language)</strong>이다.</p>
+<h3>BNIL — LLIL / MLIL / HLIL 3단계</h3>
+<p>BNIL은 하나의 IL이 아니라 서로 다른 추상화 단계에서 동작하는 IL들의 모음이다.</p>
+<ul><li><strong>LLIL(Low Level IL)</strong>: 원본 명령어 의미를 거의 그대로 옮긴 가장 저수준 표현이다. NOP을 제거하고 플래그를 조건부 명령에 접어 넣는 정도의 정리만 하며, 나머지는 실제 기계어 명령어와 거의 1:1 대응이다.</li><li><strong>MLIL(Medium Level IL)</strong>: 레지스터/메모리 접근을 "변수"로 변환하고, 변수에 타입을 부여하며, 호출 규약 정보를 이용해 함수 호출에 인자·타입을 채워 넣는다. 데이터 흐름 분석과 상수 전파도 이 단계에서 이루어진다. 즉 레지스터가 아니라 이미 의미 있는 변수 이름으로 로직을 볼 수 있다.</li><li><strong>HLIL(High Level IL)</strong>: MLIL 위에 고수준 제어 흐름(if/while/for 형태)과 각종 죽은 코드 제거·단순화 패스를 추가한 것으로, 실제 소스코드에 가장 가까운 의사 C코드 형태다. HLIL은 트리(AST) 구조로 되어 있어서 IDA의 Hex-Rays 디컴파일 결과나 Ghidra의 Decompile 창과 비슷하게 읽힌다.</li></ul>
+<p>각 단계(SSA 폼 제외)는 사람이 읽을 수 있도록 설계되어 있고, 부호 있는/없는 비교 연산자나 <code>sx</code>(부호 확장), <code>zx</code>(제로 확장), 크기 접미사(<code>.q</code>, <code>.d</code>, <code>.w</code>, <code>.b</code>) 같은 표기를 사용해 정보를 압축해서 보여준다. 스크립트를 짤 때 "레지스터 단위로 세밀하게 손대고 싶으면 LLIL, 변수/타입 단위로 다루고 싶으면 MLIL, 소스코드 수준 로직만 보고 싶으면 HLIL"처럼 목적에 맞는 단계를 선택할 수 있다는 게 IDA(디스어셈블리 vs Hex-Rays 의사코드, 2단계)나 Ghidra(P-code 기반, 사용자에게 직접 노출되는 단계가 제한적)보다 세분화된 장점이다.</p>
+<h3>무료로 쓸 수 있는 방법 두 가지</h3>
+<p>Binary Ninja는 기본적으로 유료(Ultimate 등 상용 라이선스) 제품이지만, 두 가지 무료 경로가 있다.</p>
+<ul><li><strong>Binary Ninja Cloud</strong>: 다운로드 없이 브라우저에서 쓰는 버전이다. 협업 기능, 그래프 임베딩, 코드 직접 링크, 여러 IL 뷰를 제공하지만 바이너리를 Vector 35 서버에 업로드해야 하고, PE/Mach-O/ELF 포맷만 지원하며, API/플러그인은 쓸 수 없고, 성능 제한이 엄격하다.</li><li><strong>Binary Ninja Free</strong>: 다운로드해서 쓰는 데스크톱판이다. 디컴파일 가능한 아키텍처가 x86, x86_64, ARMv7(Thumb2 포함), ARMv8(AArch64)로 제한되고(PowerPC/MIPS/RISC-V 등은 디컴파일 지원 안 됨), IL 뷰도 Disassembly/HLIL/Pseudo C만 볼 수 있으며(MLIL/LLIL 뷰 제한), API/플러그인 접근이 없어 자동화 스크립트를 못 쓴다. 명시적으로 "상업적 용도로 사용 불가"라는 라이선스 조건이 붙는다.</li></ul>
+<p>즉 CTF 연습 목적(비상업)으로 x86/x64/ARM 바이너리를 데스크톱에서 가볍게 열어보는 용도라면 Binary Ninja Free로 충분하지만, 이 저장소가 다루는 스크립팅 자동화(IDAPython/Ghidra 스크립트에 대응하는 것)를 Binary Ninja에서 하려면 API가 열려 있는 유료 라이선스가 필요하다.</p>
+<h3>IDA/Ghidra 대비 언제 쓰는가</h3>
+<ul><li>이미 IDA Pro(유료) 라이선스가 있고 팀이 IDA에 익숙하다면 Binary Ninja로 갈아탈 이유는 적다.</li><li>Ghidra는 완전 무료·오픈소스이고 API(Java, GhidraScript, 일부 Python 지원)도 열려 있어서 예산이 없는 CTF 환경에서는 여전히 1순위 선택이다.</li><li>Binary Ninja는 Python 친화적인 API 설계로 유명해서(정식 라이선스가 있다면) 분석 자동화 스크립트를 빠르게 짜고 싶을 때, 또는 BNIL의 3단계 IL을 이용해 변수/타입 단위로 프로그래밍적으로 조작하고 싶을 때 강점이 있다. 이 저장소의 필수 툴킷에는 포함되어 있지 않으므로, IDA Free나 Ghidra로 막힌 특정 상황(예: 특정 아키텍처의 디컴파일 품질, 팀이 이미 쓰던 스크립트 자산)에서 "선택적으로" 고려하는 도구로 취급하면 된다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>writeup에 "Binary Ninja", "binja", "BNIL", "MLIL", "HLIL"이라는 단어가 등장</li><li>스크립트 코드에 <code>import binaryninja</code>, <code>bv.functions</code>, <code>func.mlil</code>, <code>func.hlil</code> 같은 API 호출이 보임</li><li>화면 캡처에 IDA/Ghidra와 다른 다크 테마 UI, 그래프 뷰 옆에 "Pseudo C"나 "HLIL" 탭이 나란히 있는 구성</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>CTF 문제를 당장 풀어야 하는 상황이면 이미 설치되어 있는 IDA Free/Ghidra를 그대로 쓰는 게 낫다. Binary Ninja를 처음 써보고 싶다면 공식 사이트에서 <code>Binary Ninja Free</code>(비상업용) 데스크톱판을 받아 x86/x64/ARM 샘플 바이너리를 열어 HLIL 뷰가 IDA의 Hex-Rays 디컴파일과 어떻게 다르게 보이는지 비교해보는 정도로 충분하다.</p>
+<h2>단계별 절차</h2>
+<ol><li>공식 사이트에서 무료 옵션이 데스크톱판(<code>Binary Ninja Free</code>)인지 브라우저판(<code>Binary Ninja Cloud</code>)인지 확인하고 목적에 맞는 쪽을 선택한다.</li><li>데스크톱판을 받았다면 라이선스 동의 후 설치하고, 분석할 x86/x64/ARM 바이너리를 연다.</li><li>하단/우측 탭에서 Disassembly, HLIL(Pseudo C) 뷰를 전환해보며 같은 함수가 어떻게 다르게 표현되는지 비교한다.</li><li>자동화가 필요하면 API/플러그인이 열려 있는 정식 라이선스가 있는지부터 확인한다(무료판은 API가 막혀 있음).</li><li>팀에 이미 IDA/Ghidra 스크립트 자산이 많다면 굳이 옮기지 말고, Binary Ninja는 "두 번째 의견"이 필요할 때 보조로만 사용한다.</li></ol>
+<h2>명령어/단축키</h2>
+<p>Binary Ninja Free 데스크톱판은 File → Open으로 바이너리를 로드한다. 정식 라이선스에서 API를 쓸 때 기본 패턴은 다음과 같다(개념 확인용, 무료판에서는 동작하지 않음).</p>
+<pre><code class="language-python">import binaryninja as bn
+
+bv = bn.open_view("./chall")
+for func in bv.functions:
+    print(func.name, hex(func.start))
+    for block in func.hlil:      # HLIL(고수준 IL) 단위로 순회
+        print(block)</code></pre>
+<h2>출력 해석</h2>
+<ul><li>HLIL 뷰는 IDA Hex-Rays의 의사 C코드, Ghidra의 Decompile 창과 목적이 같다 — 변수 이름·제어 흐름이 소스코드에 가깝게 재구성된 결과다.</li><li>MLIL 뷰가 안 보이고 Disassembly/HLIL/Pseudo C만 보인다면 무료판(Binary Ninja Free/Cloud)의 IL 뷰 제한 때문이다. 유료판에서는 LLIL/MLIL/HLIL을 모두 전환해가며 볼 수 있다.</li><li>특정 아키텍처(PowerPC, MIPS, RISC-V 등)에서 디컴파일 탭 자체가 안 나온다면 무료판의 아키텍처 제한 때문일 가능성이 높다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Binary Ninja Free를 상업 프로젝트나 유료 컨설팅 작업에 그대로 쓰는 것 — 라이선스에 "상업적 용도로 사용 불가"가 명시되어 있다.</li><li>무료판에서 플러그인/스크립트를 설치하려다가 API 자체가 막혀 있다는 걸 모르고 시간을 낭비하는 것.</li><li>Binary Ninja Cloud에 CTF 문제 파일(대회 규정상 외부 유출 금지일 수 있는)을 무심코 업로드하는 것 — Cloud는 바이너리를 Vector 35 서버에 제출해야 동작한다는 점을 반드시 인지해야 한다.</li><li>LLIL/MLIL/HLIL을 그냥 "같은 디컴파일 결과"로 오해하는 것 — 각 단계는 추상화 수준이 다르고 스크립트에서 다루는 API 객체도 다르다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>IDA 자체의 설치/단축키가 궁금하면 → REV-0274 IDA 설치와 오프라인 준비, REV-0275 IDA 단축키 치트시트</li><li>Ghidra 자체의 설치/단축키가 궁금하면 → REV-0277 Ghidra 설치와 오프라인 준비, REV-0278 Ghidra 단축키 치트시트</li><li>IDA에서 반복 작업을 자동화하고 싶다면 → REV-1107 IDAPython으로 반복 작업 자동화하기</li><li>무료·오픈소스 디스어셈블러 자동화가 필요하면 → REV-1108 radare2 r2pipe로 스크립팅하기</li></ul>
+<h2>미니 예제</h2>
+<p>Binary Ninja Free로 같은 <code>strcmp</code> 검증 함수를 열었을 때 화면 구성 예시(개념 설명):</p>
+<pre><code class="language-text">[Disassembly]                    [Pseudo C (HLIL)]
+0x1040: push rbp                 int32_t check(char* input)
+0x1041: mov rbp, rsp             {
+0x1044: sub rsp, 0x10                if (strcmp(input, "flag_value") == 0)
+0x1048: mov [rbp-8], rdi                  return 1;
+...                                   return 0;
+                                  }</code></pre>
+<p>무료판에서는 이 두 뷰(Disassembly, Pseudo C/HLIL)만 전환 가능하고, LLIL/MLIL 뷰나 API를 통한 자동 순회는 정식 라이선스가 필요하다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0274-ida-install.html">REV-0274 — IDA 설치와 오프라인 준비</a></li><li><a href="rev-0277-ghidra-install.html">REV-0277 — Ghidra 설치와 오프라인 준비</a></li><li><a href="rev-1107-idapython-automation.html">REV-1107 — IDAPython으로 반복 작업 자동화하기</a></li><li><a href="rev-1108-radare2-r2pipe-scripting.html">REV-1108 — radare2 r2pipe로 스크립팅하기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Binary Ninja Free/Cloud의 라이선스 조건(비상업 전용, 지원 아키텍처 제한, API/플러그인 불가, Cloud의 서버 업로드 요구사항): Vector 35 공식 사이트 <code>binary.ninja/free/</code> 페이지 기준 (2026-09-10 확인).</li><li>BNIL의 LLIL/MLIL/HLIL 3단계 정의와 각 단계의 역할(변수화, 타입 부여, 고수준 제어 흐름 재구성): Binary Ninja 공식 개발자 문서 <code>docs.binary.ninja</code> BNIL Overview 페이지 기준 (2026-09-10 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

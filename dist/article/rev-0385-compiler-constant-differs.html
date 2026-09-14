@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>같은 소스인데 컴파일러마다 상수 값이 다르게 보일 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>같은 소스인데 컴파일러마다 상수 값이 다르게 보일 때</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>같은 C 소스코드라도 컴파일러(MSVC/GCC/Clang)나 최적화 옵션, 심지어 같은 컴파일러의 버전이 다르면 어셈블리에 박히는 <strong>상수 값 자체가 달라질 수 있다</strong> — 특히 나눗셈을 곱셈+시프트로 바꾸는 매직 넘버(magic number) 최적화는 계산 알고리즘이 컴파일러마다 조금씩 다르기 때문에, "이 상수가 왜 이 값인지" 손으로 검증하려면 그 최적화의 일반 공식부터 이해해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>같은 함수를 다른 컴파일러(또는 다른 최적화 레벨)로 빌드했더니 상수 리터럴 값이 서로 다르게 나올 때</li><li>나눗셈이 최적화된 것으로 보이는 <code>imul</code>+매직 넘버+시프트 조합의 상수가, 직접 계산해본 공식과 딱 맞아떨어지지 않을 때</li><li>CTF에서 "이 바이너리는 어떤 컴파일러로 빌드됐는가"를 상수 패턴만으로 추정해야 할 때</li><li>레퍼런스 라이터업의 상수와 내 손에 있는 바이너리의 상수가 달라서 "내가 잘못 분석했나" 혼란스러울 때</li></ul>
+<h2>핵심 개념</h2>
+<p>컴파일러 최적화, 특히 <strong>정수 나눗셈을 곱셈으로 대체하는 기법</strong>(division by invariant integers using multiplication, 흔히 "매직 넘버" 최적화라 불림)은 나눗셈이 곱셈+시프트보다 훨씬 느리다는 사실에서 출발한다. 상수로 나누는 연산(예: <code>x / 10</code>, <code>x / 3</code>)을 컴파일러가 발견하면, 실행 시점의 <code>idiv</code> 대신 미리 계산해둔 "매직 넘버"를 곱하고 시프트하는 코드로 바꿔치기한다.</p>
+<p><strong>왜 상수가 컴파일러마다 다른가</strong>: 이 매직 넘버를 찾는 알고리즘 자체는 여러 가지가 있고(가장 유명한 것은 Granlund &amp; Montgomery의 1994년 논문에 기반한 방법), 컴파일러마다 세부 구현(정확한 매직 넘버 자체, 추가 보정 시프트/덧셈 유무, 몇 비트 정밀도로 근사하는지)이 조금씩 다르다. 그 결과 <strong>같은 <code>x / 10</code>이라는 연산인데도</strong> GCC, Clang, MSVC가 만들어내는 매직 넘버 상수와 뒤따르는 시프트량이 서로 다를 수 있다. 심지어 같은 컴파일러라도 버전이 바뀌면서 이 알고리즘이 개선되어 상수가 달라지는 경우도 있다.</p>
+<p><strong>구체적 예시</strong>: <code>x / 10</code>(x는 32비트 unsigned)을 최적화하면 흔히 다음과 같은 형태가 된다.</p>
+<pre><code class="language-asm">mov     eax, ecx
+mov     edx, 0xCCCCCCCD      ; 매직 넘버 (컴파일러/버전에 따라 다를 수 있음)
+mul     edx                   ; edx:eax = x * 매직넘버 (64비트 결과)
+shr     edx, 3                ; 상위 결과를 시프트해서 몫을 얻음</code></pre>
+<p><code>0xCCCCCCCD</code>는 <code>2^35 / 10</code>을 반올림한 값에 가까운 상수로, <code>x * 0xCCCCCCCD</code>의 상위 32비트를 취하고 3비트 시프트하면 <code>x / 10</code>의 근사 몫이 나오도록 설계된 것이다. 이 상수와 시프트량(<code>3</code>)의 조합은 나누는 수(<code>10</code>)와 피연산자 비트폭(32비트)에 의해 수학적으로 결정되지만, <strong>정확히 어떤 상수·시프트 조합을 선택하는지는 컴파일러 구현에 따라 미세하게 다를 수 있다.</strong> 그래서 "직접 계산한 이론값과 실제 바이너리의 상수가 정확히 일치하지 않는다"고 당황할 필요는 없다 — 컴파일러별 구현 차이 범위 안에 있다면 정상이다.</p>
+<p><strong>컴파일러 지문(fingerprint)으로 활용 가능</strong>: 반대로 말하면, 특정 상수/코드 패턴(예: 함수 프롤로그 형태, 특정 매직 넘버, 스택 보호 코드의 정확한 형태)은 "이 바이너리가 MSVC로 빌드됐는지 GCC로 빌드됐는지"를 추정하는 단서로 쓰인다. Detect It Easy나 IDA의 FLIRT 시그니처 매칭도 이런 컴파일러별 패턴 차이를 이용해 컴파일러/라이브러리를 식별한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>소스 코드가 완전히 동일해 보이는 두 바이너리인데, 나눗셈/나머지 연산 근처의 상수 리터럴이 다른 경우</li><li><code>mul</code>/<code>imul</code> 뒤에 오는 시프트량과 상수의 조합이, 손으로 계산한 이론적 매직 넘버 공식과 정확히 일치하지 않고 근처 값으로 보이는 경우</li><li>같은 알고리즘의 두 바이너리를 diff 떠봤는데 코드 구조는 동일한데 특정 상수(주로 곱셈 상수, 해시 시드값 등)만 다른 경우</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>상수가 다르다고 발견한 두 바이너리가 애초에 같은 컴파일러/버전/최적화 옵션으로 빌드된 게 맞는지부터 확인한다(PE의 리치 헤더, ELF의 <code>.comment</code> 섹션, 컴파일러 버전 문자열 등). 다른 컴파일러라면 상수가 다른 것이 정상이다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 나눗셈 최적화 패턴인지부터 식별</strong> <code>imul</code>/<code>mul</code> 직후 시프트(<code>shr</code>/<code>sar</code>)가 따라오고, 그 앞뒤로 뺄셈/덧셈 보정이 붙어 있다면 나눗셈 매직 넘버 최적화로 의심한다.</p>
+<p><strong>2) 상수와 나누는 값을 역산해서 근사치 확인</strong></p>
+<pre><code class="language-python">magic = 0xCCCCCCCD
+shift = 3
+# 이론적으로 magic은 2**(32+shift) / divisor 근처 값이어야 함
+divisor_estimate = (2**(32+shift)) / magic
+print(divisor_estimate)   # 약 10.0 근처로 나오면 "10으로 나누는 코드"라는 확신</code></pre>
+<p>정확히 정수로 안 떨어지고 근사치로 나오는 것이 정상이다 — 애초에 근사 곱셈이기 때문이다.</p>
+<p><strong>3) 여러 컴파일러/버전으로 같은 소스를 직접 빌드해서 비교</strong> 가능하면 <code>gcc -O2</code>, <code>clang -O2</code>, MSVC <code>/O2</code> 등으로 같은 소스를 각각 컴파일해보고 나온 상수를 직접 비교한다. 이렇게 하면 "이 정도 차이는 컴파일러 구현 차이일 뿐"이라는 감을 실제로 확인할 수 있다.</p>
+<p><strong>4) 컴파일러 식별 메타데이터도 함께 확인</strong> PE라면 리치 헤더(Rich Header)나 <code>.rdata</code>의 버전 문자열, ELF라면 <code>.comment</code> 섹션(<code>readelf -p .comment</code>)에서 컴파일러 이름/버전 문자열을 직접 확인해 상수 차이의 원인을 교차검증한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">gcc -O2 -S example.c -o gcc_o2.s      # GCC 최적화 어셈블리 생성
+clang -O2 -S example.c -o clang_o2.s  # Clang 최적화 어셈블리 생성
+readelf -p .comment binary            # ELF 컴파일러 버전 문자열 확인</code></pre>
+<pre><code class="language-python">divisor_estimate = (2**(32+shift)) / magic   # 매직 넘버로부터 나누는 수 역산</code></pre>
+<h2>출력 해석</h2>
+<ul><li>매직 넘버로부터 역산한 <code>divisor_estimate</code>가 정수에 가까운 값(예: <code>9.99999...</code> 또는 <code>10.0000001</code>)으로 나온다면, 이는 계산 실수가 아니라 근사 곱셈 최적화가 정확히 작동하고 있다는 신호다.</li><li><code>.comment</code> 섹션이나 리치 헤더에서 컴파일러 버전이 실제로 다르게 나온다면, 상수 차이는 애초에 "다른 도구로 만든 다른 바이너리"였기 때문이지 분석 실수가 아니다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>상수가 예상 이론값과 정확히 딱 맞아떨어지지 않으면 "내 분석이 틀렸다"고 단정하는 것 — 근사 곱셈 최적화는 원래 근사치이며, 정확한 몫을 위해 추가 보정 코드(덧셈/뺄셈 1)가 따로 붙어 있을 수 있다.</li><li>서로 다른 컴파일러/최적화 옵션으로 빌드된 두 바이너리를 "같은 소스니까 바이너리도 동일해야 한다"고 가정하고 diff 결과에 과도하게 의미를 부여하는 것.</li><li>매직 넘버 최적화를 보고 무조건 "나눗셈"이라고만 생각하고, 나머지 연산(<code>%</code>)도 같은 매커니즘(몫을 구한 뒤 <code>나누는값 * 몫</code>을 빼서 나머지를 구하는 추가 코드)으로 최적화된다는 것을 놓치는 것.</li><li>컴파일러 식별 없이 상수 패턴만으로 "이건 GCC다/MSVC다"라고 성급히 결론짓는 것 — 반드시 다른 근거(문자열, 헤더 메타데이터)와 함께 교차검증해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>나눗셈이 곱셈+시프트로 바뀌는 매직 넘버 패턴 자체를 더 자세히 보고 싶으면 assembly 카테고리의 나눗셈 최적화 패턴 문서로 이동.</li><li>나머지 연산(<code>%</code>) 최적화 패턴이 궁금하면 assembly 카테고리의 나머지 연산 최적화 패턴 문서로 이동.</li><li>컴파일러 최적화가 디컴파일 결과를 전반적으로 왜 이상하게 만드는지 궁금하면 REV-0037 문서로 이동.</li><li>음수 나눗셈에서 몫/나머지 부호가 왜 그렇게 나오는지 궁금하면 REV-0382 문서로 이동.</li></ul>
+<h2>미니 예제</h2>
+<p>다음과 같은 간단한 함수를 GCC와 MSVC로 각각 최적화 컴파일했다고 하자.</p>
+<pre><code class="language-c">unsigned int div_by_ten(unsigned int x) {
+    return x / 10;
+}</code></pre>
+<p>GCC(<code>-O2</code>)는 다음과 비슷한 코드를 낼 수 있다.</p>
+<pre><code class="language-asm">mov     eax, ecx
+mov     edx, 0xCCCCCCCD
+mul     edx
+shr     edx, 3
+mov     eax, edx
+ret</code></pre>
+<p>MSVC(<code>/O2</code>)도 개념적으로 동일한 매직 넘버 곱셈+시프트 기법을 쓰지만, 실제로 뽑아내는 레지스터 배치나 보정 코드의 유무, 심지어 매직 넘버 자체가 컴파일러 버전에 따라 미묘하게 다를 수 있다. 두 바이너리를 나란히 놓고 "상수가 다르다"고 당황하기보다는, 두 상수 모두 위의 역산 공식(<code>2**(32+shift) / divisor</code>)에 대입했을 때 <code>10</code> 근처 값이 나오는지 확인하는 것이 올바른 검증 방법이다 — 그게 확인되면 "표현 방식은 다르지만 같은 나눗셈 로직"이라고 결론지을 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0037-optimization-weirdness.html">REV-0037 — 컴파일러 최적화가 디컴파일 결과를 이상하게 만드는 이유</a></li><li><a href="rev-0382-negative-division-result-unexpected.html">REV-0382 — 음수 나눗셈 결과가 예상과 다를 때</a></li><li><a href="rev-0376-overflow-suspected-result.html">REV-0376 — 계산 결과가 예상보다 훨씬 크거나 작을 때(오버플로 의심)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>정수 나눗셈을 곱셈+시프트로 대체하는 매직 넘버 최적화 이론: Henry S. Warren, "Hacker's Delight", "Integer Division by Constants" 챕터 및 Granlund &amp; Montgomery, "Division by Invariant Integers using Multiplication"(PLDI 1994) 논문 기준 (2026-09-09 검증).</li><li>컴파일러별 구현 차이(GCC/Clang/MSVC)로 인한 생성 코드/상수 차이 일반론: 각 컴파일러 공식 최적화 문서(GCC "Optimize Options", LLVM 최적화 파이프라인 문서) 기준 개념 설명.</li><li>ELF <code>.comment</code> 섹션과 PE 리치 헤더를 통한 컴파일러 식별: 리눅스 <code>binutils</code>(<code>readelf</code>) 공식 문서 및 PE 포맷 관련 리치 헤더(Rich Header) 리버싱 커뮤니티 자료 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hex View로 디컴파일 결과 검증하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>Hex View로 디컴파일 결과 검증하기</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Ghidra</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>디컴파일러(IDA F5, Ghidra Decompile 창)가 보여주는 C 유사 코드는 <strong>추정 결과</strong>이므로, 문자열/상수/구조체 레이아웃처럼 정답이 명확히 존재하는 값은 반드시 <strong>Hex View(원본 바이트 그대로 보기)</strong>로 열어 직접 눈으로 확인하는 습관이, 잘못된 가설로 시간을 낭비하지 않는 가장 확실한 방법이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Decompile 창에 <code>DAT_00403010</code>, <code>unk_403010</code> 같은 이름만 보이고 실제로 뭐가 들어있는지 궁금할 때</li><li>디컴파일러가 보여주는 상수값(예: <code>0x7fffffff</code>, <code>0x12345678</code>)이 진짜 그 값이 맞는지 의심될 때</li><li>문자열이 깨져 보이거나(예: 유니코드인데 ASCII로 잘못 해석됨) 이상한 문자가 섞여 나올 때</li><li>구조체 필드 레이아웃을 직접 정의하려는데, 실제 메모리에 그 필드들이 어떤 순서/간격으로 있는지 확인하고 싶을 때</li><li>XOR 키, 룩업 테이블처럼 "바이트 배열 그 자체"가 알고리즘의 핵심인 경우</li></ul>
+<h2>핵심 개념</h2>
+<p>디컴파일러는 어셈블리 명령어들을 패턴 매칭해서 C 문법으로 재구성하는 <strong>번역기</strong>다. 번역 과정에서 다음과 같은 왜곡이 생길 수 있다.</p>
+<ol><li><strong>타입 추정 오류</strong>: 어떤 값이 <code>int</code>인지 <code>unsigned int</code>인지 디컴파일러가 문맥만으로 추정하다가 부호를 잘못 판단하면, 실제로는 양수인데 음수로(또는 반대로) 표시될 수 있다.</li><li><strong>문자열 인코딩 오추정</strong>: 유니코드(UTF-16LE) 문자열을 ASCII로 잘못 해석하면 글자 사이에 <code>\x00</code>이 낀 이상한 문자열로 보이거나, 반대로 ASCII를 유니코드로 잘못 잡으면 절반만 보인다.</li><li><strong>구조체/배열 경계 오추정</strong>: 디컴파일러가 스택이나 힙의 연속된 바이트를 어디까지를 한 변수로 볼지 잘못 나누면, 실제로는 하나의 배열인데 여러 개의 별개 변수(<code>local_28</code>, <code>local_24</code>, <code>local_20</code>...)로 쪼개져 표시될 수 있다.</li><li><strong>상수 표시 방식</strong>: 같은 4바이트라도 리틀 엔디안 메모리 배열을 사람이 읽기 좋은 정수로 변환하는 과정에서, 실제 바이트 순서와 화면에 표시된 정수 표기가 직관과 다르게 느껴질 수 있다.</li></ol>
+<p>이런 왜곡들을 걸러내는 방법은 하나다 — <strong>디컴파일러의 해석을 거치지 않은, 메모리에 실제로 저장된 바이트 값을 그대로 보는 것.</strong> 이것이 Hex View(헥스 뷰)의 역할이다. Hex View는 해석 없이 각 바이트를 16진수 두 자리로, 그 옆에 프린터블 문자면 ASCII로 그대로 나열해서 보여준다. 디컴파일 결과와 Hex View를 나란히 대조하면 "디컴파일러의 해석"과 "실제 데이터"의 차이를 바로 알아챌 수 있다.</p>
+<p><strong>IDA에서는</strong>: 기본 화면 구성에 <strong>Hex View-1</strong> 탭이 포함되어 있다(없으면 View → Open subviews → Hex dump). 디스어셈블리 뷰나 Decompile 창에서 주소를 클릭하면, IDA는 여러 뷰가 같은 주소를 동기화해서 보여주는 구조이므로 Hex View-1 탭으로 전환만 해도 방금 보던 주소의 원본 바이트가 그대로 나온다. 특정 주소로 바로 이동하려면 Hex View 탭을 클릭한 상태에서 <code>G</code>(Jump to address)를 눌러 주소를 입력한다.</p>
+<p><strong>Ghidra에서는</strong>: <strong>Window → Bytes</strong>를 열면 Listing과 동기화되는 hex dump 패널이 뜬다(버전에 따라 기본으로 이미 열려 있을 수도 있다). Listing이나 Decompile 창에서 커서를 옮기면 Bytes 패널도 같은 주소로 따라 이동한다. Decompile 창에서 <code>DAT_00403010</code> 같은 이름을 더블클릭하면 Listing이 그 주소로 이동하고, Bytes 패널도 함께 그 위치의 원본 바이트를 보여준다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Decompile 창에 이름만 있고 값이 안 보이는 전역 데이터(<code>DAT_</code>, <code>unk_</code>, <code>off_</code> 등)가 있다.</li><li>디컴파일러가 상수를 이상한 형태(음수, 매우 큰 16진수 등)로 보여주는데 문맥상 말이 안 되는 값 같다.</li><li>문자열이 한 글자씩 띄어져 있거나(<code>H.e.l.l.o.</code> 같은 패턴) 문자열 끝이 이상하게 잘려 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>디컴파일 결과에서 의심스러운 이름/값을 하나 고른 뒤, 그 주소로 이동해서 Hex View(IDA는 Hex View-1 탭, Ghidra는 Bytes 패널)에 원본 바이트가 어떻게 찍혀 있는지 눈으로 직접 확인한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 의심 지점 특정</strong></p>
+<p>Decompile/pseudocode에서 <code>DAT_XXXXXXXX</code>, <code>unk_XXXXXXXX</code>, 이상해 보이는 상수, 배열처럼 보이는 지역 변수 등을 하나 고른다.</p>
+<p><strong>2) 해당 주소로 이동</strong></p>
+<p>그 이름을 더블클릭(IDA/Ghidra 공통)하면 디스어셈블리/Listing 뷰가 그 주소로 이동한다.</p>
+<p><strong>3) Hex View로 전환</strong></p>
+<ul><li>IDA: <strong>Hex View-1</strong> 탭을 클릭한다. 탭이 안 보이면 View → Open subviews → Hex dump.</li><li>Ghidra: <strong>Window → Bytes</strong>를 연다. 이미 열려 있다면 그냥 패널을 확인한다.</li></ul>
+<p><strong>4) 바이트를 있는 그대로 읽기</strong></p>
+<p>Hex View는 왼쪽에 주소, 가운데에 16진수 바이트 나열, 오른쪽에 그 바이트들의 ASCII 표현(프린트 불가능한 바이트는 보통 <code>.</code>으로 표시)을 함께 보여준다. 이 세 부분을 함께 보면서 실제로 몇 바이트가 어떤 값인지 확인한다.</p>
+<p><strong>5) 문자열이면 인코딩 확인</strong></p>
+<p>바이트 사이사이에 <code>00</code>이 규칙적으로 끼어 있다면(예: <code>48 00 65 00 6c 00</code>) 이는 UTF-16LE(유니코드) 문자열이라는 뜻이다. <code>00</code>이 없이 바이트가 연속되어 있으면 일반 ASCII/UTF-8 문자열이다. 디스어셈블러가 이를 잘못 판단했다면, 해당 주소에서 우클릭 → 데이터 타입을 문자열로 다시 지정(IDA는 <code>Alt+A</code>로 ASCII String 스타일 변경, Ghidra는 우클릭 → Data → Unicode/String으로 재지정)해서 올바르게 렌더링되도록 고칠 수 있다.</p>
+<p><strong>6) 상수/배열이면 바이트 단위로 직접 재구성</strong></p>
+<p>여러 바이트로 이루어진 정수 상수는 리틀 엔디안 규칙(주소가 낮은 바이트가 값의 하위 바이트)에 따라 뒤에서부터 앞으로 읽어 값을 재구성한다. 예를 들어 Hex View에 <code>78 56 34 12</code>가 연속으로 있다면 이는 32비트 정수 <code>0x12345678</code>이다. 디컴파일러가 표시하는 정수와 이 계산 결과가 같은지 대조한다.</p>
+<p><strong>7) 구조체 필드 오프셋 검증</strong></p>
+<p>구조체를 정의하려는 경우, Hex View에서 값이 바뀌는 경계(예: 4바이트마다 의미 있는 값이 반복되는 패턴)를 직접 세어보고, 그 간격이 REV-0161에서 만든 구조체 정의의 필드 오프셋과 일치하는지 확인한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: Hex View-1 탭 클릭, 탭 안에서 <code>G</code>(Jump to address), 데이터 재정의 <code>Alt+A</code>(ASCII string), <code>D</code>(데이터로 변환 반복), <code>U</code>(Undefine)</li><li>Ghidra: <strong>Window → Bytes</strong>, Bytes 패널에서도 Listing과 동일하게 <code>G</code>로 이동 가능, 데이터 재정의는 Listing에서 우클릭 → <strong>Data → ...</strong></li><li>공통: 더블클릭으로 참조 주소 따라가기(REV-0160 XREF 개념과 함께 사용)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Hex View의 오른쪽 ASCII 컬럼에 읽을 수 있는 문자가 연속으로 보이면 그 구간이 문자열일 가능성이 매우 높다. 프린트 불가능한 바이트(<code>.</code>으로 표시)가 섞여 있다면 문자열이 아니라 코드나 이진 데이터, 혹은 유니코드일 수 있다.</li><li>같은 패턴(예: 4바이트 단위)이 여러 번 반복되는 것이 보이면 배열이나 구조체 배열일 가능성이 크다.</li><li>값이 오름차순/규칙적인 증가 패턴을 보이면 룩업 테이블이나 점프 테이블일 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>디컴파일 결과의 상수 표시를 그대로 믿고 Hex View 대조를 생략하는 것 — 특히 CTF 문제 풀이에서 정답 문자열이나 XOR 키처럼 정확도가 생명인 값은 반드시 원본 바이트로 재확인해야 한다.</li><li>엔디안을 고려하지 않고 Hex View에 보이는 바이트 순서를 그대로 정수로 읽는 것 — x86/x64는 리틀 엔디안이므로 바이트 나열 순서를 뒤집어야 실제 정수 값이 된다.</li><li>유니코드 문자열을 ASCII로 착각해서 절반만 읽고 "이상한 문자열"이라고 결론짓는 것 — <code>00</code>이 한 바이트씩 끼어 있는 패턴을 놓치지 않아야 한다.</li><li>Hex View에서 값을 확인만 하고, 디스어셈블러/디컴파일러 쪽 데이터 타입을 고쳐주지 않아서 다음에 다시 볼 때 또 헷갈리는 것 — 확인했으면 REV-0161처럼 이름/타입을 정리해 두는 것이 좋다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>Hex View에서 본 값을 어떻게 이름 붙이고 정리할지 모르겠다면 → REV-0161(Ghidra Rename과 Data Type 수정).</li><li>이 데이터를 누가 참조하는지 더 넓게 보고 싶다면 → REV-0160(Ghidra XREF 따라가기).</li><li>이 상수/바이트 배열이 특정 알고리즘(체크섬, 암호화 등)의 일부인지 판단하고 싶다면 → REV-0165(상수 검색으로 알고리즘 찾기).</li><li>확인한 값을 실제로 파이썬으로 재현해서 풀이를 만들고 싶다면 → REV-0168(정적 분석 결과를 Python 의사코드로 옮기기).</li></ul>
+<h2>미니 예제</h2>
+<p>Decompile 창에 다음과 같은 코드가 있다고 하자.</p>
+<pre><code class="language-c">int check(char *input) {
+  int i;
+  for (i = 0; i &lt; 5; i = i + 1) {
+    if ((input[i] ^ DAT_00403020[i]) != *(char *)(DAT_00403030 + i)) {
+      return 0;
+    }
+  }
+  return 1;
+}</code></pre>
+<p><code>DAT_00403020</code>(XOR 키로 추정)과 <code>DAT_00403030</code>(비교 대상 배열)이 실제로 무슨 바이트인지 디컴파일 창만으로는 알 수 없다. 이때:</p>
+<ol><li><code>DAT_00403020</code>을 더블클릭 → Hex View(IDA)/Bytes(Ghidra)에서 해당 주소를 보니 <code>11 22 33 44 55</code>가 5바이트 연속으로 있는 것을 확인.</li><li><code>DAT_00403030</code>도 같은 방법으로 확인하니 <code>5a 4b 5c 4d 5a</code> 5바이트가 있는 것을 확인.</li><li>이제 두 배열의 실제 바이트 값을 알았으므로, REV-0168 방식으로 파이썬으로 <code>input[i] = key[i] ^ target[i]</code>를 계산해 정답 문자열 5바이트를 즉시 복원할 수 있다.</li></ol>
+<p>이 예제처럼, Hex View로 원본 바이트를 확인하는 순간부터 "가설"이 "확정된 사실"로 바뀌고, 그다음은 순수한 계산 문제가 된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0158-ghidra-decompiler-window.html">REV-0158 — Ghidra Decompiler 창 읽기</a></li><li><a href="rev-0160-ghidra-xref.html">REV-0160 — Ghidra XREF 따라가기</a></li><li><a href="rev-0161-ghidra-rename-retype.html">REV-0161 — Ghidra Rename과 Data Type 수정</a></li><li><a href="rev-0165-constant-search.html">REV-0165 — 상수 검색으로 알고리즘 찾기</a></li><li><a href="rev-0168-static-to-python-pseudocode.html">REV-0168 — 정적 분석 결과를 Python 의사코드로 옮기기</a></li><li>rev-0151-positive-sp-value.md — 디컴파일 결과를 맹신하면 안 되는 또 다른 사례(스택 분석 오류)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>IDA Hex View-1 서브뷰와 디스어셈블리/디컴파일러 뷰 간 주소 동기화: Hex-Rays 공식 문서(IDA User Guide, View 구성 관련 topic) 기준.</li><li>Ghidra Bytes 뷰(Window → Bytes)와 Listing 동기화: Ghidra 공식 Help 문서 기준.</li><li>리틀 엔디안 바이트 순서와 UTF-16LE 유니코드 문자열의 <code>00</code> 인터리브 패턴은 x86/x64 아키텍처 및 Windows 유니코드 문자열의 일반적 특성으로, 도구 문서가 아닌 아키텍처/인코딩 표준 자체에 근거한다.</li><li>이 문서는 라이브 IDA/Ghidra 화면을 직접 캡처해 재검증하지는 않았으며, 공식 문서와 널리 통용되는 UI 동작을 기준으로 작성되었다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

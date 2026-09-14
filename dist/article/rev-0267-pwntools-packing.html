@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pwntools p32 p64 u32 u64 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / automation</div>
+<article class="article-body">
+<h1>pwntools p32 p64 u32 u64</h1>
+<div class="article-meta"><span class="tag">automation</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Python</span><span class="tag">pwntools</span></div>
+<h2>한 줄 요약</h2>
+<p><code>pwntools</code>의 <code>p32</code>/<code>p64</code>(pack)와 <code>u32</code>/<code>u64</code>(unpack)는 파이썬 정수와 32/64비트 바이트열을 서로 변환해주는 헬퍼 함수로, 기본적으로 x86/x64에서 흔한 <strong>리틀 엔디안(little-endian)</strong> 순서를 쓰기 때문에 <code>sendline()</code>에 주소나 정수를 실어 보낼 때 <code>struct.pack</code>을 직접 쓰지 않아도 되게 해준다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>리버싱한 바이너리에 4바이트/8바이트짜리 정수 값(주소, 매직 넘버, 체크섬 등)을 바이트열로 만들어 보내야 할 때</li><li>라이트업 코드에서 <code>p32(addr)</code>나 <code>u64(data)</code> 같은 함수를 봤는데 무슨 뜻인지 모를 때</li><li>리틀 엔디안/빅 엔디안 순서가 헷갈려서 값이 이상하게 들어가는 것 같을 때</li><li><code>struct.pack('&lt;I', x)</code>를 매번 쓰는 게 번거로워서 더 짧은 방법을 찾을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>CPU가 메모리에 여러 바이트짜리 정수를 저장하는 방식에는 크게 두 가지가 있다. <strong>리틀 엔디안</strong>은 최하위 바이트(LSB)를 가장 낮은 주소에 저장하고, <strong>빅 엔디안</strong>은 최상위 바이트(MSB)를 가장 낮은 주소에 저장한다. x86과 x64는 리틀 엔디안을 쓰므로, 정수 <code>0x12345678</code>은 메모리에 <code>78 56 34 12</code> 순서로 저장된다. 리버싱 중에 헥스 덤프나 스택 값을 볼 때 "숫자가 거꾸로 보인다"고 느끼는 이유가 바로 이것이다.</p>
+<p><code>pwntools</code>는 이 변환을 함수 네 개로 캡슐화했다.</p>
+<ul><li><strong><code>p32(n)</code></strong> — 파이썬 정수 <code>n</code>을 4바이트(32비트) 바이트열로 "패킹(packing)"한다. 기본 엔디안은 리틀 엔디안이다.</li><li><strong><code>p64(n)</code></strong> — 파이썬 정수 <code>n</code>을 8바이트(64비트) 바이트열로 패킹한다.</li><li><strong><code>u32(data)</code></strong> — 4바이트 바이트열 <code>data</code>를 파이썬 정수로 "언패킹(unpacking)"한다.</li><li><strong><code>u64(data)</code></strong> — 8바이트 바이트열 <code>data</code>를 파이썬 정수로 언패킹한다.</li></ul>
+<p>이 네 함수는 사실 파이썬 표준 라이브러리 <code>struct</code> 모듈의 <code>struct.pack('&lt;I', n)</code> / <code>struct.unpack('&lt;I', data)[0]</code>을 짧게 감싼 것에 가깝다. 다만 pwntools 버전은 이름이 짧고, <code>context.arch</code>/<code>context.endian</code> 전역 설정과 연동되어 있어 아키텍처를 한 번만 지정하면 이후 코드 전체에서 일관되게 동작한다는 장점이 있다.</p>
+<p>리버싱 자동화에서 이 함수들이 왜 중요한가 하면, 바이너리에 값을 넣을 때 사람이 읽는 형태(파이썬 정수 <code>4276993775</code>)와 프로그램이 메모리에서 실제로 기대하는 바이트 순서가 다르기 때문이다. <code>scanf("%d")</code>처럼 텍스트로 숫자를 읽는 함수라면 문자열로 <code>sendline(b'42')</code>를 보내면 되지만, <code>read()</code>나 <code>fread()</code>로 raw 바이트를 그대로 구조체에 채워 넣는 함수, 혹은 리버싱해서 알아낸 4바이트 매직 값(예: 파일 헤더 서명)을 그대로 재현해야 하는 경우에는 <code>p32</code>/<code>p64</code>로 정확한 바이트 순서를 맞춰 보내야 검증을 통과한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>p.sendline(p32(0x1337))</code>처럼 <code>sendline()</code> 인자로 정수가 아니라 <code>p32(...)</code>로 감싼 결과가 들어간다.</li><li>리버싱 중 IDA/Ghidra에서 본 4바이트 상수(<code>cmp eax, 0xDEADBEEF</code> 같은)를 코드로 재현할 때 <code>p32(0xDEADBEEF)</code>가 등장한다.</li><li>함수 주소나 스택 카나리 같은 8바이트 값을 다룰 때는 <code>p64</code>/<code>u64</code>가 쓰인다.</li><li>서버에서 받은 응답을 정수로 해석할 때 <code>leaked = u64(p.recv(8))</code>처럼 <code>recv()</code> 결과를 바로 <code>u32</code>/<code>u64</code>에 넘긴다.</li><li>코드 어딘가에 <code>context.arch = 'amd64'</code> 또는 <code>context.arch = 'i386'</code>을 설정해서 이후 <code>pack()</code>/<code>unpack()</code>(범용 함수)의 기본 크기를 맞추는 경우도 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>대상 프로그램이 값을 어떤 방식으로 읽는지부터 확인한다. 소스코드나 디스어셈블리에서 <code>scanf</code>, <code>atoi</code> 계열이면 텍스트(문자열)로 보내야 하고, <code>read</code>/<code>fread</code>/구조체 통째로 읽는 코드라면 <code>p32</code>/<code>p64</code>로 만든 raw 바이트를 보내야 한다. 이 구분을 먼저 하지 않으면 값을 아무리 정확히 계산해도 형식이 달라 검증에 실패한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 기본 패킹/언패킹 사용</strong></p>
+<pre><code class="language-python">from pwn import *
+
+# 정수 -&gt; 4바이트 리틀 엔디안 바이트열
+data = p32(0x1337)
+print(data)          # b'7\x13\x00\x00'
+
+# 정수 -&gt; 8바이트 리틀 엔디안 바이트열
+data64 = p64(0xdeadbeefcafebabe)
+print(data64)         # b'\xbe\xba\xfe\xca\xef\xbe\xad\xde'
+
+# 바이트열 -&gt; 정수
+n = u32(b'7\x13\x00\x00')
+print(hex(n))          # 0x1337
+
+n64 = u64(b'\xbe\xba\xfe\xca\xef\xbe\xad\xde')
+print(hex(n64))         # 0xdeadbeefcafebabe</code></pre>
+<p><strong>2) 실제 송수신에 결합하기</strong></p>
+<pre><code class="language-python">from pwn import *
+
+p = process('./chall')
+
+# 리버싱으로 알아낸 4바이트 매직 값을 그대로 재현해서 전송
+magic = 0xCAFEBABE
+p.send(p32(magic))
+
+# 서버가 8바이트 주소 값을 흘려주는(leak) 경우, 그대로 정수로 변환
+leaked_bytes = p.recv(8)
+leaked_addr = u64(leaked_bytes)
+print('leaked address:', hex(leaked_addr))
+
+p.close()</code></pre>
+<p><strong>3) 빅 엔디안이 필요한 특수 케이스</strong></p>
+<p>네트워크 프로토콜이나 일부 임베디드/특수 아키텍처 문제는 빅 엔디안을 쓴다. 이때는 <code>endian</code> 인자를 명시하거나 <code>context.endian</code>을 바꾼다.</p>
+<pre><code class="language-python">from pwn import *
+
+# 이 호출 하나만 빅 엔디안으로
+data_be = p32(0x1337, endian='big')
+print(data_be)  # b'\x00\x00\x13\x37'
+
+# 이후 코드 전체를 빅 엔디안 기본값으로
+context.endian = 'big'
+print(p32(0x1337))  # b'\x00\x00\x13\x37'</code></pre>
+<p><strong>4) <code>struct</code>와 비교</strong></p>
+<p><code>pwntools</code> 없이 표준 라이브러리만으로 같은 일을 하면 다음과 같다. 두 코드는 동일한 결과를 낸다.</p>
+<pre><code class="language-python">import struct
+data = struct.pack('&lt;I', 0x1337)   # p32(0x1337)와 동일
+n = struct.unpack('&lt;I', data)[0]   # u32(data)와 동일</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li><code>p8(n)</code> / <code>p16(n)</code> / <code>p32(n)</code> / <code>p64(n)</code> : 1/2/4/8바이트 리틀 엔디안 패킹(기본값)</li><li><code>u8(data)</code> / <code>u16(data)</code> / <code>u32(data)</code> / <code>u64(data)</code> : 대응하는 언패킹</li><li><code>p32(n, endian='big')</code> : 특정 호출만 빅 엔디안으로 변경</li><li><code>context.endian = 'big'</code> / <code>context.arch = 'amd64'</code> : 전역 기본값 설정</li><li><code>pack(n, word_size=32)</code> : 범용 패킹 함수(크기를 인자로 지정)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>p32(x)</code> 결과가 <code>b'\x00\x00\x00\x00'</code>처럼 전부 0이면 <code>x</code>가 0이거나, <code>x</code>에 넣은 변수가 의도한 값으로 계산되지 않았을 가능성이 크다 — <code>hex(x)</code>로 원래 정수를 먼저 확인한다.</li><li><code>u32()</code>/<code>u64()</code>에 넘긴 바이트열의 길이가 4/8이 아니면 <code>error: unpack requires a buffer of N bytes</code> 같은 예외가 발생한다. <code>recv()</code>로 받은 바이트 수가 기대와 다를 수 있으니 <code>len(data)</code>를 먼저 찍어본다.</li><li><code>p32(n)</code>에 32비트로 표현 안 되는 큰 정수(예: <code>2**32</code> 이상)를 넣으면 <code>error: number too large</code> 같은 예외가 난다 — 이 경우 <code>p64</code>가 필요한 값을 <code>p32</code>에 잘못 넣은 건 아닌지 확인한다.</li><li>값이 "거꾸로" 들어간 것처럼 보이면 대부분 엔디안 문제다 — 리틀 엔디안 결과를 손으로 읽을 때는 바이트 순서를 뒤집어서 읽어야 원래 정수가 보인다는 점을 기억한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>4바이트 값에 <code>p64</code>를 쓰거나 8바이트 값에 <code>p32</code>를 써서 크기가 안 맞는 데이터를 보내는 경우 — 대상 프로그램의 구조체 필드 크기를 정확히 확인해야 한다.</li><li>엔디안을 신경 안 쓰고 헥스 덤프에서 본 바이트 순서를 그대로 파이썬 정수 리터럴로 옮겨 적어서 값이 뒤집히는 경우 — 헥스 덤프에서 <code>78 56 34 12</code>로 보였다면 실제 정수는 <code>0x12345678</code>이지 <code>0x78563412</code>가 아니다(리틀 엔디안이라면).</li><li><code>u32()</code>/<code>u64()</code> 대신 <code>int.from_bytes(data, 'little')</code>를 섞어 쓰다가 엔디안 인자를 빼먹어 기본값(빅 엔디안)으로 해석해버리는 경우 — 파이썬 표준 <code>int.from_bytes</code>의 기본 동작과 pwntools의 기본 동작(리틀 엔디안)이 다르다는 점에 주의해야 한다.</li><li><code>p32</code>가 반환하는 것은 바이트열이지 문자열이 아닌데, 이를 <code>str()</code>로 감싸거나 문자열과 <code>+</code> 연산해서 타입 에러를 내는 경우.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>값이 계속 이상하게 전달된다면 → <code>context.log_level = 'debug'</code>로 실제 전송 바이트를 눈으로 확인하고, 기대한 바이트 순서와 비교한다.</li><li>프로세스 실행/입출력 자체가 익숙하지 않다면 → REV-0266 문서에서 <code>process()</code>/<code>sendline()</code>/<code>recvline()</code> 기본기를 먼저 확인한다.</li><li>검증 로직에서 8비트/32비트 오버플로우가 섞여 있어서 패킹한 값이 예상과 다르게 검증되는 것 같다면 → REV-0270 문서에서 Z3로 비트 폭을 정확히 모델링하는 방법을 참고한다.</li><li>오프라인 환경에서 <code>pip install pwntools</code>가 막혀 있다면 → 툴킷 카테고리(<code>../tools/</code>, 추후 작성)에서 오프라인 설치 절차를 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p>4바이트 매직 값 <code>0xCAFEBABE</code>를 검사하는 아주 단순한 대상 프로그램을 가정한다.</p>
+<pre><code class="language-c">// magic.c
+#include &lt;stdio.h&gt;
+#include &lt;unistd.h&gt;
+int main() {
+    unsigned int magic;
+    read(0, &amp;magic, 4);  // raw 4바이트를 그대로 읽음
+    if (magic == 0xCAFEBABE) printf("Correct!\n");
+    else printf("Wrong\n");
+    return 0;
+}</code></pre>
+<pre><code class="language-python"># solve.py
+from pwn import *
+
+p = process('./magic')
+p.send(p32(0xCAFEBABE))   # 문자열이 아니라 raw 4바이트를 그대로 전송
+print(p.recvline())        # b'Correct!\n'
+p.close()</code></pre>
+<p>이 예제는 <code>scanf</code>가 아니라 <code>read()</code>로 raw 바이트를 읽는 프로그램이므로, 텍스트 <code>b'3405691582'</code>를 보내면 실패하고 반드시 <code>p32()</code>로 패킹한 4바이트를 보내야 통과한다는 점이 핵심이다.</p>
+<h2>실전 예시: 여러 필드로 이루어진 패킷 조립/해석</h2>
+<p>실전 프로토콜은 4바이트 정수 하나가 아니라, <strong>매직 값 + 명령 코드 + 길이 + 가변 길이 페이로드</strong>처럼 여러 필드가 순서대로 이어진 구조를 쓰는 경우가 많다. 이런 구조는 <code>p8</code>/<code>p16</code>/<code>p32</code>를 필드 순서대로 이어붙이기만 하면 그대로 조립되고, 응답을 받을 때는 각 필드의 고정 길이만큼 잘라서 <code>u8</code>/<code>u16</code>으로 해석하면 된다.</p>
+<pre><code class="language-python">from pwn import *
+
+# 요청 패킷 구조: [매직 4바이트][명령 1바이트][페이로드 길이 2바이트][페이로드 N바이트]
+MAGIC = 0xCAFEBABE
+CMD_LOGIN = 0x01
+payload = b'login:admin'
+
+# 각 필드를 정해진 크기로 패킹한 뒤 순서대로 이어붙인다
+packet = p32(MAGIC) + p8(CMD_LOGIN) + p16(len(payload)) + payload
+print(packet.hex())
+# bebafeca010b006c6f67696e3a61646d696e
+# (매직 4바이트 리틀엔디안 + 명령 1바이트 + 길이 2바이트 리틀엔디안 + payload 11바이트)
+
+p = process('./server')     # 이 패킷을 받아 처리하는 대상 서버/바이너리라고 가정
+p.send(packet)
+
+# 응답 패킷 구조: [상태 1바이트][응답 길이 2바이트][응답 페이로드 N바이트]
+status = u8(p.recv(1))          # 첫 1바이트: 상태 코드 (0이면 성공)
+resp_len = u16(p.recv(2))        # 다음 2바이트: 이어질 응답 페이로드의 길이
+resp_payload = p.recv(resp_len)   # 그 길이만큼 페이로드를 정확히 얻어온다
+
+print('status:', status)
+print('payload:', resp_payload)
+
+p.close()</code></pre>
+<p>만약 서버가 <code>status=0</code>(성공), 응답 페이로드로 <code>b'welcome admin'</code>(13바이트)을 돌려준다면, 실제로 소켓에 흐르는 응답 바이트열은 다음과 같이 정확히 계산된다.</p>
+<pre><code class="language-python">resp = p8(0) + p16(13) + b'welcome admin'
+print(resp.hex())
+# 000d0077656c636f6d652061646d696e</code></pre>
+<p>여기서 핵심은 <strong>각 필드를 읽을 때 정확히 그 필드의 크기만큼만 <code>recv()</code>를 호출</strong>한다는 점이다. <code>resp_len</code>처럼 뒤에 나올 데이터의 길이를 미리 알려주는 필드가 있다면, 그 값을 먼저 해석해서 다음 <code>recv()</code> 호출의 인자로 그대로 사용하는 것이 정석이다. 길이를 무시하고 무작정 <code>recv(1024)</code>처럼 큰 값을 넘기면, 다음 패킷의 앞부분까지 한꺼번에 읽어와 버려 이후 파싱이 전부 어긋나는 사고로 이어지기 쉽다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0266-pwntools-process-basics.html">REV-0266 — pwntools로 프로세스 실행하고 입력 보내기</a></li><li><a href="rev-0270-z3-overflow-handling.html">REV-0270 — Z3에서 8비트 32비트 Overflow 다루기</a></li><li><a href="rev-0272-capstone-basics.html">REV-0272 — Capstone으로 디스어셈블 자동화</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>pwntools</code> 공식 문서(docs.pwntools.com)의 <code>pwnlib.util.packing</code> 모듈(<code>p8/p16/p32/p64</code>, <code>u8/u16/u32/u64</code>)을 기준으로 정리했다(2026-09-08 검증).</li><li>x86/x64가 리틀 엔디안을 사용한다는 사실은 Intel/AMD 아키텍처 매뉴얼의 일반적인 서술과 일치한다.</li><li><code>pwntools</code>는 서드파티 패키지이므로 <code>pip install pwntools</code>가 필요하며, 오프라인 설치 절차는 툴킷 카테고리(<code>../tools/</code>)에 추후 작성될 문서에서 다룬다.</li><li>코드 예제는 <code>pip install pwntools</code> 환경의 표준 CPython 3에서 그대로 재현 가능하다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

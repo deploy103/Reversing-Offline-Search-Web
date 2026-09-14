@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PIE와 주소 계산 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>PIE와 주소 계산</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">checksec</span><span class="tag">readelf</span></div>
+<h2>한 줄 요약</h2>
+<p>PIE(Position Independent Executable)는 실행 파일 자체도 공유 라이브러리처럼 "어느 주소에 올려도 동작하도록" 만들어진 바이너리이며, 그 결과 IDA에서 보는 주소는 실행 시 실제 메모리 주소가 아니라 <strong>베이스 주소로부터의 오프셋</strong>일 뿐이므로, PIE 바이너리를 디버깅할 때는 반드시 "런타임 베이스 주소 + 오프셋"을 계산해서 브레이크포인트를 걸어야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA에서 <code>main</code> 함수 주소가 <code>0x1234</code>처럼 작게 나오는데, GDB에서 그 주소에 <code>break *0x1234</code>를 걸었더니 아무 반응이 없거나("pie breakpoint가 안 걸림") 프로그램이 그냥 끝까지 실행돼버릴 때</li><li>같은 바이너리를 실행할 때마다 GDB <code>info proc mappings</code>나 <code>vmmap</code>에 찍히는 코드 시작 주소가 계속 바뀌는 걸 봤을 때</li><li><code>checksec</code> 결과 <code>PIE: PIE enabled</code>가 무슨 의미인지, <code>PIE: No PIE</code>와 뭐가 다른지 궁금할 때</li><li>IDA가 보여주는 주소와 GDB가 보여주는 주소가 서로 다른데 이게 오류가 아니라 정상인지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>PIE가 없던 시절: 고정 베이스 주소</h3>
+<p>전통적인 리눅스 실행 파일(<code>ET_EXEC</code> 타입)은 항상 같은 가상 주소, 보통 <code>0x400000</code>부터 로드되도록 컴파일됐다. 즉 컴파일 시점에 "이 프로그램은 항상 <code>0x400000</code>에서 시작한다"고 못박아 두면, 코드 안의 모든 <code>call</code>, <code>jmp</code>, 전역 변수 접근이 절대 주소(absolute address)로 그냥 박혀 있어도 문제가 없었다. IDA로 열어봐도 <code>0x400000</code>대 주소가 그대로 실제 실행 주소였다.</p>
+<h3>PIE: 실행 파일도 공유 라이브러리처럼</h3>
+<p>PIE 바이너리는 ELF 타입이 <code>ET_DYN</code>(공유 오브젝트와 같은 타입)이다. 이 바이너리는 "특정 고정 주소에서만 실행 가능"하지 않고, <strong>로더가 아무 주소에나 올려도 동작</strong>하도록 컴파일된다. 이렇게 하는 이유는 순전히 보안 때문이다 — 실행 파일 자체의 주소를 예측 불가능하게(ASLR과 결합해서) 만들어, 공격자가 코드 안의 특정 가젯(gadget)이나 함수 주소를 미리 알고 공격하는 것을 어렵게 만든다. 요즘 대부분의 리눅스 배포판(Ubuntu, Debian 등)은 <code>gcc</code>로 컴파일할 때 기본값이 PIE이며, 일부러 <code>gcc -no-pie</code>를 줘야 옛날 방식(<code>ET_EXEC</code>, non-PIE)으로 컴파일된다.</p>
+<h3>IDA/objdump가 보여주는 주소의 정체</h3>
+<p>PIE 바이너리를 IDA로 열면 기본적으로 <strong>로드 베이스를 <code>0</code>으로 가정</strong>하고 주소를 매긴다(IDA는 흔히 <code>0x0</code> 또는 매우 낮은 값에서 시작). 그래서 <code>main</code>이 <code>0x1349</code>처럼 보이는데, 이건 "이 바이너리가 메모리 어디에 로드되든, main은 로드 시작점으로부터 <code>0x1349</code>만큼 떨어진 곳에 있다"는 <strong>상대 오프셋</strong>이다. 실제 실행 중 <code>main</code>의 진짜 메모리 주소는:</p>
+<pre><code>실제 주소 = 런타임 베이스 주소 + IDA에서 본 오프셋</code></pre>
+<p>이 계산을 못 하면 GDB에서 IDA가 알려준 주소 그대로 <code>break *0x1349</code>를 걸었을 때, 그 주소는 대개 프로세스 메모리 안에서 매핑조차 안 된 영역이라 브레이크포인트가 걸리지 않거나("pie breakpoint" 문제), 걸리더라도 전혀 엉뚱한 코드에서 멈춘다.</p>
+<h3>런타임 베이스 주소는 어떻게 정해지나</h3>
+<p>PIE 바이너리의 런타임 베이스 주소는 커널의 ASLR(REV-0104 참고)에 의해 <strong>프로세스가 시작될 때마다 무작위로</strong> 정해진다(ASLR이 꺼져 있다면 항상 같은 고정값이 된다 — 보통 <code>0x555555554000</code> 부근). 이 베이스 주소는 실행 전에는 절대 알 수 없고, 오직 프로세스가 이미 로드된 <strong>실행 중</strong>에만 확인할 수 있다.</p>
+<h3>GDB/Pwndbg에서 PIE 베이스를 다루는 법</h3>
+<p>GDB는 기본적으로 PIE를 인식하고 도와준다. 심볼 이름(<code>main</code>, <code>printf</code> 등)으로 브레이크포인트를 걸면 GDB가 알아서 실제 로드 주소를 계산해준다:</p>
+<pre><code class="language-gdb">break main</code></pre>
+<p>이 방법이 가장 안전하고 실수가 적다. 반면 IDA에서 얻은 raw 오프셋 주소로 걸고 싶다면, 프로세스를 일단 실행시켜(<code>start</code> 또는 <code>run</code> 후 잠깐 멈추게 하거나) 베이스 주소를 먼저 구해야 한다:</p>
+<pre><code class="language-gdb">start
+info proc mappings</code></pre>
+<p>또는 Pwndbg를 쓰면 더 간단하다:</p>
+<pre><code class="language-gdb">start
+piebase</code></pre>
+<p>Pwndbg의 <code>piebase</code>(또는 오래된 버전에서 <code>pie</code> 관련 명령)는 현재 프로세스의 PIE 베이스 주소를 바로 알려준다. 이 값을 IDA 오프셋에 더해서 <code>break *(베이스+오프셋)</code>으로 걸면 된다. Pwndbg는 더 나아가서 <code>break</code> 명령 자체를 확장해 오프셋 표현을 직접 지원하기도 한다(버전에 따라 <code>b *$rebase(0x1349)</code> 형태의 헬퍼를 제공). 정확한 문법은 설치된 Pwndbg 버전의 <code>help</code>로 확인하는 것이 안전하다.</p>
+<h3>"pie breakpoint가 안 걸린다" 문제의 진짜 원인</h3>
+<p>이 증상은 초보자가 가장 많이 겪는 문제 중 하나다. 원인은 거의 항상 다음 중 하나다.</p>
+<ol><li><strong>아직 실행 전(<code>run</code>을 하기 전)에 raw 주소로 브레이크포인트를 걸었다.</strong> PIE 바이너리는 실행 전에는 아직 어느 주소에 로드될지 모르므로, 로드되지 않은 주소(오프셋 값 그대로)에 브레이크포인트를 걸면 그 주소에는 아무 코드도 없다.</li><li><strong>베이스 주소를 더하지 않고 IDA 오프셋을 그대로 썼다.</strong> 위에서 설명한 "실제 주소 = 베이스 + 오프셋" 계산을 빠뜨린 경우다.</li><li><strong>ASLR 때문에 실행마다 베이스가 바뀌어서, 이전 실행에서 계산해둔 주소가 이번 실행에는 안 맞는 경우.</strong> 디버깅 중에는 ASLR을 꺼두는 것이 정신 건강에 좋다(REV-0104 참고).</li></ol>
+<p>해결책은 간단하다 — <strong>가능하면 심볼 이름으로 브레이크포인트를 걸고(<code>break main</code>, <code>break *main+0x20</code>), 주소를 직접 쓸 때는 반드시 프로세스가 이미 로드된 뒤(<code>start</code> 이후)에 베이스를 구해서 더한다.</strong></p>
+<h3>non-PIE와의 차이 요약</h3>
+<table><thead><tr><th>항목</th><th>non-PIE (<code>ET_EXEC</code>)</th><th>PIE (<code>ET_DYN</code>)</th></tr></thead><tbody><tr><td>IDA가 보여주는 주소</td><td>실제 실행 주소와 동일</td><td>베이스 기준 오프셋</td></tr><tr><td>베이스 주소</td><td>항상 고정(보통 <code>0x400000</code>)</td><td>매 실행마다 ASLR로 무작위(꺼져 있으면 고정)</td></tr><tr><td><code>break *0x401234</code></td><td>그대로 동작</td><td>대부분 실패("pie breakpoint" 문제)</td></tr><tr><td>checksec 표시</td><td><code>PIE: No PIE (0x...)</code></td><td><code>PIE: PIE enabled</code></td></tr></tbody></table>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>checksec</code> 출력에 <code>PIE enabled</code>가 표시됨</li><li><code>file ./chall</code> 결과가 <code>ELF 64-bit LSB pie executable</code>(non-PIE는 <code>LSB executable</code>)</li><li>IDA에서 함수 주소가 <code>0x1000</code>~<code>0x4000</code>대의 작은 값으로 시작함(non-PIE는 보통 <code>0x400000</code>대)</li><li>GDB에서 같은 바이너리를 여러 번 실행하면 <code>info proc mappings</code> 결과의 코드 베이스 주소가 매번 다름</li><li>IDA 오프셋 그대로 <code>break *0x....</code>를 걸었을 때 <code>Breakpoint 1 at 0x....</code>는 뜨지만 <code>run</code> 후 실제로 멈추지 않고 프로그램이 끝나버림</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>checksec ./chall</code>로 PIE 여부부터 확인한다. PIE가 켜져 있다면 지금부터 다루는 모든 주소는 "오프셋"이라고 마음속으로 라벨을 붙이고, GDB에서는 되도록 raw 주소 대신 심볼(<code>break main</code>, <code>break printf</code>) 또는 심볼 기준 상대 주소(<code>break *main+0x20</code>)로 작업한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) PIE 여부 확인</strong></p>
+<pre><code class="language-bash">checksec --file=./chall
+file ./chall</code></pre>
+<p><strong>2) IDA/objdump에서 관심 있는 함수의 오프셋 확인</strong> IDA 상태 표시줄이나 함수 목록에서 주소를 확인한다. 예: <code>check_password</code> 함수가 <code>0x1349</code>.</p>
+<p><strong>3) GDB에서 프로세스를 일단 로드</strong></p>
+<pre><code class="language-gdb">gdb ./chall
+start</code></pre>
+<p><code>start</code>는 <code>main</code>의 시작 부분에 임시 브레이크포인트를 걸고 실행해, 라이브러리와 PIE 베이스가 이미 매핑된 상태로 멈춘다.</p>
+<p><strong>4) 베이스 주소 확인</strong></p>
+<pre><code class="language-gdb">info proc mappings</code></pre>
+<p>출력 맨 위쪽, <code>./chall</code> 자신의 실행 파일 경로가 적힌 첫 줄의 시작 주소가 베이스다(예: <code>0x0000555555554000</code>).</p>
+<p>Pwndbg 사용 시:</p>
+<pre><code class="language-gdb">piebase</code></pre>
+<p><strong>5) 실제 주소 계산 후 브레이크포인트</strong></p>
+<pre><code class="language-gdb">break *(0x0000555555554000 + 0x1349)</code></pre>
+<p>또는 Pwndbg의 <code>$rebase</code> 표현식을 지원하는 버전이라면:</p>
+<pre><code class="language-gdb">break *$rebase(0x1349)</code></pre>
+<p><strong>6) 훨씬 더 쉬운 대안: 심볼 이름 사용</strong></p>
+<pre><code class="language-gdb">break check_password
+break *check_password+0x20</code></pre>
+<p>GDB는 디버깅 심볼이나 동적 심볼이 있으면 PIE 베이스를 알아서 계산해 넣어준다. 대부분의 상황에서 이 방법이 가장 안전하다.</p>
+<p><strong>7) ASLR을 꺼서 매 실행 주소를 고정</strong></p>
+<pre><code class="language-gdb">set disable-randomization on</code></pre>
+<p>GDB는 기본적으로 이미 이 옵션이 켜져 있어(즉 ASLR을 끄고 실행) 매번 같은 베이스로 실행되지만, 명시적으로 확인해두면 좋다. 자세한 내용은 REV-0104 참고.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">checksec --file=./chall
+file ./chall</code></pre>
+<p>GDB/Pwndbg: <code>start</code>, <code>info proc mappings</code>, <code>vmmap</code>, <code>piebase</code>, <code>break main</code>, <code>break *(base+offset)</code>, <code>set disable-randomization on</code></p>
+<h2>출력 해석</h2>
+<ul><li><code>info proc mappings</code>의 첫 몇 줄 중 <code>./chall</code> 실행 파일 경로가 적힌 라인의 시작 주소 = PIE 베이스.</li><li><code>vmmap</code>(Pwndbg) 결과에서 실행 파일 이름 옆에 <code>r-xp</code>(읽기+실행) 권한이 붙은 구간이 코드 세그먼트다.</li><li>non-PIE 바이너리에서는 <code>info proc mappings</code>에 찍히는 코드 시작 주소가 IDA에서 본 주소와 그대로 일치한다 — 이때는 베이스를 더할 필요가 없다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>실행 전(<code>run</code>/<code>start</code> 하기 전)에 IDA 오프셋으로 바로 <code>break *0x1349</code>를 거는 것 — 그 시점엔 아직 파일이 그 주소에 로드되지 않았을 수 있고, 대개 GDB가 "그 주소에 실행 파일이 없다"는 취지의 경고를 내거나 원하는 곳에서 멈추지 않는다.</li><li>베이스 주소를 한 번 구해놓고 다음 실행에서도 같은 값을 재사용하는 것 — ASLR이 켜져 있으면 실행마다 베이스가 바뀐다.</li><li>PIE와 ASLR을 같은 것으로 생각하는 것 — PIE는 "바이너리를 재배치 가능하게 컴파일하는 옵션"이고 ASLR은 "그 재배치 가능한 것들을 실제로 무작위 주소에 배치하는 커널 기능"이다. PIE가 꺼져 있으면 ASLR이 켜져 있어도 실행 파일 자체의 코드 주소는 바뀌지 않는다(스택/힙/라이브러리 주소만 바뀐다).</li><li>IDA의 <code>Debugger</code> 메뉴로 직접 붙여서 디버깅할 때 오프셋을 잘못 계산해 엉뚱한 함수에 브레이크포인트가 걸리는 것 — IDA도 디버거로 attach하면 자동으로 재베이스(rebase)를 해주므로, 정적 분석 뷰의 오프셋을 손으로 계산하는 대신 디버거 뷰의 주소를 그대로 쓰는 것이 안전하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>실행마다 주소가 바뀌는 원리 자체(ASLR)를 더 자세히 알고 싶다면 → REV-0104 ASLR 때문에 실행할 때 주소가 바뀌는 이유</li><li>PIE를 포함한 다른 보호 기법까지 한 번에 정리하고 싶다면 → REV-0105 Canary NX PIE RELRO 한 번에 이해</li><li>GOT/PLT의 주소도 PIE 베이스에 영향을 받는지 궁금하다면 → REV-0100 PLT와 GOT 기초</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ checksec --file=./chall
+RELRO           STACK CANARY      NX            PIE
+Partial RELRO   Canary found      NX enabled    PIE enabled</code></pre>
+<pre><code class="language-gdb">$ gdb ./chall
+(gdb) start
+Temporary breakpoint 1, 0x0000555555555185 in main ()
+(gdb) info proc mappings
+      0x555555554000     0x555555555000     0x1000        0x0  r--p   /home/user/chall
+      0x555555555000     0x555555556000     0x1000     0x1000  r-xp   /home/user/chall
+      ...</code></pre>
+<p>IDA에서 <code>main</code>이 <code>0x1185</code>로 보였다면, 베이스 <code>0x555555554000</code> + 오프셋 <code>0x1185</code> = <code>0x555555555185</code>, 실제로 GDB가 멈춘 주소(<code>0x0000555555555185</code>)와 정확히 일치한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0104-aslr.html">REV-0104 — ASLR 때문에 실행할 때 주소가 바뀌는 이유</a></li><li><a href="rev-0105-binary-protections-overview.html">REV-0105 — Canary NX PIE RELRO 한 번에 이해</a></li><li><a href="rev-0100-plt-got.html">REV-0100 — PLT와 GOT 기초</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>PIE(<code>ET_DYN</code> 실행 파일)와 재배치 가능 실행 개념: System V ABI ELF 명세(<code>e_type</code> 필드 <code>ET_DYN</code>) 기준.</li><li>GDB의 PIE/ASLR 처리(<code>disable-randomization</code>, <code>start</code> 동작): GDB 공식 온라인 문서(Starting your Program, <code>set disable-randomization</code>) 기준.</li><li>Pwndbg <code>piebase</code>/<code>vmmap</code> 명령: Pwndbg 공식 문서/명령어 목록 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>재귀 함수라서 디컴파일 결과가 무한히 복잡해 보일 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>재귀 함수라서 디컴파일 결과가 무한히 복잡해 보일 때</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>함수가 자기 자신(또는 A→B→A처럼 서로를 부르는 상호 재귀)을 호출하는 것을 발견했을 때, 디컴파일러는 그 호출을 "무한히 펼쳐서" 보여주지 않고 평범한 CALL 한 줄로만 표시하므로 pseudocode 자체가 실제로 무한히 길어지지는 않으며, 진짜 어려움은 "이 함수가 언제, 몇 번 자기를 부르는지, 각 호출마다 인자가 어떻게 바뀌는지"를 사람이 머릿속으로 여러 겹 쌓아 추적해야 한다는 데 있다 — base case(종료 조건)와 recursive case(재귀 호출 조건)를 분리해서 읽고, 필요하면 동적으로 실제 재귀 깊이/인자 변화를 관찰하는 편이 훨씬 빠르다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>어떤 함수의 디스어셈블리/pseudocode 안에 자기 자신의 시작 주소로의 CALL이 보일 때</li><li>함수 A가 B를 부르고 B가 다시 A를 부르는 상호 재귀(mutual recursion) 구조를 발견했을 때</li><li>재귀 호출부의 인자가 매번 바뀌는데(예: <code>n-1</code>, 포인터+1칸 등) 그 변화 규칙을 한눈에 못 알아보겠을 때</li><li>재귀 함수인데도 CALL 없이 루프처럼 보여서 이게 진짜 재귀인지 컴파일러가 반복문으로 바꾼 것인지 헷갈릴 때(꼬리재귀 최적화)</li></ul>
+<h2>핵심 개념</h2>
+<p>재귀 자체는 디컴파일러 입장에서 특별한 문제가 아니다. 함수 A 안에서 A를 부르는 CALL은 다른 함수를 부르는 CALL과 어셈블리 수준에서 완전히 동일하게 생겼다(대상 주소가 자기 자신일 뿐). 디컴파일러는 이걸 그대로 "A(...)"라는 한 줄의 재귀 호출 표현으로 보여주며, 실행을 시뮬레이션해서 여러 단계를 펼쳐 보여주지 않는다. 따라서 "디컴파일 결과 자체가 무한히 커지는 것"이 아니라, <strong>사람이 그 한 줄의 호출을 몇 번이고 겹쳐서 상상해야 로직이 이해된다는 것</strong>이 실제 어려움이다.</p>
+<p>재귀 함수를 읽을 때 핵심은 다음 두 부분을 분리하는 것이다.</p>
+<ol><li><strong>base case(종료 조건)</strong>: 더 이상 자기 자신을 부르지 않고 바로 값을 반환하는 분기. 이게 없으면 무한 재귀(스택 오버플로우)이므로 반드시 어딘가에 있어야 한다.</li><li><strong>recursive case(재귀 호출 조건)</strong>: 자기 자신을 부르되, 인자를 반드시 "종료 조건에 가까워지는 방향"으로 바꿔서 넘기는 부분(예: <code>n</code>을 <code>n-1</code>로, 포인터를 다음 칸으로).</li></ol>
+<p>또한 컴파일러 최적화 중 <strong>꼬리 재귀 최적화(tail-call optimization)</strong>가 적용되면, <code>return f(n-1)</code>처럼 재귀 호출 결과를 그대로 리턴하는 패턴이 CALL/RET 없이 그냥 <code>jmp</code> + 레지스터 갱신으로 바뀐 <strong>반복문(loop)</strong> 형태로 컴파일될 수 있다. 이 경우 디스어셈블리에는 자기 자신을 부르는 CALL이 아예 안 보이고, 대신 함수 시작 주소로 되돌아가는 조건부 점프만 보인다 — 이는 원래 재귀 함수였지만 디스어셈블리 레벨에서는 반복문처럼 보이는 정상적인 결과다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>함수 본문 안에 자기 함수 시작 주소로의 <code>call</code>이 있음</li><li>재귀 호출 직전에 인자를 계산하는 산술 연산(<code>sub</code>, <code>add</code>, 포인터 증감 등)이 있음</li><li>함수 시작 근처로 되돌아가는 조건부 <code>jmp</code>가 있는데 <code>call</code>/<code>ret</code> 페어가 안 보임(꼬리재귀가 반복문화된 경우)</li><li>스택 사용량이 재귀 깊이에 비례해서 커질 것으로 예상되는 구조(각 재귀 프레임마다 지역 변수를 스택에 저장)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>함수 안에서 <strong>자기 자신을 부르는 CALL이 있는 분기</strong>와 <strong>부르지 않고 바로 리턴하는 분기</strong>를 그래프 뷰(REV-0150)에서 시각적으로 분리해서 표시해둔다. 후자가 base case다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) base case 찾기</strong> 그래프 뷰에서 자기 자신을 부르지 않고 종료하는 경로(리프 노드)를 찾는다. 이 경로에 도달하는 조건(예: <code>n == 0</code>, 포인터가 NULL)이 재귀가 멈추는 조건이다.</p>
+<p><strong>2) recursive case에서 인자 변화 규칙 확인</strong> 재귀 호출 직전 인자가 어떻게 계산되는지 확인한다(REV-0175 참고). 이 변화가 base case 조건 쪽으로 수렴하는지 확인하면 재귀가 실제로 끝나는 구조라는 것을 검증할 수 있다.</p>
+<p><strong>3) 한 단계만 손으로 펼쳐보기</strong> 전체를 무한히 펼치려 하지 말고, 딱 2~3단계만 손으로 직접 대입해서 시뮬레이션해본다(예: <code>f(3) → f(2) → f(1) → f(0)=base</code>). 대부분의 재귀 로직은 2~3단계만 봐도 패턴이 파악된다.</p>
+<p><strong>4) 파이썬으로 그대로 옮겨 재귀 함수로 재현</strong> 로직이 파악되면 원래 함수와 같은 구조(같은 base case, 같은 recursive case)를 가진 파이썬 재귀 함수로 옮겨 적어 직접 실행해본다(REV-0168). 손으로 여러 단계를 추적하는 것보다 훨씬 정확하고 빠르다.</p>
+<p><strong>5) 꼬리재귀가 의심되면 반복문으로 재해석</strong> CALL 없이 함수 시작으로 되돌아가는 조건부 점프만 보인다면, 이는 꼬리재귀가 최적화되어 반복문이 된 것일 수 있다. 이 경우 "이 함수가 자기 자신을 부른다"고 생각하지 말고, 그냥 일반적인 <code>while</code>/<code>for</code> 루프로 읽으면 오히려 더 단순해진다.</p>
+<p><strong>6) 정적 추적이 너무 어려우면 동적으로 깊이/인자 관찰</strong> 재귀 인자 변화 규칙이 복잡하거나(단순 감소가 아니라 조건에 따라 여러 방향으로 갈라짐) 상호 재귀가 여러 함수에 걸쳐 있으면, 그 함수에 브레이크포인트를 걸고 몇 번 호출되는지, 매번 인자가 어떻게 바뀌는지 실제로 실행하며 로그를 남기는 편이 훨씬 빠르다(REV-0805 기준).</p>
+<h2>명령어/단축키</h2>
+<ul><li><code>Space</code>: 그래프 뷰 전환(base case/recursive case 분기 시각화)</li><li><code>Ctrl+X</code>: 함수 자신을 부르는 CALL의 xref 확인(자기 참조 여부 확인)</li><li>GDB <code>dprintf</code>(REV-0642): 멈추지 않고 재귀 호출마다 인자 값만 로그로 남기기</li></ul>
+<h2>출력 해석</h2>
+<ul><li>재귀 호출부의 인자 계산식이 base case 조건과 무관한 방향으로 변한다면, 실제로는 무한 재귀(버그) 코드이거나 애초에 재귀 조건을 잘못 파악한 것이다.</li><li>파이썬으로 재현한 재귀 함수가 원본과 다른 결과를 낸다면, base case 조건의 부등호 방향(<code>&lt;</code> vs <code>&lt;=</code>) 같은 경계값을 놓쳤을 가능성이 높다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>재귀를 무한히 손으로 펼쳐서 이해하려다 시간을 낭비하는 것 — 2~3단계만 확인하고 파이썬으로 재현하는 것이 훨씬 효율적이다.</li><li>꼬리재귀 최적화로 반복문이 된 코드를 억지로 "재귀"라고 생각하며 CALL을 찾으려고 헤매는 것.</li><li>base case를 찾지 않고 recursive case만 계속 따라가는 것 — 종료 조건을 먼저 확정해야 전체 구조가 이해된다.</li><li>상호 재귀(A↔B)에서 한 함수만 보고 판단하는 것 — 관련된 모든 함수를 함께 봐야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>정적으로 아무리 봐도 실제 재귀 깊이/인자 변화가 안 잡힌다면 → REV-0805</li><li>인자 확인 방법 자체가 헷갈린다면 → REV-0175</li><li>정적 분석 결과를 파이썬으로 옮기는 방법이 궁금하면 → REV-0168</li><li>호출 관계 전반을 그래프로 보고 싶다면 → REV-0166</li></ul>
+<h2>미니 예제</h2>
+<p>어떤 함수가 <code>if (a1 &lt;= 1) return a1;</code> 형태의 즉시 리턴 분기와, <code>return sub_401200(a1-1) + sub_401200(a1-2);</code> 형태로 자기 자신을 두 번 부르는 분기를 가진다고 하자. base case는 <code>a1 &lt;= 1</code>이고, recursive case는 인자를 <code>a1-1</code>, <code>a1-2</code>로 줄여가며 두 갈래로 재귀한다. 이는 전형적인 피보나치 수열 계산 패턴이다. 이를 파이썬으로 <code>def f(a1): return a1 if a1 &lt;= 1 else f(a1-1) + f(a1-2)</code>로 그대로 옮기면, 손으로 트리를 그리지 않고도 어떤 입력에 대해 어떤 값이 나오는지 즉시 계산할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0150-ida-graph-view.html">REV-0150 — IDA Graph View에서 분기 읽기</a></li><li><a href="rev-0175-args-before-call.html">REV-0175 — CALL 직전 함수 인자 확인하는 법</a></li><li><a href="rev-0168-static-to-python-pseudocode.html">REV-0168 — 정적 분석 결과를 Python 의사코드로 옮기기</a></li><li><a href="rev-0166-call-graph-narrowing.html">REV-0166 — 함수 Call Graph로 핵심 로직 좁히기</a></li><li><a href="rev-0805-static-to-dynamic-switch-criteria.html">REV-0805 — 정적분석만으로 도저히 안 풀릴 때 동적으로 전환하는 기준</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>재귀 호출이 어셈블리 수준에서 일반 함수 호출과 동일하게 표현된다는 점과 디컴파일러가 이를 한 줄의 재귀 호출로만 표시한다는 원리는 컴파일러/디컴파일러 일반론(스택 프레임 기반 함수 호출 모델)에 근거한다.</li><li>꼬리 호출 최적화(tail-call optimization)가 CALL/RET 대신 JMP로 컴파일되어 반복문 형태가 된다는 것은 GCC/Clang 최적화 문서에서 일반적으로 설명되는 표준 최적화 기법이다.</li><li>이 글은 2026-09-09 기준으로 작성되었다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>문자별 for 루프 검증 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>문자별 for 루프 검증 패턴</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>라이브러리 함수 이름 없이 <code>for(i=0; i&lt;len; i++) { ... input[i] ... }</code> 형태로 인덱스를 증가시키며 한 바이트씩 비교/변환하는 루프는 <code>strcmp</code>/<code>memcmp</code>가 <strong>직접 손으로 구현되거나 컴파일러에 의해 인라인</strong>된 것이며, 루프 본문에 변환 연산이 있는지 없는지에 따라 뒤의 REV-0199~0202 중 어떤 패턴을 함께 봐야 하는지가 갈린다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Imports 탭에 <code>strcmp</code>/<code>memcmp</code>가 아예 없거나 있어도 호출되지 않는데, flag를 검증하는 것으로 보이는 함수가 있을 때</li><li>디스어셈블리에 반복문(루프 시작 라벨 + 조건부 점프로 되돌아가는 구조)이 있고, 그 안에서 배열 인덱스(<code>[rdi+rax]</code>, <code>[rsi+rcx]</code> 등)로 메모리에 접근하며 <code>cmp</code>를 수행할 때</li><li>디컴파일 결과가 <code>for</code> 또는 <code>while</code> 루프 안에 <code>if (input[i] != ...)</code> 형태로 나올 때</li><li>"루프가 도는데 뭘 하는지 감이 안 잡힘"이라고 느껴질 때 (변환이 있는지부터 확인하면 됨)</li></ul>
+<h2>핵심 개념</h2>
+<p>컴파일러 최적화(<code>-O2</code> 이상, 또는 릴리즈 빌드) 상태에서는 <code>strcmp</code>나 <code>memcmp</code> 같은 라이브러리 호출도 컴파일러가 직접 인라인해서 바이트/워드 단위 루프로 펼쳐버리는 경우가 많다. 또한 애초에 개발자(문제 출제자)가 <code>strcmp</code>를 안 쓰고 직접 <code>for</code>문으로 짠 검증 함수를 작성하는 경우도 매우 흔하다 — CTF 리버싱 문제의 절반 이상이 이 형태다.</p>
+<p>이 패턴을 만나면 항상 두 가지를 구분해야 한다.</p>
+<ol><li><strong>순수 비교형</strong>: <code>if (input[i] != expected[i]) return 0;</code> — 변환 없이 그냥 대응하는 바이트끼리 비교. 이건 <code>memcmp</code>를 손으로 푼 것과 동일하며, <code>expected[i]</code> 배열을 그대로 읽으면 끝난다.</li><li><strong>변환 후 비교형</strong>: <code>if (transform(input[i]) != expected[i]) return 0;</code> — 각 문자에 XOR/ADD/SUB/ROL/ROR/SHIFT 같은 연산을 적용한 뒤 비교. 이 경우 <code>transform</code>을 알아내서 <strong>역연산</strong>을 해야 원래 문자를 구할 수 있다 (REV-0199~0202 참고).</li></ol>
+<p>또한 실패 처리 방식도 두 가지로 나뉜다.</p>
+<ul><li><strong>조기 반환(short-circuit)</strong>: 한 글자라도 틀리면 즉시 <code>return 0</code>으로 빠져나감. 이 구조는 타이밍 사이드채널 공격(각 글자가 맞을 때마다 비교 시간이 미세하게 길어짐)이 이론적으로 가능한 취약한 구조지만, CTF에서는 대부분 그냥 정적/동적 분석으로 값을 직접 읽는 게 더 빠르다.</li><li><strong>전부 비교 후 판정</strong>: 모든 글자를 다 비교한 다음 <code>and</code>나 카운터 누적으로 한 번에 성공/실패를 판정. 디버거로 한 글자씩 브레이크를 걸어도 중간에 끊기지 않으므로 오히려 전체 배열을 한 번에 덤프하는 쪽이 빠르다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<p><strong>x64 디스어셈블리 (순수 비교형):</strong></p>
+<pre><code class="language-asm">xor     ecx, ecx              ; i = 0
+loop_start:
+movzx   eax, byte ptr [rdi+rcx]   ; input[i]
+cmp     al, byte ptr [rsi+rcx]    ; expected[i]
+jne     fail
+inc     ecx
+cmp     ecx, 20h               ; len == 32
+jl      loop_start</code></pre>
+<p><strong>x64 디스어셈블리 (변환 후 비교형 — XOR 예시):</strong></p>
+<pre><code class="language-asm">loop_start:
+movzx   eax, byte ptr [rdi+rcx]
+xor     al, 0x13                  ; 변환: input[i] ^ 0x13
+cmp     al, byte ptr [rsi+rcx]    ; expected[i]와 비교
+jne     fail
+inc     ecx
+cmp     ecx, 20h
+jl      loop_start</code></pre>
+<p><strong>IDA/Ghidra 디컴파일 (순수 비교형):</strong></p>
+<pre><code class="language-c">for ( i = 0; i &lt; 32; ++i )
+{
+    if ( input[i] != expected[i] )
+        return 0;
+}
+return 1;</code></pre>
+<p><strong>IDA/Ghidra 디컴파일 (변환 후 비교형):</strong></p>
+<pre><code class="language-c">for ( i = 0; i &lt; 32; ++i )
+{
+    if ( (input[i] ^ 0x13) != expected[i] )
+        return 0;
+}
+return 1;</code></pre>
+<p><strong>전부 비교 후 판정형:</strong></p>
+<pre><code class="language-c">int ok = 1;
+for ( i = 0; i &lt; 32; ++i )
+    ok &amp;= (input[i] == expected[i]);
+return ok;</code></pre>
+<p>이 형태는 루프 안에 <code>jne</code>로 즉시 빠져나가는 분기가 없다는 게 특징이다 — <code>and</code>나 덧셈으로 결과를 누적하는 것만 보인다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>루프 본문에서 <code>input[i]</code>를 읽어온 직후, <strong>비교(<code>cmp</code>) 전에 다른 연산(<code>xor</code>, <code>add</code>, <code>sub</code>, <code>rol</code>, <code>ror</code>, <code>shl</code>, <code>shr</code>)이 끼어 있는지</strong>부터 확인한다. 없으면 그냥 <code>expected</code> 배열을 읽으면 끝. 있으면 그 연산이 정확히 무엇인지 특정해서 REV-0199~0202로 넘어간다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 루프 경계값(길이) 확인</strong></p>
+<p><code>cmp ecx, 0x20</code>처럼 루프 종료 조건에 쓰이는 상수가 곧 입력/flag의 길이다. 이걸 먼저 적어둔다.</p>
+<p><strong>2) 인덱싱 베이스 두 개 식별</strong></p>
+<p>루프 안에서 메모리를 읽는 베이스 레지스터가 보통 두 개 있다 — 하나는 사용자 입력(<code>rdi</code>/<code>rbp-0x20</code> 등), 하나는 정답/키 배열(<code>rsi</code>/전역 변수 주소). 둘 다 IDA에서 더블클릭해서 초기화 위치를 확인한다.</p>
+<p><strong>3) 비교 직전 연산 유무 확인</strong></p>
+<p><code>cmp</code> 명령어 바로 위 1~3줄을 본다. <code>xor al, imm</code>이면 REV-0199, <code>add</code>/<code>sub</code>면 REV-0200, <code>rol</code>/<code>ror</code>면 REV-0201, <code>shl</code>/<code>shr</code>/<code>sar</code>면 REV-0202. 아무 연산도 없으면 그냥 REV-0197(memcmp)/REV-0196(strcmp)과 동일한 방식으로 <code>expected</code> 배열을 그대로 읽는다.</p>
+<p><strong>4) 정답 배열 덤프</strong></p>
+<p>정적으로는 IDA Hex View에서, 동적으로는 디버거에서 <code>expected</code> 배열의 시작 주소부터 <code>length</code>바이트를 덤프한다.</p>
+<pre><code class="language-python"># IDA Hex View에서 복사한 raw bytes
+expected = bytes.fromhex("...")
+length = 32
+assert len(expected) == length</code></pre>
+<p><strong>5) 변환이 있으면 역산, 없으면 그대로 출력</strong></p>
+<p>변환이 없다면:</p>
+<pre><code class="language-python">flag = expected.decode()
+print(flag)</code></pre>
+<p>변환이 있다면 REV-0199~0202의 역연산 공식을 적용한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 루프 시작 라벨에 커서를 놓고 <code>Ctrl+G</code>로 그래프 뷰 전환하면 loop back-edge가 시각적으로 보여서 루프 범위를 빠르게 파악 가능</li><li>x64dbg: 루프 내부 <code>cmp</code> 명령어에 브레이크포인트를 걸고 F9로 여러 번 실행하며 <code>al</code>/<code>expected[i]</code> 값을 관찰(단, 조기 반환형이 아니라면 매 반복마다 멈추므로 조건부 브레이크포인트 <code>bp addr, "ecx==5"</code> 형태로 특정 인덱스만 확인하는 게 빠름)</li><li>gdb: <code>watch *(char*)($rsi+$rcx)</code> 로 인덱스별 값 변화 관찰</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>jl</code>/<code>jb</code> 등으로 루프백하는 조건이 <code>ecx &lt; length</code>이면 length가 곧 flag 길이. <code>jle</code>라면 <code>length+1</code>일 수 있으니 경계 조건(<code>&lt;</code> vs <code>&lt;=</code>)을 정확히 다시 읽는다.</li><li>루프 탈출 후 반환값이 <code>1</code>(성공)인지 <code>0</code>(실패)인지, 그리고 그 반환값이 상위 호출자에서 어떻게 쓰이는지("Correct" 출력과 연결되는지)까지 확인해야 진짜 검증 함수인지 확신할 수 있다.</li><li>변환 연산의 피연산자(<code>0x13</code> 같은 즉시값)가 매 반복 동일하면 "단일 키", 인덱스에 따라 달라지면(<code>key[i % keylen]</code>처럼 다른 배열을 참조) "반복 키" 구조이므로 REV-0199의 "반복 키 XOR" 절을 참고한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>루프 종료 조건에서 <code>&lt;</code>와 <code>&lt;=</code>를 헷갈려서 flag 길이를 하나 틀리게 잡는 것. 항상 실제로 몇 번 반복되는지 손으로 세어 확인한다.</li><li>비교 직전의 변환 연산을 놓치고 <code>expected</code> 배열을 그대로 flag라고 출력해버리는 것. 결과가 아스키로 안 읽히면 반드시 위로 1~3줄을 다시 살펴본다.</li><li>조기 반환형에서 첫 글자만 틀려도 함수 전체가 바로 끝난다는 걸 이용해서 "브루트포스 + 실행시간/분기 관찰"로 억지로 풀려다가, 사실은 그냥 <code>expected</code> 배열을 정적으로 읽으면 훨씬 빠르다는 걸 놓치는 것.</li><li>인덱스 변수(<code>ecx</code>, <code>rax</code> 등)가 두 개의 다른 목적(입력 인덱스, 정답 배열 인덱스)으로 각각 따로 증가하는 경우를 하나의 변수로 착각하는 것 — 두 배열의 정렬(offset)이 다를 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>변환 연산이 <code>xor</code>라면 → REV-0199.</li><li>변환 연산이 <code>add</code>/<code>sub</code>라면 → REV-0200.</li><li>변환 연산이 <code>rol</code>/<code>ror</code>라면 → REV-0201.</li><li>변환 연산이 <code>shl</code>/<code>shr</code>/<code>sar</code>라면 → REV-0202.</li><li>변환 없이 그냥 비교인데 결과가 이상하다면 → REV-0196/REV-0197로 돌아가 <code>strcmp</code>/<code>memcmp</code>와 개념적으로 동일함을 재확인.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 순수 비교, 길이 8</strong></p>
+<pre><code class="language-asm">xor ecx, ecx
+loop1:
+movzx eax, byte ptr [rdi+rcx]
+cmp al, byte ptr [rsi+rcx]
+jne fail
+inc ecx
+cmp ecx, 8
+jl loop1</code></pre>
+<p><code>rsi</code> 시작 주소의 8바이트를 그대로 읽으면 정답.</p>
+<p><strong>예제 2 — 인덱스별 다른 키(반복 키 XOR)</strong></p>
+<pre><code class="language-c">for ( i = 0; i &lt; 12; ++i )
+{
+    if ( (input[i] ^ key[i % 4]) != expected[i] )
+        return 0;
+}</code></pre>
+<p><code>key</code>(4바이트)와 <code>expected</code>(12바이트)를 각각 덤프한 뒤:</p>
+<pre><code class="language-python">key = bytes.fromhex("deadbeef")
+expected = bytes.fromhex("...")  # 12바이트
+flag = bytes(e ^ key[i % len(key)] for i, e in enumerate(expected))
+print(flag)</code></pre>
+<p><strong>예제 3 — 전부 비교 후 판정(and 누적)</strong></p>
+<pre><code class="language-c">int ok = 1;
+for ( i = 0; i &lt; 6; ++i )
+    ok = ok &amp; (input[i] == "Secret"[i]);
+return ok;</code></pre>
+<p>문자열 리터럴 <code>"Secret"</code>이 코드/디컴파일 결과에 그대로 노출되어 있으므로 바로 읽으면 끝.</p>
+<p><strong>예제 4 — 길이 경계값을 잘못 읽기 쉬운 경우</strong></p>
+<pre><code class="language-asm">cmp ecx, 0x10
+jle loop1     ; i &lt;= 16 이므로 실제로는 17번 반복(i=0..16)</code></pre>
+<p><code>jl</code>이 아니라 <code>jle</code>이므로 flag 길이는 16이 아니라 17임에 주의.</p>
+<p><strong>예제 5 — 처음부터 끝까지 실행되는 전체 스크립트 (반복 키 XOR 역산)</strong></p>
+<p><code>for</code> 루프 안에서 <code>input[i] ^ key[i % keylen]</code>을 <code>expected[i]</code>와 비교하는 "변환 후 비교형" 검증 함수를 만났다고 가정하고, 길이·키·정답 배열을 모두 정적으로 덤프한 뒤 파이썬으로 통째로 역산하는 예제다.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0198 실전 스크립트: "문자별 for 루프 + 반복 키 XOR" 검증 함수를 통째로 역산한다.
+
+from itertools import cycle
+
+# 1) IDA에서 루프 종료 조건(cmp ecx, 0Fh -&gt; jl loop_start)을 확인해서 flag 길이를 먼저 적어둔다.
+#    0xF는 15이지만 "i &lt; 15"이므로 실제로 15번 반복 -&gt; flag 길이는 15바이트.
+flag_length = 15
+
+# 2) 키 배열(전역 변수, 4바이트)과 expected 배열(정답, 15바이트)을 각각 Hex View에서 그대로 복사한다.
+key = bytes.fromhex("4b455921")                               # 4바이트 키
+expected = bytes.fromhex("08111f5a392a354d222b3e59243724")    # 15바이트 암호문(=비교 대상)
+
+# 3) 길이가 실제로 맞는지 먼저 검증한다. 안 맞으면 hex를 잘못 복사했을 가능성이 크다.
+assert len(expected) == flag_length
+
+# 4) key[i % keylen]을 반복시키기 위해 itertools.cycle을 사용한다.
+#    XOR는 자기 역함수이므로 "암호화에 쓴 것과 똑같은 키로 다시 XOR"하면 원래 값이 돌아온다.
+flag_bytes = bytes(e ^ k for e, k in zip(expected, cycle(key)))
+
+# 5) bytes를 사람이 읽을 수 있는 문자열로 바꿔서 출력한다.
+flag = flag_bytes.decode()
+print("복원된 flag:", flag)
+# 실행 결과: 복원된 flag: CTF{rollingxor}
+
+# 6) keylen을 잘못 추정했다면 일부 바이트가 아스키 범위(0x20~0x7E)를 벗어난다.
+#    아래 assert로 "전부 정상적인 아스키인지"를 자동으로 검사해서 keylen 추정이 맞았는지 확인한다.
+assert all(0x20 &lt;= b &lt;= 0x7e for b in flag_bytes), "아스키 범위를 벗어남 -&gt; keylen을 다시 확인해야 함"
+print("모든 바이트가 출력 가능한 아스키 -&gt; keylen=4 추정이 맞다는 뜻")</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0196-strcmp-check-pattern.html">REV-0196 — strcmp 기반 Flag 검증 패턴</a></li><li><a href="rev-0197-memcmp-check-pattern.html">REV-0197 — memcmp 기반 Flag 검증 패턴</a></li><li><a href="rev-0199-xor-loop-inversion.html">REV-0199 — XOR 반복 변환 역산</a></li><li><a href="rev-0200-add-sub-constant-transform.html">REV-0200 — ADD SUB 상수 기반 문자 변환</a></li><li><a href="rev-0201-rotate-transform.html">REV-0201 — Rotate ROL ROR 기반 변환</a></li><li><a href="rev-0202-shift-transform.html">REV-0202 — Shift SHL SHR SAR 기반 변환</a></li><li>../assembly/rev-0060-cmp.md — CMP 명령어</li><li>../assembly/rev-0068-jne-jnz.md — JNE/JNZ 조건 분기</li></ul>
+<h2>출처/검증</h2>
+<ul><li>컴파일러가 짧은 <code>strcmp</code>/<code>memcmp</code> 호출을 바이트 단위 루프로 인라인 전개하는 것은 GCC/Clang/MSVC의 일반적인 최적화 동작(각 컴파일러 최적화 문서 기준).</li><li>위 예제 코드는 CTF 스타일 검증 로직을 재현한 예시이며 특정 실제 문제의 정답이 아니다(2026-09-08 작성 시 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

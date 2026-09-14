@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C++ 생성자/소멸자 호출 패턴 읽기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>C++ 생성자/소멸자 호출 패턴 읽기</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>C++ 생성자/소멸자는 겉보기엔 평범한 <code>CALL</code>이지만, 호출 직전에 "이 객체를 가리키는 포인터"(<code>this</code>)가 항상 첫 번째 인자 레지스터(<code>RCX</code> 또는 <code>RDI</code>)에 실려 있고, 함수 내부에서 멤버를 순서대로 초기화하거나 vtable 포인터를 써넣는다는 특징으로 알아볼 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA/Ghidra 함수 이름이 <code>Foo::Foo</code>, <code>Foo::~Foo</code>, <code>CFoo::CFoo</code> 처럼 클래스 이름과 똑같은(또는 <code>~</code>가 붙은) 형태로 나올 때</li><li><code>call operator new</code> 직후에 곧바로 어떤 함수가 호출되고, 그 함수 안에서 방금 할당받은 포인터에 값을 채워 넣는 코드를 볼 때</li><li>함수 스코프(중괄호 <code>{}</code>)가 끝나는 지점에서 이유를 알 수 없는 <code>CALL</code>들이 연달아 나올 때 (소멸자 체인일 가능성)</li><li>어떤 함수의 첫 줄이 <code>mov [rax], offset vtable_for_Foo</code> 형태로 시작할 때</li><li>Name mangling(<code>?Foo@Bar@@QEAA@XZ</code>, <code>_ZN3FooC1Ev</code> 등)이 뭘 뜻하는지 몰라서 함수 이름 해석이 막혔을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>생성자/소멸자도 결국 "함수"다</h3>
+<p>C++ 컴파일러는 <code>Foo obj(1, 2);</code> 같은 코드를 만나면, 내부적으로 <code>Foo::Foo(Foo* this, int, int)</code> 형태의 평범한 함수를 호출하는 코드로 바꾼다. 즉 생성자/소멸자는 문법적으로는 특별하지만, 어셈블리 레벨에서는 REV-0071(CALL)에서 다룬 일반적인 함수 호출과 완전히 동일하게 동작한다 — 차이는 <strong>항상 객체 자신을 가리키는 포인터가 암묵적인 첫 번째 인자로 전달된다</strong>는 점뿐이다. 이 포인터를 <code>this</code>라고 부른다.</p>
+<ul><li>Windows x64(Microsoft ABI): <code>this</code>는 <strong>RCX</strong>에 들어간다 (REV-0122 참고). 나머지 명시적 인자는 RDX, R8, R9 순으로 밀린다.</li><li>Linux x64(SysV ABI): <code>this</code>는 <strong>RDI</strong>에 들어간다 (REV-0106 참고). 나머지 인자는 RSI, RDX, RCX, R8, R9 순.</li><li>x86(32비트)에서는 컴파일러에 따라 <code>thiscall</code>(MSVC, <code>this</code>는 ECX)이나 스택 전달 방식을 쓴다.</li></ul>
+<h3>객체 생성의 전형적인 3단계</h3>
+<p>스택이 아니라 힙에 객체를 만드는 <code>new Foo(...)</code> 코드는 보통 다음 순서로 컴파일된다.</p>
+<ol><li><strong>메모리 할당</strong>: <code>call operator new</code> (또는 <code>call malloc</code>) — 반환값(RAX)이 아직 초기화되지 않은 원시 메모리 주소.</li><li><strong>생성자 호출</strong>: 방금 받은 포인터를 <code>this</code>용 레지스터(RCX/RDI)에 넣고 <code>call Foo::Foo</code>. 생성자 내부에서 멤버 변수들을 선언 순서대로(코드 순서가 아니라 <strong>클래스 정의에 선언된 순서</strong>) 초기화한다.</li><li><strong>vtable 포인터 세팅</strong>(가상 함수가 있는 클래스라면): 생성자의 가장 처음 부분에서 <code>mov qword ptr [rax], offset Foo::</code>vftable'` 같은 코드로 객체의 첫 8바이트에 vtable 주소를 써넣는다. 자세한 내용은 REV-0444(vtable과 가상함수 호출 패턴) 참고.</li></ol>
+<p>스택에 만드는 지역 객체(<code>Foo obj;</code>)는 1단계(할당)가 없다 — 그냥 스택 프레임 안의 고정된 오프셋(<code>[rbp-0x20]</code> 등)을 <code>this</code>로 써서 바로 생성자를 호출한다.</p>
+<h3>소멸자 호출 시점</h3>
+<p>소멸자는 객체의 "수명이 끝나는" 시점에 컴파일러가 <strong>자동으로</strong> 삽입한다. 사람이 직접 <code>delete</code>를 쓴 게 아니어도, 스코프(<code>{}</code>)를 벗어나는 모든 지점에 소멸자 호출이 끼워진다.</p>
+<ul><li>지역 객체가 정상적으로 스코프를 벗어날 때 (함수 끝, 블록 끝)</li><li><code>delete ptr;</code> — <code>call Foo::~Foo</code> 다음에 <code>call operator delete</code>가 이어진다 (소멸 후 메모리 해제라는 순서에 주의)</li><li>함수가 <code>return</code>으로 여러 지점에서 빠져나갈 수 있다면, 각 <code>return</code> 지점마다 소멸자 호출이 각각 복제되어 삽입되는 경우가 많다 — 그래서 같은 소멸자를 호출하는 <code>CALL</code>이 함수 안에 여러 번 나타날 수 있다.</li><li>컴파일러 최적화가 예외 처리(스택 언와인딩)까지 고려하면 별도의 "unwind" 경로용 소멸자 호출도 존재하지만, 이는 일반적인 정적 디스어셈블리에서는 별도 테이블(<code>.pdata</code>/<code>.xdata</code>, <code>.eh_frame</code>)로 빠져 있어 눈에 잘 안 띈다.</li></ul>
+<p><strong>소멸 순서는 생성의 역순</strong>이다. 멤버 변수가 A, B, C 순으로 생성자에서 초기화됐다면, 소멸자는 C, B, A 순으로 파괴한다. 배열이라면 마지막 원소부터 첫 원소 순으로 소멸자를 반복 호출한다.</p>
+<h3>Name Mangling으로 생성자/소멸자 알아보기</h3>
+<p>컴파일러는 오버로딩을 지원하기 위해 함수 이름에 타입 정보를 인코딩(맹글링)한다. IDA/Ghidra는 이를 자동으로 사람이 읽기 쉬운 형태로 "디맹글링(demangle)"해서 보여주지만, 원본 심볼 문자열도 알아두면 도움이 된다.</p>
+<ul><li><strong>MSVC (Windows)</strong>: 생성자는 <code>??0</code>, 소멸자는 <code>??1</code>로 시작한다. 예: <code>??0Foo@@QEAA@XZ</code> → <code>Foo::Foo(void)</code>. 소멸자는 <code>??1Foo@@QEAA@XZ</code> → <code>Foo::~Foo(void)</code>.</li><li><strong>Itanium ABI (Linux/GCC/Clang)</strong>: 생성자는 <code>C1</code>(complete object constructor) 또는 <code>C2</code>(base object constructor), 소멸자는 <code>D1</code>/<code>D2</code>/<code>D0</code>으로 표시된다. 예: <code>_ZN3FooC1Ev</code> → <code>Foo::Foo()</code>, <code>_ZN3FooD1Ev</code> → <code>Foo::~Foo()</code>.</li></ul>
+<p>IDA는 View → Open subviews → Names 또는 함수 목록에서 이미 디맹글링된 이름을 보여주므로, 굳이 맹글링 규칙을 직접 해독할 일은 드물지만, 스트립된 바이너리나 심볼이 부분적으로만 남은 경우 원본 문자열 패턴(<code>??0</code>, <code>??1</code>, <code>C1Ev</code>, <code>D1Ev</code>)만 보고도 생성자/소멸자를 구분할 수 있다.</p>
+<h3>플래그와 레지스터 관점에서 보는 CALL 자체</h3>
+<p>생성자/소멸자 호출 자체는 그냥 <code>CALL</code>이므로 플래그를 바꾸지 않는다(REV-0071 참고). 다만 <strong>생성자 내부</strong>에서 멤버 초기화를 위해 실행되는 <code>MOV</code>, <code>LEA</code>, <code>ADD</code> 등의 명령은 각각 자신의 규칙대로 플래그에 영향을 줄 수 있다 — 그러나 이 플래그 변화는 생성자 로직상 보통 다음 조건 분기에 쓰이지 않으므로 무시해도 되는 경우가 대부분이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">; 힙 객체 생성 패턴 (Windows x64, MSVC)
+mov     ecx, 18h            ; sizeof(Foo) = 24바이트
+call    operator new         ; RAX = 새 메모리 주소
+mov     rcx, rax             ; this = RAX (방금 할당받은 주소)
+call    Foo::Foo             ; 생성자 호출, RCX 그대로 this로 전달</code></pre>
+<pre><code class="language-asm">; 생성자 내부 첫 부분 (vtable 세팅)
+Foo::Foo proc near
+    mov     [rsp+8], rcx      ; this를 홈 스페이스에 저장 (REV-0450 참고)
+    mov     rax, [rsp+8]
+    mov     qword ptr [rax], offset Foo::`vftable'   ; vtable 포인터 세팅
+    mov     rax, [rsp+8]
+    mov     dword ptr [rax+8], 0   ; 멤버 변수 초기화 (예: int count = 0;)
+    mov     rax, [rsp+8]
+    ret</code></pre>
+<pre><code class="language-asm">; 소멸자 호출 후 해제 패턴
+mov     rcx, [rbp-0x18]      ; this
+call    Foo::~Foo             ; 소멸자
+mov     rcx, [rbp-0x18]
+call    operator delete       ; 메모리 해제 (소멸자 다음 순서)</code></pre>
+<h2>가장 먼저 할 것</h2>
+<ol><li>함수 이름이 클래스 이름과 같은지(<code>Foo::Foo</code>) 또는 <code>~</code>가 붙었는지(<code>Foo::~Foo</code>) 확인한다.</li><li>이 함수 진입 직후 첫 번째 인자 레지스터(RCX 또는 RDI)가 어디서 왔는지 위쪽 코드를 거슬러 올라간다 — <code>call operator new</code>의 반환값(RAX)을 그대로 옮긴 것이라면 힙 객체 생성이 확실하다.</li><li>함수 본문에서 <code>[this + offset]</code>에 값을 순서대로 쓰는 코드가 반복되면, 그 offset들이 클래스 멤버 변수의 레이아웃이다. offset 0에 포인터 크기(8바이트)를 쓰면 그건 대부분 vtable이다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 생성자 식별</strong></p>
+<p>IDA에서 함수 이름이 디맹글링되어 <code>Foo::Foo(int)</code>처럼 보이면 바로 생성자다. 스트립된 바이너리라면 <code>call</code> 대상 함수 안에서 <code>mov [rax], offset ...vftable...</code> 패턴이 있는지, 또는 <code>call operator new</code> 바로 다음에 오는 함수인지를 확인한다.</p>
+<p><strong>2) this 포인터 추적</strong></p>
+<p>생성자/소멸자 함수 내부에서 첫 줄 근처의 <code>mov [rsp+8], rcx</code>(Windows, 홈 스페이스 저장) 또는 그냥 <code>rdi</code>를 계속 사용하는 흐름(Linux)을 보면, 이후 <code>[rcx+N]</code> 또는 <code>[rdi+N]</code> 형태로 나오는 모든 접근이 "이 객체의 N번째 오프셋에 있는 멤버"라는 뜻이다. IDA에서 구조체(Structure)를 만들어 이 오프셋들에 이름을 붙이면(Local Types 또는 Structures 서브뷰) 이후 디컴파일 결과가 <code>this-&gt;count = 0;</code> 처럼 훨씬 읽기 쉬워진다.</p>
+<p><strong>3) 소멸자 체인 추적</strong></p>
+<p>함수가 끝나는 지점(에필로그 직전)에서 여러 <code>CALL</code>이 연달아 나오면, 각 CALL이 어떤 멤버 객체의 소멸자인지 하나씩 확인한다. 이때 this 값이 서로 다른 오프셋(<code>[rbp-0x18+8]</code>, <code>[rbp-0x18+0x10]</code> 등)이면 멤버 객체들이 순서대로 소멸되고 있는 것이다.</p>
+<p><strong>4) new/delete 쌍 확인</strong></p>
+<p><code>operator new</code> 뒤에 생성자, <code>operator delete</code> 앞에 소멸자가 오는지 순서를 확인한다. 순서가 반대(delete가 소멸자보다 먼저)라면 해석을 잘못한 것이니 다시 확인한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>Shift+F12</code>(문자열에서 클래스 이름 힌트 찾기), Local Types(<code>Shift+F1</code>)에서 구조체 정의, 함수 이름 위에서 <code>X</code>(Xrefs to)로 이 생성자가 어디서 호출되는지 확인, <code>N</code>으로 함수/멤버 오프셋 이름 붙이기</li><li>Ghidra: Data Type Manager에서 구조체(Structure) 생성 후 함수 시그니처에 적용, Symbol Tree에서 디맹글링된 이름 확인</li><li>x64dbg/GDB: 생성자 진입 지점에 브레이크포인트를 걸고 <code>this</code>(RCX/RDI) 값을 확인 → 이후 멤버 오프셋에 쓰이는 값을 하나씩 덤프해서 실제 초기값 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>Foo::Foo(Foo *this)</code> 형태로 디컴파일되면 IDA/Ghidra가 이미 이걸 생성자로 인식했다는 뜻이다.</li><li><code>this-&gt;vfptr = &amp;Foo::vftable;</code>(또는 비슷한 표현)이 생성자 첫 줄에 보이면 이 클래스가 최소 하나의 가상 함수를 가진다는 뜻 — REV-0444로 이동해서 vtable 구조를 마저 분석한다.</li><li>소멸자 안에서 <code>if (this-&gt;ptr) operator delete(this-&gt;ptr);</code> 같은 코드가 보이면, 이 클래스가 힙에 할당한 멤버(예: 내부 버퍼)를 직접 관리하고 있다는 뜻 — 이런 클래스는 리소스 해제 로직(더블 프리 취약점 등)을 살펴볼 가치가 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>Foo::Foo</code>라는 이름만 보고 "특별한 명령어"가 있을 거라 생각하는 것 — 실제로는 그냥 <code>CALL</code>이고, 특별함은 오직 "this가 항상 첫 인자"라는 호출 규약 수준의 관례일 뿐이다.</li><li>생성자 내부의 <code>mov [rsp+8], rcx</code>(홈 스페이스에 this 저장, REV-0450 참고)를 의미 있는 로직으로 착각하는 것 — 이건 그냥 ABI가 요구하는 인자 스필이다.</li><li>소멸자가 여러 번 호출되는 것을 보고 "버그"라고 오해하는 것 — 함수에 <code>return</code>이 여러 개면 각 반환 경로마다 컴파일러가 소멸자 호출을 복제해서 삽입하는 게 정상이다.</li><li>생성/소멸 순서를 코드에 적힌 멤버 선언 순서가 아니라 생성자 초기화 리스트(initializer list)에 적힌 순서로 착각하는 것 — C++ 표준상 실제 초기화 순서는 <strong>클래스에 멤버가 선언된 순서</strong>이지 초기화 리스트에 쓴 순서가 아니다. 이는 소스가 있을 때 헷갈리기 쉬운 함정이며, 어셈블리 레벨에서는 이미 확정된 순서로 코드가 나온다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>함수가 생성자인지 일반 멤버 함수인지 애매하면 → 첫 인자(this) 오프셋 0에 vtable 포인터를 쓰는지 확인한다. 쓴다면 생성자일 확률이 매우 높다(파괴자는 오히려 vtable을 "부모 클래스의" vtable로 되돌려 쓰기도 한다).</li><li>클래스 레이아웃(멤버 오프셋)을 전체적으로 파악하고 싶다면 → REV-0444(vtable과 가상함수 호출 패턴), REV-0445(RTTI 흔적 분석)로 이동해서 클래스 계층 구조까지 함께 재구성한다.</li><li>this가 어느 레지스터로 전달되는지 헷갈리면 → REV-0106(SysV) 또는 REV-0122(Microsoft x64) 호출 규약을 다시 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 스택 지역 객체 (Linux x64)</strong></p>
+<pre><code class="language-c">// 원본 C++
+void run() {
+    Logger log("session.txt");
+    log.write("start");
+}</code></pre>
+<pre><code class="language-asm">lea     rdi, [rbp-0x30]      ; this = 지역 객체 주소
+lea     rsi, [rip+str_session] ; "session.txt"
+call    Logger::Logger        ; 생성자
+...
+lea     rdi, [rbp-0x30]
+call    Logger::write
+lea     rdi, [rbp-0x30]
+call    Logger::~Logger       ; 스코프(함수) 끝나기 직전 자동 소멸</code></pre>
+<p><strong>예제 2 — 힙 객체 (Windows x64)</strong></p>
+<pre><code class="language-c">Foo* p = new Foo(5);
+delete p;</code></pre>
+<pre><code class="language-asm">mov     ecx, 18h
+call    operator new
+mov     rcx, rax
+mov     edx, 5
+call    Foo::Foo             ; 생성자(int)
+mov     [rbp+p], rax
+...
+mov     rcx, [rbp+p]
+call    Foo::~Foo
+mov     rcx, [rbp+p]
+call    operator delete</code></pre>
+<p><strong>예제 3 — 멤버 객체 소멸 체인</strong></p>
+<pre><code class="language-c">class Container {
+    A a; B b; C c;
+};</code></pre>
+<pre><code class="language-asm">Container::~Container proc near
+    lea     rcx, [this+offset_c]
+    call    C::~C
+    lea     rcx, [this+offset_b]
+    call    B::~B
+    lea     rcx, [this+offset_a]
+    call    A::~A
+    ret</code></pre>
+<p>선언 순서가 <code>a, b, c</code>였다면 소멸은 <code>c, b, a</code> 역순으로 일어난다는 것을 CALL 순서로 확인할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0444-vtable-virtual-call.html">REV-0444 — vtable과 가상함수 호출 패턴 분석</a></li><li><a href="rev-0445-rtti-traces.html">REV-0445 — RTTI(런타임 타입 정보) 흔적 분석</a></li><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li><li><a href="rev-0106-sysv-amd64-calling-convention.html">REV-0106 — SysV AMD64 Calling Convention</a></li><li><a href="rev-0122-ms-x64-calling-convention.html">REV-0122 — Microsoft x64 Calling Convention</a></li><li><a href="rev-0450-register-spill-pattern.html">REV-0450 — 함수 인자가 레지스터에서 스택으로 스필되는 패턴</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>MSVC 이름 맹글링 규칙(<code>??0</code>/<code>??1</code> 생성자/소멸자 접두사): Microsoft C++ 데코레이션 이름 문서 기준.</li><li>Itanium C++ ABI 이름 맹글링 규칙(<code>C1</code>/<code>C2</code>/<code>D1</code>/<code>D2</code>/<code>D0</code>): Itanium C++ ABI 공식 명세(mangling 섹션) 기준.</li><li>멤버 초기화 순서(선언 순서 기준, 초기화 리스트 순서 무관)는 ISO C++ 표준(class.base.init) 규칙 기준.</li><li>호출 규약(RCX/RDI가 this로 쓰임)은 각 플랫폼 ABI 문서(Microsoft x64 calling convention, System V AMD64 ABI) 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

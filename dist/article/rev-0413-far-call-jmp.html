@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>원거리(Far) CALL과 JMP 기초 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>원거리(Far) CALL과 JMP 기초</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>Far(원거리) <code>CALL</code>/<code>JMP</code>는 일반(near) <code>CALL</code>/<code>JMP</code>와 달리 명령어 포인터(EIP/RIP)뿐 아니라 <strong>코드 세그먼트 레지스터(CS)까지 함께 바꿔서</strong>, 실행 흐름을 완전히 다른 세그먼트(때로는 완전히 다른 실행 모드)로 옮기는 명령어다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>jmp far ptr</code>, <code>call far ptr</code>, 또는 <code>jmp 0x33:주소</code> 같은 콜론(<code>:</code>)이 포함된 이상한 형태의 점프/호출을 만났을 때</li><li>WOW64(64비트 Windows 위의 32비트 프로세스)에서 갑자기 64비트 코드처럼 보이는 바이트가 실행되는 "Heaven's Gate" 패턴을 만났을 때</li><li>부트로더, BIOS, 커널/드라이버 코드에서 세그먼트를 전환하는 코드를 분석할 때</li><li><code>CS</code> 레지스터 값이 왜 바뀌는지, 왜 일반 <code>CALL</code>/<code>JMP</code>로는 안 되는지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Near vs Far — 근본적 차이</h3>
+<p>지금까지 다룬 <a href="rev-0071-call.html"><code>CALL</code></a>, <a href="rev-0066-jmp.html"><code>JMP</code></a>은 전부 <strong>near</strong> 형태다 — 목적지가 <strong>같은 코드 세그먼트 안</strong>에 있다고 가정하고, <code>CS</code>는 그대로 둔 채 <code>EIP</code>/<code>RIP</code>(또는 <code>IP</code>)만 바꾼다. 반면 <strong>far</strong> <code>CALL</code>/<code>JMP</code>는 목적지가 세그먼트 선택자(selector) + 오프셋으로 지정되며, 실행하면 <strong><code>CS</code> 레지스터 자체가 새 값으로 교체</strong>된다.</p>
+<h3>Intel 문법</h3>
+<pre><code>JMP  FAR PTR label
+JMP  0x33:0x0000000140001000        ; 직접 지정: 셀렉터 0x33, 오프셋 0x140001000
+JMP  FWORD PTR [mem]                 ; 메모리에서 셀렉터:오프셋을 읽어 간접 far jmp
+
+CALL FAR PTR proc
+CALL 0x33:target
+CALL FWORD PTR [mem]</code></pre>
+<p><code>FWORD PTR</code>은 6바이트(32비트 오프셋 + 16비트 셀렉터, 32비트 모드 기준) 또는 64비트 모드에서는 10바이트(64비트 오프셋 + 16비트 셀렉터) 크기의 메모리 오퍼랜드를 가리킨다는 뜻이다.</p>
+<h3>스택/레지스터 효과</h3>
+<ul><li><strong>Far JMP</strong>: 스택을 전혀 건드리지 않는다. 그냥 <code>CS:IP</code>(또는 <code>CS:EIP</code>/<code>CS:RIP</code>)를 새 값으로 바꿀 뿐이다.</li><li><strong>Far CALL</strong>: <strong>CS와 반환 오프셋(IP/EIP/RIP) 둘 다</strong> 스택에 PUSH한다 — near call이 반환 오프셋 하나만 PUSH하는 것과 대비된다. 그래서 far call은 스택을 더 많이 소비하고, 짝을 이루는 반환 명령어도 <a href="rev-0414-retf.html"><code>RETF</code></a>(REV-0414)를 써야 한다(일반 <code>RET</code>는 CS를 복원하지 않는다).</li></ul>
+<h3>플래그 변화</h3>
+<p><code>CALL</code>/<code>JMP</code>(near, far 모두)는 플래그를 바꾸지 않는다. 단, far call/jmp가 <strong>디스크립터 테이블(GDT/LDT)을 거쳐 권한 레벨(CPL)을 바꾸는 경우</strong>(콜 게이트를 통한 링 전환 등)에는 간접적으로 실행 컨텍스트가 크게 달라질 수 있지만, 이는 플래그 레지스터 자체를 직접 바꾸는 것과는 다른 이야기다.</p>
+<h3>signed/unsigned 관점</h3>
+<p>해당 없음 — 주소/셀렉터를 다루는 제어 흐름 명령어다.</p>
+<h3>CS가 바뀐다는 것의 의미</h3>
+<p>보호 모드(protected mode)에서 CS에 새 셀렉터를 로드하면, CPU는 GDT(Global Descriptor Table) 또는 LDT(Local Descriptor Table)에서 그 셀렉터에 해당하는 세그먼트 디스크립터를 찾아 <strong>코드 실행 모드(16/32/64비트), 권한 레벨(CPL), 베이스 주소, 접근 권한</strong>을 전부 새로 적용한다. 이것이 near jmp/call과 완전히 다른 점이다 — near는 "같은 세그먼트 안에서 위치만 이동", far는 "실행 환경 자체를 바꿀 수 있음"이다.</p>
+<h3>리버싱에서 가장 중요한 사례 — Heaven's Gate 기법</h3>
+<p>Windows x64에서 32비트(WOW64) 프로세스는 평소 <code>CS = 0x23</code>(32비트 코드 세그먼트)으로 실행된다. 그런데 x64 시스템에는 <code>CS = 0x33</code>인 <strong>64비트 코드 세그먼트</strong>도 항상 함께 존재한다. 일부 악성코드와 일부 WOW64 내부 전환 코드는 다음과 같은 패턴으로 <strong>far jmp/call을 이용해 32비트 실행 중에 순간적으로 64비트 코드 세그먼트로 전환</strong>한다:</p>
+<pre><code class="language-asm">push 33h                 ; 목적지 셀렉터 (0x33 = 64비트 코드 세그먼트)
+call $+5                  ; 다음 명령 주소를 스택에 push (트릭)
+add  dword ptr [esp], 5    ; 스택에 있는 복귀 주소를 보정
+retf                        ; far return으로 CS:EIP를 동시 교체 -&gt; 64비트 모드 진입
+; 여기서부터는 64비트 명령어로 해석됨 (32비트 디스어셈블러는 이걸 알아채지 못함)</code></pre>
+<p>이 기법을 <strong>"Heaven's Gate"</strong>라 부르며, 32비트 전용 디버거/디스어셈블러가 세그먼트 전환을 인식하지 못해 이후 바이트를 잘못된 명령어 집합(32비트)으로 잘못 해석하게 만드는 안티 분석/안티 에뮬레이션 트릭으로 악용된다. 이 패턴을 만나면 <code>push 0x33</code> 뒤에 <code>retf</code> 또는 직접적인 <code>jmp far 0x33:target</code>가 있는지를 먼저 확인하고, 그 지점부터는 64비트 디스어셈블리 모드로 다시 분석해야 한다.</p>
+<h3>그 외의 정상적인 far call/jmp 사용처</h3>
+<ul><li><strong>부트로더/BIOS</strong>: 컴퓨터가 켜지면 16비트 real mode로 시작하는데, 32비트 protected mode로 전환할 때 <code>jmp far 0x08:protected_mode_entry</code> 같은 코드로 CS를 32비트 코드 세그먼트로 갈아끼운다.</li><li><strong>OS 커널/드라이버</strong>: 옛 x86 설계의 콜 게이트(call gate)를 통한 링 전환(사용자 모드 → 커널 모드 시스템 콜)에 far call이 쓰였다(현대 x86-64에서는 <a href="rev-0077-syscall.html"><code>SYSCALL</code></a>/<code>SYSENTER</code>가 이를 대체).</li><li><strong>DOS TSR/인터럽트 벡터 코드</strong>: 인터럽트 벡터 테이블에 저장된 seg:offset 주소로 실행이 넘어가는 것도 개념적으로 far 전환에 해당한다.</li></ul>
+<h3>컴파일러 패턴</h3>
+<p>일반적인 C 컴파일러가 사용자 모드 애플리케이션 코드에서 far call/jmp를 생성하는 일은 거의 없다 — 플랫(flat) 메모리 모델에서는 near call/jmp만으로 충분하기 때문이다. far call/jmp를 보면 부트로더/커널/드라이버 코드이거나, 손으로 작성된 어셈블리(특히 Heaven's Gate류 안티 분석 코드)라고 생각해야 한다.</p>
+<h3>IDA/Ghidra에서 보이는 형태</h3>
+<p><code>jmp far ptr sub_XXXX</code>, <code>call far ptr sub_XXXX</code>로 표시된다. Heaven's Gate 패턴은 IDA가 자동으로 인식하지 못하는 경우가 많아, 전환 이후의 바이트를 계속 32비트로 잘못 디스어셈블할 수 있다 — 이럴 때는 대상 주소에서 수동으로 "Edit → Segments" 또는 재분석 옵션을 이용해 64비트 코드로 다시 해석시켜야 정확한 디스어셈블리를 얻을 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>jmp far ptr ...</code>, <code>call far ptr ...</code> — 명시적 far 전환</li><li><code>push 33h</code> 뒤에 <code>retf</code> 또는 직접적인 far jmp — Heaven's Gate 패턴 의심</li><li>부트로더 코드에서 <code>jmp far 08h:주소</code> — real mode에서 protected mode 진입</li><li><code>jmp fword ptr [mem]</code> — 메모리에 저장된 seg:offset을 통한 간접 far jmp</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>이게 near인지 far인지부터 구분한다 — 콜론(<code>:</code>)이 있는 오퍼랜드, 또는 <code>far ptr</code> 키워드가 있으면 far다.</li><li>목적지 셀렉터 값(0x08, 0x23, 0x33 등)을 확인한다 — 특히 0x33이면 Heaven's Gate(64비트 세그먼트 전환) 가능성을 의심한다.</li><li>far call이면 짝이 되는 반환 명령어가 <code>RETF</code>(REV-0414)인지 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 명시적 far jmp 인식</strong></p>
+<pre><code class="language-asm">jmp far ptr 0028h:00401000h   ; CS=0x28, EIP=0x00401000으로 즉시 전환</code></pre>
+<p><strong>2) Heaven's Gate 패턴 인식</strong></p>
+<pre><code class="language-asm">push  33h
+call  $+5
+add   dword ptr [esp], 5
+retf                           ; CS:EIP를 동시에 교체 -&gt; 64비트 모드 진입
+; 이 지점부터 64비트 명령어로 재해석 필요</code></pre>
+<p>이 패턴을 발견하면 <code>retf</code> 이후 주소를 IDA/Ghidra에서 64비트 코드로 강제 재분석해야 정확한 디스어셈블리를 얻을 수 있다.</p>
+<p><strong>3) 부트로더의 real mode → protected mode 전환</strong></p>
+<pre><code class="language-asm">; 16비트 real mode
+lgdt  [gdt_descriptor]
+mov   eax, cr0
+or    eax, 1
+mov   cr0, eax
+jmp   far 08h:protected_mode_start   ; CS를 32비트 코드 세그먼트로 전환</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: far call/jmp 주변에서 "Force 64-bit"/"Force 32-bit" 재분석 옵션(우클릭 → 코드로 변환, 또는 세그먼트 속성 편집)으로 실행 모드 전환 지점을 수동 보정</li><li>x64dbg: 64비트 전환 이후 코드를 보려면 64비트 디버거(x64dbg)로 다시 붙이거나, "Heaven's Gate 탐지" 관련 플러그인 활용</li><li>GDB: 세그먼트 레지스터(<code>$cs</code>) 값을 <code>info registers</code>로 확인해 실제 실행 모드 추정</li></ul>
+<h2>출력 해석</h2>
+<ul><li>far jmp/call 직후 <code>CS</code> 레지스터 값이 목적지 셀렉터와 일치하는지 확인한다.</li><li>Heaven's Gate가 의심되면 <code>retf</code>/<code>jmp far</code> 실행 직후부터의 바이트를 64비트 명령어 집합으로 다시 해석했을 때 자연스러운 코드(정상적인 함수 프롤로그 등)가 나오는지 확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>far call/jmp를 그냥 near call/jmp에 "셀렉터가 하나 더 붙은 것뿐"이라고 가볍게 넘기는 것 — 실제로는 실행 모드 자체(16/32/64비트)와 권한 레벨이 바뀔 수 있는 훨씬 근본적인 전환이다.</li><li>far call의 반환 주소 프레임을 near call과 같은 크기(오프셋만)로 착각해서 스택을 잘못 해석하는 것 — far call은 CS까지 추가로 push하므로 스택에 더 많은 바이트가 쌓인다.</li><li>Heaven's Gate 패턴을 못 알아보고 32비트 디스어셈블러 결과를 그대로 믿는 것 — 전환 이후 바이트를 32비트로 계속 해석하면 완전히 엉뚱한(의미 없는) 명령어들이 나열된 것처럼 보인다.</li><li>far jmp가 스택에 무언가를 남긴다고 착각하는 것 — far jmp는 far call과 달리 스택을 전혀 쓰지 않는다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>디스어셈블리가 특정 지점부터 갑자기 말이 안 되는 명령어들의 나열로 보이면 → 그 직전에 <code>push 0x33</code> + <code>retf</code> 또는 <code>jmp far</code> 패턴이 있는지 확인하고, 있다면 그 지점부터 64비트로 재분석해본다.</li><li>far call 이후의 스택 프레임이 이상하면 → CS가 함께 push된다는 점을 감안해서 오프셋을 다시 계산한다.</li><li>목적지 셀렉터 값의 의미를 모르겠다면 → Windows x64 표준 셀렉터(0x23=32비트 유저 코드, 0x33=64비트 유저 코드, 0x2B/0x1B 계열은 데이터 세그먼트 등)와 대조해본다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 직접 지정 far jmp</strong></p>
+<pre><code class="language-asm">jmp far ptr 0033h:0000000140001000h</code></pre>
+<p><strong>예제 2 — Heaven's Gate (WOW64 → 64비트 전환)</strong></p>
+<pre><code class="language-asm">push  33h
+call  next
+next:
+add   dword ptr [esp], 5
+retf</code></pre>
+<p><strong>예제 3 — 메모리 기반 간접 far call</strong></p>
+<pre><code class="language-asm">call fword ptr [rdi]   ; [rdi]에 저장된 셀렉터:오프셋으로 far call</code></pre>
+<p><strong>예제 4 — 부트로더 protected mode 진입</strong></p>
+<pre><code class="language-asm">jmp far 0008h:pm_start
+pm_start:
+    mov ax, 10h
+    mov ds, ax
+    ; 이제 32비트 protected mode</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0414-retf.html">REV-0414 — RETF: Far 반환</a></li><li><a href="rev-0415-iret-iretd.html">REV-0415 — IRET와 IRETD: 인터럽트 반환</a></li><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li><li><a href="rev-0066-jmp.html">REV-0066 — JMP: 무조건 분기</a></li><li><a href="rev-0077-syscall.html">REV-0077 — SYSCALL: x86-64 시스템 콜</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Far CALL/JMP 오퍼랜드 형식, 스택 동작(CS+오프셋 push), 세그먼트 디스크립터/권한 레벨 전환: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "CALL—Call Procedure" 및 "JMP—Jump" 섹션의 far 형태 관련 서술, Volume 3A "Segment Descriptors" 및 "Control Transfers" 챕터 기준 (2026-09-08 검증).</li><li>Heaven's Gate 기법(WOW64에서 far jmp/retf를 이용한 64비트 세그먼트 전환): 다수의 공개 악성코드 분석 보고서 및 리버싱 커뮤니티(예: Microsoft, 보안 벤더 기술 블로그)에서 공통적으로 설명하는 관찰된 기법.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

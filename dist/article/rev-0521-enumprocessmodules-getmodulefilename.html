@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinAPI 모듈 함수 사전: EnumProcessModules GetModuleFileName · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>WinAPI 모듈 함수 사전: EnumProcessModules GetModuleFileName</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>EnumProcessModules</code>는 지정한 프로세스에 현재 로드되어 있는 모든 모듈(EXE 자신 + 로드된 DLL들)의 핸들 배열을 얻는 함수이고, <code>GetModuleFileNameW</code>는 그 핸들로부터 실제 파일 경로 문자열을 얻는 함수로, 두 함수는 짝을 이루어 "이 프로세스에 어떤 DLL들이 붙어 있는가"를 스캔하는 코드(디버거 탐지, 후킹 DLL 탐지, 자기 자신의 경로 확인)에서 함께 등장한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>프로그램이 자신에게 로드된 DLL 목록을 순회하며 특정 이름(예: 후킹 DLL, 백신 모듈, 가상화 툴 DLL)을 찾는 코드를 분석할 때</li><li>임포트 목록에서 <code>EnumProcessModules</code>, <code>EnumProcessModulesEx</code>, <code>GetModuleFileNameW</code>, <code>GetModuleFileNameExW</code>를 발견했을 때</li><li>프로그램이 자기 자신의 실행 경로(EXE 파일 경로)를 얻어서 검증/변조 탐지에 사용하는 코드를 볼 때</li><li>원격 프로세스(다른 PID)에 인젝션된 DLL 목록을 확인하는 도구 동작을 분석할 때</li></ul>
+<h2>핵심 개념</h2>
+<pre><code class="language-c">BOOL EnumProcessModules(
+    HANDLE  hProcess,     // 1. 대상 프로세스 핸들(자기 자신이면 GetCurrentProcess())
+    HMODULE *lphModule,   // 2. 모듈 핸들이 채워질 배열 주소
+    DWORD   cb,           // 3. 배열의 바이트 크기
+    LPDWORD lpcbNeeded    // 4. 실제로 필요한(또는 채워진) 바이트 크기
+);
+
+DWORD GetModuleFileNameW(
+    HMODULE hModule,  // 1. 모듈 핸들(NULL이면 현재 EXE 자신)
+    LPWSTR  lpFilename,// 2. 경로가 채워질 버퍼
+    DWORD   nSize      // 3. 버퍼 크기(문자 수)
+);
+
+// 다른 프로세스의 모듈 경로를 얻을 때는 Psapi 버전을 사용:
+DWORD GetModuleFileNameExW(HANDLE hProcess, HMODULE hModule, LPWSTR lpFilename, DWORD nSize);</code></pre>
+<p><code>EnumProcessModules</code>(및 확장판 <code>EnumProcessModulesEx</code>)는 <code>Psapi.dll</code>(또는 <code>Kernel32.dll</code> 내부로 통합된 최신 버전)이 제공하며, 대상 프로세스에 로드된 모든 모듈의 <code>HMODULE</code>(=베이스 주소) 목록을 배열로 채워준다. 일반적인 사용 패턴은 먼저 <code>cb=0</code>으로 호출해 <code>lpcbNeeded</code>로 필요한 크기를 얻은 뒤, 그 크기만큼 버퍼를 할당해 다시 호출하는 2단계 방식이다.</p>
+<p>얻은 <code>HMODULE</code> 배열의 각 원소를 <code>GetModuleFileNameW</code>(자기 프로세스) 또는 <code>GetModuleFileNameExW</code>(다른 프로세스, <code>hProcess</code> 인자 추가)에 넘기면 해당 모듈의 전체 경로 문자열을 얻을 수 있다. 배열의 첫 번째 원소(<code>lphModule[0]</code>)는 관례적으로 프로세스 자신의 EXE 모듈이다.</p>
+<p>이 조합은 "현재 프로세스에 로드된 DLL을 하나씩 순회하며 이름을 비교"하는 루프 형태로 매우 자주 나타나며, CTF/멀웨어 분석에서는 디버거(<code>x64dbg.dll</code>, <code>x32dbg.dll</code> 등은 실제로 로드되지 않지만 특정 후킹/인젝션 DLL의 파일명, 예: <code>easyhook</code>, <code>cheatengine</code> 관련 모듈)를 탐지하는 안티치트/안티디버깅 로직에서 자주 목격된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>EnumProcessModules</code>가 두 번 호출되는 패턴(첫 번째는 크기 확인용 <code>cb=0</code>, 두 번째는 실제 채우기용)</li><li>반환된 <code>HMODULE</code> 배열을 <code>for</code> 루프로 순회하며 각 원소에 <code>GetModuleFileNameW</code>를 호출하는 코드</li><li>얻은 파일명 문자열을 <code>wcsstr</code>/<code>wcscmp</code>(REV-0516)로 특정 이름과 비교하는 코드 — 특정 DLL 존재 여부 검사의 전형적 형태</li><li>배열 첫 원소만 별도로 써서 자기 자신의 EXE 경로를 얻는 짧은 코드(모듈 열거 없이 <code>GetModuleFileNameW(NULL, ...)</code> 한 줄로 끝나는 경우도 많음 — 이 경우가 훨씬 흔하고 간단하다)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>GetModuleFileNameW</code>의 첫 번째 인자가 <code>NULL</code>인지 확인한다. <code>NULL</code>이면 단순히 자기 자신의 EXE 경로를 얻는 것뿐이므로 열거 로직 전체를 볼 필요가 없다.</li><li><code>EnumProcessModules</code>가 등장하면 루프 안에서 비교되는 문자열(원하는 DLL 이름)이 무엇인지부터 찾는다.</li><li><code>hProcess</code> 인자가 <code>GetCurrentProcess()</code>(pseudo-handle, 값은 <code>-1</code>)인지 <code>OpenProcess</code>로 얻은 다른 프로세스 핸들인지 구분한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 정적 분석(IDA)</strong></p>
+<ul><li>임포트 목록에서 <code>EnumProcessModules</code>(또는 <code>K32EnumProcessModules</code>) 및 <code>GetModuleFileNameW</code>를 찾아 <code>X</code>로 교차 참조한다.</li><li><code>F5</code>로 디컴파일해 루프 구조와 비교 대상 문자열(주로 <code>L".dll"</code>로 끝나는 리터럴)을 확인한다.</li></ul>
+<p><strong>2) 동적 분석(x64dbg)</strong></p>
+<ul><li><code>bp GetModuleFileNameW</code>로 브레이크포인트를 걸고 실행을 반복(F9)하면서 매 호출마다 <code>RCX</code>(hModule)와 리턴 후 채워진 버퍼(<code>RDX</code>가 가리키는 곳)를 확인해 어떤 모듈들이 순회되는지 기록한다.</li><li>비교 로직이 있는 지점에 조건부 브레이크포인트를 걸어 특정 DLL 이름이 감지되었을 때만 멈추게 할 수도 있다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp EnumProcessModules</code>, <code>bp GetModuleFileNameW</code>, <code>bp GetModuleFileNameExW</code></li><li>x64dbg: <code>Alt+M</code>(Memory Map)로 실제 로드된 모듈 목록을 직접 대조</li><li>IDA: <code>X</code>(교차 참조), <code>F5</code>(디컴파일)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>EnumProcessModules</code> 반환값이 <code>FALSE</code>면 실패(잘못된 프로세스 핸들, 권한 부족 등).</li><li><code>lpcbNeeded</code>가 <code>cb</code>보다 크면 버퍼가 부족했다는 뜻 — 정상적인 프로그램은 이 값을 보고 버퍼를 다시 할당해 재호출한다.</li><li><code>GetModuleFileNameW</code> 반환값은 실제로 복사된 문자 수(NUL 제외)이며, 버퍼가 부족하면 <code>nSize</code>와 같은 값을 반환하고 <code>GetLastError()</code>가 <code>ERROR_INSUFFICIENT_BUFFER</code>(122)를 나타낸다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>EnumProcessModules</code>를 한 번만 호출하고 크기 확인 단계를 생략해서, 로드된 DLL이 많을 때 버퍼가 잘려 일부 모듈을 놓치는 것(분석 대상 프로그램의 버그일 수도 있고, 분석자가 이 흐름을 잘못 이해하는 경우도 있음).</li><li><code>GetModuleFileNameW</code>가 전체 경로를 반환한다는 점을 잊고 파일명만 있을 거라 가정해서 비교 로직(<code>wcsstr</code>)이 실패하는 이유를 못 찾는 것 — 실제로는 <code>C:\Windows\System32\kernel32.dll</code>처럼 전체 경로가 반환된다.</li><li>32비트 프로세스가 64비트 프로세스의 모듈을 열거하려 할 때 WOW64 제약으로 실패하는 경우를 놓치는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>특정 DLL 하나만 로드되어 있는지 빠르게 확인하는 더 가벼운 방법이 궁금하면 → REV-0520(LoadLibraryEx FreeLibrary GetModuleHandle)의 <code>GetModuleHandleW</code>를 본다.</li><li>얻은 문자열이 와이드 문자열이라 비교 방식이 궁금하면 → REV-0516(wcscpy wcscat 계열)을 본다.</li><li>이런 열거 로직이 안티디버깅/안티후킹 목적이라면 → REV-0130(IsDebuggerPresent 안티디버깅 식별)을 함께 본다.</li></ul>
+<h2>미니 예제</h2>
+<p>x64dbg에서 <code>bp GetModuleFileNameW</code>를 걸고 F9를 여러 번 눌러 호출을 반복하니 다음과 같은 값들이 순서대로 나타났다.</p>
+<pre><code class="language-text">1번째: RCX = 0x00007FF6A1230000  -&gt;  "C:\Users\ctf\Desktop\target.exe"
+2번째: RCX = 0x00007FFA12340000  -&gt;  "C:\Windows\System32\ntdll.dll"
+3번째: RCX = 0x00007FFA12010000  -&gt;  "C:\Windows\System32\kernel32.dll"
+4번째: RCX = 0x000000006A8B0000  -&gt;  "C:\Tools\SomeHookDLL.dll"</code></pre>
+<p>4번째 항목처럼 시스템 경로(<code>System32</code>)가 아닌 낯선 위치의 DLL이 보이면, 프로그램이 바로 다음 코드에서 이 이름을 특정 문자열(<code>"Hook"</code>, <code>"Cheat"</code> 등)과 비교해 분석 도구를 탐지하려는 의도일 가능성이 높다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0520-loadlibraryex-freelibrary-getmodulehandle.html">REV-0520 — WinAPI 모듈 함수 사전: LoadLibraryEx FreeLibrary GetModuleHandle</a></li><li><a href="rev-0516-wcscpy-wcscat.html">REV-0516 — Windows CRT 문자열 함수 사전: wcscpy wcscat 계열(와이드 문자)</a></li><li><a href="rev-0130-isdebuggerpresent.html">REV-0130 — IsDebuggerPresent 안티디버깅 식별</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>EnumProcessModules</code>/<code>GetModuleFileNameW</code>/<code>GetModuleFileNameExW</code>의 함수 시그니처와 2단계 호출 패턴(크기 확인 후 재호출)은 Microsoft Win32 API(Psapi, 프로세스 상태) 공식 문서 기준이다.</li><li><code>ERROR_INSUFFICIENT_BUFFER</code>(122) 등 에러 코드는 Microsoft 시스템 에러 코드 공식 문서 기준이다.</li><li>위 미니 예제의 경로와 값은 설명을 위해 구성한 예시이며 실제 특정 문제의 데이터가 아니다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

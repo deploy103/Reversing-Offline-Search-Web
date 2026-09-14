@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Compiler Generated Code와 실제 문제 로직 구분 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>Compiler Generated Code와 실제 문제 로직 구분</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Ghidra</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>실행 파일 안의 함수 중 상당수는 <strong>문제를 낸 사람이 작성한 코드가 아니라 컴파일러/런타임 라이브러리가 자동으로 붙인 부트스트랩·보안·초기화 코드</strong>이며, <code>mainCRTStartup</code>/<code>__scrt_common_main_seh</code>/<code>__libc_csu_init</code>/<code>frame_dummy</code>/스택 카나리 체크처럼 이름과 형태가 정형화된 패턴을 알아두면 이런 코드를 곧바로 건너뛰고 실제 문제 로직에만 집중할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>entry</code>나 <code>_start</code>부터 <code>main</code>까지 따라가는데 낯선 함수가 여러 겹으로 계속 나와서 어디까지가 "그냥 부트스트랩"인지 헷갈릴 때</li><li>함수 이름에 <code>__scrt</code>, <code>__libc</code>, <code>csu</code>, <code>security_check_cookie</code>, <code>frame_dummy</code>, <code>register_tm_clones</code> 같은 접두사/단어가 보일 때</li><li>디컴파일 결과에 갑자기 스택 오버플로 방지용으로 보이는 이상한 비교 코드(<code>if (canary != value) __fastfail(...)</code> 류)가 섞여 있어서 이게 문제의 일부인지 헷갈릴 때</li><li>함수가 너무 많아서 REV-0166(Call Graph)으로 좁혀봐도 여전히 컴파일러 생성 코드가 후보에 섞여 나올 때</li></ul>
+<h2>핵심 개념</h2>
+<p>현대 컴파일러(MSVC, GCC/Clang)는 사용자가 작성한 <code>main</code> 함수 하나만 달랑 실행 파일에 넣지 않는다. 실제 실행 파일에는 다음과 같은 "사용자가 작성하지 않은" 코드가 함께 포함된다.</p>
+<p><strong>Windows PE (MSVC 계열)</strong></p>
+<ul><li><strong><code>entry</code> (진입점)</strong>: PE 헤더의 AddressOfEntryPoint가 가리키는 곳으로, 보통 <code>mainCRTStartup</code> 또는 <code>WinMainCRTStartup</code>이라는 이름이 붙는다. 이는 사용자의 <code>main</code>이 아니라 C 런타임 초기화 루틴이다.</li><li><strong><code>__scrt_common_main_seh</code></strong>: 최신 MSVC 런타임에서 CRT 초기화(힙, 로케일, 예외 처리 등록, 스택 체크 쿠키 설정)를 담당한 뒤 마지막에 사용자의 <code>main</code>/<code>wmain</code>을 호출하는 함수.</li><li><strong><code>__security_init_cookie</code> / <code>__security_check_cookie</code></strong>: 스택 버퍼 오버플로 보호(<code>/GS</code> 옵션)를 위한 스택 카나리(canary) 값을 초기화/검증하는 함수. 함수 프롤로그에서 카나리 값을 스택에 심고, 에필로그 직전에 이 값이 변조되지 않았는지 확인하는 코드가 자동으로 삽입된다.</li><li><strong><code>atexit</code>/TLS(Thread Local Storage) 콜백 등록 코드</strong>: 프로그램 종료 시 실행할 정리 함수를 등록하는 배열/함수.</li></ul>
+<p><strong>Linux ELF (GCC/Clang 계열)</strong></p>
+<ul><li><strong><code>_start</code></strong>: 실제 진입점으로, glibc가 제공하는 코드이며 내부적으로 <code>__libc_start_main</code>을 호출해 최종적으로 사용자의 <code>main</code>을 실행한다.</li><li><strong><code>__libc_csu_init</code> / <code>__libc_csu_fini</code></strong>: <code>.init_array</code>/<code>.fini_array</code>에 등록된 생성자/소멸자 함수들을 순회하며 호출하는 초기화/정리 루틴.</li><li><strong><code>frame_dummy</code></strong>: 예외 처리 프레임 정보 등록을 위한 작은 함수로, 거의 항상 내용이 비슷하고 사용자가 손댈 일이 없다.</li><li><strong><code>register_tm_clones</code> / <code>deregister_tm_clones</code></strong>: 트랜잭셔널 메모리(transactional memory) 관련 초기화로, 최신 GCC가 자동 삽입하는 짧은 함수. 내용은 거의 항상 정형화되어 있다.</li><li><strong>스택 프로텍터(<code>__stack_chk_fail</code>, <code>__stack_chk_guard</code>)</strong>: MSVC의 <code>/GS</code>와 동일한 목적의 GCC <code>-fstack-protector</code> 관련 코드.</li></ul>
+<p>이런 함수들의 공통적인 특징은 <strong>(1) 함수 이름이 정형화된 규칙을 따르고, (2) 내부 로직이 어느 프로그램에서든 거의 동일하며, (3) 문제 출제자가 임의로 수정하지 않는다</strong>는 것이다. 즉, 이 패턴을 한 번 익혀두면 다음부터는 이름만 보고도 "이건 CTF 문제와 무관한 컴파일러 코드"라고 즉시 판단해서 시간을 아낄 수 있다.</p>
+<p>반대로, <strong>스택 카나리 체크 자체를 우회하거나 조작해야 하는 문제</strong>(예: 스택 오버플로우 취약점을 익스플로잇하는 pwnable 문제)에서는 이 코드가 오히려 분석 대상이 될 수 있다. 이 문서는 어디까지나 "일반적인 정적 분석에서 검증 로직을 찾을 때" 이런 코드를 건너뛰는 기준을 설명하는 것이며, 문제 유형에 따라 예외가 있을 수 있다는 점은 염두에 둬야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Symbol Tree/Imports/Functions 목록에 <code>__scrt_</code>, <code>__libc_</code>, <code>_CRT_</code>, <code>csu</code>, <code>frame_dummy</code>, <code>register_tm_clones</code> 같은 이름이 다수 보인다.</li><li>함수 프롤로그 근처에서 <code>mov eax, [special stack cookie]</code>처럼 스택에 특정 값을 저장하고, 함수 끝부분에서 그 값을 다시 비교하는 패턴이 여러 함수에 걸쳐 똑같이 반복된다.</li><li>IDA는 이런 라이브러리/부트스트랩 함수를 Functions window에서 다른 색으로 표시하거나 "Library function" 플래그를 붙이는 경우가 많고(FLIRT 시그니처로 인식된 경우), Ghidra는 Function ID Analyzer가 인식에 성공하면 실제 함수 이름을 그대로 붙여준다(REV-0157 참고).</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>entry</code>/<code>_start</code>에서 <code>main</code>까지 이어지는 호출 체인을 REV-0166(Call Graph)으로 한 번 훑어보고, 그 경로에 있는 함수 이름이 위에서 설명한 정형화된 이름과 일치하면 내부를 깊이 읽지 않고 그대로 통과시킨다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 진입점 확인</strong></p>
+<p><code>entry</code>(Ghidra) 또는 진입점 함수(IDA에서 자동으로 <code>start</code>라는 이름이 붙는 경우가 많음)로 이동한다.</p>
+<p><strong>2) 이름 패턴으로 1차 필터링</strong></p>
+<p>호출되는 함수들의 이름을 보고, 위 목록(<code>__scrt_</code>, <code>__libc_</code>, <code>csu</code>, <code>frame_dummy</code>, <code>register_tm_clones</code>, <code>security_check_cookie</code> 등)과 일치하면 "컴파일러 생성 코드"로 잠정 분류하고 넘어간다.</p>
+<p><strong>3) 라이브러리 식별 플래그 확인</strong></p>
+<ul><li>Ghidra: Function ID Analyzer(REV-0157)가 인식에 성공했다면 함수 이름이 이미 정확하게 붙어 있을 것이다. Symbol Tree에서 이런 함수들은 대개 표준 라이브러리 이름 그대로 나타난다.</li><li>IDA: FLIRT 시그니처가 인식한 라이브러리 함수는 함수 이름 앞에 특정 표시가 붙거나 Functions window에서 "Library function" 컬럼/색상으로 구분된다.</li></ul>
+<p><strong>4) <code>main</code>(또는 실제 사용자 정의 진입 함수)을 찾을 때까지 반복</strong></p>
+<p><code>__scrt_common_main_seh</code> → 사용자 <code>main</code>으로 이어지는 것처럼, 부트스트랩 함수들은 결국 사용자 코드를 호출하는 지점에서 끝난다. 그 마지막 호출 대상이 바로 실제 분석을 시작해야 할 지점이다.</p>
+<p><strong>5) <code>main</code> 진입 이후부터 REV-0163/0164/0165/0166 적용</strong></p>
+<p>이 지점부터는 이 시리즈의 다른 문서(문자열/Imports/상수/Call Graph)에서 설명한 방법을 그대로 적용해 검증 로직을 찾는다.</p>
+<p><strong>6) 예외 상황 인지</strong></p>
+<p>문제 자체가 스택 카나리 우회, TLS 콜백을 이용한 안티디버깅, 커스텀 CRT 초기화 조작 등을 다루는 pwnable/안티디버깅 문제라면, 이 컴파일러 생성 코드 자체가 분석 대상이 될 수 있다. 이 경우 "무시해도 되는 패턴"이 아니라 "정확히 이해해야 하는 패턴"으로 취급을 바꿔야 한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>Call Graph로 진입점부터 훑기: REV-0166 참고(IDA View → Graphs → Function calls, Ghidra Function Call Graph/Function Call Trees)</li><li>라이브러리 함수 재식별: Ghidra <strong>Analysis → One Shot → Function ID</strong>, IDA는 FLIRT 시그니처 적용(File → Load file → FLIRT signature file 또는 자동 적용)</li><li>이름으로 필터링: Symbol Tree/Functions 목록 상단 필터에 <code>scrt</code>, <code>libc</code>, <code>csu</code> 등 입력해 한 번에 훑어보기</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Function ID/FLIRT가 정확히 인식한 함수는 이름이 실제 라이브러리 함수명(<code>__scrt_common_main_seh</code> 등) 그대로 나타난다. 이런 이름이 나왔다면 그 자체가 "이 함수는 컴파일러가 넣은 것"이라는 확실한 신호다.</li><li>반대로 인식에 실패해서 <code>FUN_</code> 이름이 그대로 남아 있더라도, 함수 내부가 스택 카나리 설정/검사만 하고 있거나, 여러 함수 포인터를 배열로 순회하며 호출만 하는 매우 정형화된 짧은 코드라면 컴파일러 생성 코드일 가능성을 의심해야 한다.</li><li>반대로 이런 부트스트랩 함수들을 지나 마침내 도달한 함수가 입력을 받고, 조건 분기가 여러 개 있고, 반복문으로 데이터를 처리한다면 그때부터가 실제로 "문제를 낸 사람이 작성한 로직"일 가능성이 크다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>entry</code>에서 <code>main</code>까지 가는 모든 함수를 하나하나 처음부터 끝까지 읽으려고 시도하는 것 — 대부분 시간 낭비다. 이름 패턴만 확인하고 빠르게 통과시켜야 한다.</li><li>스트립된(symbol이 제거된) 바이너리에서 이런 함수 이름이 안 보인다고 해서 "전부 문제 로직"이라고 오해하는 것 — 이름이 없어도 내부 구조(짧고 정형화된 반복 패턴)로 컴파일러 코드임을 추정할 수 있다.</li><li>스택 카나리 체크 코드를 발견하고 "이게 검증 로직인가?" 하고 오래 분석하는 것 — 일반적인 crackme/reversing 문제에서는 이 코드가 문제와 무관한 컴파일러 보안 기능일 뿐인 경우가 대부분이다(단, pwnable 문제는 예외).</li><li>C++ 바이너리에서 전역 객체 생성자(<code>_GLOBAL__sub_I_...</code>, <code>__static_initialization_and_destruction_0</code> 등)를 사용자 코드로 착각하는 것 — 이것도 C++ 컴파일러가 전역/정적 객체를 초기화하기 위해 자동 생성하는 코드다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>진입점부터 어디까지가 부트스트랩이고 어디부터 <code>main</code>인지 구조를 그림으로 보고 싶다면 → REV-0166(함수 Call Graph로 핵심 로직 좁히기).</li><li><code>main</code>을 찾았는데 그 안에서도 컴파일러가 삽입한 코드(카나리 체크 등)와 실제 로직이 뒤섞여 보인다면 → 함수 시작/끝부분의 카나리 관련 코드는 무시하고 중간의 실질적인 조건 분기/반복문에 집중.</li><li>main 함수 자체를 원천적으로 못 찾겠다면 → ../triage/rev-0009-finding-main.md(main 함수 찾기, 트리아지 관점)와 함께 참고.</li><li>부트스트랩 코드를 지나 도달한 함수가 진짜 검증 로직인지 확신이 안 서면 → REV-0163/0164/0165의 단서(문자열/Import/상수)로 교차 확인.</li></ul>
+<h2>미니 예제</h2>
+<p>64비트 Linux ELF crackme를 Ghidra에서 열었다고 하자. <code>_start</code>부터 Function Call Graph(REV-0166)로 따라가 보면 다음과 같은 체인이 보인다.</p>
+<pre><code>_start → __libc_start_main → main</code></pre>
+<p><code>__libc_start_main</code>은 glibc가 제공하는 초기화 함수로, 내부적으로 <code>__libc_csu_init</code>을 통해 <code>.init_array</code>에 등록된 초기화 함수들(그중 하나가 <code>frame_dummy</code>)을 호출한 뒤 최종적으로 <code>main</code>을 호출한다. 이 경로에서:</p>
+<ul><li><code>_start</code>, <code>__libc_start_main</code>, <code>__libc_csu_init</code>, <code>frame_dummy</code>: 전부 이름 패턴만으로 컴파일러/런타임 생성 코드임을 즉시 알 수 있으므로 내부를 읽지 않고 통과.</li><li><code>main</code>: 여기서부터 실제 분석 대상. <code>main</code> 안에서 <code>scanf</code>로 입력을 받고 <code>check_password</code>를 호출하는 코드가 보이면, 그때부터 REV-0163~0166의 방법을 적용한다.</li></ul>
+<p>이처럼 "이름 패턴 인식"만으로 실제로 읽어야 할 코드량을 처음부터 크게 줄일 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0157-ghidra-auto-analysis.html">REV-0157 — Ghidra Auto Analysis 옵션</a></li><li><a href="rev-0163-strings-to-check-function.html">REV-0163 — 문자열에서 검증 함수로 이동하는 정적 분석</a></li><li><a href="rev-0164-imports-narrowing.html">REV-0164 — Imports에서 검증 함수 후보 좁히기</a></li><li><a href="rev-0166-call-graph-narrowing.html">REV-0166 — 함수 Call Graph로 핵심 로직 좁히기</a></li><li>../triage/rev-0009-finding-main.md — main 함수 찾기</li></ul>
+<h2>출처/검증</h2>
+<ul><li>MSVC CRT 초기화 체인(<code>mainCRTStartup</code>, <code>__scrt_common_main_seh</code>, <code>__security_init_cookie</code>/<code>__security_check_cookie</code>)은 Microsoft Learn의 CRT 초기화 및 <code>/GS</code>(Buffer Security Check) 관련 공식 문서에 기반해 정리했다.</li><li>glibc 초기화 체인(<code>_start</code>, <code>__libc_start_main</code>, <code>__libc_csu_init</code>, <code>frame_dummy</code>, <code>register_tm_clones</code>/<code>deregister_tm_clones</code>)은 glibc 소스 및 GCC가 생성하는 표준 ELF 시작 코드에 대한 널리 알려진 리버스 엔지니어링 레퍼런스 자료에 기반했다.</li><li>Ghidra Function ID Analyzer와 IDA FLIRT 시그니처를 통한 라이브러리 함수 자동 식별: 각 도구의 공식 Help/문서 기준.</li><li>이 문서는 라이브 IDA/Ghidra 화면을 직접 캡처해 재검증하지는 않았으며, 공식 문서와 컴파일러/런타임의 잘 알려진 표준 동작을 기준으로 작성되었다. 컴파일러 버전에 따라 함수 이름이 다소 다를 수 있다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

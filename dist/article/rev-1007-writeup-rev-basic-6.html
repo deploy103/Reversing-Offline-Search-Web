@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Write-up] rev-basic-6 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / writeup</div>
+<article class="article-body">
+<h1>[Write-up] rev-basic-6</h1>
+<div class="article-meta"><span class="tag">writeup</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span><span class="tag">Python</span><span class="tag">Detect It Easy</span></div>
+<h2>한 줄 요약</h2>
+<p>rev-basic-6은 입력 문자를 인덱스로 사용해 256개짜리 치환 배열 <code>b</code>를 조회하고, 조회한 값을 또 다른 고정 배열 <code>a</code>와 비교하는 이중 테이블 구조라서, 값을 직접 계산하는 게 아니라 "배열 <code>a</code>의 각 값이 배열 <code>b</code>에서 몇 번째 위치에 있는지"를 거꾸로 검색해야 정답이 나온다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>드림핵 rev-basic-6에서 입력 문자가 그대로 비교되는 게 아니라 어떤 배열의 "인덱스"로 쓰이는 것 같은데, 그다음에 뭘 해야 할지 모를 때</li><li>코드에 256개짜리 배열과 18개(또는 다른 길이)짜리 배열 두 개가 동시에 나와서 어느 게 입력이고 어느 게 정답 기준인지 헷갈릴 때</li><li>x64dbg로 함수 이름 없이 주소만 보면서 분석하다가 흐름을 놓쳤을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>지금까지의 문제들은 입력 문자에 산술/논리 연산을 적용한 결과를 정답 배열과 비교했다. rev-basic-6은 연산 대신 "조회(lookup)"를 쓴다. 코드는 입력 문자열의 <code>i</code>번째 문자를 인덱스로 삼아 256개짜리 배열 <code>b</code>(치환 테이블, 코드에서는 특정 메모리 주소로 표시됨)의 <code>b[입력[i]]</code> 값을 읽어온다. 그리고 이 값을 정답 길이(0x12 = 18)만큼의 고정 배열 <code>a</code>의 <code>a[i]</code>와 비교해서, 일치하면 다음 문자로 넘어가고 불일치하면 실패한다.</p>
+<p>이 구조에서는 입력 문자 자체가 배열 <code>b</code>의 인덱스이기 때문에, <code>a[i]</code>와 <code>b</code>를 알고 있어도 "<code>b</code>의 어느 인덱스에서 그 값이 나왔는지"를 찾아야 원래 입력 문자를 알 수 있다. 즉 <code>b</code>를 순방향으로 조회하는 게 아니라, <code>a[i]</code>와 값이 같은 원소를 <code>b</code> 안에서 순차 탐색(0~255까지 검사)해 그 인덱스 번호를 찾아내는 역방향 탐색이 필요하다. 이는 REV-0907에서 다루는 "두 배열이 서로를 참조하며 변환하는 이중 테이블 패턴"과 REV-0215의 Lookup Table 기반 변환의 실제 예시다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>실행 흐름은 이전 문제들과 동일: <code>Input : </code> → 입력 → <code>Correct</code>/<code>Wrong</code>.</li><li>디스어셈블리/디컴파일에서 사용자 입력 바이트를 그대로 다른 배열의 오프셋으로 사용하는 코드(<code>movzx</code>로 바이트를 읽은 뒤 그 값을 다시 다른 배열 주소에 더해서 참조하는 형태)가 보인다.</li><li>함수에 이름이 없고(스트립되었거나 IDA가 이름을 못 붙인 경우) 주소로만 식별되는 경우가 많아, 어셈블리 수준에서 두 배열의 크기(하나는 256개, 하나는 18개)를 직접 확인해야 한다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>DIE로 파일 확인 후, x64dbg에서 문자열 참조로 <code>Input : </code> 위치를 찾아 검증 함수로 진입한다. 함수에 이름이 없다면 먼저 두 개의 배열이 각각 몇 바이트인지(하나는 256바이트짜리 치환 테이블, 하나는 정답 길이만큼의 짧은 배열)를 어셈블리에서 확인해 어느 쪽이 "치환 테이블"이고 어느 쪽이 "정답 기준값"인지 구분한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>DIE로 파일 확인, 실행해서 입출력 문구 확인.</li><li>x64dbg에서 문자열 참조 검색으로 <code>Input : </code> 출력 위치를 찾고, <code>Correct</code>/<code>Wrong</code> 분기 직전의 <code>call</code>로 진입.</li><li>함수 내부에서 입력 바이트가 어떤 배열의 인덱스로 쓰이는지(즉 <code>movzx</code> 등으로 읽은 값을 다시 주소 계산에 사용하는 지점) 확인.</li><li>256바이트 치환 배열(<code>b</code>)과 18바이트 정답 기준 배열(<code>a</code>)을 각각 덤프해 파이썬 리스트로 옮긴다.</li><li>파이썬에서 <code>a</code>의 각 값에 대해 <code>b.index(값)</code>(또는 직접 반복문으로 순차 탐색)을 수행해 원래 입력 문자를 하나씩 복원한다.</li><li>복원된 18개의 인덱스 값을 <code>chr()</code>로 변환해 문자열을 만든다.</li><li>실제로 입력해 <code>Correct</code>가 나오는지 검증한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: 우클릭 → Search for → String references, <code>F2</code>(브레이크포인트), <code>F7</code>/<code>F8</code>(Step Into/Over), Dump 창에서 배열 주소로 이동(Ctrl+G)해 바이트 값 확인.</li><li>Python: <code>b.index(v)</code> 또는 <code>[i for i, x in enumerate(b) if x == v]</code>로 값이 몇 번째 인덱스에 있는지 탐색.</li></ul>
+<h2>출력 해석</h2>
+<p><code>b[input[i]] == a[i]</code>가 모든 <code>i</code>에서 성립해야 통과라는 것은, "입력 문자를 인덱스로 넣었을 때 나오는 치환값이 미리 정해진 기준값과 같아야 한다"는 의미다. <code>b</code>가 1:1 치환(같은 값이 중복되지 않는 순열)이라면 <code>a[i]</code>에 대응하는 인덱스는 정확히 하나만 존재하므로, 순차 탐색으로도 항상 유일한 답을 찾을 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>a</code>와 <code>b</code>의 역할을 반대로 이해해서, <code>a</code>를 치환 테이블로 보고 <code>b</code>를 인덱스로 조회하려는 것 — 어느 배열이 256개짜리(치환 테이블)이고 어느 게 정답 길이만큼(18개)인지 크기를 먼저 확인해야 한다.</li><li><code>b</code>에 중복된 값이 있을 수 있다는 가능성을 고려하지 않고 <code>index()</code> 결과 하나만 믿었다가, 실제로는 여러 인덱스 중 하나만 정답인 경우를 놓치는 것(이 문제의 <code>b</code>가 순열이라면 문제 없지만, 항상 확인하는 습관이 필요하다).</li><li>어셈블리에서 배열 인덱싱에 쓰이는 레지스터 크기(바이트 단위 <code>movzx</code>인지, 워드/더블워드인지)를 잘못 읽어 인덱스 계산이 틀리는 것.</li><li>함수 이름이 없다고 해서 분석을 포기하는 것 — 이름이 없어도 배열 크기와 참조 패턴만으로 충분히 로직을 재구성할 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>인접 바이트를 더하는 방식이 궁금하면 REV-1006(rev-basic-5)을 먼저 복습한다.</li><li>이중 테이블 참조 패턴 자체가 낯설다면 REV-0907과 REV-0215를 먼저 본다.</li><li>다음 문제인 rev-basic-7의 ROL+XOR 조합은 REV-1008을 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-python">a = [...]   # 정답 기준 배열(18개)
+b = [...]   # 256개짜리 치환 테이블
+
+flag = ''
+for target in a:
+    idx = b.index(target)  # b[idx] == target 이 되는 idx를 찾는다
+    flag += chr(idx)
+
+print(flag)</code></pre>
+<p><code>b.index(target)</code>는 파이썬 리스트에서 특정 값이 처음 나타나는 위치를 찾아주는 함수이며, <code>b</code>가 순열(치환) 테이블이라는 전제하에 이 방식으로 항상 유일한 원래 문자를 복원할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0907-double-table-cross-reference-pattern.html">REV-0907 — 두 배열을 서로 참조하며 변환하는 이중 테이블 패턴</a></li><li><a href="rev-0215-lookup-table-transform.html">REV-0215 — Lookup Table 기반 변환</a></li><li><a href="rev-0179-x64dbg-string-references.html">REV-0179 — x64dbg String References 찾기</a></li><li>[REV-1006 — [Write-up] rev-basic-5](rev-1006-writeup-rev-basic-5.html)</li><li>[REV-1008 — [Write-up] rev-basic-7](rev-1008-writeup-rev-basic-7.html)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>드림핵 워게임 rev-basic-6 챌린지(reversing 태그, Bronze 4 티어, 풀이자 2890명, 2026-09-09 조회 기준).</li><li>참고 블로그: <code>dig06161.github.io/2022/04/13/dreamhack-rev-basic-6/</code> — x64 디버거로 분석하며 입력 문자를 인덱스로 사용해 치환 배열을 조회하고, 그 결과를 고정 배열과 비교하는 구조, 그리고 파이썬으로 치환 배열 안에서 값의 위치를 순차 탐색해 복원하는 절차를 확인함. 이 글에는 실행 결과로 나온 최종 플래그 문자열이 본문에 직접 명시되어 있지 않아, 이 글에서도 구체적인 정답 문자열은 확정하지 않았다.</li><li>위 원문의 문장을 그대로 인용하지 않고, "이중 테이블 역방향 탐색"이라는 패턴만 재구성해 한국어로 새로 서술했다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -20,7 +20,7 @@ Binary Ninja는 Vector 35가 만든 상용 디스어셈블러/디컴파일러로
 
 ## 언제 검색해야 하나
 - CTF writeup이나 툴 목록에서 "Binary Ninja", "binja"라는 이름이 나왔는데 IDA/Ghidra랑 뭐가 다른지 모를 때
-- 이 저장소의 툴킷(AGENTS.md)에는 Binary Ninja가 핵심 도구로 들어있지 않은데, 누군가 "무료로 쓸 수 있는 디스어셈블러"를 찾다가 발견했을 때
+- 기본 툴 목록에는 Binary Ninja가 없는데, 누군가 "무료로 쓸 수 있는 디스어셈블러"를 찾다가 발견했을 때
 - Python으로 분석을 자동화하고 싶은데 IDAPython/Ghidra 스크립팅이 번거롭게 느껴져서 대안을 찾을 때
 - writeup에 `MLIL`, `HLIL` 같은 낯선 용어가 나와서 뜻을 확인해야 할 때
 

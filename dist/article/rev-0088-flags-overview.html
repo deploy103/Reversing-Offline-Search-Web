@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>CPU에는 <code>EFLAGS</code>(x86, 32비트) / <code>RFLAGS</code>(x64, 하위 32비트가 EFLAGS와 동일하게 쓰임)라는 특수 레지스터가 있고, 그 안의 개별 비트인 <code>CF</code>(캐리) <code>ZF</code>(제로) <code>SF</code>(사인) <code>OF</code>(오버플로우) <code>PF</code>(패리티) 등이 직전 연산 결과의 성질을 기록한다. 모든 조건 분기(<code>Jcc</code>), 조건부 값 설정(<code>SETcc</code>), 조건부 이동(<code>CMOVcc</code>)은 이 비트들의 조합을 검사해서 동작을 결정하며, 이 매핑을 외우면 디스어셈블리의 <code>if</code>/<code>while</code>/비교 연산자를 손으로 직접 읽을 수 있게 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>cmp eax, ebx</code> 다음에 <code>jg</code>가 왜 오는지, <code>ja</code>가 왜 오는지 차이를 모를 때</li><li><code>jl</code>과 <code>jb</code>가 둘 다 "작으면 점프"인데 뭐가 다른지 헷갈릴 때</li><li>IDA/Ghidra 디컴파일에서 <code>if (a &gt; b)</code>로 보이는 코드가 원본 어셈블리에서는 <code>SF</code>, <code>OF</code>를 비교하는 이상한 조건으로 보일 때</li><li>값 하나가 <code>0xFFFFFFFF</code>처럼 "크게도, 음수로도" 보일 수 있는 상황에서 실제로 어느 쪽으로 분기하는지 확신이 안 설 때</li><li><code>sete al</code>, <code>cmovl eax, ebx</code> 같은 <code>SETcc</code>/<code>CMOVcc</code> 명령을 처음 봤을 때</li><li>"signed unsigned 비교가 헷갈려요", "jg jl 헷갈림" 같은 증상으로 검색해서 들어온 경우</li></ul>
+<h2>핵심 개념</h2>
+<h3>EFLAGS/RFLAGS란 무엇인가</h3>
+<p><code>EFLAGS</code>는 EAX, EBX 같은 범용 레지스터가 아니라, 각 <strong>비트 하나하나가 독립적인 참/거짓 정보</strong>를 담는 특수 레지스터다. x64에서는 <code>RFLAGS</code>라는 64비트 레지스터가 있지만 실제로 쓰이는 비트는 EFLAGS와 동일한 하위 32비트뿐이고 상위 비트는 예약되어 있다. 그래서 실전에서는 그냥 "EFLAGS"라고 불러도 무방하다.</p>
+<p>일반 레지스터처럼 <code>mov eax, eflags</code> 같은 명령으로 직접 값을 읽어올 수는 없다. 대신:</p>
+<ul><li><code>PUSHF</code>/<code>POPF</code> (<a href="rev-0046-pushf-popf.html">REV-0046</a>, 예정) 명령으로 스택을 거쳐 통째로 저장/복원할 수 있고,</li><li>디버거(IDA 디버거, x64dbg, GDB/Pwndbg)는 레지스터 창에 <code>CF=0 ZF=1 SF=0 OF=0 PF=1 ...</code> 형태로 각 플래그를 이름으로 직접 보여준다.</li></ul>
+<p>가장 중요한 사실: <strong>거의 모든 산술/논리/비교 명령은 실행될 때마다 이 플래그들을 자동으로 갱신한다.</strong> 프로그래머가 명시적으로 손대지 않아도 <code>ADD</code>, <code>SUB</code>, <code>CMP</code>, <code>AND</code>, <code>TEST</code> 같은 명령을 실행하는 순간 CPU가 알아서 플래그를 세팅하고, 바로 다음에 오는 <code>Jcc</code>/<code>SETcc</code>/<code>CMOVcc</code>가 그 플래그를 읽어서 동작을 결정한다.</p>
+<h3>플래그 하나씩 뜯어보기</h3>
+<p>#### CF (Carry Flag, 캐리 플래그) <strong>의미</strong>: 부호 없는(unsigned) 연산에서 결과가 넘쳤을 때 1이 된다. 덧셈이면 최상위 비트에서 자리올림(carry out)이 발생했을 때, 뺄셈이면 빌림(borrow)이 필요했을 때 1이 된다.</p>
+<p><strong>예시</strong>:</p>
+<pre><code class="language-asm">mov al, 0xFF     ; AL = 255 (unsigned로 보면 8비트 최댓값)
+add al, 0x01     ; 255 + 1 = 256, 그런데 AL은 8비트라 담을 수 없음
+                 ; 결과: AL = 0x00, CF = 1  (8비트를 벗어나는 자리올림 발생)</code></pre>
+<p><code>255 + 1</code>은 unsigned 8비트 범위(0~255)를 벗어나므로 CF가 1이 된다. <strong>CF는 오직 unsigned 연산의 오버플로우/언더플로우만 신경 쓴다</strong> — 이 점이 뒤에서 나올 OF와의 결정적인 차이다.</p>
+<p>주의할 특이 케이스: <code>INC</code>와 <code>DEC</code>는 예외적으로 <strong>CF를 절대 건드리지 않는다</strong> (자세한 이유는 <a href="rev-0049-inc-dec.html">REV-0049 — INC와 DEC</a> 참고). 그래서 반복문 카운터에 CF가 이미 어떤 다른 이유로 세팅되어 있었다면, <code>INC</code>/<code>DEC</code>를 실행해도 그 값이 그대로 유지된다.</p>
+<p>CF는 <code>ADC</code>(Add with Carry), <code>SBB</code>(Subtract with Borrow) 명령이 여러 워드짜리(예: 64비트를 넘는 128비트) 큰수 연산을 이어붙일 때 "이전 자리에서 넘어온 캐리"를 전달하는 용도로도 쓰이고, <code>SHL</code>/<code>SHR</code>/<code>SAR</code>/<code>ROL</code>/<code>ROR</code> 같은 시프트/로테이트 명령에서는 "밀려나간 마지막 비트"가 CF에 저장된다.</p>
+<p>#### ZF (Zero Flag, 제로 플래그) <strong>의미</strong>: 연산 결과가 정확히 0일 때 1이 된다. signed든 unsigned든 상관없이 그냥 "결과 비트 패턴이 전부 0인가"만 본다.</p>
+<p><strong>예시</strong>:</p>
+<pre><code class="language-asm">mov eax, 5
+cmp eax, 5      ; 내부적으로 eax - 5 = 0 을 계산 (eax 값 자체는 안 바뀜)
+                ; 결과: ZF = 1</code></pre>
+<p><code>CMP</code>는 내부적으로 뺄셈을 수행하지만 그 결과를 레지스터에 저장하지 않고 플래그만 갱신한다 (<a href="rev-0060-cmp.html">REV-0060 — CMP</a>, 예정). ZF는 "두 값이 같은가"를 확인하는 가장 흔한 질문(<code>==</code>, <code>!=</code>)에 직결되기 때문에 실전에서 가장 자주 검사되는 플래그다 (<code>JE</code>/<code>JZ</code>, <code>JNE</code>/<code>JNZ</code>).</p>
+<p>#### SF (Sign Flag, 사인 플래그) <strong>의미</strong>: 결과의 최상위 비트(MSB)를 그대로 복사한 값이다. 8비트면 bit 7, 32비트면 bit 31, 64비트면 bit 63. 즉 "결과의 비트 패턴이 2의 보수로 봤을 때 음수처럼 생겼는가"만 기계적으로 반영할 뿐, 그 연산이 원래 signed였는지 unsigned였는지는 전혀 신경 쓰지 않는다.</p>
+<p><strong>예시</strong>:</p>
+<pre><code class="language-asm">mov eax, 0x80000000
+sub eax, 0        ; 결과 = 0x80000000, 최상위 비트(bit 31) = 1
+                  ; SF = 1</code></pre>
+<p>이 값이 프로그래머 입장에서 unsigned 변수였더라도(즉 실제로는 2,147,483,648이라는 "큰 양수"였더라도) SF는 그저 최상위 비트가 1이라는 사실만 보고 1이 된다.</p>
+<p><strong>여기가 이 글에서 가장 중요한 함정이다</strong>: <strong>SF 하나만 보고 "이 결과는 음수다"라고 판단하면 안 된다.</strong> signed 오버플로우가 발생한 상황에서는 SF가 진짜 부호를 거짓으로 알려주기 때문이다. 진짜 부호를 알려면 SF와 OF를 <strong>함께</strong> 봐야 한다 — 이건 아래 "Jcc 매핑" 절에서 실제 숫자로 증명한다.</p>
+<p>#### OF (Overflow Flag, 오버플로우 플래그) <strong>의미</strong>: signed(부호 있는) 연산에서 결과가 그 크기의 signed 표현 범위를 벗어났을 때 1이 된다. 예를 들어 "양수 + 양수인데 결과가 음수처럼 나옴" 또는 "음수 + 음수인데 결과가 양수처럼 나옴" 같은, signed 수학적으로 있을 수 없는 결과가 나왔을 때 CPU가 "이 결과는 못 믿는다"는 신호로 세운다.</p>
+<p><strong>예시 (CF와의 결정적 대조)</strong>:</p>
+<pre><code class="language-asm">mov al, 0x7F     ; AL = 127 (8비트 signed 최댓값)
+add al, 0x01     ; 127 + 1 = 128
+                 ; 결과: AL = 0x80</code></pre>
+<p>이 한 줄로 두 플래그를 동시에 계산해보자:</p>
+<ul><li><strong>CF 관점(unsigned)</strong>: <code>127 + 1 = 128</code>. unsigned 8비트 범위는 0~255이므로 128은 전혀 문제없이 담긴다. → <strong>CF = 0</strong></li><li><strong>OF 관점(signed)</strong>: <code>127 + 1</code>을 signed 8비트로 보면 결과가 <code>0x80</code>인데, 이는 2의 보수로 <code>-128</code>이다. "양수(127) + 양수(1) = 음수(-128)"라는 것은 signed 수학에서 불가능한 결과이므로 → <strong>OF = 1</strong></li></ul>
+<p>즉 <strong>같은 연산, 같은 비트 패턴 결과인데 CF=0이고 OF=1</strong>이다. 이것이 "unsigned 오버플로우"와 "signed 오버플로우"가 서로 완전히 다른 신호라는 것을 보여주는 가장 명확한 예시다. CF는 unsigned 세계의 오버플로우 감시자, OF는 signed 세계의 오버플로우 감시자라고 기억하면 된다.</p>
+<p>#### PF (Parity Flag, 패리티 플래그) <strong>의미</strong>: 결과값의 <strong>최하위 1바이트</strong>에 들어있는 1비트의 개수가 짝수개면 1, 홀수개면 0이 된다. 8080 시절부터 내려온 레거시 플래그로, 현대 x64 리버싱에서 의도적으로 쓰이는 경우는 매우 드물다(가끔 난독화된 코드나 오래된 시리얼 검증 루틴에서 발견될 수 있다).</p>
+<p><strong>예시</strong>:</p>
+<pre><code class="language-asm">mov al, 0x03     ; 0b00000011 → 1비트가 2개 (짝수개)
+test al, al      ; PF = 1 (짝수 개수)</code></pre>
+<p>#### AF (Auxiliary Carry Flag) — 참고만 bit 3과 bit 4 사이의 자리올림/빌림을 기록하는 플래그로, <code>DAA</code>/<code>DAS</code>/<code>AAA</code>/<code>AAS</code> 같은 레거시 BCD(2진화 10진수) 명령에서만 쓰인다. 현대 x64 바이너리 리버싱에서는 사실상 볼 일이 없으므로, "존재는 한다" 정도만 알아두고 무시해도 된다.</p>
+<h3>어떤 명령어가 어떤 플래그를 바꾸는가</h3>
+<table><thead><tr><th>명령어</th><th>영향받는 플래그</th><th>비고</th></tr></thead><tbody><tr><td><code>ADD</code>, <code>SUB</code>, <code>CMP</code>, <code>ADC</code>, <code>SBB</code>, <code>NEG</code></td><td>CF, OF, SF, ZF, AF, PF 전부</td><td>표준 산술 연산</td></tr><tr><td><code>INC</code>, <code>DEC</code></td><td>OF, SF, ZF, AF, PF (<strong>CF는 그대로 유지</strong>)</td><td>루프 카운터에서 CF 보존이 중요</td></tr><tr><td><code>AND</code>, <code>OR</code>, <code>XOR</code>, <code>TEST</code>, <code>NOT</code></td><td>SF, ZF, PF 세팅 / <strong>CF=0, OF=0으로 강제 클리어</strong></td><td><code>NOT</code>은 플래그를 아예 바꾸지 않음</td></tr><tr><td><code>MUL</code>, <code>IMUL</code></td><td>CF, OF만 의미 있음 (상위 절반이 0/부호 확장인지 여부) / SF, ZF, AF, PF는 <strong>정의되지 않음(undefined)</strong></td><td><a href="rev-0050-mul.html">REV-0050 — MUL</a>, <a href="rev-0051-imul.html">REV-0051 — IMUL</a></td></tr><tr><td><code>DIV</code>, <code>IDIV</code></td><td><strong>모든 플래그가 정의되지 않음(undefined)</strong></td><td><a href="rev-0052-div.html">REV-0052 — DIV</a>, <a href="rev-0053-idiv.html">REV-0053 — IDIV</a></td></tr><tr><td><code>SHL</code>/<code>SAL</code>, <code>SHR</code>, <code>SAR</code>, <code>ROL</code>, <code>ROR</code></td><td>CF = 마지막으로 밀려난 비트 / OF는 1비트 시프트일 때만 의미 있음</td><td>예정: REV-0061~REV-0065</td></tr></tbody></table>
+<p>관련 산술 명령어 각각의 전체 설명은 <a href="rev-0047-add.html">REV-0047 — ADD</a>, <a href="rev-0048-sub.html">REV-0048 — SUB</a>, <a href="rev-0049-inc-dec.html">REV-0049 — INC와 DEC</a>, <a href="rev-0054-neg.html">REV-0054 — NEG</a> 참고. <code>AND</code>/<code>OR</code>/<code>XOR</code>/<code>NOT</code>/<code>TEST</code>(REV-0055~REV-0059), <code>CMP</code>(REV-0060), <code>SHL</code>/<code>SAL</code>/<code>SHR</code>/<code>SAR</code>/<code>ROL</code>/<code>ROR</code>(REV-0061~REV-0065)는 모두 예정.</p>
+<h3>핵심: 플래그 조합 → Jcc / SETcc / CMOVcc 매핑표</h3>
+<p>모든 <code>Jcc</code>(조건 분기)는 <code>SETcc</code>(조건에 따라 레지스터를 0/1로 설정)와 <code>CMOVcc</code>(조건에 따라 값을 이동)로 그대로 대응되는 형제 명령이 있다. 셋 다 <strong>정확히 같은 플래그 조건</strong>을 검사한다.</p>
+<p><strong>단일 플래그만 보는 것들:</strong></p>
+<table><thead><tr><th>플래그 조건</th><th>Jcc</th><th>SETcc</th><th>CMOVcc</th><th>의미</th></tr></thead><tbody><tr><td>ZF=1</td><td><code>JE</code>/<code>JZ</code></td><td><code>SETE</code>/<code>SETZ</code></td><td><code>CMOVE</code>/<code>CMOVZ</code></td><td>같다(==) / 결과가 0</td></tr><tr><td>ZF=0</td><td><code>JNE</code>/<code>JNZ</code></td><td><code>SETNE</code></td><td><code>CMOVNE</code></td><td>다르다(!=) / 결과가 0 아님</td></tr><tr><td>SF=1</td><td><code>JS</code></td><td><code>SETS</code></td><td><code>CMOVS</code></td><td>결과의 최상위 비트가 1</td></tr><tr><td>SF=0</td><td><code>JNS</code></td><td><code>SETNS</code></td><td><code>CMOVNS</code></td><td>결과의 최상위 비트가 0</td></tr><tr><td>CF=1</td><td><code>JC</code>/<code>JB</code>/<code>JNAE</code></td><td><code>SETC</code>/<code>SETB</code></td><td><code>CMOVC</code>/<code>CMOVB</code></td><td>캐리 발생</td></tr><tr><td>CF=0</td><td><code>JNC</code>/<code>JAE</code>/<code>JNB</code></td><td><code>SETNC</code>/<code>SETAE</code></td><td><code>CMOVNC</code>/<code>CMOVAE</code></td><td>캐리 없음</td></tr><tr><td>OF=1</td><td><code>JO</code></td><td><code>SETO</code></td><td><code>CMOVO</code></td><td>signed 오버플로우 발생</td></tr><tr><td>OF=0</td><td><code>JNO</code></td><td><code>SETNO</code></td><td><code>CMOVNO</code></td><td>signed 오버플로우 없음</td></tr><tr><td>PF=1</td><td><code>JP</code>/<code>JPE</code></td><td><code>SETP</code></td><td><code>CMOVP</code></td><td>짝수 패리티</td></tr><tr><td>PF=0</td><td><code>JNP</code>/<code>JPO</code></td><td><code>SETNP</code></td><td><code>CMOVNP</code></td><td>홀수 패리티</td></tr></tbody></table>
+<p><strong><code>CMP a, b</code> (내부적으로 a - b 계산) 다음에 쓰는 비교용 — unsigned:</strong></p>
+<table><thead><tr><th>조건</th><th>의미</th><th>Jcc</th><th>플래그 조건</th></tr></thead><tbody><tr><td>a &gt; b</td><td>above (unsigned 초과)</td><td><code>JA</code>/<code>JNBE</code></td><td>CF=0 <strong>AND</strong> ZF=0</td></tr><tr><td>a &gt;= b</td><td>above or equal</td><td><code>JAE</code>/<code>JNB</code></td><td>CF=0</td></tr><tr><td>a &lt; b</td><td>below (unsigned 미만)</td><td><code>JB</code>/<code>JNAE</code></td><td>CF=1</td></tr><tr><td>a &lt;= b</td><td>below or equal</td><td><code>JBE</code>/<code>JNA</code></td><td>CF=1 <strong>OR</strong> ZF=1</td></tr></tbody></table>
+<p><strong><code>CMP a, b</code> 다음에 쓰는 비교용 — signed:</strong></p>
+<table><thead><tr><th>조건</th><th>의미</th><th>Jcc</th><th>플래그 조건</th></tr></thead><tbody><tr><td>a &gt; b</td><td>greater (signed 초과)</td><td><code>JG</code>/<code>JNLE</code></td><td>ZF=0 <strong>AND</strong> SF=OF</td></tr><tr><td>a &gt;= b</td><td>greater or equal</td><td><code>JGE</code>/<code>JNL</code></td><td>SF=OF</td></tr><tr><td>a &lt; b</td><td>less (signed 미만)</td><td><code>JL</code>/<code>JNGE</code></td><td>SF≠OF</td></tr><tr><td>a &lt;= b</td><td>less or equal</td><td><code>JLE</code>/<code>JNG</code></td><td>ZF=1 <strong>OR</strong> SF≠OF</td></tr></tbody></table>
+<p><strong>외우는 요령</strong>: 영문 알파벳으로 구분된다. <strong>A/B(Above/Below)로 시작하는 계열은 전부 unsigned이고 CF를 검사</strong>하고, <strong>G/L(Greater/Less)로 시작하는 계열은 전부 signed이고 SF와 OF의 관계를 검사</strong>한다.</p>
+<h3>왜 "SF = OF"가 "크거나 같다"를 의미하는가 (핵심 원리)</h3>
+<p>이 규칙이 직관적으로 이해가 안 되는 게 정상이다. 원리는 이렇다:</p>
+<ul><li><strong>오버플로우가 없었다면(OF=0)</strong>: <code>a - b</code>의 결과 비트 패턴이 진짜 수학적으로 옳은 값이므로, SF를 그대로 믿을 수 있다. SF=0이면 결과가 0 이상이라는 뜻이므로 <code>a &gt;= b</code>. 그래서 OF=0일 때는 "SF=0"이 곧 "크거나 같다"이고, 이는 "SF와 OF가 둘 다 0이라 같다(SF=OF)"와 동치다.</li><li><strong>오버플로우가 있었다면(OF=1)</strong>: 진짜 결과가 signed 범위를 벗어나서 부호 비트가 "거짓말"을 하고 있는 상태다. 이때는 SF가 뒤집혀서 보이므로, 반대로 해석해야 진짜 답이 나온다. OF=1일 때 SF=1이면 실제로는 결과가 양수(즉 <code>a &gt;= b</code>)였다는 뜻이고, 이 역시 "SF와 OF가 둘 다 1이라 같다(SF=OF)"와 동치다.</li></ul>
+<p>즉 오버플로우가 있든 없든, <strong>"SF와 OF가 같은 값이면 진짜 결과는 0 이상"</strong>이라는 규칙이 항상 성립한다. 그래서 <code>JGE</code>(signed &gt;=)는 정확히 <code>SF=OF</code> 하나만 검사하면 된다.</p>
+<p><strong>직접 손으로 검증하는 예제 (8비트 signed, 오버플로우 발생 케이스):</strong></p>
+<p><code>a = -100</code>, <code>b = 100</code>을 8비트로 비교한다고 하자. <code>-100</code>은 2의 보수로 <code>0x9C</code>, <code>100</code>은 <code>0x64</code>다.</p>
+<pre><code class="language-asm">mov al, 0x9C   ; al = -100 (signed로 해석 시)
+cmp al, 0x64   ; al - 0x64 = 0x9C - 0x64 = 0x38 (56)</code></pre>
+<p>수학적으로 진짜 답은 <code>-100 - 100 = -200</code>인데, 이는 8비트 signed 범위(<code>-128</code>~<code>127</code>)를 벗어난다 → <strong>OF = 1</strong>.</p>
+<p>실제 계산된 결과 비트 패턴은 <code>0x38</code>(십진수 56), 최상위 비트(bit 7)가 0이므로 → <strong>SF = 0</strong>.</p>
+<p>여기서 <code>SF(0) ≠ OF(1)</code>이므로 <code>JL</code>(SF≠OF) 조건이 참이 되어 "less than" 분기가 선택된다. 결과 비트 패턴만 보면 <code>0x38</code>은 "양수처럼" 보여서 얼핏 <code>a &gt; b</code>처럼 착각하기 쉽지만, OF=1이라는 신호 덕분에 CPU는 이 부호 비트를 믿지 않고 뒤집어서 해석하여 <strong>정확하게 <code>-100 &lt; 100</code>이라는 진짜 답</strong>을 낸다. 이것이 SF 하나만 보면 안 되고 SF와 OF를 함께 봐야 하는 이유다.</p>
+<h3>JG vs JA, JL vs JB — 같은 비트를 놓고 완전히 다른 답을 낼 수 있다</h3>
+<p><code>0xFFFFFFFF</code>(32비트)와 <code>1</code>을 비교하는 상황을 보자.</p>
+<pre><code class="language-asm">mov eax, 0FFFFFFFFh
+cmp eax, 1        ; eax - 1 = 0xFFFFFFFE</code></pre>
+<p>이 하나의 <code>CMP</code>로 완전히 상반된 두 가지 결론이 동시에 성립한다:</p>
+<ul><li><strong>signed로 해석하면</strong>: <code>0xFFFFFFFF</code>는 <code>-1</code>이다. <code>-1 &lt; 1</code>이므로 <strong><code>JL</code>이 선택되어야 맞다</strong> (실제로 SF=1, OF=0이라 SF≠OF → JL 조건 성립).</li><li><strong>unsigned로 해석하면</strong>: <code>0xFFFFFFFF</code>는 <code>4294967295</code>라는 매우 큰 수다. <code>4294967295 &gt; 1</code>이므로 <strong><code>JA</code>가 선택되어야 맞다</strong> (실제로 CF=0, ZF=0 → JA 조건 성립).</li></ul>
+<p><strong>같은 비교, 같은 CMP, 같은 플래그 값 집합인데, 어떤 Jcc를 골랐는지에 따라 정반대의 분기가 나온다.</strong> 컴파일러는 원본 C 변수가 <code>int</code>(signed)였는지 <code>unsigned int</code>였는지에 따라 처음부터 <code>JL</code>을 쓸지 <code>JA</code>를 쓸지 결정해서 코드를 생성해 놓는다. 그래서 리버싱할 때는 <strong>이미 박혀 있는 Jcc 니모닉을 보고 거꾸로 원본 변수의 부호 여부를 추론</strong>할 수 있다 — 이건 <a href="rev-0052-div.html">REV-0052 — DIV</a>/<a href="rev-0053-idiv.html">REV-0053 — IDIV</a>에서 나오는 "CDQ가 있으면 signed, <code>xor edx,edx</code>면 unsigned" 휴리스틱과 완전히 같은 원리다.</p>
+<p><strong>정리</strong>: <code>CMP</code> 뒤에 <code>JA</code>/<code>JAE</code>/<code>JB</code>/<code>JBE</code>가 오면 → 원본 변수는 unsigned였다. <code>JG</code>/<code>JGE</code>/<code>JL</code>/<code>JLE</code>가 오면 → 원본 변수는 signed(int)였다. 이건 스트립된 바이너리에서 변수 타입을 복원할 때 매우 강력한 단서다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>cmp eax, ebx</code> 바로 다음 줄에 <code>jg</code>, <code>jl</code>, <code>jge</code>, <code>jle</code> 중 하나가 온다 → signed 비교</li><li><code>cmp eax, ebx</code> 바로 다음 줄에 <code>ja</code>, <code>jb</code>, <code>jae</code>, <code>jbe</code> 중 하나가 온다 → unsigned 비교</li><li><code>test eax, eax</code> 다음에 <code>jz</code>/<code>je</code> (0인지 검사) 또는 <code>js</code> (부호 비트만 검사) — <a href="rev-0059-test.html">REV-0059 TEST</a>, 예정</li><li><code>sete al</code>, <code>setl al</code>, <code>setg al</code> 같은 명령이 <code>cmp</code> 직후에 등장 — boolean 반환값(<code>bool</code>, <code>int</code> 0/1)을 만드는 코드</li><li><code>cmovl eax, ebx</code>, <code>cmovge eax, ecx</code> 같은 명령 — 분기 없이 조건을 처리하는 최적화 코드(삼항 연산자 <code>?:</code>가 이렇게 컴파일되는 경우가 많음)</li><li>IDA/Ghidra 디컴파일에서 <code>if (a &gt; b)</code>인데 원본 어셈블리는 <code>SF</code>/<code>OF</code> 비교처럼 보임 → signed 비교였다는 뜻</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>Jcc</code>/<code>SETcc</code>/<code>CMOVcc</code>를 만나면 순서대로 확인한다:</p>
+<ol><li>바로 위에 어떤 명령이 있었는가 (<code>CMP</code>, <code>TEST</code>, <code>SUB</code>, 아니면 다른 산술 명령인가) — 그 명령이 지금 보는 플래그를 만들었다.</li><li>그 니모닉이 <code>A/B</code> 계열인가 <code>G/L</code> 계열인가, 아니면 <code>E/Z</code>, <code>S</code>, <code>O</code>, <code>C</code>, <code>P</code> 단일 플래그 계열인가.</li><li><code>A/B</code> 계열이면 unsigned 비교, <code>G/L</code> 계열이면 signed 비교임을 확정한다.</li><li>위 매핑표에서 정확한 플래그 조건을 찾아 실제 값(디버거의 레지스터 창)과 대조해본다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 디버거에서 플래그 직접 확인하기</strong></p>
+<p>x64dbg나 IDA 디버거의 레지스터 창에는 <code>EFLAGS</code> 옆에 <code>C 0  Z 1  S 0  O 0  P 1  A 0</code> 처럼 각 플래그가 0/1로 나열된다. <code>CMP</code>나 <code>ADD</code> 한 줄을 실행(F7/F8 step)한 직후 이 값이 어떻게 바뀌는지 직접 관찰하면 매핑표를 몸으로 익힐 수 있다.</p>
+<pre><code>(gdb) i r eflags
+eflags         0x246               [ PF ZF IF ]</code></pre>
+<p>GDB/Pwndbg에서는 <code>info registers eflags</code> 또는 <code>i r eflags</code>로 확인하면 세팅된 플래그 이름만 대괄호 안에 나열해서 보여준다. 위 예시는 PF와 ZF가 1이라는 뜻이다.</p>
+<p><strong>2) 소스 CMP와 다음 Jcc를 짝지어 읽기</strong></p>
+<pre><code class="language-asm">cmp eax, 10
+jg  greater_branch</code></pre>
+<p>→ <code>CMP</code>가 <code>eax - 10</code>을 계산하고 ZF, SF, OF, CF를 세팅한다. <code>JG</code>는 <code>ZF=0 AND SF=OF</code>를 검사한다. 즉 이 코드는 <code>if (eax &gt; 10) goto greater_branch;</code>를 signed로 비교한 것이다.</p>
+<p><strong>3) A/B 계열이면 unsigned, G/L 계열이면 signed로 원본 타입을 역추론</strong></p>
+<pre><code class="language-asm">cmp ecx, 0
+jb  handle_negative_as_error   ; unsigned 관점에서 "0보다 작다"는 불가능하지만
+                                ; 컴파일러가 unsigned 변수에 대해 이런 비교를 넣는 경우
+                                ; ecx가 unsigned 타입임을 알려주는 강한 단서</code></pre>
+<p><strong>4) SETcc/CMOVcc는 Jcc와 똑같은 조건표로 해석</strong></p>
+<pre><code class="language-asm">cmp eax, ebx
+setg al        ; al = (eax &gt; ebx) ? 1 : 0   (signed)</code></pre>
+<p>Jcc 대신 SETcc/CMOVcc가 나와도 당황하지 말고 위 매핑표에서 같은 접미사(<code>G</code>, <code>L</code>, <code>A</code>, <code>B</code>, <code>E</code> 등)를 찾아 동일한 플래그 조건을 적용하면 된다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA/x64dbg 레지스터 창: EFLAGS 옆에 각 플래그가 개별 체크박스/글자로 표시됨 (더블클릭하면 값을 직접 토글할 수도 있음 — 조건 분기를 강제로 바꿔서 실행해보는 패치 없는 임시 우회 트릭으로 쓰이기도 함)</li><li>GDB/Pwndbg: <code>info registers eflags</code> (<code>i r eflags</code>) — 세팅된 플래그 이름 목록으로 표시</li><li>Pwndbg: <code>context</code> 실행 시 레지스터 영역에 플래그가 자동으로 색깔 강조되어 표시됨</li><li>IDA: 명령어 위에서 <code>Shift+F5</code>(범용) 대신, <code>Alt+G</code>로 그래프 뷰에서 조건 분기의 True/False 방향을 시각적으로 색깔(초록/빨강)로 구분해서 볼 수 있음</li></ul>
+<h2>출력 해석</h2>
+<ul><li>디버거에서 <code>CF=0 ZF=1 SF=0 OF=0</code>처럼 보이면, 방금 실행된 명령의 결과가 "0이고, 음수가 아니며, 오버플로우도 캐리도 없었다"는 뜻 — 전형적인 "두 값이 정확히 같다"는 CMP 결과다.</li><li><code>SF=1, OF=1</code>처럼 SF와 OF가 <strong>같은 값</strong>이면 (<code>SF=OF</code>) → signed 비교에서 "크거나 같다"(<code>JGE</code>)가 참이 되는 상태.</li><li><code>SF=0, OF=1</code>처럼 SF와 OF가 <strong>다른 값</strong>이면 (<code>SF≠OF</code>) → signed 비교에서 "작다"(<code>JL</code>)가 참이 되는 상태. 이때 SF만 보면 "양수 결과"처럼 착각하기 쉬우니 항상 OF를 같이 확인한다.</li><li>디컴파일러(IDA F5, Ghidra)는 이 플래그 조합을 이미 해석해서 <code>if (a &gt; b)</code>, <code>if (a &gt;= b)</code> 같은 고수준 조건으로 보여준다 — 원본 어셈블리를 볼 필요 없이 디컴파일 결과의 비교 연산자와 변수 타입(<code>int</code> vs <code>unsigned int</code>)만 봐도 같은 정보를 얻을 수 있지만, 디컴파일이 실패하거나 이상하게 나올 때는 이 절의 매핑표로 직접 원본 어셈블리를 읽어야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><strong><code>JG</code>와 <code>JA</code>가 "영어로는 둘 다 크다는 뜻이니 같은 거겠지"라고 착각하는 것</strong> — <code>0xFFFFFFFF</code>와 <code>1</code>을 비교하는 예시에서 봤듯, signed로는 <code>JL</code>(작다)이 맞고 unsigned로는 <code>JA</code>(크다)가 맞다. 완전히 반대 결론이 나올 수 있다. 반드시 니모닉이 A/B 계열인지 G/L 계열인지부터 구분해야 한다.</li><li><strong>SF 하나만 보고 "이 결과는 음수다"라고 단정하는 것</strong> — signed 오버플로우가 발생하면 SF가 진짜 부호를 거짓으로 보여준다. 항상 OF와 함께 판단해야 한다(<code>SF=OF</code>인지 <code>SF≠OF</code>인지).</li><li><strong>TEST와 CMP가 피연산자 값을 바꾼다고 착각하는 것</strong> — 둘 다 내부적으로 연산(AND, SUB)을 수행하지만 그 결과를 어디에도 저장하지 않고 <strong>플래그만</strong> 갱신한다. <code>test eax, eax</code>는 <code>eax</code>가 0인지(<code>ZF</code>) 또는 음수인지(<code>SF</code>)만 검사하는 매우 흔한 관용구다.</li><li><strong>MUL/IMUL, DIV/IDIV 직후에 ZF나 SF를 믿고 분기 코드를 분석하는 것</strong> — 곱셈은 CF/OF만 의미가 있고 나머지는 undefined, 나눗셈은 전체 플래그가 undefined다. 컴파일러도 이 사실을 알기 때문에 곱셈/나눗셈 직후 바로 조건 분기가 오는 경우는 거의 없고, 대개 별도의 <code>CMP</code>나 <code>TEST</code>가 먼저 삽입된다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>어떤 Jcc를 봐도 표에서 못 찾겠다면 → 니모닉 전체를 다시 읽어본다. <code>JNAE</code>, <code>JNBE</code>, <code>JNGE</code>, <code>JNLE</code>처럼 <code>N</code> 접두사 + 반대말 조합으로 된 별칭들이 많다(예: <code>JNAE</code>는 <code>JB</code>와 완전히 동일한 명령의 다른 이름일 뿐이다). 어셈블러/디스어셈블러가 어느 이름을 표시하느냐는 도구마다 다를 수 있다.</li><li>CMP와 Jcc 사이에 다른 명령이 끼어있어서 플래그가 이미 덮어써진 것 같다면 → CMP 바로 다음 줄이 Jcc가 맞는지, 혹은 컴파일러가 사이에 플래그를 보존하는 명령(예: <code>LEA</code>, <code>MOV</code> — 이들은 플래그를 바꾸지 않음)만 넣었는지 확인한다. <code>LEA</code>와 <code>MOV</code>는 플래그를 전혀 건드리지 않으므로 안전하게 건너뛰어도 된다.</li><li>원본 변수가 signed인지 unsigned인지 여전히 헷갈리면 → 같은 함수 안에서 이 변수에 대해 쓰인 다른 Jcc들을 모두 모아서 계열이 일관되게 A/B인지 G/L인지 확인한다.</li><li>디컴파일 결과와 어셈블리가 다르게 보인다면 → 디컴파일러가 타입을 잘못 추론했을 가능성이 있으니, 원본 어셈블리의 Jcc 계열을 최종 근거로 삼는다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — signed 비교가 컴파일되는 방식</strong></p>
+<pre><code class="language-c">int a, b;
+if (a &gt; b) {
+    do_something();
+}</code></pre>
+<pre><code class="language-asm">cmp eax, ebx      ; a - b 계산, ZF/SF/OF 세팅
+jle skip          ; a &lt;= b 이면(ZF=1 OR SF≠OF) 건너뜀
+call do_something
+skip:</code></pre>
+<p><strong>예제 2 — 같은 비트, 정반대 결론 (0xFFFFFFFF vs 1)</strong></p>
+<pre><code class="language-asm">mov eax, 0FFFFFFFFh
+cmp eax, 1
+jl  is_negative     ; signed로 보면 -1 &lt; 1 이므로 여기로 분기 (SF≠OF)
+; ja  is_larger      ; 만약 코드가 unsigned였다면 이 니모닉이 대신 쓰였을 것 (CF=0, ZF=0)</code></pre>
+<p>같은 <code>cmp eax, 1</code> 한 줄이지만, 컴파일러가 <code>eax</code>를 <code>int</code>로 선언했느냐 <code>unsigned int</code>로 선언했느냐에 따라 <code>jl</code>이 나올지 <code>ja</code>가 나올지가 결정된다.</p>
+<p><strong>예제 3 — SETcc로 bool 값 만들기</strong></p>
+<pre><code class="language-c">bool eq = (a == b);</code></pre>
+<pre><code class="language-asm">cmp  eax, ebx
+sete al           ; al = (ZF==1) ? 1 : 0
+movzx eax, al     ; 상위 바이트 0으로 확장 (REV-0040 참고)</code></pre>
+<p><strong>예제 4 — CMOVcc로 분기 없는 max 만들기</strong></p>
+<pre><code class="language-c">int max(int a, int b) {
+    return (a &lt; b) ? b : a;
+}</code></pre>
+<pre><code class="language-asm">; eax = a, ebx = b 라고 가정
+cmp  eax, ebx
+cmovl eax, ebx   ; SF≠OF (즉 a &lt; b)이면 eax에 ebx 값을 덮어씀 → eax = max(a,b)</code></pre>
+<p><code>cmovl</code>은 조건이 거짓이면 아무 일도 하지 않고 <code>eax</code>를 그대로 둔다 — 분기(<code>Jcc</code>)가 아예 없으므로 CPU의 분기 예측 실패 페널티가 없다. 이런 패턴은 삼항 연산자나 단순 <code>if-else</code> 대입문에서 컴파일러 최적화로 흔히 나타난다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0047-add.html">REV-0047 — ADD: 덧셈과 플래그</a></li><li><a href="rev-0048-sub.html">REV-0048 — SUB: 뺄셈과 플래그</a></li><li><a href="rev-0049-inc-dec.html">REV-0049 — INC와 DEC: 1 증가 감소와 CF 주의</a></li><li><a href="rev-0050-mul.html">REV-0050 — MUL: Unsigned 곱셈</a></li><li><a href="rev-0051-imul.html">REV-0051 — IMUL: Signed 곱셈과 컴파일러 패턴</a></li><li><a href="rev-0052-div.html">REV-0052 — DIV: Unsigned 나눗셈</a></li><li><a href="rev-0053-idiv.html">REV-0053 — IDIV: Signed 나눗셈</a></li><li><a href="rev-0054-neg.html">REV-0054 — NEG: 2의 보수 음수 만들기</a></li><li><a href="rev-0046-pushf-popf.html">REV-0046 — PUSHF와 POPF: 플래그 저장과 복원</a></li><li>REV-0055~REV-0058 — AND, OR, XOR, NOT (예정)</li><li><a href="rev-0059-test.html">REV-0059 — TEST: 값을 바꾸지 않는 AND 비교</a></li><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li><li>REV-0061~REV-0065 — SHL/SAL, SHR, SAR, ROL, ROR (예정)</li><li><a href="rev-0066-jmp.html">REV-0066 — JMP: 무조건 분기</a></li><li>REV-0067~REV-0070 — JE/JZ, JNE/JNZ, JG/JGE/JL/JLE, JA/JAE/JB/JBE 각 Jcc 계열 상세 (예정)</li><li><a href="rev-0075-cmovcc.html">REV-0075 — CMOVcc: 분기 없는 조건부 이동</a></li><li><a href="rev-0076-setcc.html">REV-0076 — SETcc: 조건 결과를 0 또는 1로 만들기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>EFLAGS/RFLAGS 레지스터 구조와 각 비트 정의: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 1, "3.4.3 EFLAGS Register" 섹션 기준 (2026-09-08 검증).</li><li>산술/논리 명령별 플래그 영향(Flags Affected): Intel SDM Volume 2A/2B, 각 명령어(<code>ADD</code>, <code>SUB</code>, <code>CMP</code>, <code>INC</code>, <code>DEC</code>, <code>AND</code>, <code>OR</code>, <code>XOR</code>, <code>TEST</code>, <code>MUL</code>, <code>IMUL</code>, <code>DIV</code>, <code>IDIV</code>) 개별 레퍼런스 페이지의 "Flags Affected" 절 기준.</li><li><code>Jcc</code>/<code>SETcc</code>/<code>CMOVcc</code> 조건 코드와 대응 플래그 조합표: Intel SDM Volume 2A, "Jcc—Jump if Condition Is Met", "SETcc—Set Byte on Condition", "CMOVcc—Conditional Move" 섹션의 조건 코드(tttn) 표 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

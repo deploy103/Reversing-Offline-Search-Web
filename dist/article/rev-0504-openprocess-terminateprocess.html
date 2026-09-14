@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinAPI 프로세스 함수 사전: OpenProcess TerminateProcess · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>WinAPI 프로세스 함수 사전: OpenProcess TerminateProcess</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>OpenProcess</code>는 이미 실행 중인 다른 프로세스에 대한 핸들을 PID로 얻는 함수이고, <code>TerminateProcess</code>는 그 핸들을 이용해 프로세스를 강제 종료하는 함수로, 두 함수를 연달아 쓰는 패턴은 백신/디버거 프로세스를 찾아 죽이는 안티분석 코드에서 매우 흔하게 등장한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>OpenProcess</code>가 어떤 권한(<code>dwDesiredAccess</code>)으로 다른 프로세스를 열려는지 확인해야 할 때</li><li><code>TerminateProcess</code> 호출을 보고 이 프로그램이 특정 프로세스(x64dbg, ProcessHacker 등 분석 도구)를 죽이려 하는지 의심될 때</li><li><code>PROCESS_ALL_ACCESS</code>, <code>PROCESS_VM_WRITE</code>, <code>PROCESS_TERMINATE</code> 같은 접근 권한 상수값이 헷갈릴 때</li><li><code>TerminateProcess</code>와 <code>ExitProcess</code>의 차이(자기 자신 종료 vs 남을 종료)가 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<p><strong><code>OpenProcess</code></strong> — PID로 다른 프로세스의 핸들을 얻는다.</p>
+<pre><code class="language-c">HANDLE OpenProcess(
+    DWORD dwDesiredAccess,
+    BOOL  bInheritHandle,
+    DWORD dwProcessId
+);</code></pre>
+<ol><li><code>dwDesiredAccess</code> — 원하는 접근 권한. 코드가 이후 무엇을 하려는지 짐작할 수 있는 가장 중요한 인자다.</li></ol>
+<table><thead><tr><th>값</th><th>이름</th><th>의미 / 이후 예상되는 API</th></tr></thead><tbody><tr><td>0x0001</td><td><code>PROCESS_TERMINATE</code></td><td><code>TerminateProcess</code>용</td></tr><tr><td>0x0008</td><td><code>PROCESS_VM_OPERATION</code></td><td><code>VirtualAllocEx</code>/<code>VirtualProtectEx</code>용(메모리 조작)</td></tr><tr><td>0x0010</td><td><code>PROCESS_VM_READ</code></td><td><code>ReadProcessMemory</code>용</td></tr><tr><td>0x0020</td><td><code>PROCESS_VM_WRITE</code></td><td><code>WriteProcessMemory</code>용 — <code>VM_OPERATION</code>과 함께 있으면 코드/DLL 인젝션 의심</td></tr><tr><td>0x0400</td><td><code>PROCESS_QUERY_INFORMATION</code></td><td><code>GetExitCodeProcess</code>, <code>GetPriorityClass</code> 등 정보 조회용</td></tr><tr><td>0x1000</td><td><code>PROCESS_QUERY_LIMITED_INFORMATION</code></td><td>더 제한된 정보 조회(낮은 권한으로도 가능)</td></tr><tr><td>0x001F0FFF</td><td><code>PROCESS_ALL_ACCESS</code></td><td>모든 권한 — 이 값이 보이면 이후 뭐든 할 수 있다는 뜻이므로 특히 주의 깊게 추적해야 함</td></tr></tbody></table>
+<p><code>PROCESS_VM_OPERATION</code>+<code>PROCESS_VM_WRITE</code>+<code>PROCESS_VM_READ</code> 조합(또는 그냥 <code>PROCESS_ALL_ACCESS</code>)으로 연 핸들이 이후 <code>WriteProcessMemory</code>/<code>CreateRemoteThread</code>로 이어진다면 전형적인 DLL 인젝션/코드 인젝션 패턴이다.</p>
+<ol><li><code>bInheritHandle</code> — 자식 프로세스가 이 핸들을 상속할지 여부. 대개 <code>FALSE</code>.</li><li><code>dwProcessId</code> — 대상 프로세스의 PID. <code>CreateToolhelp32Snapshot</code>+<code>Process32First</code>/<code>Next</code>로 프로세스 이름을 순회하며 PID를 찾아 넘기는 코드가 앞에 붙는 경우가 매우 흔하다(예: <code>x64dbg.exe</code>, <code>ida64.exe</code>, <code>ollydbg.exe</code>, <code>procexp64.exe</code> 등 이름을 문자열 비교로 찾는 패턴).</li></ol>
+<p>반환값은 성공 시 유효한 <code>HANDLE</code>, 실패 시 <code>NULL</code>(<code>CreateFile</code>과 달리 여기서는 실패값이 <code>INVALID_HANDLE_VALUE</code>가 아니라 <code>NULL</code>이다).</p>
+<p><strong><code>TerminateProcess</code></strong> — 프로세스를 강제 종료한다.</p>
+<pre><code class="language-c">BOOL TerminateProcess(HANDLE hProcess, UINT uExitCode);</code></pre>
+<p><code>hProcess</code>는 <code>PROCESS_TERMINATE</code> 권한을 포함해 연 핸들이어야 하며, <code>uExitCode</code>는 종료되는 프로세스의 종료 코드로 남는다. 이 함수는 대상 프로세스의 정리 코드(DLL의 <code>DLL_PROCESS_DETACH</code>, 소멸자 등)를 실행시키지 않고 <strong>즉시 강제 종료</strong>시킨다는 점이 일반적인 프로세스 종료와 다르다.</p>
+<p><strong><code>ExitProcess</code>와의 차이</strong> — <code>ExitProcess(UINT uExitCode)</code>는 인자가 하나뿐이며 <strong>자기 자신</strong>을 정상 종료(DLL 언로드 등 정리 과정 포함)시키는 함수다. <code>TerminateProcess</code>는 <strong>다른 프로세스</strong>(또는 자기 자신도 가능)를 핸들 기준으로 강제 종료시키며 정리 과정을 건너뛴다. 코드에서 인자가 1개면 <code>ExitProcess</code>, 핸들+종료코드로 2개면 <code>TerminateProcess</code>라는 시그니처 차이로 즉시 구분 가능하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>CreateToolhelp32Snapshot</code> → <code>Process32FirstW</code>/<code>Process32NextW</code> 루프에서 <code>szExeFile</code> 문자열을 특정 프로세스 이름과 비교(<code>lstrcmpiW</code>, <code>wcscmp</code> 등)한 뒤, 일치하면 <code>OpenProcess</code>(권한 <code>PROCESS_TERMINATE</code> 또는 <code>PROCESS_ALL_ACCESS</code>) → <code>TerminateProcess</code> 순서로 이어지는 코드.</li><li><code>OpenProcess</code>의 <code>dwDesiredAccess</code> 인자가 <code>0x1F0FFF</code>(<code>PROCESS_ALL_ACCESS</code>)로 통째로 넘어가는 패턴 — 세밀한 권한 대신 전체 권한을 요청하는 것은 다소 거친(그리고 흔한) 구현 방식이다.</li><li><code>OpenProcess</code> 반환값을 <code>test eax, eax</code> / <code>je skip</code>(0이면 실패, 건너뜀)으로 검사하는 코드.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>OpenProcess</code> 호출 직전에 대상 PID가 어떻게 결정되는지부터 역추적한다 — 대개 프로세스 이름 문자열 비교 코드가 근처에 있으며, 그 문자열이 곧 "이 프로그램이 무엇을 노리는가"에 대한 직접적인 답이다.</p>
+<h2>단계별 절차</h2>
+<ol><li>IDA에서 <code>OpenProcess</code>를 <code>X</code>(xref)로 찾는다.</li><li><code>F5</code>로 디컴파일해 <code>dwDesiredAccess</code> 상수와, <code>dwProcessId</code> 인자가 어떤 변수에서 왔는지(스냅샷 루프의 결과인지) 확인한다.</li><li>스냅샷 루프가 있다면 비교 대상 문자열(프로세스 이름)을 확인해 어떤 프로세스를 찾는지 파악한다.</li><li><code>TerminateProcess</code> 호출까지 이어지는지 확인하고, x64dbg에서 <code>bp TerminateProcess</code> 후 <code>RCX</code>(hProcess)가 어떤 프로세스인지 추적한다(핸들 값 자체로는 알 수 없으므로 <code>OpenProcess</code> 호출 시점의 PID를 먼저 확인해야 함).</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp OpenProcess</code>, <code>bp TerminateProcess</code>, <code>Ctrl+F9</code>(리턴까지 실행)</li><li>IDA: <code>X</code>(xref), <code>F5</code>(디컴파일)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>OpenProcess</code> 반환값 <code>NULL</code>이면 실패(권한 부족 또는 대상 PID가 존재하지 않음) — <code>CreateFile</code>류의 <code>INVALID_HANDLE_VALUE</code>(<code>-1</code>)와 실패값이 다르다는 점에 유의.</li><li><code>TerminateProcess</code> 반환값 <code>0</code>이면 종료 실패(대상이 이미 종료됐거나 권한 부족).</li><li>대상 PID가 자기 자신의 PID(<code>GetCurrentProcessId()</code> 결과)와 같다면 자기 자신을 종료하는 특수한 경우다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>OpenProcess</code> 실패값을 <code>INVALID_HANDLE_VALUE</code>(-1)로 착각하는 것 — 실제로는 <code>NULL</code>(0)이다.</li><li><code>TerminateProcess</code>와 <code>ExitProcess</code>를 같은 함수로 착각하는 것 — 인자 개수(2개 vs 1개)와 대상(타 프로세스 vs 자기 자신)이 다르다.</li><li><code>PROCESS_ALL_ACCESS</code> 상수값을 32비트 기준(<code>0x1F0FFF</code>)으로만 기억해서 다른 버전/문서의 값과 헷갈리는 것 — Windows 버전에 따라 이 상수의 정확한 비트 구성이 문서에서 미묘하게 다르게 설명되는 경우가 있으므로, 정확한 판별은 상수값보다 "이후 어떤 API가 이어지는가"로 하는 것이 더 안전하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>대상 프로세스를 애초에 만드는 단계가 궁금하면 → REV-0503 확인.</li><li>프로세스 안의 스레드를 다루는 API가 궁금하면 → REV-0505 확인.</li><li>이 프로세스가 디버거를 감지하려는 것 같다면 → REV-0130(IsDebuggerPresent 안티디버깅 식별)도 함께 확인.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+PROCESSENTRY32W pe = { sizeof(pe) };
+Process32FirstW(snap, &amp;pe);
+do {
+    if (!lstrcmpiW(pe.szExeFile, L"x64dbg.exe")) {
+        HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, pe.th32ProcessID);
+        TerminateProcess(h, 1);
+    }
+} while (Process32NextW(snap, &amp;pe));</code></pre>
+<p>이 패턴은 실행 중인 모든 프로세스를 스냅샷으로 순회하며 이름이 <code>x64dbg.exe</code>인 프로세스를 찾아 강제 종료하는 전형적인 "분석 도구 킬러" 코드다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0503-createprocess-family.html">REV-0503 — WinAPI 프로세스 함수 사전: CreateProcess 계열</a></li><li><a href="rev-0505-createthread-exitthread.html">REV-0505 — WinAPI 스레드 함수 사전: CreateThread ExitThread</a></li><li><a href="rev-0130-isdebuggerpresent.html">REV-0130 — IsDebuggerPresent 안티디버깅 식별</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>OpenProcess</code>/<code>TerminateProcess</code>/<code>ExitProcess</code> 시그니처, <code>PROCESS_*</code> 접근 권한 상수, 실패값 규칙은 Microsoft Win32 API 공식 문서 기준(2026-09-08 확인 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

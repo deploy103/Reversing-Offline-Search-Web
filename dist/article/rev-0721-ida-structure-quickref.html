@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA 구조체(Structure) 정의 빠른 참조 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA 구조체(Structure) 정의 빠른 참조</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>Pseudocode나 디스어셈블리에 <code>*(int *)(a1 + 8)</code>, <code>*(int *)(a1 + 0Ch)</code>처럼 같은 포인터에서 서로 다른 오프셋을 반복해서 읽는 코드가 보이면, IDA의 <strong>Structures</strong> 서브뷰(<code>Shift+F9</code>)에서 구조체를 직접 정의하고 그 포인터에 타입으로 적용해서 <code>a1-&gt;field_8</code>처럼 의미 있는 멤버 접근으로 바꿔 읽을 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Pseudocode에서 같은 변수에 <code>+4</code>, <code>+8</code>, <code>+0Ch</code> 같은 오프셋이 반복적으로 등장할 때</li><li>오프셋 숫자만 봐서는 그 위치가 무엇을 의미하는지 기억하기 어려울 때</li><li>구조체 멤버를 직접 정의해서 <code>field_4</code> 같은 자동 생성 이름 대신 실제 필드 이름(<code>length</code>, <code>flag</code> 등)으로 바꾸고 싶을 때</li><li>소스가 없는 바이너리에서 힙에 할당된 커스텀 구조체(예: CTF 문제의 <code>struct player { int hp; int level; char name[32]; }</code>)의 레이아웃을 역으로 추정해서 문서화하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Structures 서브뷰</h3>
+<p><code>Shift+F9</code>를 누르면 <strong>Structures</strong> 창이 열린다. 이 창은 사용자가 직접 정의한 구조체/공용체(union) 목록을 관리하는 곳으로, IDA가 헤더에서 읽어온 표준 타입을 보여주는 Local Types(<code>Shift+F11</code>, REV-0723)와는 별개의 "사용자 정의 구조체 전용" 창이다.</p>
+<h3>구조체 추가와 멤버 편집</h3>
+<p>Structures 창에서 <code>Ins</code>(Insert) 키를 누르면 새 구조체/union 이름을 입력하는 대화상자가 뜬다. 구조체를 만든 뒤에는 그 구조체 안에서 다시 <code>Ins</code>를 눌러 멤버를 추가한다. 멤버 한 줄은 오프셋, 이름, 크기(타입)로 구성되며, <code>D</code> 키를 누르면 해당 멤버의 크기(byte/word/dword/qword)를 순환시켜 바꿀 수 있다. 이름은 <code>N</code>으로, 타입은 <code>Y</code>로 바꾸는 것이 다른 서브뷰와 동일하다.</p>
+<h3>포인터에 구조체 타입 적용하기</h3>
+<p>구조체를 만든 것만으로는 아무 효과가 없다. Pseudocode나 디스어셈블리에서 그 구조체를 가리키는 포인터 변수(예: <code>a1</code>) 위에 커서를 두고 <code>Y</code>(Set type)를 누른 뒤 <code>구조체이름 *</code> 형태로 타입을 지정해야 비로소 <code>a1-&gt;field_8</code>처럼 멤버 접근 표기로 바뀐다.</p>
+<h3>Create struct — 디컴파일러가 구조체를 제안</h3>
+<p>Hex-Rays 디컴파일러는 한 포인터가 여러 오프셋으로 접근되는 패턴을 감지하면, Pseudocode 창에서 해당 변수를 우클릭했을 때 <strong>Create struct</strong>(또는 유사한 이름의 항목)를 제안하는 경우가 있다. 이 기능을 쓰면 접근된 오프셋들을 기반으로 구조체 뼈대를 자동 생성해주므로, 처음부터 손으로 오프셋을 하나씩 셀 필요 없이 자동 생성 결과를 다듬는 방식으로 작업할 수 있다.</p>
+<h3>union — 같은 메모리를 다르게 해석</h3>
+<p>같은 오프셋이 상황에 따라 다른 타입으로 쓰이는 경우(예: 같은 4바이트가 어떤 코드 경로에서는 <code>int</code>, 다른 경로에서는 <code>float</code>로 읽힘) union을 만들어 처리한다. Structures 창에서 새 구조체를 만들 때 "Union" 옵션을 선택하면 일반 struct 대신 union으로 만들 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>Pseudocode에서 <code>*(int *)(a1 + 4)</code>, <code>*(char *)(a1 + 8)</code>처럼 같은 포인터에 서로 다른 고정 오프셋이 여러 번 등장하거나, 디스어셈블리에서 <code>mov eax, [ecx+8]</code>, <code>mov [ecx+0Ch], edx</code>처럼 같은 베이스 레지스터에 여러 오프셋을 쓰는 코드가 반복되면 구조체 후보다.</p>
+<h2>가장 먼저 할 것</h2>
+<p><code>Shift+F9</code>로 Structures 창을 열고, 코드에서 본 가장 큰 오프셋(예: <code>+0x20</code>)보다 넉넉한 크기로 구조체를 하나 만들어본다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 오프셋 목록 정리</strong></p>
+<p>Pseudocode나 디스어셈블리를 훑으며 같은 포인터에 대해 어떤 오프셋들이 등장하는지 먼저 메모한다(예: <code>+0</code>, <code>+4</code>, <code>+8</code>, <code>+0x28</code>).</p>
+<p><strong>2) 구조체 생성</strong></p>
+<p><code>Shift+F9</code> → <code>Ins</code> → 이름 입력(예: <code>player_t</code>).</p>
+<p><strong>3) 멤버 추가</strong></p>
+<p>만든 구조체 안에서 <code>Ins</code>로 멤버를 하나씩 추가한다. 오프셋 순서대로 추가하면 편하고, 크기를 모르면 일단 <code>dword</code>(4바이트)로 넣은 뒤 <code>D</code>로 크기를 조정한다. 이름은 처음엔 <code>field_4</code>처럼 남겨도 되고, 역할이 파악되면 바로 의미 있는 이름으로 바꾼다.</p>
+<p><strong>4) 포인터에 타입 적용</strong></p>
+<p>Pseudocode에서 해당 포인터 변수(<code>a1</code> 등)를 클릭하고 <code>Y</code>를 눌러 <code>player_t *</code>로 타입을 지정한다.</p>
+<p><strong>5) 결과 확인 및 반복</strong></p>
+<p><code>a1-&gt;unk_4</code>처럼 자동 이름이 붙은 멤버가 보이면, Structures 창으로 돌아가 그 멤버 이름/타입을 다시 다듬는다. 이 과정을 오프셋이 모두 의미 있는 이름으로 바뀔 때까지 반복한다.</p>
+<h2>명령어/단축키</h2>
+<table><thead><tr><th>단축키</th><th>위치</th><th>동작</th></tr></thead><tbody><tr><td><code>Shift+F9</code></td><td>전역</td><td>Structures 서브뷰 열기</td></tr><tr><td><code>Ins</code></td><td>Structures 창</td><td>새 구조체/union 추가, 구조체 안에서는 새 멤버 추가</td></tr><tr><td><code>D</code></td><td>Structures 창</td><td>멤버 크기(byte/word/dword/qword) 순환</td></tr><tr><td><code>N</code></td><td>Structures 창</td><td>구조체/멤버 이름 변경</td></tr><tr><td><code>Y</code></td><td>디스어셈블리/Pseudocode</td><td>포인터 변수에 <code>구조체명 *</code> 타입 적용</td></tr><tr><td>우클릭 → Create struct</td><td>Pseudocode</td><td>오프셋 접근 패턴으로부터 구조체 자동 제안</td></tr></tbody></table>
+<h2>출력 해석</h2>
+<ul><li>타입 적용 후 <code>a1-&gt;field_8</code>처럼 보이면 성공적으로 구조체가 씌워진 것이다. <code>field_8</code>은 오프셋 8에 아직 이름을 안 붙였다는 뜻의 자동 이름이므로, <code>N</code>으로 실제 이름으로 바꿔주면 더 읽기 좋아진다.</li><li>구조체를 적용했는데도 여전히 <code>*(int *)(a1 + 8)</code> 형태로 남아 있다면, 타입 적용이 실제로 반영되지 않았거나(다른 변수에 적용했거나) 구조체 크기/오프셋이 실제 접근 패턴과 안 맞는 것이다.</li><li>구조체 멤버 크기의 합이 실제 코드에서 관찰되는 최대 오프셋보다 작으면 IDA가 경고하거나 멤버가 겹쳐 보일 수 있다 — 구조체 전체 크기를 다시 확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>구조체는 만들었지만 실제 포인터 변수에 타입을 적용(<code>Y</code>)하는 단계를 빼먹고 "왜 안 바뀌지"라고 헷갈리는 것.</li><li>멤버 크기를 실제와 다르게 지정해서 이후 멤버들의 오프셋이 전부 밀리는 것 — 특히 포인터(4바이트 vs 8바이트, x86 vs x64)를 헷갈리면 이 문제가 자주 생긴다.</li><li>union이 필요한 상황(같은 오프셋을 다른 타입으로 재해석)인데 일반 struct로 만들어서 타입 충돌 경고를 겪는 것.</li><li>구조체 이름을 <code>struct_1</code>처럼 방치해서 나중에 이 구조체가 어떤 개념(플레이어 상태, 헤더 등)이었는지 잊어버리는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>멤버 타입을 <code>int</code>가 아니라 포인터/배열로 지정해야 할 때 → REV-0148 IDA Y로 타입 지정하기.</li><li>표준 헤더에 이미 정의된 구조체(예: <code>struct timeval</code>)를 직접 만들지 않고 가져오고 싶다면 → REV-0723 IDA 타입 라이브러리(til) 빠른 참조.</li><li>구조체 멤버 중 하나가 상수 코드 값이라 이름표를 붙이고 싶다면 → REV-0722 IDA Enum 정의 빠른 참조.</li><li>구조체를 적용한 후에도 Pseudocode가 이상하게 보이면 → REV-0146 IDA F5 디컴파일과 Pseudocode 읽기.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">관찰된 패턴:
+  *(int *)(a1 + 0)   // 항상 특정 값 비교
+  *(int *)(a1 + 4)   // 레벨 값처럼 증가
+  *(char *)(a1 + 8)  // 이름 문자열 시작으로 추정
+
+Shift+F9 → Ins → 이름 "player_t" 입력
+  Ins → offset 0, dword, 이름 hp
+  Ins → offset 4, dword, 이름 level
+  Ins → offset 8, char[32], 이름 name
+
+Pseudocode에서 a1 위에 Y → "player_t *" 지정
+결과:
+  if ( a1-&gt;hp == 0 )
+    ...
+  a1-&gt;level += 1;</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0722-ida-enum-quickref.html">REV-0722 — IDA Enum 정의 빠른 참조</a></li><li><a href="rev-0723-ida-til-quickref.html">REV-0723 — IDA 타입 라이브러리(til) 빠른 참조</a></li><li><a href="rev-0148-ida-set-type.html">REV-0148 — IDA Y로 타입 지정하기</a></li><li><a href="rev-0146-ida-f5-decompile.html">REV-0146 — IDA F5 디컴파일과 Pseudocode 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Structures 서브뷰(<code>Shift+F9</code>)와 멤버 추가/크기 변경(<code>Ins</code>/<code>D</code>) 동작은 Hex-Rays 공식 문서(docs.hex-rays.com)의 단축키 레퍼런스 및 "Structures, unions, offsets" 관련 사용자 가이드 설명을 기준으로 정리했다(2026-09-09 검증).</li><li>Pseudocode에서의 "Create struct" 자동 구조체 제안 기능은 Hex-Rays 디컴파일러의 공개된 사용자 가이드에서 설명하는 변수 재구성(retype/추론) 기능을 기준으로 서술했다. 정확한 메뉴 문구는 IDA 버전에 따라 다를 수 있으므로 실제 우클릭 메뉴에서 재확인할 것을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

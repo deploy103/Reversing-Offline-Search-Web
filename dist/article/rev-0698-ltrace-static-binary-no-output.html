@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ltrace가 정적 바이너리에서 아무것도 안 보여줄 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>ltrace가 정적 바이너리에서 아무것도 안 보여줄 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">ltrace</span><span class="tag">strace</span><span class="tag">readelf</span></div>
+<h2>한 줄 요약</h2>
+<p><code>ltrace ./chall</code>을 실행했는데 라이브러리 호출은 하나도 안 찍히고 프로그램 자체의 출력만 나오거나 <code>Couldn't find .dynsym or .dynstr in "..."</code> 에러가 뜨는 이유는, <code>ltrace</code>가 <strong>동적 링킹의 PLT/GOT 후킹 메커니즘에 의존</strong>하기 때문에 <strong>정적으로 링킹된 바이너리</strong>(<code>libc</code> 코드가 실행 파일 안에 그대로 박혀 있는 경우)에서는 원리상 아무것도 가로챌 수 없어서이며, 이런 경우엔 <code>ltrace</code> 대신 <code>strace</code>(시스템 콜 레벨)나 GDB 브레이크포인트로 접근해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>ltrace ./chall</code>을 실행했더니 프로그램의 원래 출력만 보이고 <code>malloc(...)</code>, <code>strcpy(...)</code> 같은 라이브러리 호출 로그가 전혀 안 찍힐 때</li><li><code>Couldn't find .dynsym or .dynstr in "/proc/&lt;PID&gt;/exe"</code> 에러 메시지를 봤을 때</li><li><code>file ./chall</code> 결과에 <code>statically linked</code>라고 나오는데 왜 ltrace가 안 되는지 이유를 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>ltrace는 PLT/GOT를 조작해서 라이브러리 호출을 가로챈다</h3>
+<p><code>ltrace</code>와 <code>strace</code>는 둘 다 <code>ptrace(2)</code>를 쓰지만 가로채는 지점이 다르다. <code>strace</code>는 커널로 들어가는 <strong>시스템 콜 진입점</strong>을 가로채므로 바이너리가 정적이든 동적이든 항상 동작한다. 반면 <code>ltrace</code>는 <strong>동적 링킹으로 호출되는 라이브러리 함수</strong>를 가로채기 위해, 실행 파일의 <code>.dynsym</code>(동적 심볼 테이블)과 <code>.plt</code>/<code>.got.plt</code>(REV-0100 참고)를 찾아서 그 함수들이 실제로 호출되는 시점에 개입하는 방식으로 동작한다.</p>
+<p>정적 링킹(<code>gcc -static</code>)된 바이너리는 <code>malloc</code>, <code>printf</code> 등 libc 함수의 <strong>기계어 코드 전체가 실행 파일 안에 직접 복사</strong>되어 들어간다. 즉 PLT를 거쳐 외부 라이브러리를 호출하는 구조 자체가 없다 — 함수 호출이 그냥 바이너리 내부의 <code>call</code> 명령 하나로 끝난다. <code>ltrace</code>가 후킹할 PLT 스텁도, 참조할 <code>.dynsym</code>도 없으므로 원리적으로 라이브러리 호출을 가로챌 방법이 없다.</p>
+<h3>왜 "아무것도 안 찍히는" 경우와 "에러가 뜨는" 경우가 갈리나</h3>
+<ul><li>바이너리에 <code>.dynsym</code>/<code>.dynstr</code> 섹션 자체가 없으면(완전 정적 링킹 + 최소 구성) <code>ltrace</code>가 <code>Couldn't find .dynsym or .dynstr in "..."</code> 에러를 내고 아예 트레이싱을 포기한다.</li><li>일부 정적 바이너리는 <code>.dynsym</code>이 빈 채로 남아있거나 다른 목적의 심볼만 있어서 에러 없이 그냥 "라이브러리 호출 로그 0줄"로 조용히 지나가기도 한다.</li><li>두 경우 모두 <strong>정적 링킹이 원인</strong>이라는 결론은 같다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-text">$ ltrace ./chall
+Couldn't find .dynsym or .dynstr in "/proc/12345/exe"</code></pre>
+<p>또는 에러 없이:</p>
+<pre><code class="language-text">$ ltrace ./chall
+Enter password: test
+Wrong password
++++ exited (status 1) +++</code></pre>
+<p>(라이브러리 호출 로그 없이 프로그램 출력만 그대로 찍힘)</p>
+<h2>가장 먼저 할 것</h2>
+<ol><li>바이너리가 진짜 정적 링킹인지부터 확인한다.</li></ol>
+<pre><code class="language-bash">   file ./chall</code></pre>
+<p>출력에 <code>statically linked</code>가 보이면 원인이 확정된다. <code>dynamically linked</code>인데도 이 증상이면 다른 원인(권한, ltrace 설치 문제 등)이므로 이 글의 범위를 벗어난다.</p>
+<ol><li>정적 링킹이 확인되면 <code>ltrace</code>를 포기하고 <strong><code>strace</code>로 전환</strong>하거나, 특정 함수 호출을 정말 보고 싶다면 GDB 브레이크포인트를 쓴다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 정적 링킹 여부와 심볼 상태 확인</strong></p>
+<pre><code class="language-bash">file ./chall
+readelf -d ./chall     # 동적 섹션이 없으면(.dynamic 없음) 완전 정적 링킹
+readelf -S ./chall | grep dynsym</code></pre>
+<p><code>readelf -d</code> 결과가 <code>There is no dynamic section in this file.</code>이면 완전히 정적으로 링킹된 것이 확정이다.</p>
+<p><strong>2) syscall 레벨 관찰로 전환 (가장 실용적인 대안)</strong></p>
+<pre><code class="language-bash">strace ./chall</code></pre>
+<p><code>ltrace</code>가 보여주려던 <code>malloc</code>, <code>read</code>, <code>write</code> 같은 함수는 결국 내부적으로 <code>brk</code>/<code>mmap</code>, <code>read</code>, <code>write</code> 시스템 콜을 호출하므로, <code>strace</code>로도 상당 부분 같은 정보를 얻을 수 있다(REV-0112, REV-0697 참고). 다만 <code>strlen</code>, <code>strcpy</code>처럼 시스템 콜을 아예 안 쓰는 순수 라이브러리 함수는 <code>strace</code>에도 안 잡힌다.</p>
+<p><strong>3) 특정 라이브러리 함수 호출을 꼭 봐야 한다면 GDB로 직접 브레이크포인트</strong> 정적 바이너리라도 함수가 strip되지 않았다면(정적 링킹 시 흔히 <code>.symtab</code>에 <code>malloc</code>, <code>strcpy</code> 같은 이름이 그대로 남는다) GDB로 이름으로 걸 수 있다.</p>
+<pre><code class="language-gdb">(gdb) break malloc
+(gdb) break strcpy
+(gdb) run</code></pre>
+<p>strip까지 되어 있어 이름도 없다면, 함수 시그니처(프롤로그 패턴)를 정적 분석 도구(Ghidra의 FunctionID, IDA의 FLIRT 시그니처)로 식별한 뒤 주소로 거는 수밖에 없다.</p>
+<p><strong>4) 정말 함수 인자/리턴값 추적이 필요하면 GDB 스크립트로 ltrace 흉내</strong></p>
+<pre><code class="language-gdb">(gdb) break malloc
+(gdb) commands
+&gt; printf "malloc(%d)\n", $rdi
+&gt; continue
+&gt; end
+(gdb) run</code></pre>
+<p><code>break</code>에 <code>commands</code>를 붙이면 그 지점을 지날 때마다 자동으로 인자를 출력하고 계속 진행하게 만들 수 있다 — 정적 바이너리에서 <code>ltrace</code>가 하던 일을 수동으로 재현하는 방법이다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">file ./chall
+readelf -d ./chall
+readelf -S ./chall | grep dynsym
+strace ./chall</code></pre>
+<pre><code class="language-gdb">break malloc
+commands
+printf "malloc(%d)\n", $rdi
+continue
+end</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>readelf -d ./chall</code> → <code>There is no dynamic section in this file.</code>은 완전 정적 링킹의 명확한 증거다.</li><li><code>file ./chall</code> → <code>ELF 64-bit LSB executable, ... statically linked, ... not stripped</code>처럼 <code>not stripped</code>가 함께 나오면 최소한 심볼 이름은 남아있어 GDB로 함수 이름 기반 접근이 가능하다는 뜻이다. <code>stripped</code>라면 이름 기반 접근도 불가능하다.</li><li><code>strace</code> 결과에서 <code>mmap(NULL, ..., PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, ...)</code>가 반복해서 보이면, 이는 정적 바이너리 내부의 <code>malloc</code> 구현이 힙을 확장하는 흔적이다 — <code>malloc</code> 자체 호출은 안 보여도 그 결과로 나타나는 syscall 패턴으로 간접 추론이 가능하다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>ltrace</code>가 "설치가 잘못됐다"거나 "버전이 오래됐다"고 오해하고 재설치를 시도하는 것 — 원인은 도구 문제가 아니라 바이너리의 링킹 방식이다.</li><li><code>strace</code>로 바꾸면 되는데도 계속 <code>ltrace</code> 옵션(<code>-e</code>, <code>-S</code> 등)만 바꿔가며 재시도하는 것. <code>ltrace -S</code>는 시스템 콜까지 함께 보여주는 옵션이지만, 애초에 "라이브러리 함수 호출"을 가로채는 부분은 정적 바이너리에서 여전히 작동하지 않는다.</li><li>CTF 문제에서 정적 바이너리를 일부러 준 이유(디버깅 방해, <code>libc</code> 버전 고정)를 무시하고 계속 동적 분석 도구로만 뚫으려 하는 것 — 정적 분석(Ghidra/IDA로 <code>malloc</code> 등 표준 라이브러리 함수 시그니처 인식)을 병행하는 게 더 빠를 때가 많다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>ltrace의 기본 사용법 자체가 처음이라면 → REV-0111 ltrace로 라이브러리 호출 빠르게 보기</li><li>strace로 전환했는데 로그가 너무 많다면 → REV-0697 strace 결과가 너무 많아서 원하는 부분을 못 찾을 때</li><li>이 바이너리가 애초에 왜 정적 링킹됐는지, libc 버전 문제와 관련이 있는지 궁금하다면 → REV-0705 glibc 버전이 안 맞아서 바이너리가 실행이 안 될 때</li><li>GDB로 함수에 브레이크를 거는 세부 절차가 더 필요하다면 → REV-0696 동적 링킹된 함수에 브레이크포인트가 심볼 없이는 안 걸릴 때</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">$ file ./chall
+chall: ELF 64-bit LSB executable, x86-64, ... statically linked, for GNU/Linux 3.2.0, not stripped
+
+$ ltrace ./chall
+Couldn't find .dynsym or .dynstr in "/proc/9821/exe"
+
+$ readelf -d ./chall
+There is no dynamic section in this file.
+
+$ strace -e trace=read,write ./chall
+read(0, "test\n", 1024)                = 5
+write(1, "Wrong password\n", 16)       = 16</code></pre>
+<p><code>ltrace</code>는 <code>.dynsym</code>이 없어 바로 실패했지만, <code>readelf -d</code>로 정적 링킹임을 재확인한 뒤 <code>strace</code>로 바꾸자 최소한 입출력 흐름은 그대로 관찰할 수 있었다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0111-ltrace-basics.html">REV-0111 — ltrace로 라이브러리 호출 빠르게 보기</a></li><li><a href="rev-0112-strace-basics.html">REV-0112 — strace로 시스템 콜에서 힌트 찾기</a></li><li><a href="rev-0697-strace-too-much-output.html">REV-0697 — strace 결과가 너무 많아서 원하는 부분을 못 찾을 때</a></li><li><a href="rev-0696-breakpoint-symbol-missing-dynamic.html">REV-0696 — 동적 링킹된 함수에 브레이크포인트가 심볼 없이는 안 걸릴 때</a></li><li><a href="rev-0705-glibc-version-not-found-execution.html">REV-0705 — glibc 버전이 안 맞아서 바이너리가 실행이 안 될 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>ltrace</code>가 PLT/GOT 후킹 방식으로 동작하며 정적 링킹 바이너리를 트레이스할 수 없다는 점, <code>Couldn't find .dynsym or .dynstr</code> 에러 메시지는 ltrace 프로젝트(구 <code>ltrace.org</code>, 현재 gitlab.com/cespedes/ltrace) 문서 및 커뮤니티에 널리 보고된 표준 동작이다.</li><li><code>strace</code>는 syscall 레벨에서 동작하여 링킹 방식과 무관하게 항상 동작한다는 점은 <code>strace(1)</code>/<code>ptrace(2)</code> man page 기준이다.</li><li>GDB의 <code>break</code>+<code>commands</code> 조합으로 함수 호출을 로깅하는 방법은 GDB 공식 문서 "Break Commands" 섹션에 기술되어 있다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

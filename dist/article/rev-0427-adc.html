@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADC: 캐리 포함 덧셈 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>ADC: 캐리 포함 덧셈</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>ADC dst, src</code>는 <code>dst = dst + src + CF</code>를 계산하는 명령으로, 이전 덧셈에서 넘어온 자리올림(캐리)까지 더해줘서 레지스터 폭보다 큰 정수를 여러 개의 <code>ADD</code>/<code>ADC</code> 조합으로 이어붙여 계산할 수 있게 해준다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>add</code>로 하위 절반을 더하고 바로 다음 줄에 <code>adc</code>로 상위 절반을 더하는 코드를 만났을 때</li><li><code>unsigned __int128</code>, bignum 라이브러리(RSA, 큰 수 암호 연산 등)의 어셈블리를 리버싱하면서 자리올림 전파를 추적해야 할 때</li><li><code>ADD</code>와 <code>ADC</code>가 뭐가 다른지 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>ADC가 실제로 하는 일</h3>
+<p><code>ADC dst, src</code>는 다음을 계산한다.</p>
+<pre><code>dst = dst + src + CF</code></pre>
+<p>일반 <code>ADD</code>(<a href="rev-0047-add.html">REV-0047</a>)와 유일한 차이는 <strong>덧셈을 시작하기 전에 현재 CF 값을 더한다</strong>는 점이다. CF가 0이면 <code>ADC</code>는 <code>ADD</code>와 완전히 동일하게 동작한다.</p>
+<p>이게 왜 필요한가: 레지스터 하나(예: 64비트)로 담을 수 없는 큰 수(예: 128비트)를 더하려면, 먼저 하위 64비트를 <code>ADD</code>로 더해서 혹시 자리올림이 발생했는지(CF=1) 확인하고, 그다음 상위 64비트를 더할 때 그 자리올림을 반영해야 정확한 결과가 나온다. 이 "자리올림을 다음 자리로 넘기는" 역할을 하는 것이 <code>ADC</code>다. 초등학교 세로셈에서 "받아올림"을 다음 자리에 더하는 것과 정확히 같은 개념이다.</p>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>ADC r/m8,  r8         ADC r8,  r/m8
+ADC r/m16, r16         ADC r16, r/m16
+ADC r/m32, r32         ADC r32, r/m32
+ADC r/m64, r64         ADC r64, r/m64
+ADC r/m,   imm8/imm16/imm32   ; 즉시값을 더함 (부호 확장)</code></pre>
+<p>목적지(dst)는 레지스터 또는 메모리, 소스(src)는 레지스터·메모리·즉시값 중 하나다. <code>ADD</code>와 마찬가지로 dst와 src가 동시에 둘 다 메모리일 수는 없다.</p>
+<h3>방향</h3>
+<p>연산 결과는 항상 <strong>첫 번째(목적지) 오퍼랜드에 저장</strong>된다. 두 번째(소스) 오퍼랜드는 변하지 않는다.</p>
+<h3>플래그 변화</h3>
+<p><code>ADC</code>는 <code>ADD</code>와 동일하게 CF, OF, SF, ZF, AF, PF를 전부 결과에 맞춰 갱신한다. 여기서 중요한 점: <strong>입력으로 쓰인 CF와, 연산 후 새로 세팅되는 CF는 다른 값이다.</strong> 즉 <code>ADC</code>가 끝나면 "이번 자리에서 새로 자리올림이 발생했는가"를 나타내는 새 CF 값이 남고, 이 새 CF를 다시 그다음 상위 워드의 <code>ADC</code>에 넘겨주면서 사슬처럼 연결한다.</p>
+<h3>Signed/Unsigned</h3>
+<p>CF는 unsigned 관점의 자리올림, OF는 signed 관점의 오버플로를 나타낸다는 점은 <code>ADD</code>와 동일하다(<a href="rev-0088-flags-overview.html">REV-0088</a> 참고). 다중 정밀도 연산에서는 대개 CF(자리올림 전파)가 핵심이고, 최상위 워드에서만 최종적으로 OF를 봐서 전체 결과의 signed 오버플로 여부를 판단한다.</p>
+<h3>스택/RSP/RIP 변화</h3>
+<p>스택에는 영향이 없다. <code>RIP</code>는 명령 길이만큼 다음 명령으로 이동할 뿐이다.</p>
+<h3>컴파일러가 만드는 전형적 패턴</h3>
+<p><code>unsigned __int128</code>(GCC/Clang 확장 타입)이나 자체 bignum 구조체의 덧셈 연산자를 구현할 때, 컴파일러는 항상 다음 순서를 만든다.</p>
+<pre><code>ADD  (하위 워드끼리)
+ADC  (그다음 워드끼리, 낮은 자리에서 넘어온 CF 반영)
+ADC  (그다음 워드끼리, ...)
+...</code></pre>
+<p>암호 라이브러리(RSA, ECC 등 큰 수를 다루는 코드)에서 이 패턴이 매우 자주 나오며, <code>ADD</code> 하나만 있고 <code>ADC</code>가 없다면 32/64비트 범위 안에서 끝나는 일반 정수 연산이라는 뜻이다.</p>
+<h3>IDA/Ghidra 디컴파일에서 보이는 모습</h3>
+<p>디컴파일러가 두 워드짜리 배열을 하나의 논리적인 큰 정수로 인식하면 <code>unsigned __int128 sum = (unsigned __int128)a + b;</code>처럼 깔끔하게 합쳐 보여주기도 하지만, 인식하지 못하면 <code>CARRY</code>류의 가짜(pseudo) 함수 호출이나 <code>extraout_EDX</code> 같은 낯선 변수와 함께 <code>ADD</code>/<code>ADC</code>가 거의 원문 그대로 남아 있는 경우가 많다. 이런 낯선 표기가 보이면 다중 정밀도 산술을 의심해야 한다.</p>
+<h3>리버싱에서의 의미</h3>
+<p><code>ADC</code>가 등장한다는 것 자체가 "이 코드가 레지스터 하나로는 표현 못 하는 큰 수를 다루고 있다"는 강력한 신호다. CTF에서는 RSA 직접 구현, 체크섬/해시의 일부 단계, 커스텀 암호화 루틴에서 자주 나타난다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>add eax, [rsi]</code> 다음 줄에 <code>adc edx, [rsi+4]</code> — 64비트 두 조각을 하나의 논리적 값으로 더함</li><li>반복문 안에서 <code>adc</code>가 여러 번 나오면 임의 정밀도(arbitrary precision) 큰 수 연산</li><li><code>adc</code>만 있고 그 전에 <code>CLC</code>(CF를 0으로 클리어)나 <code>ADD</code>가 없으면, 이전 CF 값이 무엇이었는지부터 위로 거슬러 확인해야 함</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>이 <code>ADC</code>가 몇 번째 워드를 더하는 중인지(첫 워드=ADD, 그 이후=ADC 사슬) 위아래 문맥을 확인한다.</li><li>최종 결과가 몇 비트짜리 값을 표현하려는 것인지(64비트 두 개=128비트, 네 개=256비트 등) 파악한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) ADD-ADC 사슬 식별</strong></p>
+<pre><code class="language-asm">mov  eax, [rdi]
+add  eax, [rsi]        ; 하위 32비트 덧셈, CF 세팅
+mov  [rbx], eax
+mov  eax, [rdi+4]
+adc  eax, [rsi+4]       ; 상위 32비트 + 하위에서 넘어온 CF
+mov  [rbx+4], eax</code></pre>
+<p>→ <code>rdi</code>와 <code>rsi</code>가 가리키는 두 64비트(8바이트) 값을 더해 <code>rbx</code>에 저장하는 코드로 해석한다.</p>
+<p><strong>2) 디버거로 CF 전파 확인</strong> <code>ADD</code> 실행 직후 레지스터 창에서 CF 값을 확인하고, 바로 다음 <code>ADC</code>를 한 줄 실행(F7/F8)한 뒤 결과 레지스터 값이 그 CF만큼 추가로 반영됐는지 비교한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA/x64dbg: F7/F8로 ADD → ADC를 한 줄씩 실행하며 레지스터 창에서 CF와 목적지 레지스터 값을 비교 관찰</li><li>GDB/Pwndbg: <code>stepi</code>로 한 명령씩 실행, <code>info registers eflags</code>로 CF 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>ADD</code> 직후 CF=1이면, 이어지는 <code>ADC</code>는 결과에 1을 추가로 더한 값이 나온다. CF=0이면 <code>ADD</code>와 동일한 결과다.</li><li><code>ADC</code>가 끝난 뒤 CF가 다시 1이 되면, 그 자리올림은 그다음 상위 워드의 <code>ADC</code>(있다면)로 또 전달돼야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>ADC</code>를 그냥 <code>ADD</code>와 같은 것으로 착각해서 CF 반영을 빠뜨리고 해석하는 것 — 사슬의 중간 어디선가 CF가 1이었다면 결과값 계산이 1만큼 어긋난다.</li><li><code>ADC</code> 사슬 앞에 CF를 초기화하는 코드(<code>CLC</code>, 또는 첫 워드용 <code>ADD</code>)가 있는지 확인하지 않고 임의의 CF 값을 가정하는 것.</li><li>다중 워드 연산인 줄 모르고 상위/하위 워드를 서로 다른 독립적인 변수로 착각해서 분석하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>ADC</code> 앞뒤로 몇 개의 워드가 이어지는지 헷갈리면 → 반복문 구조(카운터, 배열 인덱스)를 먼저 확인해서 몇 비트짜리 연산인지 역산한다.</li><li>CF가 어디서 왔는지 모르겠다면 → 바로 위 명령을 순서대로 거슬러 올라가며 CF를 세팅하는 명령(REV-0088 표 참고)을 찾는다.</li><li>뺄셈 버전이 필요하면 → <a href="rev-0428-sbb.html">REV-0428 — SBB</a>로 이동.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 64비트 두 개로 표현된 128비트 덧셈</strong></p>
+<pre><code class="language-c">typedef unsigned __int128 u128;
+u128 add128(u128 a, u128 b) { return a + b; }</code></pre>
+<pre><code class="language-asm">mov  rax, rdi          ; a의 하위 64비트 (RDI:RSI 페어로 전달된다고 가정)
+add  rax, rdx          ; b의 하위 64비트와 덧셈
+mov  rcx, rsi          ; a의 상위 64비트
+adc  rcx, r8            ; b의 상위 64비트 + 캐리 전파
+; rax:rcx = 결과 (하위:상위)</code></pre>
+<p><strong>예제 2 — 32비트 워드 세 개짜리 bignum 배열 덧셈 루프</strong></p>
+<pre><code class="language-asm">xor  ecx, ecx           ; 인덱스 초기화, CF도 첫 반복 전까지는 미사용
+loop_start:
+mov  eax, [rsi+rcx*4]
+adc  eax, [rdi+rcx*4]   ; 첫 반복은 CF가 이전 명령들 상태에 의존하므로
+                        ; 실제 컴파일러는 첫 워드만 ADD로 따로 처리한다
+mov  [rbx+rcx*4], eax
+inc  ecx
+cmp  ecx, 4
+jl   loop_start</code></pre>
+<p><strong>예제 3 — CF 전파가 최종 자리올림까지 이어지는 경우</strong></p>
+<pre><code class="language-asm">mov  eax, 0FFFFFFFFh
+add  eax, 1              ; 0xFFFFFFFF + 1 = 0x100000000 -&gt; EAX=0, CF=1
+mov  ebx, 0
+adc  ebx, 0               ; EBX = 0 + 0 + CF(1) = 1  -&gt; 자리올림이 상위 워드로 넘어감</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0047-add.html">REV-0047 — ADD: 덧셈과 플래그</a></li><li><a href="rev-0428-sbb.html">REV-0428 — SBB: 캐리 포함 뺄셈</a></li><li><a href="rev-0426-jc-jnc.html">REV-0426 — JC와 JNC: 캐리 플래그 기반 분기 별칭</a></li><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a></li><li><a href="rev-0418-clc-stc-cmc.html">REV-0418 — CLC STC CMC: 캐리 플래그 직접 조작</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>ADC</code> 연산 정의(<code>dst = dst + src + CF</code>)와 Flags Affected: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "ADC—Add with Carry" 섹션 기준 (2026-09-08 검증).</li><li>다중 정밀도 정수 연산에서의 ADD/ADC 관용구: GCC/Clang <code>__int128</code> 확장 및 일반 bignum 구현 관례 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ELF Section 이름 관례 사전(.text .rodata .bss 등) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>ELF Section 이름 관례 사전(.text .rodata .bss 등)</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">readelf</span><span class="tag">objdump</span></div>
+<h2>한 줄 요약</h2>
+<p>ELF의 섹션 이름(<code>.text</code>, <code>.rodata</code>, <code>.data</code>, <code>.bss</code> 등)은 표준이 강제하는 것이 아니라 <strong>컴파일러/링커가 따르는 관례</strong>지만, 어느 도구로 어떤 바이너리를 열어도 거의 항상 같은 이름 규칙을 쓰기 때문에 이름만 보고도 그 섹션에 무엇이 들었을지 바로 짐작할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>readelf -S</code>나 IDA의 섹션 목록에 나온 이름(<code>.init_array</code>, <code>.got.plt</code>, <code>.eh_frame</code> 등)이 뭔지 몰라서 찾아볼 때</li><li>어떤 데이터가 어느 섹션에 있는지 보고 "이게 상수인지, 변수인지, 초기화됐는지"를 빠르게 판단하고 싶을 때</li><li><code>.bss</code> 섹션 크기는 큰데 파일 크기에는 반영이 안 되는 이유가 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>섹션과 세그먼트는 다른 개념</h3>
+<p>섹션 헤더(<code>Elf64_Shdr</code>, REV-0090 참고)는 <strong>링커/디버거용</strong> 정보이고, 프로그램 헤더(세그먼트)는 <strong>로더가 실제로 메모리에 매핑할 때</strong> 쓰는 정보다. 여러 섹션이 하나의 세그먼트(예: <code>LOAD</code>)로 묶여 매핑된다. 이 글은 섹션 이름에 집중한다.</p>
+<h3>코드/읽기 전용 데이터</h3>
+<table><thead><tr><th>이름</th><th>내용</th><th>권한</th></tr></thead><tbody><tr><td><code>.text</code></td><td>실제 실행 코드(명령어)</td><td>R-X</td></tr><tr><td><code>.init</code></td><td>프로그램 시작 시 실행되는 초기화 코드(레거시, <code>_init</code>)</td><td>R-X</td></tr><tr><td><code>.fini</code></td><td>종료 시 실행되는 정리 코드(레거시, <code>_fini</code>)</td><td>R-X</td></tr><tr><td><code>.plt</code> / <code>.plt.sec</code></td><td>PLT 스텁 코드. <code>.plt.sec</code>는 CET(Intel Control-flow Enforcement) 지원 최신 glibc/바이너리에서 추가되는 IBT용 별도 PLT(REV-0100 참고)</td><td>R-X</td></tr><tr><td><code>.rodata</code></td><td>문자열 리터럴, <code>const</code> 전역 변수 등 읽기 전용 데이터</td><td>R--</td></tr><tr><td><code>.init_array</code> / <code>.fini_array</code></td><td>생성자/소멸자 함수 포인터 배열(<code>__attribute__((constructor))</code>, C++ 전역 객체 생성자 등). <code>_start</code> → <code>__libc_start_main</code>이 <code>.init_array</code>를 순회 호출</td><td>R--</td></tr><tr><td><code>.eh_frame</code> / <code>.eh_frame_hdr</code></td><td>예외 처리/스택 언와인딩용 메타데이터(C++ 예외, 백트레이스 계산에 사용)</td><td>R--</td></tr><tr><td><code>.interp</code></td><td>동적 링커(ELF Interpreter) 경로 문자열, 예: <code>/lib64/ld-linux-x86-64.so.2</code></td><td>R--</td></tr><tr><td><code>.note.*</code></td><td>ABI 태그, 빌드 ID 등 메타데이터 노트</td><td>R--</td></tr><tr><td><code>.comment</code></td><td>컴파일러 버전 문자열 등</td><td>없음(비적재)</td></tr></tbody></table>
+<h3>쓰기 가능한 데이터</h3>
+<table><thead><tr><th>이름</th><th>내용</th><th>권한</th></tr></thead><tbody><tr><td><code>.data</code></td><td>0이 아닌 값으로 초기화된 전역/정적 변수</td><td>RW-</td></tr><tr><td><code>.bss</code></td><td>0으로 초기화되거나 초기화되지 않은 전역/정적 변수. <strong><code>SHT_NOBITS</code> 타입이라 파일 안에 실제 바이트를 갖지 않고 크기 정보만 있음</strong> — 로더가 이 섹션 크기만큼 0으로 채운 메모리를 할당한다. 그래서 <code>.bss</code>가 아무리 커도 파일 크기는 늘지 않는다</td><td>RW-</td></tr><tr><td><code>.tdata</code> / <code>.tbss</code></td><td>스레드 로컬 저장소(<code>__thread</code> 변수)의 초기화됨/안됨 버전</td><td>RW-</td></tr></tbody></table>
+<h3>링킹/심볼 관련</h3>
+<table><thead><tr><th>이름</th><th>내용</th></tr></thead><tbody><tr><td><code>.dynamic</code></td><td>동적 링커용 태그 배열(<code>DT_NEEDED</code>, <code>DT_SYMTAB</code> 등, REV-0641 참고)</td></tr><tr><td><code>.dynsym</code> / <code>.dynstr</code></td><td>동적 심볼 테이블 / 그 이름 문자열 테이블 — <strong>스트립해도 보통 남아있음</strong>(런타임 심볼 해석에 필수)</td></tr><tr><td><code>.symtab</code> / <code>.strtab</code></td><td>전체 심볼 테이블 / 문자열 테이블 — 디버깅/링크용, <code>strip</code> 명령으로 가장 먼저 제거되는 대상</td></tr><tr><td><code>.got</code> / <code>.got.plt</code></td><td>전역 오프셋 테이블(REV-0100 참고)</td></tr><tr><td><code>.rela.dyn</code> / <code>.rela.plt</code></td><td>재배치 엔트리(<code>Elf64_Rela</code> 구조체 배열). <code>.rela.plt</code>는 PLT/GOT 관련 지연 바인딩용, <code>.rela.dyn</code>은 그 외 전역 변수/포인터용</td></tr><tr><td><code>.hash</code> / <code>.gnu.hash</code></td><td>심볼 이름을 빠르게 찾기 위한 해시 테이블(SysV 방식 / GNU 확장 방식)</td></tr><tr><td><code>.shstrtab</code></td><td>섹션 이름 문자열 테이블 자체(섹션 헤더의 <code>sh_name</code>이 여기를 가리킴)</td></tr></tbody></table>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>readelf -S ./chall</code>을 실행하면 <code>[Nr] Name Type Address Offset Size ... Flg</code> 형식으로 모든 섹션이 나열됨</li><li>IDA/Ghidra의 Segments 뷰에 위 이름들이 그대로 표시됨</li><li><code>.bss</code>의 <code>Type</code>이 <code>NOBITS</code>로 표시되고, <code>Size</code>는 크지만 파일 오프셋(<code>Offset</code>) 이후 실제로 그만큼의 바이트가 파일에 없음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>readelf -S ./chall</code>로 전체 섹션 목록과 <code>Flg</code>(권한: <code>W</code>=쓰기, <code>A</code>=alloc, <code>X</code>=실행)를 한 번 훑어서 코드/상수/변수 영역이 각각 어디인지 감을 잡는다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 전체 섹션 목록</strong></p>
+<pre><code class="language-bash">readelf -S ./chall</code></pre>
+<p><strong>2) 특정 섹션 헥사 덤프</strong></p>
+<pre><code class="language-bash">readelf -x .rodata ./chall
+objdump -s -j .data ./chall</code></pre>
+<p><strong>3) 섹션별 디스어셈블</strong></p>
+<pre><code class="language-bash">objdump -d -j .text ./chall</code></pre>
+<p><strong>4) .bss가 실제 파일 크기에 안 잡히는지 확인</strong></p>
+<pre><code class="language-bash">readelf -S ./chall | grep -A1 '\.bss'
+ls -l ./chall</code></pre>
+<p><code>.bss</code> 줄의 <code>Off</code>(파일 오프셋)와 다음 섹션의 <code>Off</code>를 비교하면 <code>.bss</code>만큼의 구간이 파일에서는 "차지하지 않는다"는 것을 알 수 있다(Type이 <code>NOBITS</code>이기 때문).</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">readelf -S ./chall
+readelf -x &lt;섹션이름&gt; ./chall
+objdump -h ./chall     # 섹션 요약(readelf -S와 유사)
+objdump -d -j .text ./chall</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>Flg</code> 열의 <code>WA</code>는 Write+Alloc(런타임에 메모리 적재되고 쓰기 가능, <code>.data</code>/<code>.bss</code>), <code>AX</code>는 Alloc+Execute(<code>.text</code>), <code>A</code>만 있으면 읽기 전용 적재(<code>.rodata</code>).</li><li><code>Type</code>이 <code>PROGBITS</code>면 파일에 실제 데이터가 있는 섹션, <code>NOBITS</code>면 <code>.bss</code>처럼 크기만 있고 파일에 바이트가 없는 섹션, <code>DYNAMIC</code>이면 <code>.dynamic</code>, <code>SYMTAB</code>/<code>DYNSYM</code>이면 각각 심볼 테이블.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>.data</code>와 <code>.bss</code>를 혼동하는 것 — <code>.data</code>는 0이 아닌 초기값이 있어 <strong>파일에 실제로 그 값이 저장</strong>되지만, <code>.bss</code>는 0으로 초기화될 뿐이라 파일에 데이터를 저장할 필요가 없다.</li><li><code>.rodata</code>에 있는 문자열을 함수라고 착각하는 것 — <code>.rodata</code>는 실행 권한(<code>X</code>)이 없으므로 여기 있는 바이트를 코드로 실행하려 하면 세그멘테이션 폴트가 난다(단, 일부 보호 기법 미적용 구세대 바이너리는 예외적으로 실행 가능한 경우도 있음 — NX 비트 확인 필요).</li><li>섹션 이름이 없어도(스트립된 바이너리) 프로그램이 실행 안 되는 것으로 착각하는 것 — 섹션 헤더는 로더가 실행에 필수로 요구하지 않는다. 실행에 필수인 것은 프로그램 헤더(세그먼트)다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>섹션과 세그먼트(프로그램 헤더) 차이를 더 명확히 하고 싶으면 → REV-0090 Program vs Section Header.</li><li><code>.plt</code>/<code>.got</code> 계열이 헷갈리면 → REV-0100 PLT와 GOT 기초.</li><li><code>.dynamic</code> 안의 각 태그(<code>DT_*</code>) 의미가 궁금하면 → REV-0641 ELF Dynamic Section 태그(DT_*) 빠른 참조.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ readelf -S ./chall | grep -E '\.text|\.rodata|\.data|\.bss'
+  [14] .text             PROGBITS  ... AX
+  [16] .rodata           PROGBITS  ... A
+  [24] .data             PROGBITS  ... WA
+  [25] .bss              NOBITS    ... WA</code></pre>
+<p><code>.text</code>는 실행 가능(<code>AX</code>), <code>.rodata</code>는 읽기 전용(<code>A</code>만), <code>.data</code>/<code>.bss</code>는 쓰기 가능(<code>WA</code>)이며 그중 <code>.bss</code>만 <code>NOBITS</code> 타입임을 한 줄로 확인할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0090-program-vs-section-header.html">REV-0090 — ELF Program Header와 Section Header 차이</a></li><li><a href="rev-0089-elf-header.html">REV-0089 — ELF 헤더 읽는 법</a></li><li><a href="rev-0100-plt-got.html">REV-0100 — PLT와 GOT 기초</a></li><li><a href="rev-0641-elf-dynamic-section-tags.html">REV-0641 — ELF Dynamic Section 태그(DT_*) 빠른 참조</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>섹션 이름 및 역할(<code>.text</code>, <code>.rodata</code>, <code>.data</code>, <code>.bss</code>, <code>.init_array</code>, <code>.eh_frame</code> 등): System V ABI generic ABI "Special Sections" 표 및 GNU Binutils(<code>ld</code>, <code>readelf</code>) 표준 링커 스크립트 관례 기준.</li><li><code>SHT_NOBITS</code>/<code>SHT_PROGBITS</code> 타입 정의: System V ABI "Section Header" 챕터 기준 (2026-09-08 검증).</li><li><code>.plt.sec</code> 도입 배경(CET/IBT): glibc 및 GNU Binutils CET 지원 관련 릴리스 노트 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

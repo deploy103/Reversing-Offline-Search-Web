@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XOR reg reg를 값 변경으로 착각했을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>XOR reg reg를 값 변경으로 착각했을 때</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>xor eax, eax</code>처럼 <strong>같은 레지스터를 자기 자신과 XOR하는 것</strong>은 항상 결과가 0이 되는 것을 이용한 "레지스터를 0으로 만드는" 관용구(idiom)일 뿐 어떤 암호화나 데이터 변환도 아니며, 오퍼랜드가 서로 다른 <code>xor eax, ecx</code> 같은 형태와는 완전히 다른 의미로 읽어야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>xor eax, eax</code>, <code>xor ecx, ecx</code>처럼 같은 레지스터가 두 번 나오는 코드를 보고 "이게 뭘 암호화/변환하는 거지?"라고 헷갈릴 때</li><li>flag 복호화 루프를 분석하다가 <code>xor</code> 명령어를 만났는데 이게 진짜 키 XOR인지 단순 초기화인지 구분이 안 될 때</li><li><code>mov eax, 0</code>과 <code>xor eax, eax</code>가 왜 결과가 같은데 다른 인코딩으로 쓰이는지 궁금할 때</li><li>디스어셈블리에서 <code>xor</code>가 나올 때마다 무조건 "역산해야 할 암호화 단계"라고 오해하고 있을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>XOR의 기본 동작 복습</h3>
+<p><code>XOR dest, src</code>는 두 오퍼랜드를 비트 단위로 배타적 논리합(exclusive OR) 연산한 뒤 <code>dest</code>에 저장한다. 진리표는 다음과 같다.</p>
+<pre><code>0 XOR 0 = 0
+0 XOR 1 = 1
+1 XOR 0 = 1
+1 XOR 1 = 0</code></pre>
+<p>어떤 값이든 <strong>자기 자신과 XOR하면 모든 비트가 1 XOR 1 = 0 또는 0 XOR 0 = 0이 되어 결과는 항상 0</strong>이다. 이건 그 레지스터에 실제로 어떤 값이 들어있었는지와 무관하게 항상 성립하는 수학적 성질이다.</p>
+<h3><code>xor eax, eax</code> = "eax를 0으로 만들어라"라는 뜻일 뿐</h3>
+<p>컴파일러는 레지스터를 0으로 초기화하고 싶을 때 두 가지 방법 중 하나를 선택할 수 있다.</p>
+<pre><code class="language-asm">mov  eax, 0     ; B8 00 00 00 00  -&gt; 5바이트
+xor  eax, eax   ; 31 C0           -&gt; 2바이트</code></pre>
+<p>결과는 완전히 동일하게 <code>EAX = 0</code>이지만, <code>xor eax, eax</code>가 인코딩이 훨씬 짧고(2바이트 vs 5바이트), 최신 CPU에서는 이 패턴을 "제로화 관용구(zero idiom)"로 특별 인식해서 실행 유닛에 값이 전달되기를 기다릴 필요 없이(이전 값에 대한 의존성을 끊어서, false dependency 제거) 매우 빠르게 처리한다. 그래서 컴파일러는 거의 항상 <code>mov reg, 0</code> 대신 <code>xor reg, reg</code>를 선택한다 — 이것은 최적화의 결과물이지 어떤 비밀스러운 계산이 아니다.</p>
+<h3>진짜 XOR 기반 변환과 구분하는 법</h3>
+<p>CTF에서 문자열을 XOR로 인코딩/디코딩하는 진짜 로직은 <strong>서로 다른 두 값</strong>을 XOR한다.</p>
+<pre><code class="language-asm">xor  al, cl      ; AL과 CL이 다른 레지스터 -&gt; 진짜 데이터 변환 (키로 XOR)
+xor  byte ptr [rdi], 0x5A   ; 메모리 값과 상수 XOR -&gt; 진짜 인코딩/디코딩</code></pre>
+<p>반면 <code>xor eax, eax</code>, <code>xor ecx, ecx</code>처럼 <strong>오퍼랜드 두 개가 완전히 같은 레지스터</strong>인 경우는 100% 제로화 관용구다. 구분 기준은 단 하나 — <strong>두 오�레퍼랜드가 같은 레지스터인가, 다른가</strong>이다.</p>
+<h3>플래그에 미치는 영향</h3>
+<p><code>XOR</code>은 항상 다음 플래그를 결과에 맞춰 세팅한다(REV-0057 참고).</p>
+<pre><code>ZF = 1 (결과가 0이므로 항상 참)
+SF = 0 (결과가 0이므로 음수 아님)
+PF = 1 (0의 바이트 패리티는 짝수이므로 참)
+CF = 0 (XOR은 항상 캐리를 0으로 클리어)
+OF = 0 (XOR은 항상 오버플로우를 0으로 클리어)</code></pre>
+<p>그래서 <code>xor eax, eax</code> 직후에 <code>ZF</code>가 항상 1이 된다는 점을 이용해, 컴파일러가 이 명령어를 "0으로 초기화 + 제로 플래그 세팅"을 한 번에 하는 용도로도 종종 활용한다(바로 뒤에 <code>jz</code>가 이어지는 경우는 드물지만, <code>test</code>/<code>cmp</code> 없이 흐름을 이어가는 최적화에서 나타날 수 있다).</p>
+<h3>왜 XOR을 골랐는가 (다른 제로화 방법과 비교)</h3>
+<pre><code class="language-asm">sub  eax, eax   ; 이것도 항상 0이 되지만 XOR보다 덜 쓰임
+and  eax, 0     ; 이것도 항상 0이지만 즉치값이 필요해 인코딩이 더 김
+xor  eax, eax   ; 가장 짧고, 대부분의 CPU에서 zero idiom으로 인식되어 가장 빠름</code></pre>
+<p><code>XOR</code>이 사실상 업계 표준 관용구로 자리잡은 이유는 인코딩 크기와 실행 속도(디펜던시 제거) 양쪽에서 가장 유리하기 때문이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>xor eax, eax</code> 직후 <code>ret</code>이나 <code>mov [rbp-4], eax</code> — 함수의 반환값을 0으로 만들거나 지역 변수를 0으로 초기화하는 전형적인 패턴</li><li>함수 시작 부분(프롤로그 직후)에서 여러 개의 <code>xor reg, reg</code>가 연달아 나옴 — 여러 지역 변수/누산기를 한 번에 0으로 초기화</li><li>루프 시작 전 <code>xor ecx, ecx</code> — 카운터를 0부터 시작</li><li><strong>혼동하지 말 것</strong>: <code>xor al, [rdi+rcx]</code> 처럼 오퍼랜드가 다른 형태가 반복 루프 안에 있다면 이건 진짜 XOR 인코딩/디코딩 로직이다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>xor</code>의 두 오퍼랜드가 정확히 같은 레지스터인지부터 확인한다.</li><li>같다면 그냥 "이 레지스터를 0으로 만든다"로 즉시 해석하고 넘어간다 — 더 깊이 분석할 필요가 없다.</li><li>다르다면(레지스터-레지스터가 다르거나, 레지스터-메모리, 레지스터-상수) 진짜 데이터 변환일 가능성이 높으므로 REV-0057이나 관련 알고리즘 문서로 넘어가서 분석한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 오퍼랜드 동일성 확인</strong></p>
+<p><code>xor eax, eax</code>처럼 좌우가 같은 이름의 레지스터인지 눈으로 바로 확인한다. 다른 크기 표기(<code>xor eax, eax</code>는 되지만 <code>xor al, ah</code>처럼 다른 서브 레지스터인 경우는 진짜 값이 섞이므로 별개)까지 정확히 봐야 한다.</p>
+<p><strong>2) 반복문 안인지 확인</strong></p>
+<p><code>xor</code> 명령어가 루프 안에서 인덱스가 바뀌는 메모리/레지스터를 대상으로 반복 실행된다면 이는 데이터 변환(암호화/디코딩) 루프일 가능성이 매우 높다. 함수 초입 한 번만 실행되는 <code>xor reg, reg</code>와는 문맥이 다르다.</p>
+<p><strong>3) 디컴파일 결과와 대조</strong></p>
+<p>IDA F5 결과에서 <code>xor eax, eax</code>는 보통 <code>v1 = 0;</code> 또는 <code>return 0;</code>처럼 아주 단순하게 표시된다. 만약 디컴파일 결과가 복잡한 계산식으로 나온다면 진짜 오퍼랜드를 다시 확인해야 한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: F5(디컴파일)로 <code>xor eax, eax</code>가 <code>v1 = 0</code>처럼 단순화되는지 확인</li><li>x64dbg/GDB: 해당 명령어 실행 전후 레지스터 값을 비교(<code>p $eax</code> 전후)해서 실제로 0이 되는지, 그리고 그 전 값이 무엇이었는지(제로화이므로 사실 무의미) 확인</li><li>objdump: <code>objdump -d</code> 결과에서 <code>31 c0</code>(2바이트) 인코딩이면 100% <code>xor eax, eax</code>류의 짧은 형태임을 바로 알 수 있음</li></ul>
+<h2>출력 해석</h2>
+<ul><li>실행 전 EAX 값이 무엇이었든 실행 후 항상 0이면 제로화 관용구가 맞다.</li><li>ZF가 항상 1로 세팅되는 것도 정상이며, 별도의 "비교 성공/실패" 의미는 없다.</li><li>루프 안에서 매 반복마다 다른 결과가 나온다면(같은 레지스터 XOR인데도 값이 매번 다르다면) 그건 애초에 오퍼랜드를 잘못 읽은 것이니 다시 확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>xor</code>라는 이름만 보고 무조건 "이건 암호화/난독화 단계"라고 판단해서 불필요하게 역산을 시도하는 것 — 오퍼랜드가 같은 레지스터면 그냥 0을 만드는 것뿐이다.</li><li><code>xor eax, eax</code>를 <code>mov eax, 0</code>과 "기능은 같지만 다른 명령어"로 보고 굳이 둘의 차이를 분석하려 드는 것 — 결과·목적 모두 완전히 동일하며 인코딩 크기/속도 차이만 있을 뿐이다.</li><li>진짜 데이터 변환 XOR 루프(<code>xor al, [rdi+rcx]</code>, 키가 반복 적용되는 형태)를 발견했는데, 이걸 "그냥 초기화겠지"라고 대충 넘기는 것 — 오퍼랜드가 서로 다르면 반드시 값의 출처를 추적해야 한다.</li><li><code>xor eax, eax</code> 실행 후 플래그(ZF=1)를 보고 "방금 뭔가 비교가 성공했다"고 오해하는 것 — 이건 비교 결과가 아니라 XOR 연산 자체의 부수 효과일 뿐이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>XOR 명령어 자체의 전체 문법/플래그를 다시 보고 싶으면 → REV-0057(XOR: XOR 연산과 XOR reg reg 제로화)</li><li>진짜 XOR 기반 flag 인코딩/디코딩을 역산하는 절차가 필요하면 → REV-0199(XOR 반복 변환 역산)를 참고</li><li>플래그가 왜 이렇게 세팅되는지 다시 확인하려면 → REV-0088(플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기)</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 반환값 0 초기화 (제로화 관용구)</strong></p>
+<pre><code class="language-c">// 원본 C
+int get_zero(void) {
+    return 0;
+}</code></pre>
+<pre><code class="language-asm">xor   eax, eax    ; EAX(반환값) = 0
+ret</code></pre>
+<p><strong>예제 2 — 루프 카운터 초기화 (제로화 관용구)</strong></p>
+<pre><code class="language-asm">xor   ecx, ecx        ; i = 0
+loop_start:
+    cmp   ecx, 10
+    jge   loop_end
+    ; ... 루프 본문 ...
+    inc   ecx
+    jmp   loop_start
+loop_end:</code></pre>
+<p><strong>예제 3 — 진짜 XOR 인코딩 루프 (혼동하면 안 되는 경우)</strong></p>
+<pre><code class="language-asm">xor   ecx, ecx           ; i = 0  (이건 제로화, 루프 카운터)
+decode_loop:
+    mov   al, [rsi+rcx]
+    xor   al, 0x37        ; &lt;- 이건 진짜 데이터 변환! 오퍼랜드가 다름(al과 상수 0x37)
+    mov   [rdi+rcx], al
+    inc   ecx
+    cmp   ecx, r8d
+    jl    decode_loop</code></pre>
+<p>같은 함수 안에 제로화 XOR(<code>xor ecx, ecx</code>)과 진짜 변환 XOR(<code>xor al, 0x37</code>)이 함께 있을 수 있다 — 오퍼랜드를 하나씩 확인해서 구분해야 한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0057-xor.html">REV-0057 — XOR: XOR 연산과 XOR reg reg 제로화</a></li><li><a href="rev-0059-test.html">REV-0059 — TEST: 값을 바꾸지 않는 AND 비교</a></li><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a></li><li><a href="rev-0039-mov.html">REV-0039 — MOV: 값 복사와 레지스터 메모리 이동</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>XOR reg,reg 제로화 관용구와 false dependency 제거(zero idiom)에 대한 CPU 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "XOR—Logical Exclusive OR" 섹션 및 Intel Optimization Reference Manual의 "Zeroing Idioms" 관련 설명 기준.</li><li>컴파일러가 <code>mov reg,0</code> 대신 <code>xor reg,reg</code>를 선택하는 코드 생성 관행: GCC/LLVM 코드 생성 관련 일반 최적화 문서 기준(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

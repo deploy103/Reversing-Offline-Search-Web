@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>입력을 줘도 아무 반응이 없을 때 확인 순서 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>입력을 줘도 아무 반응이 없을 때 확인 순서</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">strace</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>입력을 줘도 화면에 아무 반응이 없을 때는 프로그램이 진짜로 멈춘 게 아니라 <strong>stdout 버퍼링 때문에 출력이 안 보이는 것</strong>이거나, 프로그램이 기대하는 입력 형식과 실제로 준 입력이 달라서 <strong>여전히 대기 중</strong>인 경우가 대부분이며, 이 둘을 구분하는 것이 첫 단계다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>프로그램을 실행해서 문자열을 입력하고 엔터를 쳤는데 아무 것도 출력되지 않을 때</li><li>"Enter password:" 같은 프롬프트조차 안 뜨는데 커서만 깜빡이고 있을 때</li><li>파이프(<code>echo x | ./chall</code>)나 파일 리다이렉션으로 입력을 줬는데 출력이 하나도 안 나올 때</li><li>디버거로 멈춰서 확인하고 싶은데 어디서 멈췄는지조차 감이 안 잡힐 때</li></ul>
+<h2>핵심 개념</h2>
+<p>"반응이 없다"는 현상은 실제로는 서로 다른 세 가지 상황을 뭉뚱그린 표현이다.</p>
+<ol><li><strong>출력 버퍼링(가장 흔한 원인)</strong> — C 표준 라이브러리의 <code>stdout</code>은 터미널(tty)에 연결되어 있을 때는 줄 단위(line-buffered)로 자동 flush되지만, 파이프나 파일로 리다이렉션되면 <strong>완전 버퍼링(fully-buffered)</strong> 모드로 바뀐다. 이 경우 버퍼가 꽉 차거나 프로그램이 종료돼야 출력이 한꺼번에 나온다. 즉 "반응이 없다"고 느끼는 것은 사실 출력이 <strong>커널로 아직 안 넘어간 것</strong>뿐이다.</li><li><strong>입력 형식 불일치</strong> — <code>scanf("%d", ...)</code>처럼 특정 형식을 기다리는데 문자열을 주면 입력 자체가 무시되거나 파싱이 실패해 무한정 다음 입력을 기다리는 상태가 될 수 있다. 프로그램은 죽지 않았고 여전히 <code>scanf</code>/<code>fgets</code> 안에서 블로킹 중이다.</li><li><strong>진짜로 멈춘 경우(데드락/무한 루프)</strong> — 멀티스레드 프로그램에서 뮤텍스 데드락이 걸렸거나, 조건이 절대 만족되지 않는 <code>while(1)</code> 루프에 빠진 경우. 이 경우는 CPU 사용률(<code>top</code>)을 보면 100%로 치솟아 있어 구분 가능하다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>파이프로 입력을 줄 때만 출력이 안 보이고, 인터랙티브 터미널에서 직접 타이핑하면 정상적으로 보임</li><li><code>strace</code>로 보면 <code>write()</code> 호출 자체가 없거나, 있는데도 터미널에는 안 보임(버퍼링)</li><li><code>top</code>/작업 관리자에서 CPU 사용률이 0%에 가까움(블로킹) vs 100%(무한 루프)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>top</code> 또는 작업 관리자로 CPU 사용률부터 확인한다. 0%에 가까우면 뭔가를 "기다리는 중"(입력 대기, 버퍼링)이고, 100%면 진짜 루프에 빠진 것이다. 그다음 <code>stdbuf -o0</code>으로 버퍼링부터 강제로 꺼본다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) CPU 사용률로 대기 vs 루프 구분</strong></p>
+<pre><code class="language-bash">top -p $(pgrep chall)</code></pre>
+<p>0%대면 어딘가에서 블로킹 중(입력 대기 등), 100%면 무한 루프.</p>
+<p><strong>2) 출력 버퍼링 의심 시 강제로 unbuffered 실행</strong></p>
+<pre><code class="language-bash">stdbuf -o0 ./chall</code></pre>
+<p>이렇게 실행했을 때 프롬프트가 바로 보인다면, 원래 문제는 버퍼링이었을 뿐 프로그램은 정상이었다. pwntools를 쓴다면 <code>process()</code>가 기본적으로 pty를 붙여주므로 이 문제를 피할 수 있는 경우가 많다.</p>
+<p><strong>3) strace로 실제 write/read 호출 확인</strong></p>
+<pre><code class="language-bash">strace -f -e trace=read,write ./chall</code></pre>
+<p><code>read(0, ...)</code>에서 멈춰 있다면 stdin을 기다리는 중이고, <code>write(1, ...)</code>가 이미 호출됐는데 화면에 안 보인다면 100% 버퍼링 문제다.</p>
+<p><strong>4) 입력 형식이 프로그램 기대와 맞는지 소스/디스어셈블리로 확인</strong> 정적 분석에서 <code>scanf</code>, <code>fgets</code>, <code>read</code> 호출부의 포맷 문자열(<code>"%d"</code>, <code>"%s"</code>, <code>"%20s"</code> 등)을 확인한다(REV-0109 참고). <code>%d</code>를 기대하는데 문자를 입력하면 <code>scanf</code>가 값을 읽지 못하고 입력 스트림에 그대로 남아 다음 호출까지 영향을 줄 수 있다.</p>
+<p><strong>5) 디버거로 read/scanf 호출 지점에 브레이크포인트</strong></p>
+<pre><code class="language-gdb">break read
+run</code></pre>
+<p>입력을 준 뒤 이 브레이크포인트가 실제로 걸리는지 확인한다. 걸리지 않으면 프로그램이 애초에 입력을 받을 지점까지 도달하지 못한 것 — 이전 단계(예: 초기화 루틴)에서 멈췄거나 크래시가 났을 가능성을 REV-0329 관점에서 다시 확인한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">top -p $(pgrep chall)
+stdbuf -o0 ./chall
+strace -f -e trace=read,write ./chall
+echo "test" | stdbuf -o0 ./chall</code></pre>
+<p>GDB: <code>break read</code>, <code>break scanf</code>, <code>run</code>, <code>continue</code></p>
+<h2>출력 해석</h2>
+<ul><li><code>read(0, "test\n", 1024) = 5</code> 이후 아무 <code>write</code>도 없다면, 프로그램이 입력은 받았지만 그 이후 로직에서 멈춘 것 — 다음 함수 호출을 추적해야 한다.</li><li><code>write</code> 호출 자체가 로그에 나타나는데 터미널에는 안 보인다면 100% 버퍼링 문제이며, <code>stdbuf -o0</code>이나 프로그램 종료 후 한꺼번에 보이는 출력으로 확인 가능하다.</li><li>CPU 100%에서 <code>strace</code> 로그에 동일한 syscall이 반복된다면 무한 루프, 로그가 아예 안 늘어나면 시스템 콜 없는 순수 연산 루프(스핀락 등)다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>버퍼링 때문에 안 보이는 것을 "프로그램이 죽었다"고 오해해서 강제 종료(Ctrl+C)해버리는 것 — 몇 초만 더 기다리거나 EOF를 주면 버퍼가 flush되며 출력이 한꺼번에 나올 수 있다.</li><li><code>scanf("%d")</code>에 문자열을 넣고 "왜 안 먹지"라며 계속 같은 입력을 반복하는 것 — 포맷 불일치면 입력을 100번 줘도 안 된다. 포맷을 먼저 맞춰야 한다.</li><li>파이프로 테스트할 때와 직접 타이핑할 때 동작이 다르다는 것을 알아채지 못하고 "환경이 이상하다"고만 생각하는 것.</li><li>CPU 사용률을 확인하지 않고 무작정 코드부터 읽어서 시간을 낭비하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>입력 함수 자체를 못 찾겠다면 → REV-0007 입력 함수부터 역추적하는 방법.</li><li>입력 함수 호출부의 정확한 포맷/버퍼 크기를 봐야 한다면 → REV-0109 scanf fgets read 입력 추적.</li><li>디버거로 입력 버퍼가 실제로 어떻게 바뀌는지 보고 싶다면 → REV-0195 디버거에서 입력 버퍼가 실제로 변하는 과정 추적.</li><li>브레이크포인트 개념 자체가 헷갈린다면 → REV-0169 Breakpoint가 무엇이고 어디에 걸어야 하는가.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ ./chall
+Enter password:               &lt;- 이건 실제로 바로 출력됨(터미널이라 line-buffered)
+
+
+$ echo "1234" | ./chall
+                               &lt;- 아무것도 안 보임(파이프라 fully-buffered)
+
+$ echo "1234" | stdbuf -o0 ./chall
+Enter password:
+Wrong password</code></pre>
+<p>같은 바이너리인데 터미널에서 직접 실행할 때는 프롬프트가 보이고, 파이프로 리다이렉션했을 때는 안 보였다가 <code>stdbuf -o0</code>을 붙이자 다시 보인 것으로, 원인이 로직이 아니라 버퍼링이었음을 확인할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0007-trace-from-input.html">REV-0007 — 입력 함수부터 역추적하는 방법</a></li><li><a href="rev-0109-input-functions.html">REV-0109 — scanf fgets read 입력 추적</a></li><li><a href="rev-0195-tracing-input-buffer.html">REV-0195 — 디버거에서 입력 버퍼가 실제로 변하는 과정 추적</a></li><li><a href="rev-0169-what-is-a-breakpoint.html">REV-0169 — Breakpoint가 무엇이고 어디에 걸어야 하는가</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>glibc stdio의 tty/파이프별 버퍼링 모드(line-buffered vs fully-buffered) 차이: glibc 매뉴얼 "Buffering Concepts" 섹션 기준 (2026-09-09 검증).</li><li><code>stdbuf</code> 동작 방식: GNU coreutils <code>stdbuf(1)</code> man page 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Z3로 문자 조건 풀기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / automation</div>
+<article class="article-body">
+<h1>Z3로 문자 조건 풀기</h1>
+<div class="article-meta"><span class="tag">automation</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Python</span><span class="tag">Z3</span></div>
+<h2>한 줄 요약</h2>
+<p>CTF 바이너리가 입력 문자열을 한 글자씩 순회하며 검사하는 구조라면, 문자열 길이만큼 8비트 <code>BitVec</code> 변수를 만들어 배열처럼 다루고 각 글자의 검증식을 <code>s.add()</code>로 그대로 옮긴 뒤, 결과값을 <code>chr()</code>로 변환하면 원본 문자열(플래그)을 통째로 복원할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>리버싱한 <code>check_flag()</code> 함수가 <code>for (i = 0; i &lt; len; i++)</code>처럼 문자열을 한 글자씩 순회하며 각 위치마다 다른 조건을 검사할 때</li><li>각 문자가 이전 문자, 다음 문자, 또는 고정된 키 배열과 XOR/덧셈 관계로 얽혀 있어서 손으로 역산하기 번거로울 때</li><li>Z3로 정수 하나는 풀어봤는데(REV-0268), 문자열 전체를 어떻게 변수 여러 개로 다뤄야 할지 모를 때</li><li>찾은 해가 출력 불가능한 제어문자라서 실제로는 말이 안 되는 "플래그"가 나올 때, 어떻게 조건을 더 추가해야 할지 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<p>C 문자열은 결국 <code>char</code> 배열, 즉 8비트 정수들의 나열이다. 따라서 문자열 조건을 Z3로 풀 때 가장 자연스러운 방법은 문자열 길이만큼 <strong>8비트 <code>BitVec</code> 변수를 리스트로 만들어</strong> 각각을 한 글자에 대응시키는 것이다.</p>
+<pre><code class="language-python">from z3 import *
+flag = [BitVec(f'c{i}', 8) for i in range(10)]  # 10글자짜리 문자열</code></pre>
+<p>이렇게 만든 <code>flag[0]</code>, <code>flag[1]</code>, ... 각각은 C 코드에서 <code>input[0]</code>, <code>input[1]</code>, ...에 대응하는 심볼릭 변수다. 리버싱한 검증 함수가 하는 연산(비교, XOR, 덧셈, 룩업 테이블 참조 등)을 인덱스별로 그대로 <code>s.add()</code>에 옮기면 된다.</p>
+<p>여기에 리버싱에서 거의 항상 추가해야 하는 조건이 하나 있다: <strong>출력 가능 문자 범위 제약</strong>이다. Z3는 수학적으로 조건을 만족하기만 하면 어떤 8비트 값(0~255)이든 답으로 내놓을 수 있다. 하지만 실제 플래그는 보통 사람이 읽을 수 있는 ASCII 문자(영문자, 숫자, 기호)로 이루어져 있다. 이 제약을 걸어주지 않으면 Z3가 수학적으로는 맞지만 화면에 이상한 제어문자로 나오는 "쓸모없는 해"를 줄 수도 있고, 반대로 검증 로직 자체가 출력 가능 문자를 전제로 설계되어 있다면 이 제약이 오히려 탐색 공간을 크게 줄여 더 빨리 풀리게 도와준다.</p>
+<pre><code class="language-python">for c in flag:
+    s.add(c &gt;= 0x20, c &lt;= 0x7e)   # 스페이스(0x20)~물결표(0x7e) 사이의 출력 가능 문자</code></pre>
+<p>또는 더 좁혀서 영문/숫자만 허용하고 싶다면 <code>Or()</code>로 여러 구간을 합칠 수 있다.</p>
+<pre><code class="language-python">def is_alnum(c):
+    return Or(
+        And(c &gt;= ord('0'), c &lt;= ord('9')),
+        And(c &gt;= ord('A'), c &lt;= ord('Z')),
+        And(c &gt;= ord('a'), c &lt;= ord('z')),
+    )
+
+for c in flag:
+    s.add(is_alnum(c))</code></pre>
+<p>모델을 얻은 뒤에는 각 <code>BitVec</code>의 정수값을 <code>chr()</code>로 바꿔서 이어붙이면 최종 문자열이 완성된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>[BitVec(f'c{i}', 8) for i in range(n)]</code>처럼 리스트 컴프리헨션으로 문자 변수 배열을 한 번에 만드는 코드가 보인다.</li><li><code>for i in range(len(flag)): s.add(...)</code>처럼 반복문 안에서 인덱스별 조건을 추가하는 패턴이 있다.</li><li><code>s.add(c &gt;= 0x20, c &lt;= 0x7e)</code>처럼 아스키 범위를 제한하는 조건이 별도로 붙어 있다.</li><li>결과를 출력하는 부분에서 <code>''.join(chr(m[c].as_long()) for c in flag)</code>처럼 모델 값을 문자로 변환해 이어붙이는 코드가 있다.</li><li>리버싱 대상 코드에 <code>key[i]</code>, <code>table[i]</code> 같은 상수 배열이 있고, 이 값들이 Z3 스크립트에 파이썬 리스트로 그대로 옮겨져 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>검증 함수에서 플래그의 <strong>길이가 고정인지</strong>부터 확인한다(예: <code>if (strlen(input) != 20) return 0;</code> 같은 코드). 길이를 모르는 채로 시작하면 <code>BitVec</code> 배열의 크기를 몇 개로 잡아야 할지 알 수 없다. 길이가 코드에 명시적으로 없다면, 배열 크기(버퍼 크기)나 반복문의 상한값을 단서로 추정한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 대상 검증 로직 예시(리버싱 결과라고 가정)</strong></p>
+<pre><code class="language-c">// 각 글자를 key 배열과 XOR한 뒤 target 배열과 비교
+unsigned char key[]    = {0x13, 0x37, 0x42, 0x99, 0x01};
+unsigned char target[] = {0x56, 0x5a, 0x2e, 0xf5, 0x60};
+
+int check(char *input) {
+    for (int i = 0; i &lt; 5; i++) {
+        if ((input[i] ^ key[i]) != target[i]) return 0;
+    }
+    return 1;
+}</code></pre>
+<p><strong>2) 이를 그대로 Z3로 옮기기</strong></p>
+<pre><code class="language-python">from z3 import *
+
+key    = [0x13, 0x37, 0x42, 0x99, 0x01]
+target = [0x56, 0x5a, 0x2e, 0xf5, 0x60]
+n = len(key)
+
+flag = [BitVec(f'c{i}', 8) for i in range(n)]
+s = Solver()
+
+for i in range(n):
+    s.add((flag[i] ^ key[i]) == target[i])
+    s.add(flag[i] &gt;= 0x20, flag[i] &lt;= 0x7e)  # 출력 가능 문자로 제한
+
+if s.check() == sat:
+    m = s.model()
+    result = ''.join(chr(m[flag[i]].as_long()) for i in range(n))
+    print('recovered:', result)
+else:
+    print('unsat')</code></pre>
+<p><strong>3) 문자 사이에 관계가 있는 경우(이전 글자에 의존)</strong></p>
+<p>일부 검증 로직은 <code>input[i]</code>가 <code>input[i-1]</code>에 의존한다(예: 롤링 체크섬). 이런 관계도 그대로 조건으로 추가하면 된다.</p>
+<pre><code class="language-python">from z3 import *
+
+n = 6
+flag = [BitVec(f'c{i}', 8) for i in range(n)]
+s = Solver()
+
+target_sum_pairs = [0xaa, 0x91, 0x88, 0x7f, 0x76, 0x6d]  # 예시 목표값
+
+s.add(flag[0] == ord('C'))  # 첫 글자는 보통 알려진 접두사(예: 'C'TF{...})
+for i in range(1, n):
+    s.add((flag[i] + flag[i-1]) &amp; 0xff == target_sum_pairs[i])
+
+for c in flag:
+    s.add(c &gt;= 0x20, c &lt;= 0x7e)
+
+if s.check() == sat:
+    m = s.model()
+    print(''.join(chr(m[flag[i]].as_long()) for i in range(n)))</code></pre>
+<p><strong>4) 여러 해가 나올 수 있을 때 다른 해도 찾아보기</strong></p>
+<p>조건이 느슨해서 여러 개의 문자열이 답이 될 수 있다면, 찾은 해를 배제하는 조건을 추가하고 다시 풀어서 다른 해가 있는지 확인할 수 있다.</p>
+<pre><code class="language-python">if s.check() == sat:
+    m = s.model()
+    print(''.join(chr(m[flag[i]].as_long()) for i in range(n)))
+    # 방금 찾은 해를 제외하는 조건 추가
+    s.add(Or([flag[i] != m[flag[i]] for i in range(n)]))
+    print(s.check())  # 다른 해가 있으면 sat, 유일한 해면 unsat</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li><code>[BitVec(f'c{i}', 8) for i in range(n)]</code> : n개의 8비트 문자 변수 배열 생성</li><li><code>s.add(c &gt;= 0x20, c &lt;= 0x7e)</code> : 출력 가능 아스키 범위 제약</li><li><code>Or(cond1, cond2, ...)</code> / <code>And(cond1, cond2, ...)</code> : 논리합/논리곱 명시적 결합</li><li><code>ord('A')</code> / <code>chr(65)</code> : 파이썬 표준 문자↔코드 변환(제약조건 작성/결과 해석에 사용)</li><li><code>''.join(chr(m[c].as_long()) for c in flag)</code> : 모델의 문자 배열을 최종 문자열로 조립</li><li><code>s.add(Or([flag[i] != m[flag[i]] for i in range(n)]))</code> : 방금 찾은 해를 제외하고 재탐색(다른 해 존재 확인)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>recovered: CTF{...}</code> 형태의 정상적인 문자열이 나오면 성공이다. 실제 대회 플래그 포맷(<code>flag{</code>, <code>CTF{</code> 등)과 접두사가 일치하는지 확인하면 정답 여부를 빠르게 검증할 수 있다.</li><li>결과 문자열에 물음표나 깨진 문자가 섞여 있다면 출력 가능 문자 제약(<code>0x20~0x7e</code>)을 빠뜨렸을 가능성이 크다.</li><li><code>unsat</code>이 나오면 인덱스 매핑(<code>flag[i]</code>와 <code>key[i]</code>/<code>target[i]</code>가 정말 같은 i를 가리키는지), 길이, 또는 원본 로직에서 XOR을 덧셈으로 잘못 옮기는 등의 번역 실수를 의심한다.</li><li>답이 여러 개 나올 수 있는 구조에서 <code>s.check()</code>를 반복 호출했는데 계속 <code>sat</code>이 나온다면, 조건이 실제 검증 로직보다 느슨하게(예: 일부 검사 누락) 옮겨졌을 가능성이 있다 — 원본 코드의 조건을 다시 대조한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>각 문자에 출력 가능 문자 제약을 빼먹어서, 수학적으로는 맞지만 사람이 읽을 수 없는 이상한 바이트가 답으로 나오는 경우.</li><li>문자 변수를 8비트가 아니라 32비트로 선언해서, <code>char</code>가 원래 갖는 자연스러운 8비트 랩어라운드(wraparound)가 재현되지 않아 잘못된 해를 얻는 경우 — 이 주제는 REV-0270에서 더 자세히 다룬다.</li><li><code>input[i]</code>가 <code>signed char</code>인지 <code>unsigned char</code>인지 확인하지 않고 부호 비교를 잘못 써서, 실제로는 존재하는 해를 <code>unsat</code>으로 잘못 판단하는 경우.</li><li>인덱스 순서를 뒤바꿔서(<code>key[i]</code>와 <code>target[n-1-i]</code>를 짝지어야 하는데 <code>target[i]</code>와 짝지음) 검증 로직을 잘못 옮기는 경우 — 원본 반복문의 인덱스 진행 방향(정방향/역방향)을 반드시 재확인해야 한다.</li><li>리스트 컴프리헨션으로 만든 변수 이름이 전부 똑같아서(<code>BitVec('c', 8)</code>을 매번 이름 겹치게 생성) Z3가 서로 다른 변수를 같은 변수로 취급해버리는 경우 — 반드시 <code>f'c{i}'</code>처럼 인덱스를 이름에 포함시켜 유일하게 만들어야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>unsat</code>이 계속 나온다면 → 조건을 인덱스 몇 개만 남기고 나머지는 주석 처리해서, 어느 인덱스에서 모순이 생기는지 좁혀본다.</li><li>검증 로직에 8비트/32비트가 섞여 있어 오버플로우 처리가 애매하다면 → REV-0270 문서를 참고해서 비트폭을 정확히 맞춘다.</li><li>애초에 정수 하나만 다루는 단순한 경우로 돌아가서 개념을 다시 잡고 싶다면 → REV-0268 문서의 기본 <code>BitVec</code> 사용법을 다시 참고한다.</li><li>검증 로직이 반복문/분기가 너무 많아서 손으로 옮기는 것 자체가 비현실적이라면 → REV-0271 문서의 <code>angr</code>로 넘어가서 바이너리를 직접 심볼릭 실행시키는 방법을 고려한다. angr을 쓰면 로직을 손으로 Z3 코드로 번역하지 않아도 된다.</li></ul>
+<h2>미니 예제</h2>
+<p>위 2단계 예제를 완성된 형태로 다시 정리하면 다음과 같다. 실행하면 <code>recovered: %7*!.</code>처럼 XOR로 얽힌 5글자 문자열을 즉시 복원한다(실제 출력 문자는 key/target 값에 따라 달라진다).</p>
+<pre><code class="language-python">from z3 import *
+
+key    = [0x13, 0x37, 0x42, 0x99, 0x01]
+target = [0x56, 0x5a, 0x2e, 0xf5, 0x60]
+
+flag = [BitVec(f'c{i}', 8) for i in range(len(key))]
+s = Solver()
+for i in range(len(key)):
+    s.add((flag[i] ^ key[i]) == target[i])
+    s.add(flag[i] &gt;= 0x20, flag[i] &lt;= 0x7e)
+
+assert s.check() == sat
+m = s.model()
+print(''.join(chr(m[flag[i]].as_long()) for i in range(len(key))))</code></pre>
+<p>복원된 문자열은 이후 REV-0266의 <code>sendline()</code>으로 실제 바이너리에 넣어 최종 검증할 수 있다.</p>
+<h2>실전 예시: 치환 테이블(S-box) 참조를 조건으로 옮기기</h2>
+<p>XOR 키만 쓰는 검증 로직보다 조금 더 까다로운 실전 패턴은, 바이너리 안에 <strong>256바이트짜리 치환 테이블(S-box)</strong>을 두고 <code>output[i] = table[input[i]]</code> 형태로 각 글자를 변환하는 방식이다. 이런 테이블 조회는 산술식 하나로 표현할 수 없기 때문에, "입력 글자가 특정 값 k일 때만 출력이 <code>table[k]</code>와 같다"는 조건들을 <code>Or()</code>로 전부 나열해서 표현해야 한다.</p>
+<p>리버싱한 바이너리에 다음과 같은(가상의) 256바이트 치환 테이블이 있고, 그 테이블로 4글자짜리 문자열을 변환한 뒤 결과를 상수 배열과 비교한다고 가정한다. 재현 가능하도록 <code>random.seed()</code>로 테이블을 고정해서 만든다.</p>
+<pre><code class="language-python">from z3 import *
+import random
+
+# 리버싱 대상 바이너리의 .rodata에 있다고 가정한 256바이트 치환 테이블.
+# 실전에서는 이 테이블을 직접 손으로 옮겨 적거나 바이너리에서 읽어와야 하지만,
+# 여기서는 누구나 동일하게 재현할 수 있도록 고정된 시드로 생성한다.
+random.seed(1337)
+sbox = list(range(256))
+random.shuffle(sbox)
+
+# 바이너리 안에 상수로 박혀 있다고 가정하는 목표값(4바이트) — sbox[ord('A')], sbox[ord('z')], sbox[ord('9')], sbox[ord('!')]
+target = [0x00, 0x2d, 0xef, 0x39]
+
+n = len(target)
+flag = [BitVec(f'c{i}', 8) for i in range(n)]   # 8비트 문자 변수 4개
+s = Solver()
+
+for i in range(n):
+    # "flag[i]가 k라면, target[i]는 반드시 sbox[k]와 같다"를 k=0..255 전부에 대해 나열하고 Or로 묶는다.
+    # 즉 테이블 조회 table[input] == output을 "가능한 입력값 전부"에 대한 선택지로 풀어서 표현하는 방식이다.
+    s.add(Or([And(flag[i] == k, target[i] == sbox[k]) for k in range(256)]))
+    s.add(flag[i] &gt;= 0x20, flag[i] &lt;= 0x7e)   # 출력 가능 문자로 제한(항상 넣는 습관)
+
+if s.check() == sat:
+    m = s.model()
+    recovered = ''.join(chr(m[flag[i]].as_long()) for i in range(n))
+    print('recovered:', recovered)   # Az9!
+else:
+    print('unsat')</code></pre>
+<p>이 스크립트를 그대로 실행하면 <code>recovered: Az9!</code>가 나온다(<code>random.seed(1337)</code>로 만든 테이블 기준으로 직접 재현 검증됨). <code>Or([And(flag[i] == k, target[i] == sbox[k]) for k in range(256)])</code> 한 줄이 하는 일은 "flag[i]로 가능한 256가지 값 중, 그 값을 테이블에 넣었을 때 실제로 목표값이 나오는 것만 참으로 남긴다"는 뜻이며, 이 방식은 XOR/덧셈처럼 수식으로 바로 표현되지 않는 <strong>임의의 룩업 테이블 기반 변환</strong>에도 그대로 적용할 수 있는 일반적인 패턴이다. 테이블이 256바이트보다 작더라도(예: 16바이트 니블 치환 테이블) <code>range(256)</code> 대신 실제 테이블 크기만큼만 순회하도록 바꾸면 그대로 재사용 가능하다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0268-z3-bitvec-basics.html">REV-0268 — Z3 BitVec 기초</a></li><li><a href="rev-0270-z3-overflow-handling.html">REV-0270 — Z3에서 8비트 32비트 Overflow 다루기</a></li><li><a href="rev-0266-pwntools-process-basics.html">REV-0266 — pwntools로 프로세스 실행하고 입력 보내기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Z3 파이썬 API의 <code>BitVec</code> 리스트 패턴, <code>Or</code>/<code>And</code> 결합, 모델 추출 방식은 Z3 공식 GitHub(Z3Prover/z3) 및 Z3py 튜토리얼 문서를 기준으로 정리했다(2026-09-08 검증).</li><li><code>z3-solver</code>는 서드파티 패키지이므로 <code>pip install z3-solver</code>가 필요하며, 오프라인 설치 절차는 툴킷 카테고리(<code>../tools/</code>)에 추후 작성될 문서에서 다룬다.</li><li>코드 예제는 <code>pip install z3-solver</code> 환경의 표준 CPython 3에서 그대로 재현 가능하다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

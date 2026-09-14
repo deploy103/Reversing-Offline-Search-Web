@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SBB: 캐리 포함 뺄셈 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>SBB: 캐리 포함 뺄셈</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>SBB dst, src</code>는 <code>dst = dst - src - CF</code>를 계산하는 명령으로, 다중 정밀도 뺄셈에서 빌림(borrow)을 다음 자리로 전달하는 역할을 하며, <code>sbb eax, eax</code>처럼 자기 자신을 빼는 관용구는 CF 값을 그대로 <code>0</code> 또는 <code>0xFFFFFFFF</code>(전체 1비트) 마스크로 바꾸는 분기 없는(branchless) 트릭으로도 매우 자주 쓰인다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>sub</code> 다음에 <code>sbb</code>가 나오는 다중 정밀도(bignum) 뺄셈 코드를 만났을 때</li><li><code>cmp</code> 직후 <code>sbb eax, eax</code> 같은 이상한 패턴이 나와서 뭘 하는 건지 모를 때</li><li>분기(<code>jcc</code>) 없이 조건에 따라 값을 0 또는 전체 1비트로 바꾸는 최적화된 코드를 만났을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>SBB가 실제로 하는 일</h3>
+<p><code>SBB dst, src</code>는 다음을 계산한다.</p>
+<pre><code>dst = dst - src - CF</code></pre>
+<p><code>SUB</code>(<a href="rev-0048-sub.html">REV-0048</a>)와 유일한 차이는 <strong>뺄셈 전에 현재 CF(빌림 여부)를 추가로 뺀다</strong>는 점이다. CF가 0이면 <code>SBB</code>는 <code>SUB</code>와 완전히 동일하게 동작한다. 세로 뺄셈에서 "아랫자리에서 빌려온 만큼 이번 자리에서 하나 더 빼는" 것과 같은 개념이다.</p>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>SBB r/m8,  r8      SBB r8,  r/m8
+SBB r/m16, r16      SBB r16, r/m16
+SBB r/m32, r32      SBB r32, r/m32
+SBB r/m64, r64      SBB r64, r/m64
+SBB r/m, imm8/imm16/imm32</code></pre>
+<p>결과는 항상 첫 번째(목적지) 오퍼랜드에 저장되고, <code>dst = dst - (src + CF)</code>로 계산된다.</p>
+<h3>플래그 변화</h3>
+<p><code>SUB</code>와 동일하게 CF, OF, SF, ZF, AF, PF를 모두 결과에 맞춰 갱신한다. 여기서도 입력으로 쓰인 CF와 연산 후 새로 세팅되는 CF는 별개의 값이며, 새 CF는 "이번 자리에서 빌림이 또 필요했는가"를 의미한다.</p>
+<h3>Signed/Unsigned</h3>
+<p>CF=1은 unsigned 관점에서 뺄셈 결과가 음수가 되어(즉 dst &lt; src+CF) 빌림이 필요했다는 뜻이다. <code>ADC</code>/<code>SBB</code> 사슬에서는 최하위 워드부터 최상위 워드까지 CF(빌림)를 계속 전파시켜 다중 정밀도 값 전체를 하나의 뺄셈처럼 처리한다.</p>
+<h3>스택/RSP/RIP 변화</h3>
+<p>스택에는 영향이 없다. <code>RIP</code>는 명령 길이만큼 다음 명령으로 이동한다.</p>
+<h3>리버싱에서 특히 중요한 관용구: <code>SBB reg, reg</code></h3>
+<p>같은 레지스터끼리 빼면 값 자체는 항상 0이 되므로(<code>x - x = 0</code>), 결과는 오직 CF에만 좌우된다.</p>
+<pre><code>CF = 0 이면: reg - reg - 0 = 0            -&gt; reg = 0x00000000
+CF = 1 이면: reg - reg - 1 = -1(전체 1비트) -&gt; reg = 0xFFFFFFFF</code></pre>
+<p>즉 <code>sbb eax, eax</code>는 "직전 CF가 1이었으면 EAX를 전부 1비트(0xFFFFFFFF)로, 0이었으면 EAX를 전부 0으로 만든다." 이렇게 만들어진 값은 뒤따르는 <code>AND</code>/<code>OR</code>와 결합해 <strong>조건 분기 없이</strong> 두 값 중 하나를 선택하는 마스크로 자주 쓰인다(분기 예측 실패 페널티를 피하려는 최적화). <code>CMOVcc</code>(<a href="rev-0075-cmovcc.html">REV-0075</a>)와 목적은 비슷하지만 구현 방식이 다른, 더 오래된 스타일의 분기 없는 관용구다.</p>
+<h3>컴파일러가 만드는 전형적 패턴</h3>
+<ol><li><strong>다중 정밀도 뺄셈</strong>: <code>unsigned __int128</code>이나 bignum 뺄셈에서 하위 워드는 <code>SUB</code>, 그다음 워드부터는 <code>SBB</code>.</li><li><strong>부호 없는 비교 후 마스크 생성</strong>: <code>cmp a, b</code> 다음 <code>sbb reg, reg</code>로 "a &lt; b이면 전체 1비트, 아니면 0"인 마스크를 만들고, 이후 <code>and</code>/<code>or</code>로 두 값을 선택(예: min/max, 절댓값, 클램프 구현의 최적화된 형태).</li></ol>
+<h3>IDA/Ghidra 디컴파일에서 보이는 모습</h3>
+<p>디컴파일러가 <code>sbb reg, reg</code> 패턴을 인식하면 삼항 연산자나 <code>-(a &lt; b)</code> 같은 표현으로 정리해서 보여주기도 하지만, 인식하지 못하면 원문 그대로 <code>CARRY</code> 관련 pseudo 표현이나 낯선 임시 변수와 함께 남는 경우가 많다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>sub eax, [rsi]</code> 다음 줄에 <code>sbb edx, [rsi+4]</code> — 다중 정밀도 뺄셈</li><li><code>cmp eax, ebx</code> 다음 <code>sbb ecx, ecx</code> — 분기 없는 0/0xFFFFFFFF 마스크 생성 (unsigned 비교 결과 기반)</li><li><code>sbb</code>로 만든 마스크 레지스터가 곧바로 <code>and</code>나 <code>or</code>에 쓰이는 코드</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>SBB</code>의 두 오퍼랜드가 서로 다른 레지스터/메모리인지, 아니면 같은 레지스터끼리인지부터 확인한다. 같은 레지스터면 마스크 생성 관용구를 의심한다.</li><li>다르다면 다중 정밀도 뺄셈 사슬의 일부인지 위아래 <code>SUB</code>/<code>SBB</code> 흐름을 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 마스크 생성 관용구 해석</strong></p>
+<pre><code class="language-asm">cmp  eax, ebx     ; eax - ebx, unsigned 비교 -&gt; CF = (eax &lt; ebx)
+sbb  ecx, ecx     ; ecx = 0xFFFFFFFF if eax&lt;ebx(unsigned) else 0
+and  ecx, edi     ; edi 값을 조건부로 선택 (마스킹)</code></pre>
+<p>→ <code>ecx = (eax &lt; ebx) ? edi : 0</code> 형태의 분기 없는 선택으로 해석한다.</p>
+<p><strong>2) 다중 정밀도 뺄셈 사슬 해석</strong></p>
+<pre><code class="language-asm">mov  eax, [rdi]
+sub  eax, [rsi]      ; 하위 32비트
+mov  [rbx], eax
+mov  eax, [rdi+4]
+sbb  eax, [rsi+4]     ; 상위 32비트 - 하위에서 빌려온 만큼 추가로 뺌
+mov  [rbx+4], eax</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>IDA/x64dbg: F7/F8로 <code>CMP</code>→<code>SBB</code>를 한 줄씩 실행하며 CF와 목적지 레지스터 값을 비교</li><li>GDB/Pwndbg: <code>stepi</code>, <code>info registers eflags</code>로 CF 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>sbb reg, reg</code> 직후 레지스터가 <code>0</code> 또는 <code>0xFFFFFFFF</code>(64비트면 <code>0xFFFFFFFFFFFFFFFF</code>)만 나온다면 마스크 생성 관용구가 맞다는 강력한 증거다.</li><li>다중 정밀도 사슬에서는 CF=1이 이어질수록 더 상위 워드까지 빌림이 전파된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>sbb eax, eax</code>를 보고 "왜 자기 자신을 빼지?"라며 의미 없는 코드로 착각하는 것 — 실제로는 CF를 마스크로 변환하는 매우 흔한 최적화 관용구다.</li><li><code>SBB</code>를 항상 다중 정밀도 뺄셈으로만 해석하는 것 — 오퍼랜드가 같은 레지스터인지 먼저 확인해야 어느 패턴인지 정확히 판단할 수 있다.</li><li><code>SUB</code>와 <code>SBB</code>를 같은 것으로 취급해 CF 반영을 빠뜨리는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>sbb</code>로 만들어진 마스크가 어디에 쓰이는지 모르겠다면 → 바로 다음 줄의 <code>AND</code>/<code>OR</code>/<code>XOR</code> 사용처를 따라가 어떤 값을 조건부로 선택/제거하는지 확인한다.</li><li>다중 정밀도 뺄셈인지 확신이 안 서면 → 관련된 워드 개수(반복 횟수, 배열 크기)를 세어 몇 비트짜리 연산인지 역산한다.</li><li>캐리를 만드는 명령이 무엇인지 헷갈리면 → <a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터 개요</a> 표를 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — CF를 0/0xFFFFFFFF 마스크로 바꾸는 관용구</strong></p>
+<pre><code class="language-c">unsigned int select(unsigned int a, unsigned int b, unsigned int x) {
+    return (a &lt; b) ? x : 0;
+}</code></pre>
+<pre><code class="language-asm">cmp  eax, ebx    ; a, b 비교
+sbb  ecx, ecx    ; ecx = (a&lt;b) ? 0xFFFFFFFF : 0
+and  ecx, edx    ; edx = x, 결과는 x 또는 0</code></pre>
+<p><strong>예제 2 — 64비트 두 개로 표현된 128비트 뺄셈</strong></p>
+<pre><code class="language-asm">mov  rax, rdi
+sub  rax, rdx        ; 하위 64비트
+mov  rcx, rsi
+sbb  rcx, r8           ; 상위 64비트 - 빌림</code></pre>
+<p><strong>예제 3 — 절댓값을 분기 없이 구하는 고전 트릭 (SBB + XOR)</strong></p>
+<pre><code class="language-c">int myabs(int x) {
+    return x &lt; 0 ? -x : x;
+}</code></pre>
+<pre><code class="language-asm">mov  eax, edi
+cdq                  ; edx = (eax의 부호를 전체 비트로 확장) = 0 또는 0xFFFFFFFF
+xor  eax, edx
+sub  eax, edx         ; edx가 0xFFFFFFFF(즉 x&lt;0)일 때 2의 보수 음수 변환 완성</code></pre>
+<p>이 예제는 엄밀히는 <code>SBB</code>가 아니라 <code>CDQ</code>+<code>XOR</code>+<code>SUB</code> 조합이지만, "부호/캐리를 전체 비트 마스크로 바꿔 분기 없이 값을 조작한다"는 점에서 <code>SBB reg,reg</code> 관용구와 사고방식이 같아 함께 알아두면 좋다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0048-sub.html">REV-0048 — SUB: 뺄셈과 플래그</a></li><li><a href="rev-0427-adc.html">REV-0427 — ADC: 캐리 포함 덧셈</a></li><li><a href="rev-0426-jc-jnc.html">REV-0426 — JC와 JNC: 캐리 플래그 기반 분기 별칭</a></li><li><a href="rev-0075-cmovcc.html">REV-0075 — CMOVcc: 분기 없는 조건부 이동</a></li><li><a href="rev-0057-xor.html">REV-0057 — XOR: XOR 연산과 XOR reg reg 제로화</a></li><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>SBB</code> 연산 정의(<code>dst = dst - (src + CF)</code>)와 Flags Affected: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "SBB—Integer Subtraction with Borrow" 섹션 기준 (2026-09-08 검증).</li><li><code>sbb reg, reg</code>를 이용한 0/전체-1비트 마스크 생성 관용구: 컴파일러 최적화 출력(GCC/Clang <code>-O2</code>)에서 흔히 관찰되는 일반적 관례 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

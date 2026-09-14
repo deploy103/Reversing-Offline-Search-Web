@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinAPI 메모리 함수 사전: VirtualAlloc VirtualProtect · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>WinAPI 메모리 함수 사전: VirtualAlloc VirtualProtect</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>VirtualAlloc</code>은 새 메모리 페이지를 할당하고 <code>VirtualProtect</code>는 기존 페이지의 읽기/쓰기/실행 권한을 바꾸는 함수로, 언패커가 원본 코드를 복호화해 담을 공간을 만들거나(<code>VirtualAlloc</code> + <code>PAGE_EXECUTE_READWRITE</code>) 이미 로드된 <code>.text</code> 섹션을 쓰기 가능하게 바꿔 코드를 패치하는(<code>VirtualProtect</code>) 지점을 찾을 때 반드시 알아야 하는 API 쌍이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>패킹된 실행 파일을 분석하며 "언패킹된 코드가 어디에 풀리는가"를 찾아야 할 때</li><li><code>VirtualAlloc</code>으로 새로 할당된 메모리 영역에 데이터가 복사된 뒤 그쪽으로 <code>jmp</code>/<code>call</code>이 이어지는 흐름(OEP 진입점 후보)을 추적해야 할 때</li><li>읽기 전용이어야 할 <code>.text</code> 섹션에 값을 쓰는 self-modifying code를 발견해 그 직전에 <code>VirtualProtect</code> 호출이 있는지 확인해야 할 때</li><li>셸코드나 인젝션 페이로드가 <code>PAGE_EXECUTE_READWRITE</code>(RWX) 권한의 메모리를 만드는지 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>함수 시그니처</h3>
+<pre><code class="language-c">LPVOID VirtualAlloc(
+    LPVOID lpAddress,        // 1. 원하는 시작 주소(NULL이면 시스템이 알아서 선택)
+    SIZE_T dwSize,           // 2. 할당할 바이트 수
+    DWORD  flAllocationType, // 3. MEM_COMMIT / MEM_RESERVE / MEM_RESET 등의 조합
+    DWORD  flProtect         // 4. 페이지 보호 속성(PAGE_* 상수)
+);
+
+BOOL VirtualProtect(
+    LPVOID lpAddress,      // 1. 대상 메모리 시작 주소
+    SIZE_T dwSize,         // 2. 바꿀 영역의 바이트 수
+    DWORD  flNewProtect,   // 3. 새로 적용할 보호 속성(PAGE_* 상수)
+    PDWORD lpflOldProtect  // 4. 이전 보호 속성이 저장될 DWORD 주소(반드시 유효한 주소여야 함)
+);</code></pre>
+<p>둘 다 <code>kernel32.dll</code>이 제공하며, 대상 페이지가 존재해야 하는(<code>VirtualAlloc</code>으로 이미 커밋된) <code>VirtualProtect</code>와 달리 <code>VirtualAlloc</code>은 새 영역을 확보한다는 점이 근본적인 차이다.</p>
+<h3>flAllocationType 주요 값</h3>
+<pre><code class="language-text">MEM_COMMIT   0x1000  // 실제 물리 메모리(페이지 파일)를 배정
+MEM_RESERVE  0x2000  // 주소 공간만 예약, 아직 메모리는 배정 안 함
+MEM_RESET    0x80000 // 페이지 내용을 더 이상 신경 쓰지 않는다고 표시</code></pre>
+<p><code>MEM_COMMIT | MEM_RESERVE</code>(0x3000)를 함께 쓰는 것이 가장 흔한 패턴이다.</p>
+<h3>flProtect / flNewProtect 주요 값</h3>
+<pre><code class="language-text">PAGE_NOACCESS          0x01
+PAGE_READONLY           0x02
+PAGE_READWRITE          0x04
+PAGE_EXECUTE            0x10
+PAGE_EXECUTE_READ       0x20
+PAGE_EXECUTE_READWRITE  0x40  // 읽기/쓰기/실행 모두 가능(RWX) — 언패커/셸코드에서 매우 흔함
+PAGE_GUARD              0x100 (조합 플래그)</code></pre>
+<p>정상적인 컴파일러가 생성한 <code>.text</code> 섹션은 보통 <code>PAGE_EXECUTE_READ</code>로 매핑되며, 코드 영역이 <code>PAGE_READWRITE</code>나 <code>PAGE_EXECUTE_READWRITE</code>로 바뀌는 순간은 "이 프로그램이 자기 코드를 스스로 수정하려 한다"는 강한 신호다.</p>
+<h3>왜 리버싱/언패킹에서 핵심 API인가</h3>
+<p>UPX 같은 단순 패커부터 상용 프로텍터까지, 압축/암호화된 원본 코드를 실행 전에 복원해야 하므로 다음 3단계 패턴이 거의 항상 등장한다.</p>
+<ol><li><code>VirtualAlloc(NULL, size, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE)</code>로 쓰기+실행이 모두 가능한 새 영역을 만든다.</li><li>그 영역에 압축 해제/복호화된 원본 코드를 채운다(루프로 바이트 단위 복사, 또는 <code>memcpy</code>류 호출).</li><li>채운 뒤 그 주소로 <code>jmp</code>하거나(직접 실행), 필요하면 <code>VirtualProtect</code>로 <code>PAGE_EXECUTE_READ</code>처럼 실행 전용에 가깝게 권한을 낮춘다.</li></ol>
+<p>디버거에서 "RWX로 새로 할당된 메모리에 값을 쓴 뒤 그쪽으로 제어가 넘어가는 지점"을 찾는 것이 언패킹의 핵심 기법 중 하나이며, x64dbg의 "Memory Map" 탭에서 실행 도중 새로 생기는 RWX 영역을 관찰하는 방식으로 이를 실전에서 활용한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">push 40h            ; PAGE_EXECUTE_READWRITE
+push 1000h          ; MEM_COMMIT
+push [size]
+push 0               ; lpAddress = NULL
+call VirtualAlloc
+mov  [newbuf], eax
+...
+; newbuf에 데이터를 채우는 루프
+...
+jmp  eax             ; 또는 call eax — 새로 할당한 영역으로 제어 이전</code></pre>
+<ul><li>Import 목록에 <code>VirtualAlloc</code>/<code>VirtualAllocEx</code>가 있고, 반환값(할당된 주소)이 이후 메모리 쓰기 루프의 목적지로 쓰이는 패턴.</li><li><code>VirtualProtect</code> 호출 직전 <code>lpAddress</code>가 자기 자신의 <code>.text</code> 섹션 범위 안의 주소인 경우.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>VirtualAlloc</code> 호출에 브레이크포인트를 걸고 <code>flProtect</code> 인자가 <code>0x40</code>(PAGE_EXECUTE_READWRITE)인지부터 확인한다. RWX 할당이면 거의 확실히 언패킹/코드 생성 목적이므로, 반환값(할당된 주소)을 메모리에 기록해두고 그 주소에 대한 쓰기/실행 접근을 계속 추적한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) VirtualAlloc 반환값 기록</strong></p>
+<pre><code class="language-text">bp VirtualAlloc
+run
+; 인자 확인(x64: RCX=lpAddress, RDX=dwSize, R8=flAllocationType, R9=flProtect)
+Ctrl+F9   ; 실행till return
+; RAX = 새로 할당된 주소</code></pre>
+<p><strong>2) 그 주소에 하드웨어 브레이크포인트 설정</strong> x64dbg에서 해당 주소를 Dump 창에 띄운 뒤 우클릭 → <code>Breakpoint &gt; Hardware, Access</code>(쓰기 감시) 또는 <code>Hardware, Execute</code>(실행 감시)를 걸어, 언제 그 영역에 값이 채워지고 언제 실행되는지 추적한다.</p>
+<p><strong>3) VirtualProtect 호출 확인</strong> <code>.text</code> 섹션 주소 범위 안에서 <code>VirtualProtect</code>가 불리면 self-modifying code 가능성이 높으므로 <code>lpAddress</code>, <code>dwSize</code>, <code>flNewProtect</code>를 기록하고 <code>lpflOldProtect</code>가 가리키는 값(원래 보호 속성)도 함께 확인한다.</p>
+<p><strong>4) 실행 이전 지점(OEP 후보) 확인</strong> 새로 채워진 영역으로 <code>jmp</code>/<code>call eax</code>(또는 레지스터)가 발생하는 지점을 IDA에서 표시해두면, 이곳이 언패킹 후 원본 코드의 진입점(OEP)일 가능성이 크다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp VirtualAlloc</code>, <code>bp VirtualProtect</code>, <code>Ctrl+F9</code>(Execute till return)</li><li>x64dbg: 메모리 주소 우클릭 → <code>Breakpoint &gt; Hardware, Access/Execute</code></li><li>x64dbg: <code>Memory Map</code> 탭(Alt+M)에서 RWX(<code>ERWC</code> 등으로 표시) 영역 확인</li><li>IDA: <code>X</code>(xref), <code>F5</code>(디컴파일)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>VirtualAlloc</code>이 <code>NULL</code>(0)을 반환하면 할당 실패이며, <code>GetLastError()</code>로 원인을 확인해야 한다.</li><li><code>VirtualProtect</code>가 <code>TRUE</code>(0이 아닌 값)를 반환하고 <code>lpflOldProtect</code>에 이전 값이 채워졌다면 보호 속성 변경이 성공한 것이다.</li><li>Memory Map에서 <code>Protect</code> 열이 <code>PAGE_EXECUTE_READWRITE</code>(RWX)로 표시된 영역은 정상 프로그램에서는 드물게 나타나므로 우선 조사 대상으로 표시해둔다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>VirtualAlloc</code>의 <code>flProtect</code> 인자만 보고 실제 최종 보호 속성이라 단정하는 것 — 뒤이어 <code>VirtualProtect</code>로 다시 바뀔 수 있으므로 이후 흐름까지 확인해야 한다.</li><li><code>lpflOldProtect</code>에 NULL을 넘겨 <code>VirtualProtect</code> 호출 자체가 실패하는 코드를 놓치는 것 — 이 인자는 반드시 유효한 <code>DWORD</code> 변수의 주소여야 한다.</li><li>RWX 메모리 발견 즉시 "이건 무조건 패커"라고 단정하는 것 — JIT 컴파일러(.NET, 일부 스크립트 엔진)나 정상적인 동적 코드 생성 기능에서도 RWX를 쓸 수 있으므로 주변 문맥을 함께 봐야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>할당된 메모리 영역의 속성을 나중에 다시 조회하고 싶다면 → REV-0509 WinAPI 메모리 함수 사전: VirtualQuery VirtualFree</li><li>다른 프로세스에 메모리를 할당/주입하는 변형(<code>VirtualAllocEx</code>)이 궁금하다면 → REV-0511 WinAPI 메모리 함수 사전: ReadProcessMemory WriteProcessMemory</li><li>x64dbg로 실행 파일을 처음 여는 법이 아직 낯설다면 → REV-0127 x64dbg로 EXE 첫 분석 시작</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">LPVOID buf = VirtualAlloc(NULL, unpackedSize, MEM_COMMIT | MEM_RESERVE, PAGE_EXECUTE_READWRITE);
+DecompressInto(buf, packedData, packedSize);
+((void(*)())buf)();  // 언패킹된 코드로 바로 점프해 실행</code></pre>
+<p>x64dbg에서 <code>bp VirtualAlloc</code> → <code>Ctrl+F9</code> → <code>RAX</code> 확인 → 그 주소에 <code>Hardware, Execute</code> 브레이크포인트를 걸어두면, <code>DecompressInto</code>가 끝난 직후 그 영역이 실행되는 순간(위 예제 마지막 줄)에 정확히 멈춰서 언패킹된 코드의 첫 명령어를 바로 볼 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0509-virtualquery-virtualfree.html">REV-0509 — WinAPI 메모리 함수 사전: VirtualQuery VirtualFree</a></li><li><a href="rev-0511-readprocessmemory-writeprocessmemory.html">REV-0511 — WinAPI 메모리 함수 사전: ReadProcessMemory WriteProcessMemory</a></li><li><a href="rev-0127-x64dbg-first-analysis.html">REV-0127 — x64dbg로 EXE 첫 분석 시작</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>VirtualAlloc</code>/<code>VirtualProtect</code>의 시그니처와 <code>MEM_*</code>/<code>PAGE_*</code> 상수 값은 Microsoft 공식 문서(learn.microsoft.com, "VirtualAlloc function" / "VirtualProtect function") 기준이다(2026-09-08 확인).</li><li>언패킹 시 RWX 할당 후 실행 전이 패턴은 일반적인 언패킹/리버싱 관례 레퍼런스 기준이다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>objdump 기본 사용법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>objdump 기본 사용법</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">입문</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">objdump</span><span class="tag">binutils</span></div>
+<h2>한 줄 요약</h2>
+<p><code>objdump</code>는 ELF 파일을 디스어셈블(기계어 → 어셈블리 변환)하고, 심볼·재배치·헤더 정보를 함께 볼 수 있는 GNU binutils의 범용 바이너리 분석 도구로, IDA/Ghidra가 없는 환경에서 코드를 직접 읽어야 할 때 가장 먼저 손이 가는 명령어다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>서버/CTF 환경에 IDA/Ghidra가 없어서 커맨드라인으로 디스어셈블리를 봐야 할 때</li><li>특정 함수 하나(<code>main</code>, <code>printf@plt</code> 등)의 어셈블리만 빠르게 확인하고 싶을 때</li><li><code>objdump</code> 결과가 기본적으로 AT&amp;T 문법이라 IDA(Intel 문법)에 익숙한 사람이 헷갈릴 때</li><li>import된 라이브러리 함수 목록을 스크립트로 뽑고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p><code>objdump</code>는 오브젝트 파일 포맷 전반(ELF, PE, Mach-O 등)을 다룰 수 있는 범용 도구다. 핵심 기능은 크게 세 가지다: (1) 디스어셈블(<code>-d</code>), (2) 헤더/심볼 정보 출력(<code>-f</code>, <code>-h</code>, <code>-t</code>, <code>-T</code>), (3) 특정 섹션의 raw 콘텐츠 덤프(<code>-s</code>). <code>readelf</code>가 ELF 구조체를 그대로 보여주는 데 집중한다면, <code>objdump</code>는 기계어 바이트를 실제 어셈블리 명령어로 변환해서 보여주는 데 특화되어 있다.</p>
+<p><strong>AT&amp;T 문법이 기본값</strong>이라는 점이 IDA 사용자에게 가장 큰 함정이다. 기본 <code>objdump -d</code> 출력은 <code>mov %rax, %rbx</code>처럼 <code>%</code>레지스터 접두사, 소스→목적지 순서(IDA/Intel과 반대), 즉시값에 <code>$</code> 접두사를 쓴다. <code>-M intel</code> 옵션으로 IDA와 동일한 Intel 문법으로 바꿀 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>IDA 없이 서버에 SSH로 접속해 바이너리만 있을 때, 또는 스크립트에서 특정 함수의 바이트 패턴을 자동으로 뽑아야 할 때 objdump가 등장한다.</p>
+<h2>가장 먼저 할 것</h2>
+<pre><code class="language-bash">objdump -d -M intel ./chall | less</code></pre>
+<p>습관적으로 <code>-M intel</code>을 붙인다. IDA 출력과 형태가 비슷해져서 눈에 익은 문법으로 바로 읽을 수 있다.</p>
+<h2>단계별 절차 / 옵션 정리</h2>
+<h3><code>-d</code> : 실행 가능한 섹션만 디스어셈블</h3>
+<pre><code class="language-bash">objdump -d -M intel ./chall</code></pre>
+<p>출력 예:</p>
+<pre><code>0000000000001149 &lt;main&gt;:
+    1149:	f3 0f 1e fa          	endbr64
+    114d:	55                   	push   rbp
+    114e:	48 89 e5             	mov    rbp,rsp
+    1151:	48 83 ec 10          	sub    rsp,0x10
+    1155:	bf 04 20 00 00       	mov    edi,0x2004
+    115a:	e8 d1 fe ff ff       	call   1030 &lt;puts@plt&gt;
+    115f:	b8 00 00 00 00       	mov    eax,0x0
+    1164:	c9                   	leave
+    1165:	c3                   	ret</code></pre>
+<p>왼쪽부터 주소, raw 기계어 바이트, 어셈블리 명령어(Intel 문법) 순서.</p>
+<h3><code>-D</code> : 모든 섹션 디스어셈블(비실행 섹션 포함)</h3>
+<pre><code class="language-bash">objdump -D ./chall</code></pre>
+<p><code>-d</code>는 실행 가능한(<code>X</code> 플래그) 섹션만 보여주고, <code>-D</code>는 데이터 섹션도 억지로 명령어처럼 디스어셈블해서 보여준다(데이터를 코드처럼 잘못 해석할 수 있으니 주의).</p>
+<h3>특정 함수만 보기</h3>
+<pre><code class="language-bash">objdump -d -M intel ./chall --disassemble=main</code></pre>
+<p>또는 grep으로 필터:</p>
+<pre><code class="language-bash">objdump -d -M intel ./chall | grep -A20 '&lt;main&gt;:'</code></pre>
+<h3><code>-T</code> : 동적 심볼 테이블(임포트 함수 목록)</h3>
+<pre><code class="language-bash">objdump -T ./chall</code></pre>
+<p>출력 예:</p>
+<pre><code>0000000000000000      DF *UND*  0000000000000000  GLIBC_2.2.5 printf
+0000000000000000      DF *UND*  0000000000000000  GLIBC_2.2.5 puts
+0000000000004018 g    DO .bss   0000000000000004  GLIBC_2.2.5 stdout</code></pre>
+<p><code>*UND*</code>는 이 바이너리 안에 정의되어 있지 않고 외부(libc 등)에서 가져와야 하는 심볼이라는 뜻 — 즉 이 프로그램이 어떤 라이브러리 함수를 쓰는지 한눈에 보인다.</p>
+<h3><code>-t</code> : 심볼 테이블(strip 안 됐을 때)</h3>
+<pre><code class="language-bash">objdump -t ./chall</code></pre>
+<h3><code>-f</code> : 파일 요약 헤더</h3>
+<pre><code class="language-bash">objdump -f ./chall</code></pre>
+<p>출력 예:</p>
+<pre><code>architecture: i386:x86-64, flags 0x00000150:
+HAS_SYMS, DYNAMIC, D_PAGED
+start address 0x0000000000001060</code></pre>
+<h3><code>-h</code> : 섹션 헤더 요약</h3>
+<pre><code class="language-bash">objdump -h ./chall</code></pre>
+<h3><code>-s -j &lt;섹션&gt;</code> : 특정 섹션 raw hex 덤프</h3>
+<pre><code class="language-bash">objdump -s -j .rodata ./chall</code></pre>
+<h3>PLT 스텁만 필터링해서 보기</h3>
+<pre><code class="language-bash">objdump -d -M intel ./chall | grep '@plt'</code></pre>
+<p>어떤 라이브러리 함수들이 이 바이너리에서 실제로 CALL되는지 빠르게 확인(REV-0100 참고).</p>
+<h2>명령어/단축키</h2>
+<p>자주 쓰는 조합만 빠르게 정리:</p>
+<pre><code class="language-bash">objdump -d -M intel ./chall           # 실행 섹션 디스어셈블 (Intel 문법)
+objdump -d -M intel ./chall | grep -A20 '&lt;main&gt;:'   # main 함수만 잘라 보기
+objdump -T ./chall                    # 동적 심볼 테이블
+objdump -R ./chall                    # 재배치 정보 (GOT 엔트리 등)
+objdump -s -j .rodata ./chall         # .rodata 섹션 원시 바이트 덤프
+objdump -d -M intel ./chall | grep '@plt'   # PLT 스텁만 필터링</code></pre>
+<h2>출력 해석</h2>
+<ul><li>왼쪽 열 주소는 파일 오프셋이 아니라 <strong>가상 주소</strong>(ELF 헤더 REV-0089 참고)다. PIE 바이너리라면 이 주소에 실제 ASLR 베이스가 더해져야 런타임 주소가 된다.</li><li>중간의 raw 바이트 열(<code>f3 0f 1e fa</code> 등)은 그 명령어의 실제 기계어 인코딩 — 패치나 시그니처 작성 시 이 바이트를 직접 참고한다.</li><li><code>&lt;main&gt;:</code>처럼 꺾쇠괄호 안 이름은 심볼 테이블에서 가져온 것 — strip된 바이너리라면 이런 이름 대신 그냥 주소만 나온다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>기본 출력이 AT&amp;T 문법인 걸 모르고 "objdump가 이상하게 나온다"고 오해하는 것 — <code>-M intel</code>을 빼먹은 것뿐이다. AT&amp;T는 <code>mov %rax, %rbx</code>(src, dst), Intel은 <code>mov rbx, rax</code>(dst, src)로 피연산자 순서 자체가 반대다.</li><li><code>-d</code>로 아무것도 안 나오는데 파일이 잘못됐다고 생각하는 것 — 정적 링킹이 아닌 순수 데이터 파일이거나, 실행 가능한 섹션이 없는 경우일 수 있다. <code>-h</code>로 섹션 플래그부터 확인한다.</li><li><code>-D</code>(전체 디스어셈블)로 데이터 섹션까지 억지로 명령어로 해석해서 나온 이상한 코드를 실제 실행되는 코드라고 착각하는 것 — <code>-d</code>가 실행 섹션만 보여주므로 더 안전하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>ELF 구조 자체가 궁금하면 → <a href="rev-0089-elf-header.html">REV-0089 ELF 헤더 읽는 법</a></li><li>심볼 조회만 빠르게 하고 싶으면 → <a href="rev-0093-nm-basics.html">REV-0093 nm으로 심볼 찾기</a></li><li>PLT/GOT 스텁 코드 해석이 궁금하면 → <a href="rev-0100-plt-got.html">REV-0100 PLT와 GOT 기초</a></li><li><code>_start</code>부터 코드를 읽고 싶으면 → <a href="rev-0098-start-function.html">REV-0098 _start 함수 읽는 법</a></li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ objdump -d -M intel chall | grep -A9 '&lt;main&gt;:'
+0000000000001149 &lt;main&gt;:
+    1149:	f3 0f 1e fa          	endbr64
+    114d:	55                   	push   rbp
+    114e:	48 89 e5             	mov    rbp,rsp
+    1151:	48 83 ec 10          	sub    rsp,0x10
+    1155:	bf 04 20 00 00       	mov    edi,0x2004
+    115a:	e8 d1 fe ff ff       	call   1030 &lt;puts@plt&gt;
+    115f:	b8 00 00 00 00       	mov    eax,0x0
+    1164:	c9                   	leave
+    1165:	c3                   	ret</code></pre>
+<p><code>main</code>이 <code>puts@plt</code>를 한 번 호출하고 <code>0</code>을 반환하는 아주 단순한 "Hello World" 패턴임을 IDA 없이도 바로 읽을 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0089-elf-header.html">REV-0089 — ELF 헤더 읽는 법</a></li><li><a href="rev-0093-nm-basics.html">REV-0093 — nm으로 심볼 찾기</a></li><li><a href="rev-0098-start-function.html">REV-0098 — _start 함수 읽는 법</a></li><li><a href="rev-0100-plt-got.html">REV-0100 — PLT와 GOT 기초</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>옵션 목록/출력 형식: GNU binutils <code>objdump(1)</code> man page 기준 (2026-09-08 검증).</li><li>AT&amp;T vs Intel 문법 차이: GNU <code>as</code>(GAS) 문서 "AT&amp;T Syntax versus Intel Syntax" 섹션 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

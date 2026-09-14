@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Z3 문법 빠른 참조(BitVec/제약조건) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / automation</div>
+<article class="article-body">
+<h1>Z3 문법 빠른 참조(BitVec/제약조건)</h1>
+<div class="article-meta"><span class="tag">automation</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Z3</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>Z3(REV-0268~REV-0270)를 실전에서 쓸 때마다 매번 API 문서를 찾아보지 않도록, BitVec 선언/연산/부호 있는 비교/논리 결합/배열/모델 추출까지 자주 쓰는 문법을 표 형태로 정리한 빠른 참조 문서다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Z3 코드를 짜다가 특정 함수(부호 있는 비교, 부호 확장 등) 이름이 기억 안 날 때</li><li><code>BVSGT</code>, <code>SignExt</code>, <code>Extract</code> 같은 함수 문법을 매번 검색하기 귀찮을 때</li><li>여러 조건을 AND/OR로 묶는 정확한 문법이 헷갈릴 때</li><li>문자 배열(패스워드 등)을 다루는 제약조건 문법을 빠르게 다시 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Z3 파이썬 바인딩은 대부분 연산자 오버로딩(<code>+</code>, <code>-</code>, <code>^</code>, <code>&amp;</code>, <code>==</code> 등)으로 자연스러운 파이썬 문법을 그대로 쓸 수 있지만, <strong>부호 있는(signed) 비교</strong>나 <strong>비트 추출/확장</strong>처럼 파이썬 연산자로 표현할 수 없는 연산은 별도 함수 이름을 알아야 한다. 이 문서는 REV-0268(BitVec 기초), REV-0269(문자 조건), REV-0270(오버플로우)에서 다룬 개념들의 실제 함수 시그니처만 빠르게 찾아볼 수 있도록 표로 압축했다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>아래 표에 정리된 함수/연산자 이름이 그대로 Z3 파이썬 스크립트에 등장한다. <code>from z3 import *</code> 이후 이 문서의 표에 나온 이름들을 그대로 호출하면 된다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>지금 풀어야 할 조건이 "부호 없는 비교(기본 연산자로 충분)"인지 "부호 있는 비교(별도 함수 필요)"인지부터 판단한다. C 원본 코드에서 변수 타입이 <code>unsigned int</code>/<code>unsigned char</code>면 기본 연산자, <code>int</code>/<code>char</code>(부호 있는 기본 타입)면 signed 전용 함수가 필요하다.</p>
+<h2>단계별 절차</h2>
+<ol><li>변수를 선언한다: <code>BitVec('name', bits)</code>.</li><li>필요한 연산을 아래 표에서 찾아 그대로 적용한다.</li><li><code>Solver()</code>에 <code>add()</code>로 제약조건을 쌓는다.</li><li><code>check()</code> 결과가 <code>sat</code>이면 <code>model()</code>로 실제 값을 꺼낸다.</li></ol>
+<h2>명령어/단축키</h2>
+<h3>변수/상수 선언</h3>
+<pre><code class="language-python">from z3 import *
+x = BitVec('x', 32)          # 32비트 심볼릭 변수
+c = BitVecVal(10, 32)         # 32비트 상수값
+arr = [BitVec(f'c{i}', 8) for i in range(16)]   # 8비트 변수 16개(문자 배열)</code></pre>
+<h3>산술/비트 연산 (파이썬 연산자 그대로)</h3>
+<pre><code class="language-python">x + y, x - y, x * y            # 덧셈/뺄셈/곱셈
+x ^ y, x &amp; y, x | y, ~x         # XOR/AND/OR/NOT
+x &lt;&lt; y, LShR(x, y)              # 왼쪽 시프트 / 논리 오른쪽 시프트(부호 무시)
+x &gt;&gt; y                          # 산술(부호 있는) 오른쪽 시프트</code></pre>
+<h3>비교 연산자</h3>
+<pre><code class="language-python">x == y, x != y                  # 동등/부등 (부호 무관)
+x &lt; y, x &lt;= y, x &gt; y, x &gt;= y     # 부호 없는(unsigned) 비교 — 기본값
+ULT(x, y), ULE(x, y), UGT(x, y), UGE(x, y)   # 명시적 unsigned 비교
+x &lt;s y                          # BitVec에서 &lt;s/&lt;=s/&gt;s/&gt;=s는 signed 비교 연산자 (일부 버전은 함수형: BVSLT 등)</code></pre>
+<h3>부호/비트폭 관련</h3>
+<pre><code class="language-python">SignExt(n, x)     # x를 부호 확장해서 (원래비트+n)비트로 늘림
+ZeroExt(n, x)     # x를 0으로 채워서 확장(부호 없는 확장)
+Extract(hi, lo, x) # x의 [hi:lo] 비트 구간을 잘라냄(예: Extract(7,0,x)는 최하위 바이트)</code></pre>
+<h3>논리 결합</h3>
+<pre><code class="language-python">s.add(And(cond1, cond2))     # 모든 조건 동시 만족
+s.add(Or(cond1, cond2))       # 조건 중 하나 이상 만족
+s.add(Not(cond1))             # 조건 부정
+s.add(Implies(cond1, cond2))  # cond1이면 cond2도 성립</code></pre>
+<h3>솔버/모델</h3>
+<pre><code class="language-python">s = Solver()
+s.add(expr)
+result = s.check()            # sat / unsat / unknown
+m = s.model()
+val = m[x].as_long()           # 정수로 추출</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>&lt;</code>, <code>&lt;=</code>, <code>&gt;</code>, <code>&gt;=</code>는 Z3 BitVec에서 <strong>기본적으로 부호 없는(unsigned) 비교</strong>다. 원본 로직이 <code>int</code>(부호 있는) 타입이면 <code>&lt;s</code> 계열이나 <code>BVSLT</code> 등 signed 전용 비교를 명시적으로 써야 한다. 이 구분을 놓치면 <code>sat</code>/<code>unsat</code> 결과가 원본 프로그램의 실제 동작과 어긋난다.</li><li><code>Extract(hi, lo, x)</code>의 결과 비트폭은 <code>hi-lo+1</code>이다. 예를 들어 32비트 <code>x</code>에서 최하위 바이트만 뽑으려면 <code>Extract(7, 0, x)</code>이고 결과는 8비트 값이다.</li><li><code>SignExt</code>/<code>ZeroExt</code>의 첫 인자는 "추가할 비트 수"이지 "최종 비트 수"가 아니다. 8비트를 32비트로 만들려면 <code>SignExt(24, x)</code>(24비트 추가)다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>부호 있는 비교가 필요한데 기본 <code>&lt;</code> 연산자를 그대로 써서 잘못된 해를 얻는 것.</li><li><code>SignExt</code>/<code>ZeroExt</code>의 인자를 "최종 비트 수"로 착각해서 엉뚱한 비트폭이 나오는 것.</li><li><code>Extract(lo, hi, x)</code>처럼 인자 순서를 거꾸로 넣는 것 — 반드시 <code>(hi, lo, x)</code> 순서다.</li><li><code>LShR</code>(논리 시프트)과 <code>&gt;&gt;</code>(산술 시프트)를 혼동해서 부호 비트가 잘못 유지/소실되는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>BitVec 기본 개념 자체가 헷갈리면 → REV-0268 Z3 BitVec 기초</li><li>문자열/문자 배열 조건을 실제로 세우는 예제가 필요하면 → REV-0269 Z3로 문자 조건 풀기</li><li>오버플로우/부호 확장이 섞인 복잡한 로직이라면 → REV-0270 Z3에서 8비트 32비트 Overflow 다루기</li><li>로직이 너무 복잡해서 손으로 옮기기 어렵다면 → REV-0271 angr 심볼릭 실행 기초</li></ul>
+<h2>미니 예제</h2>
+<p>부호 있는 8비트 값 <code>x</code>가 <code>-10</code>보다 크고 <code>100</code>보다 작다는 조건을 정확히 표현하는 예제다.</p>
+<pre><code class="language-python">from z3 import *
+
+x = BitVec('x', 8)
+s = Solver()
+
+# 부호 있는 비교(signed)를 명시적으로 사용 — 기본 &lt;, &gt; 연산자는 unsigned라 여기선 부적합
+s.add(x &gt;s -10)
+s.add(x &lt;s 100)
+
+if s.check() == sat:
+    m = s.model()
+    print(m[x].as_long())</code></pre>
+<p>기본 unsigned 비교(<code>x &gt; -10</code>처럼 파이썬에서 음수를 그대로 넣는 경우)를 썼다면 8비트 값 <code>-10</code>이 내부적으로 <code>246</code>(2의 보수 표현)으로 처리되어 전혀 다른 결과가 나왔을 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0268-z3-bitvec-basics.html">REV-0268 — Z3 BitVec 기초</a></li><li><a href="rev-0269-z3-solving-char-constraints.html">REV-0269 — Z3로 문자 조건 풀기</a></li><li><a href="rev-0270-z3-overflow-handling.html">REV-0270 — Z3에서 8비트 32비트 Overflow 다루기</a></li><li><a href="rev-0271-angr-basics.html">REV-0271 — angr 심볼릭 실행 기초</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Z3 파이썬 API(<code>BitVec</code>, <code>Extract</code>, <code>SignExt</code>, <code>ZeroExt</code>, <code>ULT</code>/<code>UGT</code>, signed 비교 연산자, <code>And</code>/<code>Or</code>/<code>Not</code>/<code>Implies</code>)는 Z3 공식 GitHub(Z3Prover/z3)의 Z3py API 문서 및 튜토리얼을 기준으로 정리했다(2026-09-09 검증).</li><li>BitVec 기본 비교 연산자가 unsigned라는 사실은 Z3py 튜토리얼의 "Bit-Vectors" 섹션 설명과 일치한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>strip된 정적 바이너리에서 libc 함수 식별 개념(시그니처 매칭) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>strip된 정적 바이너리에서 libc 함수 식별 개념(시그니처 매칭)</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">readelf</span><span class="tag">objdump</span></div>
+<h2>한 줄 요약</h2>
+<p>strip된 정적 바이너리는 <code>nm</code>/<code>readelf -s</code>로 이름을 얻을 수 없지만, glibc 함수들은 컴파일러 버전과 최적화 옵션이 같으면 명령어 바이트 시퀀스가 거의 그대로 반복되기 때문에, IDA의 FLIRT나 Ghidra의 Function ID 같은 "시그니처 매칭" 기능으로 바이트 패턴을 알려진 libc 함수 목록과 대조해 함수 이름을 자동으로 복원할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>file ./chall</code> 결과에 <code>statically linked, stripped</code>가 같이 보일 때</li><li><code>nm ./chall</code> 결과가 <code>nm: ./chall: no symbols</code>로 나와서 함수 이름을 하나도 알 수 없을 때</li><li>IDA/Ghidra에서 함수가 전부 <code>sub_401xxx</code> 형태의 무명 함수로만 나오는데, 그중 어떤 게 <code>malloc</code>이고 어떤 게 <code>printf</code>인지 구분해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 바이트 패턴 매칭이 가능한가</h3>
+<p>같은 glibc 소스 코드를 같은 컴파일러(GCC 특정 버전), 같은 최적화 옵션(<code>-O2</code> 등)으로 컴파일하면 함수 내부의 명령어 바이트 시퀀스가 거의 동일하게 나온다. 차이가 나는 부분은 대개 상대 주소를 담은 오퍼랜드(<code>call</code>, <code>jmp</code>, <code>lea</code>의 대상 주소, 재배치되는 부분)뿐이다. 시그니처 매칭 도구는 이런 "가변 바이트"를 와일드카드로 마스킹한 뒤, 나머지 고정 바이트들의 체크섬(또는 패턴)을 미리 계산해둔 데이터베이스와 대조하는 방식으로 동작한다.</p>
+<h3>IDA FLIRT (Fast Library Identification and Recognition Technology)</h3>
+<p>IDA의 대표적인 시그니처 매칭 기능으로, <code>.sig</code>/<code>.pat</code> 형식의 시그니처 파일을 사용한다. IDA는 분석 시작 시 컴파일러/라이브러리 조합에 맞는 시그니처 파일을 자동 적용하거나, <code>File → Load file → FLIRT signature file...</code>로 수동 적용할 수 있다. glibc 정적 라이브러리(<code>libc.a</code>)에서 직접 시그니처를 뽑아주는 <code>pcf</code>/<code>sigmake</code> 같은 IDA SDK 도구도 존재하며, CTF 커뮤니티에서 자주 쓰이는 glibc 버전별 FLIRT 시그니처 모음이 공개되어 있기도 하다.</p>
+<h3>Ghidra Function ID (FID)</h3>
+<p>Ghidra는 FLIRT와 비슷한 목적의 "Function ID" 프레임워크를 내장하고 있다. <code>libc.a</code>, <code>libgcc.a</code> 등에서 함수 바이트 해시를 뽑아 FID 데이터베이스를 만들고(<code>Function ID → Create New Empty Function ID Database</code>, <code>Populate Function ID Database</code>), 분석 시 <code>Analysis → Auto Analyze → Function ID</code>를 켜면 일치하는 함수에 자동으로 이름이 붙는다. Ghidra 배포판에는 일부 표준 라이브러리용 FID 데이터베이스가 기본 포함되어 있다.</p>
+<h3>시그니처가 없거나 안 맞을 때의 수동 식별</h3>
+<p>컴파일러/glibc 버전이 시그니처 DB와 다르면 자동 매칭이 실패할 수 있다. 이때는 몇 가지 수동 단서를 쓴다.</p>
+<ul><li><strong><code>.rodata</code>의 에러 메시지 문자열</strong>: glibc는 내부적으로 <code>"malloc(): invalid size"</code>, <code>"free(): double free detected"</code> 같은 고정 문자열을 갖고 있어, <code>strings ./chall</code>로 이런 문구를 찾으면 근처 함수가 <code>malloc</code>/<code>free</code> 계열임을 추정할 수 있다.</li><li><strong><code>__libc_csu_init</code>/<code>__libc_start_main</code> 특유의 프롤로그 패턴</strong>: <code>__libc_start_main</code>은 <code>argc</code>, <code>argv</code>를 받아 <code>main</code>을 호출하는 고정된 호출 구조를 가지므로, <code>_start</code>(REV-0098)에서 바로 이어지는 큰 함수를 보면 식별 가능하다.</li><li><strong><code>.comment</code> 섹션</strong>: <code>readelf -p .comment ./chall</code>로 GCC/Clang 버전 문자열이 남아있는지 확인하면, 어느 버전의 FLIRT/FID 시그니처를 써야 할지 힌트가 된다.</li><li><strong>호출 그래프 위치</strong>: <code>main</code>에서 직접 호출되는 함수가 인자 개수/패턴상 <code>scanf</code>류로 보이면(REV-0109), 근처의 다른 무명 함수들과 비교해 라이브러리 함수 군집을 추정할 수 있다.</li></ul>
+<h3>Diaphora / BinDiff — 같은 문제 다른 문제 사이의 심볼 이식</h3>
+<p>같은 CTF 시리즈에서 심볼이 살아있는 유사 바이너리(같은 spec으로 컴파일된 버전)를 구했다면, Diaphora나 BinDiff 같은 바이너리 비교 도구로 함수를 매칭시켜 이름을 그대로 옮겨올 수도 있다. 이는 FLIRT/FID가 실패했을 때 실전에서 자주 쓰이는 우회법이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code>$ file ./chall
+./chall: ELF 64-bit LSB executable, x86-64, ... statically linked, stripped
+$ nm ./chall
+nm: ./chall: no symbols</code></pre>
+<p>IDA/Ghidra를 열면 Functions 창에 <code>sub_401000</code>, <code>sub_401230</code>, ... 처럼 이름 없는 함수만 수천 개 나열된다.</p>
+<h2>가장 먼저 할 것</h2>
+<pre><code class="language-bash">file ./chall
+readelf -p .comment ./chall
+strings ./chall | grep -iE "malloc|free|glibc|GNU C Library"</code></pre>
+<p>컴파일러/glibc 버전 힌트를 먼저 확보한 뒤, IDA/Ghidra에서 해당 버전에 맞는 FLIRT/FID 시그니처를 적용해본다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 버전 힌트 수집</strong></p>
+<pre><code class="language-bash">readelf -p .comment ./chall
+strings ./chall | grep "GNU C Library"</code></pre>
+<p><strong>2) IDA FLIRT 적용</strong></p>
+<ul><li><code>File → Load file → FLIRT signature file...</code>에서 glibc/libc 관련 <code>.sig</code> 선택</li><li>자동 인식이 안 되면 <code>libc.a</code>가 있는 유사 환경(같은 배포판 Docker 이미지 등)에서 직접 시그니처를 생성</li></ul>
+<p><strong>3) Ghidra Function ID 적용</strong></p>
+<ul><li><code>File → Configure → Function ID</code> 활성화 확인</li><li><code>Analysis → Auto Analyze</code> 재실행, 또는 이미 분석된 바이너리라면 <code>Function ID → Apply FID Database</code></li></ul>
+<p><strong>4) 자동 매칭 후에도 남는 함수는 수동 대조</strong></p>
+<ul><li><code>main</code> 호출 직후의 함수 인자 개수, 반환값 사용 패턴을 REV-0106(SysV AMD64 Calling Convention) 기준으로 추정</li><li><code>.rodata</code> 문자열 xref로 어떤 함수가 어떤 에러 메시지를 참조하는지 REV-0165(constant-search류 접근)로 좁히기</li></ul>
+<p><strong>5) 결과를 GDB에서 검증</strong> 시그니처로 "이 주소가 <code>malloc</code>일 것"이라 추정했다면, GDB로 실행 중 힙 동작을 관찰해 실제로 청크가 할당되는지 REV-0659/Pwndbg 힙 명령으로 교차 검증한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">file ./chall
+nm ./chall
+readelf -p .comment ./chall
+strings ./chall | grep -i "GNU C Library"</code></pre>
+<p>(IDA/Ghidra 쪽은 GUI 메뉴 조작이라 별도 CLI 명령은 없다. IDA는 <code>File → Load file → FLIRT signature file...</code>, Ghidra는 <code>Function ID</code> 메뉴를 사용한다.)</p>
+<h2>출력 해석</h2>
+<pre><code>$ readelf -p .comment ./chall
+
+String dump of section '.comment':
+  [     0]  GCC: (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0</code></pre>
+<p>이 문자열로 Ubuntu 22.04 + GCC 11.4.0 조합임을 알 수 있고, 같은 조합으로 빌드된 FLIRT/FID 시그니처를 구하거나 직접 만들면 매칭 성공률이 크게 올라간다.</p>
+<pre><code>$ strings ./chall | grep "GNU C Library"
+GNU C Library (Ubuntu GLIBC 2.35-0ubuntu3.4) stable release version 2.35.</code></pre>
+<p>glibc 버전 2.35임을 확인했으니, 이 버전 기준 소스/심볼 오프셋을 참고해 <code>malloc</code>/<code>free</code> 등의 내부 흐름(REV-0655 glibc malloc 내부 흐름 개요)과 대조할 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li>시그니처 매칭 결과를 100% 신뢰하는 것 — FLIRT/FID는 확률적 매칭이라 오탐(false positive)이 있을 수 있으므로, 중요한 함수(예: 취약점이 있는 <code>malloc</code>/<code>free</code>)는 반드시 GDB로 동작을 재확인해야 한다.</li><li>컴파일러 버전 확인 없이 아무 시그니처나 적용하는 것 — 버전이 다르면 매칭률이 크게 떨어지고, 심하면 엉뚱한 이름이 붙는다.</li><li>strip된 정적 바이너리를 보자마자 포기하고 처음부터 끝까지 수작업으로 어셈블리를 읽는 것 — <code>main</code>과 사용자 정의 함수만 찾으면 되는 경우가 많으므로, 문자열 xref(REV-0008)로 사용자 로직부터 먼저 좁히고 glibc 내부 함수는 필요한 만큼만 식별하는 게 효율적이다.</li><li>Diaphora/BinDiff로 이식한 이름을 검증 없이 그대로 믿는 것 — 비교 대상 바이너리가 실제로 충분히 유사한지 먼저 확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>애초에 strip이 안 된 바이너리라면 → REV-0666 nm으로 정적 바이너리에서 원하는 심볼 찾기가 훨씬 빠르다</li><li>디버그 정보가 일부라도 남아있는지 다시 확인 → REV-0667 ELF에서 디버그 심볼(.debug_info)이 남아있는 경우 활용하기</li><li>glibc 내부 malloc 흐름 자체를 더 알아야 한다면 → REV-0655 glibc malloc 내부 흐름 개요</li><li>정적 링킹 바이너리 분석의 전체 전략이 궁금하다면 → REV-0646 정적 링킹된(Statically Linked) ELF 분석 접근법</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ file ./chall
+./chall: ELF 64-bit LSB executable, x86-64, ... statically linked, stripped
+
+$ readelf -p .comment ./chall
+String dump of section '.comment':
+  [     0]  GCC: (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0
+
+$ strings ./chall | grep "GNU C Library"
+GNU C Library (Ubuntu GLIBC 2.35-0ubuntu3.4) stable release version 2.35.</code></pre>
+<p>이 두 줄만으로 "Ubuntu 22.04 + GCC 11.4.0 + glibc 2.35" 조합을 확정했고, IDA/Ghidra에 해당 버전용 FLIRT/FID 시그니처를 적용하면 수천 개의 무명 함수 중 상당수에 <code>malloc</code>, <code>free</code>, <code>printf</code> 같은 실제 이름이 자동으로 붙는다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0666-nm-static-binary-symbol-search.html">REV-0666 — nm으로 정적 바이너리에서 원하는 심볼 찾기</a></li><li><a href="rev-0667-debug-info-symbols-utilization.html">REV-0667 — ELF에서 디버그 심볼(.debug_info)이 남아있는 경우 활용하기</a></li><li><a href="rev-0646-statically-linked-elf-analysis.html">REV-0646 — 정적 링킹된(Statically Linked) ELF 분석 접근법</a></li><li><a href="rev-0655-glibc-malloc-internal-flow.html">REV-0655 — glibc malloc 내부 흐름 개요(청크 헤더 수준)</a></li><li><a href="rev-0038-symbols-vs-stripped.html">REV-0038 — 심볼이 있는 바이너리와 Stripped 바이너리 차이</a></li><li><a href="rev-0091-readelf-basics.html">REV-0091 — readelf 기본 사용법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>FLIRT 개념 및 시그니처 파일(.sig/.pat) 동작 방식: Hex-Rays IDA 공식 문서(FLIRT technology) 기준.</li><li>Ghidra Function ID 프레임워크 동작: Ghidra 공식 문서(Function ID Plugin) 기준.</li><li><code>.comment</code> 섹션에 GCC 버전 문자열이 기록되는 동작: GNU Binutils/GCC 표준 빌드 동작 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

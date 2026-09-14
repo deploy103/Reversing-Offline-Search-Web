@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Opaque Predicate 기초 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / packing</div>
+<article class="article-body">
+<h1>Opaque Predicate 기초</h1>
+<div class="article-meta"><span class="tag">packing</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">x64dbg</span><span class="tag">Detect It Easy</span></div>
+<h2>한 줄 요약</h2>
+<p>Opaque predicate(불투명 조건, 불투명 술어)는 겉보기엔 입력값에 따라 참/거짓이 바뀌는 것처럼 보이지만 실제로는 항상 같은 결과(항상 참 또는 항상 거짓)로만 계산되는 조건식을 코드에 끼워 넣어, 실제로는 절대 실행되지 않는 가짜 분기(dead branch)를 만들고 정적 분석 도구가 CFG(제어 흐름 그래프)를 실제보다 훨씬 복잡하게 인식하도록 속이는 난독화 기법이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리에 <code>cmp</code>, <code>test</code> 다음에 조건 분기(<code>jz</code>, <code>jnz</code> 등)가 있는데, 그 조건이 프로그램 입력이나 사용자 데이터와 무관한 수식(예: 어떤 변수의 제곱을 4로 나눈 나머지)으로 계산될 때</li><li>함수 안에 도달하는 것이 불가능해 보이는 코드 블록이 있는데 IDA가 그것도 정상적인 분기 대상으로 표시하고 있을 때</li><li>그래프 뷰에서 분기가 있는데 한쪽 경로로 가는 화살표가 실제로는 한 번도 밟히지 않는 것 같다는 의심이 들 때</li><li>Control Flow Flattening(REV-0231)을 분석하다가 dispatcher 안에서 이상하게 항상 같은 결과가 나오는 조건을 만났을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>컴파일러/난독화 도구는 원본 코드에 실제로는 아무 의미가 없는 <code>if</code>문을 인위적으로 추가할 수 있다. 이때 조건식은 겉보기에는 복잡하고 입력에 의존하는 것처럼 보이지만, 수학적으로 분석하면 <strong>항상 참(true)이거나 항상 거짓(false)</strong>으로 결정되어 있다. 이런 조건식을 <strong>opaque predicate</strong>라고 부른다. "불투명(opaque)"이라는 이름은, 컴파일 시점에는 이 조건이 무엇을 계산하는지 프로그램 설계자(난독화 도구)는 알고 있지만, 이를 나중에 보는 분석가(사람이든 자동화된 도구든)에게는 "이 조건이 실제로 뭘 하는지" 그리고 "이게 항상 같은 값인지"가 한눈에 보이지 않는다는 뜻에서 나왔다.</p>
+<p>대표적으로 자주 쓰이는 항상 참인 조건의 예는 다음과 같다.</p>
+<ul><li><code>(x * x) % 4 != 2</code> — 임의의 정수 x에 대해 x²을 4로 나눈 나머지는 절대 2가 될 수 없다(정수의 제곱은 항상 4로 나눴을 때 나머지가 0 또는 1이기 때문). 그래서 이 식은 x가 무엇이든 <strong>항상 참</strong>이다.</li><li><code>(x*x - x) % 2 == 0</code> — x²-x = x(x-1)은 연속된 두 정수의 곱이라 항상 짝수다. 그래서 이 식도 <strong>항상 참</strong>이다.</li><li><code>7*y*y - 1 != x*x</code> (특정 조건 하에서) — 정수론적으로 특정 형태의 등식이 성립하지 않음을 이용한 조건.</li></ul>
+<p>난독화 도구는 이런 항상 참(또는 항상 거짓)인 조건을 코드 곳곳에 심어 넣고, 그 조건에 따라 분기하는 <code>if</code>문을 만든다. 조건이 항상 참이면 "거짓일 때 실행되는 쪽" 블록은 <strong>실제로는 절대 실행되지 않는 죽은 코드(dead code)</strong>가 된다. 이 죽은 코드 블록 안에는 진짜처럼 보이는(하지만 의미 없는) 명령어들을 채워 넣어서, 분석가가 "이것도 분석해야 할 진짜 로직인가?"라고 헷갈리게 만든다. 또한 이런 가짜 분기가 많아질수록 CFG(제어 흐름 그래프)의 노드/엣지 수가 실제 로직 복잡도보다 훨씬 부풀려져서, 자동화된 분석 도구(심볼릭 실행, 자동 디컴파일 등)의 처리 시간과 분석가의 인지 부담을 함께 늘리는 효과를 낸다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>조건 분기 직전 계산이 프로그램의 실제 입력(사용자 입력, 파일 내용 등)과 무관한 <strong>지역 변수 하나에 대한 산술/모듈러 연산</strong>으로만 이루어져 있음(예: 그 변수가 함수 진입 시점에 이미 고정된 값이거나, 프로그램 흐름과 무관하게 계산되는 카운터).</li><li>조건식에 <code>* </code>(곱셈), <code>% </code>(나머지) 연산이 섞여 있고, 그 결과를 특정 상수와 비교(<code>== 0</code>, <code>!= 2</code> 등)함.</li><li>두 분기 경로 중 한쪽이 다른 쪽에 비해 코드가 뜬금없이 짧거나, 의미 없어 보이는 명령(예: <code>nop</code>에 가까운 연산, 이미 계산된 값을 다시 계산하는 중복 코드)만 있음.</li><li>동적 분석(디버거로 실제 실행)을 해보면 그 분기에서 매번 같은 방향으로만 점프하고, 반대쪽으로는 어떤 입력을 넣어도 절대 가지 않음.</li><li>Control Flow Flattening(REV-0231)의 dispatcher 안에 이런 패턴이 섞여 있으면, state 값이 특정 case로만 계속 흐르고 다른 case는 절대 도달하지 않는 것처럼 보임.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>의심스러운 조건 분기를 발견하면, 코드를 계속 읽어내려가기보다 <strong>그 조건식이 정말로 입력에 따라 달라지는지 수학적으로/동적으로 검증</strong>하는 것이 우선이다. 간단한 산술식이면 손으로 몇 가지 값을 대입해서 항상 같은 결과가 나오는지 확인해보는 것만으로도 opaque predicate 여부를 빠르게 판단할 수 있다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 의심스러운 조건 분기 찾기</strong></p>
+<p>디스어셈블리나 디컴파일 결과에서 조건식이 프로그램의 실제 데이터 흐름과 무관해 보이는 지점을 찾는다. 특히 지역 변수 하나만으로 계산되는 모듈러 연산이 핵심 단서다.</p>
+<p><strong>2) 조건식을 수식으로 정리</strong></p>
+<p><code>(v4 * v4) % 4 != 2</code> 같은 형태로 조건식을 옮겨 적는다. IDA 디컴파일(F5) 결과를 참고하면 어셈블리보다 수식을 파악하기 훨씬 쉽다.</p>
+<p><strong>3) 손으로 몇 가지 값 대입해서 검증</strong></p>
+<p>v4에 임의의 여러 정수(0, 1, 2, 3, -1, 100 등)를 대입해서 조건이 항상 같은 참/거짓 값으로 나오는지 확인한다. 정수론 지식이 필요한 경우도 있지만, CTF에서 자주 쓰이는 opaque predicate는 대부분 몇 개 값만 넣어봐도 패턴이 바로 드러난다.</p>
+<p><strong>4) 동적 분석으로 재확인</strong></p>
+<p>여러 다른 입력값으로 프로그램을 실제로 실행시키면서, 그 분기가 항상 같은 방향으로만 가는지 디버거로 확인한다. 손으로 한 수학적 판단을 실제 실행으로 검증하는 단계다.</p>
+<p><strong>5) 항상 참/거짓으로 확인되면 죽은 코드로 표시</strong></p>
+<p>한쪽 분기가 절대 실행되지 않는다는 것이 확인되면, 그 블록은 "실제 로직과 무관한 죽은 코드"로 분류하고 더 이상 분석 시간을 쓰지 않는다. IDA에서는 그 블록에 주석을 남겨(예: "dead - opaque predicate false branch") 나중에 다시 헷갈리지 않도록 표시해두면 좋다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA <code>F5</code> : 디컴파일해서 조건식을 C에 가까운 수식으로 확인</li><li>IDA <code>;</code>(세미콜론) : 선택한 줄/블록에 주석 추가 (죽은 코드 표시용)</li><li>x64dbg 조건부 로깅 브레이크포인트: 의심되는 분기 주소에 걸어두고 여러 입력으로 실행해 실제 분기 방향을 기록</li><li>(선택) Python/z3 같은 자동화 도구로 조건식을 SMT solver에 넣어 "항상 참인지"를 자동으로 증명할 수도 있다(고급, 자동화/Solver 카테고리 참고)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>여러 값을 대입해도 조건이 계속 같은 결과(항상 참 또는 항상 거짓)로 나온다면 → opaque predicate가 거의 확실하다.</li><li>값에 따라 결과가 바뀐다면 → 진짜 의미 있는 조건 분기이므로 opaque predicate가 아니라 실제 로직의 일부다. 계속 정상적으로 분석을 진행해야 한다.</li><li>동적 분석에서 실제로 여러 입력에 대해 항상 같은 경로로만 분기하는 것이 관찰되면 → 정적 판단이 맞았다는 것을 확인한 것이다.</li><li>죽은 코드로 분류된 블록 안의 명령어들이 실제로는 존재하지 않는 함수를 호출하거나, 절대 도달할 수 없는 이상한 값을 참조한다면 → 이는 의도적으로 채워 넣은 "미끼(decoy)" 코드일 가능성이 높으며, 신경 쓰지 않아도 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>opaque predicate로 보이는 조건을 성급하게 죽은 코드로 단정하고 건너뛰었는데, 실제로는 몇 가지 특수한 입력에서만 다른 결과가 나오는 진짜 로직이었던 경우. 몇 개의 값만 대입해보고 결론 내리지 말고, 가능하면 수학적으로(또는 폭넓은 범위의 값으로) 검증해야 한다.</li><li>조건식을 어셈블리 상태로만 붙잡고 씨름하는 것. IDA의 F5 디컴파일 결과로 옮기면 산술식이 훨씬 명확하게 보이므로, 어셈블리보다 디컴파일 결과를 먼저 확인하는 것이 효율적이다.</li><li>opaque predicate가 섞인 코드 전체를 자동으로 걸러내주는 도구가 있을 거라 기대하고 수작업 검증을 생략하는 것. IDA/Ghidra 자체는 이런 패턴을 자동으로 인식하지 못하며, 분석가가 직접 판단해야 한다(고급 자동화가 필요하면 z3 같은 SMT solver를 별도로 활용해야 한다).</li><li>죽은 코드 블록에 있는 의미 없어 보이는 API 호출이나 문자열 참조를 실제 로직으로 오해하고 시간을 낭비하는 것. 반대로 실제로 죽은 코드가 아닌데 무시하고 넘어가는 것도 흔한 실수이므로, 판단이 애매하면 반드시 동적 검증을 병행한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>조건식이 너무 복잡해서 손으로 참/거짓을 판단하기 어렵다면 → z3 같은 SMT solver에 조건식을 그대로 입력해서 "항상 참인가?"를 자동으로 검증하는 방법을 검토한다(자동화/Solver 카테고리 참고).</li><li>opaque predicate가 Control Flow Flattening의 dispatcher 안에 섞여 있다면 → REV-0231을 함께 참고해서 state 전이와 죽은 분기를 동시에 정리한다.</li><li>죽은 코드 블록 안의 코드가 실행 중에 스스로를 바꾸는 것처럼 보인다면 → REV-0230(Self-modifying Code)과 결합된 형태일 수 있다.</li><li>여러 조건 분기가 전부 opaque predicate로 의심되어 실제 로직을 찾기 어렵다면 → 정적 분석을 잠시 멈추고 동적 분석으로 프로그램이 실제로 어떤 값을 비교/출력하는지부터 확인하는 것이 더 빠를 수 있다.</li></ul>
+<h2>미니 예제</h2>
+<p>디컴파일 결과에 다음과 같은 함수가 있었다고 하자.</p>
+<pre><code class="language-c">int check(int input) {
+    int v4 = input + 3;
+    if ((v4 * v4) % 4 != 2) {
+        // "참" 분기 - 항상 여기로만 옴
+        return real_check(input);
+    } else {
+        // "거짓" 분기 - 절대 도달하지 않는 죽은 코드
+        return decoy_function(input, v4);
+    }
+}</code></pre>
+<p><code>v4</code>가 어떤 정수든 <code>(v4 * v4) % 4</code>는 항상 0 또는 1이며 절대 2가 될 수 없다(정수의 제곱을 4로 나눈 나머지는 v4가 짝수면 0, 홀수면 1이기 때문이다). 따라서 <code>(v4 * v4) % 4 != 2</code>는 <strong>입력값 <code>input</code>이 무엇이든 항상 참</strong>이다. 즉 <code>else</code> 분기의 <code>decoy_function</code> 호출은 프로그램이 실제로 실행될 때 절대 일어나지 않는 죽은 코드이며, 진짜 로직은 항상 <code>real_check(input)</code>이다. 분석가는 <code>decoy_function</code> 내부를 분석하는 데 시간을 쓸 필요가 없고, <code>real_check</code>에만 집중하면 된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0231-control-flow-flattening.html">REV-0231 — Control Flow Flattening 기초</a></li><li><a href="rev-0230-self-modifying-code.html">REV-0230 — Self-modifying Code 기초</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Opaque predicate의 정의(항상 같은 참/거짓 값으로 계산되는 조건식을 이용한 가짜 분기 삽입)와 대표적인 정수론 기반 예시(<code>x*x % 4 != 2</code> 등)는 코드 난독화 연구 분야의 고전적 개념으로, Collberg, Thomborson, Low의 난독화 변환 분류 연구(1997년경 소프트웨어 난독화 기법 논문)와 이후 OLLVM/Tigress 같은 공개 난독화 도구 문서에서 공통적으로 다루는 내용을 기준으로 정리했다(2026-09-08 검증).</li><li>opaque predicate가 CFG를 인위적으로 복잡하게 만들어 정적/자동화 분석 비용을 높이는 목적이라는 설명은 다수의 공개 리버싱/디옵퍼스케이션 교육 자료에서 공통적으로 다루는 내용이다.</li><li>실제 CTF/악성코드 샘플에 쓰이는 조건식은 훨씬 다양하고 복잡할 수 있으므로, 예제는 개념 이해를 위한 단순화된 형태다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

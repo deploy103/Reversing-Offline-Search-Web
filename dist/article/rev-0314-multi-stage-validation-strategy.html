@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>다단계 검증(Stage 1/2/3)이 있는 문제 공략법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>다단계 검증(Stage 1/2/3)이 있는 문제 공략법</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>Stage 1/2/3처럼 순차적으로 진행되는 다단계 검증 문제는 전체를 한 번에 풀려 하지 말고 <strong>스테이지 경계를 먼저 찾아 개수를 확정</strong>한 뒤, 앞 스테이지를 통과했다는 상태를 디버거로 강제로 만들어(패치 또는 브레이크포인트 스킵) 매번 처음부터 입력을 다시 넣지 않고 뒤 스테이지만 반복 테스트하는 것이 핵심 시간 절약 기법이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>실행 결과에 "Stage 1 clear", "Level 2 시작" 같은 순차적 진행 메시지가 보일 때</li><li>앞 단계를 통과해야만 다음 단계 코드가 실행되는 구조라 매번 처음부터 정답을 다시 입력해야 해서 테스트 속도가 느릴 때</li><li>전체 스테이지가 몇 개인지 확신이 없어서 언제 끝나는지 감이 안 잡힐 때</li><li>각 스테이지의 로직이 서로 다른 방식(첫 단계는 XOR, 다음 단계는 다른 인코딩)이라 한 번에 이해하기 부담스러울 때</li></ul>
+<h2>핵심 개념</h2>
+<p>다단계 검증은 REV-0313(여러 검증 함수)과 겉보기에 비슷하지만 결정적인 차이가 있다. REV-0313은 여러 필드를 독립적으로 검증하는 구조인 반면, 다단계 검증은 <strong>하나의 흐름이 순서대로 이어지며, 이전 단계를 통과해야만 다음 단계 코드에 도달</strong>하는 구조다. 게임의 레벨처럼 앞 단계를 건너뛰고 뒷 단계만 테스트할 수 없다는 점이 가장 큰 시간 낭비 요인이다.</p>
+<h3>스테이지 개수부터 확정한다</h3>
+<p>전체를 분석하기 전에 스테이지가 몇 개인지부터 안다. <code>strings ./chall | grep -i stage</code>로 "Stage 1", "Stage 2", "Stage 3", "Congratulations" 같은 문구를 미리 찾아두면, 최소한 "총 3단계짜리 문제"라는 걸 알고 시작할 수 있다. 문자열이 안 보인다면 IDA/Ghidra의 Functions 목록에서 비슷한 이름/구조의 함수가 몇 개 반복되는지로 대략 가늠한다.</p>
+<h3>스테이지 경계를 코드에서 찾는 법</h3>
+<p>보통 <code>main</code> 또는 상위 로직 함수에서 다음과 같은 패턴으로 나타난다.</p>
+<pre><code class="language-c">if (!stage1_check(input)) { puts("Stage 1 failed"); exit(1); }
+puts("Stage 1 passed");
+if (!stage2_check(input)) { puts("Stage 2 failed"); exit(1); }
+puts("Stage 2 passed");</code></pre>
+<p>각 <code>if</code> 블록이 하나의 스테이지 경계다. <code>exit</code>나 <code>return</code>으로 끝나는 실패 분기가 스테이지 사이의 명확한 구분선이 된다.</p>
+<h3>앞 단계를 매번 통과시키지 않고 뒷 단계만 반복 테스트하는 법</h3>
+<p>다단계 문제에서 가장 큰 비효율은 Stage 3을 테스트하려고 매번 Stage 1, 2 정답을 처음부터 다시 입력하는 것이다. 이를 피하는 방법은 두 가지다.</p>
+<ol><li><strong>디버거로 분기 강제 통과(패치)</strong>: x64dbg/GDB에서 <code>stage1_check</code>의 반환값을 확인하는 조건 분기(<code>test eax, eax</code> / <code>jz fail</code>) 직전에 브레이크포인트를 걸고, 레지스터 값을 직접 성공 조건에 맞게 바꿔서 실행을 이어간다. GDB라면 <code>set $eax = 1</code> 같은 명령으로 반환값 자체를 조작할 수 있다.</li><li><strong>바이너리 패치</strong>: 분석용 사본을 하나 만들어, 실패 분기로 가는 조건 점프(<code>JE</code>/<code>JNE</code> 등)를 무조건 통과하도록 니모닉을 바꾸거나 NOP으로 만든다(x64dbg의 어셈블 기능 또는 IDA의 Patch Program 기능 사용). 이렇게 만든 패치본으로 Stage 2, 3만 반복 테스트하면 된다. 원본 파일은 절대 덮어쓰지 않고 반드시 복사본에만 적용한다.</li></ol>
+<p>이 기법 덕분에 Stage 1을 이미 이해하고 정답을 확보했다면, 이후에는 Stage 2/3 분석에만 집중하고 테스트 사이클을 훨씬 빠르게 돌릴 수 있다.</p>
+<h3>스테이지마다 다른 로직일 수 있다는 점 감안</h3>
+<p>각 스테이지가 서로 다른 인코딩/알고리즘을 쓰는 경우가 많다(Stage 1은 단순 XOR, Stage 2는 커스텀 치환, Stage 3은 커스텀 VM 등). 한 스테이지의 패턴을 알아냈다고 해서 다음 스테이지도 같은 방식일 거라 가정하지 않는다. 각 스테이지는 REV-0006~0009 같은 기본 검증 함수 찾기 절차를 처음부터 다시 적용한다는 마음으로 접근한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>실행 시 "Stage 1", "Level 2", "Round 3" 같은 순차적 메시지가 출력된다.</li><li>코드에 <code>if (!stageN_check(...)) exit(1);</code> 형태가 반복된다.</li><li>각 스테이지 함수의 로직 스타일(반복문 구조, 상수 종류)이 서로 다르다.</li><li>Stage 3 이후에 커스텀 opcode/switch 문 위주의 낯선 구조가 보인다면 REV-0315(커스텀 VM) 가능성도 같이 의심한다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>strings</code>로 스테이지 관련 문구를 검색해 전체 스테이지 개수를 먼저 확정한다. 그다음 <code>main</code>에서 각 스테이지 경계(성공/실패 분기)의 주소를 적어둔다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>strings ./chall | grep -iE "stage|level|round|clear|passed"</code>로 스테이지 개수와 메시지 확인</li><li><code>main</code>(또는 상위 로직)에서 각 스테이지 진입/탈출 조건 분기 주소를 표로 정리</li><li>Stage 1부터 순서대로 검증 함수를 분석(REV-0006~0009 절차 재사용)</li><li>Stage 1 정답을 확보하면, 분석 전용 사본에서 Stage 1 분기를 무조건 통과하도록 패치하거나 디버거에서 반환값을 조작</li><li>패치본으로 Stage 2만 반복 테스트하며 분석 및 정답 확보</li><li>같은 방식으로 Stage 3, 4... 순서대로 반복</li><li>모든 스테이지 정답을 원본(패치하지 않은) 바이너리에 순서대로 입력해 최종 검증</li><li>서브플래그 제출이 가능한 대회라면 각 스테이지 확보 시점마다 제출(REV-0312)</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">strings ./chall | grep -iE "stage|level|round|clear|passed"</code></pre>
+<ul><li>GDB: <code>break *0x401234</code>(분기 직전), <code>run</code>, <code>set $eax = 1</code>(반환값 강제 조작), <code>continue</code></li><li>x64dbg: F2(브레이크포인트), 레지스터 창에서 EAX 값 더블클릭 후 직접 수정, 또는 조건 점프 위에서 우클릭 → Assemble로 <code>JE</code>를 <code>JMP</code>나 NOP으로 변경(사본에만 적용)</li><li>IDA: <code>Edit → Patch Program → Change byte</code>로 특정 바이트 패치(사본에만 적용)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>반환값을 조작한 뒤 다음 스테이지 메시지가 정상 출력되면 패치가 올바르게 적용된 것이다.</li><li>패치 후에도 여전히 실패 메시지가 나온다면, 조작한 분기가 실제 스테이지 통과 조건이 아니거나(다른 검사가 더 있음) 조작 위치를 잘못 잡은 것이다 — <code>main</code> 흐름을 다시 확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>매번 Stage 1부터 전체 정답을 손으로 다시 입력하며 뒷 스테이지를 테스트하는 것 — 시간이 스테이지 수에 비례해 계속 늘어난다.</li><li>원본 파일을 직접 패치해서 나중에 최종 검증할 깨끗한 사본이 없어지는 것 — 항상 복사본에 패치한다.</li><li>앞 스테이지와 같은 로직이 뒤에도 반복될 거라 가정하고 대충 넘어갔다가 실제로는 다른 알고리즘이라 헤매는 것.</li><li>스테이지 개수를 확인하지 않고 시작해서, 다 풀었다고 생각했는데 뒤에 스테이지가 더 있었다는 걸 뒤늦게 아는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>스테이지 하나의 검증 로직 자체를 못 찾겠다 → REV-0006 Flag 검증 함수 찾는 가장 흔한 경로</li><li>뒷 스테이지가 커스텀 VM처럼 보인다 → REV-0315 커스텀 가상머신(VM) 기반 문제를 알아보는 첫 징후</li><li>서브플래그 제출과 시간 배분이 궁금하다 → REV-0312 시간이 부족할 때 부분점수를 노리는 전략</li><li>필드가 여러 개라 검증 함수도 여러 개인 구조와 헷갈린다 → REV-0313 여러 개의 검증 함수가 있는 문제 접근 순서</li><li>PIE 바이너리라 패치할 주소가 실행마다 바뀐다 → REV-0194 PIE 바이너리 GDB 브레이크포인트 잡기</li></ul>
+<h2>미니 예제</h2>
+<p><code>main</code>에서 <code>stage1_check</code> 실패 시 <code>puts("Stage 1 failed"); return 1;</code>, 성공 시 <code>puts("Stage 1 clear");</code>로 이어지는 걸 확인했다. GDB로 <code>stage1_check</code> 리턴 직후 주소에 브레이크포인트를 걸고 <code>set $eax = 1</code>로 강제 성공시켜보니 "Stage 1 clear"와 함께 곧바로 Stage 2 입력 프롬프트가 떴다. 이후 Stage 2를 테스트할 때는 Stage 1 입력을 아무 값이나 대충 넣고 이 조작을 반복해서, Stage 1 정답을 매번 재입력하지 않고도 Stage 2 로직에만 집중해서 분석할 수 있었다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0313-multiple-check-functions-order.html">REV-0313 — 여러 개의 검증 함수가 있는 문제 접근 순서</a></li><li><a href="rev-0315-custom-vm-first-signs.html">REV-0315 — 커스텀 가상머신(VM) 기반 문제를 알아보는 첫 징후</a></li><li><a href="rev-0312-partial-score-strategy-time-pressure.html">REV-0312 — 시간이 부족할 때 부분점수를 노리는 전략</a></li><li><a href="rev-0006-finding-check-function.html">REV-0006 — Flag 검증 함수 찾는 가장 흔한 경로</a></li><li><a href="rev-0194-gdb-pie-breakpoints.html">REV-0194 — PIE 바이너리 GDB 브레이크포인트 잡기</a></li><li><a href="rev-0310-difficulty-triage-checkpoints.html">REV-0310 — 리버싱 문제 난이도를 빠르게 가늠하는 체크포인트</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>다단계 검증 구조 분석 및 디버거 반환값 조작(패치)을 통한 스테이지 스킵 기법: GDB/x64dbg 공식 문서 및 CTF 실전 경험칙 기준 요약 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

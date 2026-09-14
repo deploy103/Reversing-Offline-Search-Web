@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>문자열이 암호화되어 있어 참조를 못 찾을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>문자열이 암호화되어 있어 참조를 못 찾을 때</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>Strings 창(Shift+F12)이나 <code>strings</code> 명령에 정작 필요한 문자열이 하나도 안 보인다면, 프로그램이 실제로 출력/비교하는 텍스트가 바이너리 안에 원문 그대로 저장되지 않고 <strong>XOR/커스텀 인코딩 등으로 암호화된 바이트 배열</strong>로 저장되어 있다가 실행 중에 복호화되는 경우이며, 이때는 "문자열 xref로 함수 찾기"(REV-0163) 전략이 통하지 않으므로 암호화된 배열을 참조하는 코드(복호화 루프)를 직접 찾아 로직을 분석하거나, 필요하면 동적으로 실행 중 복호화된 값을 직접 덤프해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>실행하면 분명히 메시지를 출력하는데 Strings 창(Shift+F12)이나 <code>strings</code> 명령에는 그럴듯한 문자열이 하나도 없을 때</li><li><code>.rodata</code>/<code>.data</code> 섹션에 사람이 읽을 수 없는 바이트 나열만 보일 때</li><li>REV-0163(문자열 Xref로 검증 함수 찾기) 전략을 시도했는데 애초에 참조할 문자열 자체가 없어서 시작할 수 없을 때</li><li>문자열처럼 보이는 배열이 있는데 <code>puts</code>/<code>printf</code>에 바로 넘겨지지 않고 이상한 루프를 먼저 거칠 때</li></ul>
+<h2>핵심 개념</h2>
+<p><code>strings</code>나 IDA Strings 창은 바이너리에 <strong>평문(plaintext) ASCII/UTF 바이트 나열</strong>이 있을 때만 그것을 찾아낸다. 문자열 리터럴이 컴파일 시점에 원문 그대로 저장되지 않고, 빌드 스크립트나 난독화 도구가 각 문자를 XOR 키, 회전(rotate), 커스텀 치환표 등으로 미리 바꿔서 저장해두면, 그 바이트들은 사람이 보기엔 그냥 무작위 데이터로 보인다. 실행 시점에 프로그램은 출력 직전에 이 배열을 원래대로 되돌리는 <strong>복호화 루프</strong>를 거친 뒤에야 <code>puts</code>/<code>printf</code>에 넘긴다.</p>
+<p>이 상황에서 "문자열을 보고 그 문자열을 쓰는 함수를 거꾸로 찾는다"는 접근(REV-0163) 자체가 성립하지 않는다. 대신 다음 두 방향으로 접근해야 한다.</p>
+<ol><li><strong>정적으로 복호화 루틴을 찾아 직접 재현한다</strong>: 암호화된 배열은 여전히 바이너리 안에 고정된 데이터로 존재하고, 그 배열을 참조하는 코드(반복문 + XOR/치환 연산)도 정적으로 보인다. 이 로직을 읽어서 파이썬 등으로 그대로 재현하면 실행 없이도 원문을 복원할 수 있다.</li><li><strong>동적으로 복호화 직후 값을 스냅샷한다</strong>: 복호화 알고리즘이 복잡하거나 여러 단계로 감싸져 있으면, 정적으로 따라가는 것보다 그 함수에 브레이크포인트를 걸고 복호화가 끝난 직후 메모리를 덤프하는 편이 훨씬 빠르다(REV-0805 기준으로 전환 판단).</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>.data</code>/<code>.rodata</code>에 <code>DB</code> 나열로 된 바이트 배열이 있는데 ASCII로 보면 의미 없는 값들뿐임</li><li>어떤 함수가 이 배열을 대상으로 인덱스 루프를 돌면서 <code>xor</code>, <code>sub</code>, <code>rol</code>/<code>ror</code>, 또는 테이블 조회 같은 연산을 반복함</li><li>루프가 끝난 뒤 그 결과 버퍼가 <code>puts</code>, <code>printf</code>, <code>strcmp</code> 등에 넘겨짐</li><li>문자열 배열 크기가 실제 출력 메시지 길이와 대략 맞아떨어짐(암호화해도 길이는 보통 보존됨)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>puts</code>/<code>printf</code>/<code>strcmp</code> 계열 함수의 Xref를 거꾸로 따라가서, 그 인자로 들어가는 버퍼가 <strong>어디서 채워지는지</strong>부터 추적한다. 인자가 고정 문자열 주소가 아니라 스택/힙 버퍼라면 그 버퍼를 채우는 직전 함수(복호화 루틴 후보)를 찾는다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 출력/비교 함수에서 거꾸로 추적</strong> <code>printf</code>, <code>puts</code>, <code>strcmp</code>, <code>memcmp</code> 등의 xref를 REV-0164(Imports 좁히기) 방식으로 모으고, 각 호출 직전에 인자로 쓰이는 버퍼가 어디서 만들어졌는지 데이터 흐름을 따라간다.</p>
+<p><strong>2) 암호화된 원본 배열 위치 확정</strong> 버퍼를 채우는 루프의 소스가 되는 고정 주소(<code>.data</code>/<code>.rodata</code>)를 찾는다. 이 주소가 바로 암호화된 원문이다. Hex View(REV-0162)로 실제 바이트를 확인해둔다.</p>
+<p><strong>3) 복호화 알고리즘 코드로 읽어내기</strong> 루프 안의 연산을 그대로 옮겨 적는다. 흔한 패턴은 <code>buf[i] ^= key[i % keylen]</code>(반복 XOR 키), <code>buf[i] -= i</code>(인덱스 기반 변형), 고정 치환표 조회 등이다. 루프 종료 조건(길이, NULL 종료 여부)도 함께 확인한다.</p>
+<p><strong>4) 파이썬으로 정적 재현</strong> Hex View에서 뽑은 원본 바이트와 알아낸 알고리즘을 파이썬 스크립트로 그대로 옮겨 복호화 결과를 뽑는다(REV-0168, 정적 분석 결과를 파이썬 의사코드로 옮기기 참고). 이 방법이 통하면 실행 없이 모든 문자열을 한 번에 복원할 수 있어 가장 효율적이다.</p>
+<p><strong>5) 알고리즘이 너무 복잡하면 동적 전환</strong> 알고리즘이 다단계이거나(암호화된 값이 또 다른 키로 재암호화됨), 키 자체가 런타임에 계산되는 값(시간, 입력값 등)에 의존하면 정적 재현이 비효율적이다. 이 경우 복호화 루프가 끝나는 지점에 브레이크포인트를 걸고 그 시점의 버퍼 메모리를 직접 덤프하는 편이 빠르다(REV-0805 기준 참고).</p>
+<h2>명령어/단축키</h2>
+<ul><li><code>Shift+F12</code>: IDA Strings 창(원문 문자열이 있는지 재확인용)</li><li><code>Ctrl+X</code>: 암호화된 배열 주소의 xref 확인</li><li><code>Alt+B</code>(또는 우클릭 → Binary search): Hex View에서 특정 바이트 패턴 검색</li><li>Python(idapython) 또는 별도 스크립트로 복호화 로직 재현</li></ul>
+<h2>출력 해석</h2>
+<ul><li>정적으로 복원한 문자열이 여전히 의미 없어 보이면 루프의 인덱스 범위나 XOR 키 순환 길이를 잘못 읽었을 가능성이 크다 — 키 길이를 1바이트씩 늘려가며 재시도해본다.</li><li>복호화 결과가 일부만 맞고 뒷부분이 깨진다면 종료 조건(NULL 바이트 vs 고정 길이)을 잘못 판단한 것이다.</li><li>동적으로 덤프한 값이 매 실행마다 달라진다면 키가 난수/시간 기반이라는 뜻이므로, 그 값 자체를 매번 다시 구해야 한다(정적 원문 복원이 불가능한 케이스).</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Strings 창에 안 보인다고 "이 바이너리엔 검증할 문자열이 없다"고 성급히 결론짓는 것 — 암호화되어 있을 가능성을 먼저 배제해야 한다.</li><li>복호화 루프를 찾고도 XOR 키의 순환 길이(keylen)를 확인하지 않고 고정 1바이트 키라고 가정하는 것.</li><li>복호화 알고리즘을 코드로 재현할 때 원본 언어의 부호 있는/없는 바이트 연산 차이를 무시해서 결과가 미묘하게 틀리는 것 — <code>char</code>가 부호 있는 타입이면 XOR 전에 부호 확장이 일어날 수 있다.</li><li>정적 재현이 계속 실패하는데도 계속 정적으로만 매달리는 것 — 몇 번 시도해도 안 맞으면 동적 덤프로 전환하는 것이 시간상 이득이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>애초에 그 문자열을 쓰는 함수 자체를 어떻게 찾아야 하는지 기본이 궁금하면 → REV-0163</li><li>정적 분석 결과를 파이썬으로 옮겨 계산하는 방법이 궁금하면 → REV-0168</li><li>이 문제 말고도 여러 이유로 정적 분석이 막혀서 동적 전환을 고민 중이면 → REV-0805</li><li>문자열이 아니라 상수 자체가 이상한 이름으로 보이는 문제라면 → REV-0792</li></ul>
+<h2>미니 예제</h2>
+<p><code>.rodata</code>에 <code>48 60 6D 6D 66</code> 같은 바이트 배열이 있고, 이를 참조하는 함수가 <code>for (i = 0; i &lt; 5; i++) buf[i] = data[i] ^ 0x21;</code> 형태의 루프를 돈 뒤 <code>puts(buf)</code>를 호출한다고 하자. 이 배열을 Hex View에서 그대로 뽑아 파이썬으로 <code>bytes(b ^ 0x21 for b in [0x48,0x60,0x6D,0x6D,0x66])</code>을 계산하면 <code>b"Hello"</code>가 나온다. 이렇게 알고리즘이 단순 고정 XOR임을 확인하면, 바이너리 안의 다른 암호화된 문자열들도 같은 키로 전부 정적으로 일괄 복원할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0163-strings-to-check-function.html">REV-0163 — 문자열에서 검증 함수로 이동하는 정적 분석</a></li><li><a href="rev-0168-static-to-python-pseudocode.html">REV-0168 — 정적 분석 결과를 Python 의사코드로 옮기기</a></li><li><a href="rev-0164-imports-narrowing.html">REV-0164 — Imports에서 검증 함수 후보 좁히기</a></li><li><a href="rev-0792-off-unk-byte-prefix-names.html">REV-0792 — 상수가 이상한 이름(off_, unk_, byte_)으로만 나올 때</a></li><li><a href="rev-0805-static-to-dynamic-switch-criteria.html">REV-0805 — 정적분석만으로 도저히 안 풀릴 때 동적으로 전환하는 기준</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>문자열 난독화(암호화된 리터럴 + 런타임 복호화)는 CTF 리버싱에서 널리 관찰되는 일반적인 기법으로, 특정 벤더 문서보다는 다수의 공개 CTF 라이트업 및 리버싱 교육 자료에서 공통적으로 다뤄지는 패턴이다.</li><li>IDA Strings 창(Shift+F12)의 동작(바이너리 내 평문 바이트 나열만 탐지)은 Hex-Rays 공식 문서 기준.</li><li>이 글은 2026-09-09 기준으로 작성되었다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

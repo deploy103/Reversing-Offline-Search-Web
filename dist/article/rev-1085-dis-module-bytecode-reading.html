@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Python 바이트코드(dis 모듈)를 직접 읽는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / other-targets</div>
+<article class="article-body">
+<h1>Python 바이트코드(dis 모듈)를 직접 읽는 법</h1>
+<div class="article-meta"><span class="tag">other-targets</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">python</span><span class="tag">dis</span><span class="tag">marshal</span></div>
+<h2>한 줄 요약</h2>
+<p>uncompyle6/decompyle3/pycdc가 전부 실패하거나 결과를 못 믿겠을 때는 파이썬 표준 라이브러리 <code>dis</code> 모듈로 바이트코드 명령어를 한 줄씩 직접 읽으면 되는데, <code>marshal.load()</code>로 <code>.pyc</code>의 code 객체를 불러온 뒤 <code>dis.dis(code)</code>에 넘기기만 하면 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>REV-1084의 모든 디컴파일러가 에러를 내거나 이상한 코드를 출력해서 원본 로직을 신뢰할 수 없을 때</li><li>최신 Python(3.10 이상)이라 디컴파일러 지원이 아직 부실한 <code>.pyc</code>를 다뤄야 할 때</li><li>디컴파일된 결과의 특정 함수 하나가 의심스러워서 실제 바이트코드로 교차 검증하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3><code>.pyc</code>는 결국 marshal된 code 객체</h3>
+<p><code>.pyc</code> 파일은 16바이트 헤더(REV-1083) 뒤에 파이썬 <code>marshal</code> 모듈로 직렬화된 <strong>code 객체</strong> 하나가 통째로 저장되어 있다. <code>marshal.load()</code>는 이 직렬화 포맷을 역직렬화해서 실제 파이썬 <code>code</code> 객체(함수의 <code>__code__</code> 속성과 동일한 타입)로 복원해준다. 일단 이 code 객체만 손에 넣으면, <code>dis</code> 모듈의 모든 기능을 그대로 쓸 수 있다.</p>
+<h3>dis.dis()가 보여주는 것</h3>
+<p><code>dis.dis(code)</code>는 코드 객체 안의 모든 명령어를 사람이 읽기 좋은 표 형태로 출력한다. 각 줄은 대략 다음 정보를 담는다.</p>
+<ul><li><strong>줄 번호</strong>: 원본 소스에서 이 명령어에 대응하는 줄(디버그 정보가 남아있는 경우).</li><li><strong>점프 대상 표시(<code>&gt;&gt;</code>)</strong>: 다른 명령어가 여기로 점프해온다는 표시.</li><li><strong>opcode 이름</strong>(예: <code>LOAD_FAST</code>, <code>CALL</code>, <code>COMPARE_OP</code>, <code>POP_JUMP_IF_FALSE</code>).</li><li><strong>정수 인자(oparg)</strong>: 예를 들어 지역 변수 슬롯 번호, 상수 테이블 인덱스.</li><li><strong>해석된 값(argval/argrepr)</strong>: 괄호 안에 실제 변수 이름, 상수 값, 점프 대상 오프셋 등이 사람이 읽을 수 있게 표시된다.</li></ul>
+<p>프로그래밍적으로 각 명령어에 접근하려면 <code>dis.get_instructions(code)</code>나 <code>dis.Bytecode(code)</code>를 쓰면 <code>Instruction</code> 객체(namedtuple 유사)의 나열을 얻을 수 있고, 각 객체에서 <code>.opname</code>, <code>.arg</code>, <code>.argval</code>, <code>.argrepr</code>, <code>.offset</code> 등을 개별적으로 꺼낼 수 있다.</p>
+<h3>자주 보게 될 opcode를 읽는 요령</h3>
+<ul><li><code>LOAD_FAST n (변수명)</code> / <code>STORE_FAST n (변수명)</code>: 지역 변수를 스택에 올리거나 스택 값을 지역 변수에 저장.</li><li><code>LOAD_CONST n (값)</code>: 상수 테이블에서 값을 스택에 올림 — 문자열 비교/플래그 값이 여기 자주 등장한다.</li><li><code>LOAD_GLOBAL</code> / <code>LOAD_ATTR</code> / <code>CALL</code>(3.11 이전은 <code>CALL_FUNCTION</code>): 전역 이름 참조, 속성 접근, 함수 호출.</li><li><code>COMPARE_OP n (==)</code>처럼 비교 연산자가 괄호 안에 그대로 표시된다.</li><li><code>POP_JUMP_IF_FALSE</code>/<code>POP_JUMP_IF_TRUE</code>: 조건 분기 — CTF 검증 로직의 <code>if</code> 문이 거의 항상 이 형태로 나타난다.</li></ul>
+<h3>왜 이 방법이 "최후의 보루"인가</h3>
+<p>디컴파일러는 바이트코드를 다시 고급 언어 문법(if/for/컴프리헨션 등)으로 재구성하는 복잡한 패턴 매칭을 하기 때문에 버전이 하나만 안 맞아도 실패하거나 틀린 코드를 낼 수 있다. 반면 <code>dis</code>는 재구성을 전혀 하지 않고 <strong>인터프리터가 실제로 실행하는 명령어를 있는 그대로</strong> 보여주므로 항상 정확하다(단, 표준 라이브러리 공식 문서가 명시하듯 opcode 집합과 인코딩 자체는 버전마다 달라 "안정된 인터페이스가 아니다"). 읽기는 번거롭지만 절대 거짓말을 하지 않는다는 점이 핵심 가치다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>디컴파일 결과에 <code># WARNING: Decompyle incomplete</code> 나 이상한 임시 변수명이 섞여 있어 신뢰할 수 없을 때.</li><li><code>.pyc</code> 버전이 uncompyle6/decompyle3/pycdc 어느 것도 지원 범위에 없다고 나올 때.</li><li>함수 하나만 콕 집어 검증하고 싶은데 전체 디컴파일은 필요 없을 때.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>marshal.load()</code>로 code 객체를 얻은 뒤 <code>dis.dis(code)</code>를 바로 호출해본다. 파일 헤더가 16바이트(3.7+ 기준)라는 것만 REV-1083에서 확인해두면 된다.</p>
+<h2>단계별 절차</h2>
+<ol><li>REV-1083으로 <code>.pyc</code>의 정확한 헤더 길이(3.7+ 기준 16바이트)를 확인한다.</li><li>파일을 열어 헤더만큼 <code>read()</code>로 건너뛴다.</li><li>남은 바이트를 <code>marshal.load()</code>로 역직렬화해 code 객체를 얻는다.</li><li><code>dis.dis(code)</code>로 최상위 코드(모듈 레벨)를 먼저 살펴본다.</li><li>관심 있는 함수는 <code>code.co_consts</code> 안에 중첩된 code 객체로 들어있으므로, 그 안에서 찾아 <code>dis.dis(nested_code)</code>로 다시 들여다본다.</li><li><code>POP_JUMP_IF_FALSE</code> 주변의 <code>COMPARE_OP</code>, 그 앞의 <code>LOAD_CONST</code>를 따라가며 비교 대상 상수(플래그 후보)를 찾는다.</li><li><strong>주의</strong>: <code>marshal.load()</code>는 반드시 <code>.pyc</code>를 만든 파이썬과 같은 마이너 버전으로 실행해야 한다. 버전이 다르면 역직렬화 자체가 깨지거나 예외가 난다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python">import marshal, dis
+
+with open("chall.pyc", "rb") as f:
+    f.read(16)              # 3.7+ 기준 헤더 16바이트 스킵
+    code = marshal.load(f)
+
+dis.dis(code)                # 모듈 최상위 코드 디스어셈블
+
+# 중첩된 함수의 code 객체 찾기
+for const in code.co_consts:
+    if hasattr(const, "co_name"):
+        print(const.co_name)
+        dis.dis(const)
+
+# 명령어를 프로그램적으로 순회
+for instr in dis.get_instructions(code):
+    print(instr.offset, instr.opname, instr.argrepr)</code></pre>
+<h2>출력 해석</h2>
+<pre><code class="language-text">  3           0 LOAD_FAST                0 (flag)
+              2 LOAD_CONST               1 ('CTF{sample_flag}')
+              4 COMPARE_OP               2 (==)
+              6 POP_JUMP_IF_FALSE        6 (to 12)
+              8 LOAD_GLOBAL              0 (print + NULL)
+             10 ...
+        &gt;&gt;   12 LOAD_GLOBAL              1 (print + NULL)</code></pre>
+<p><code>LOAD_CONST</code>에서 바로 옆 괄호에 <code>'CTF{sample_flag}'</code>처럼 실제 비교 상수가 그대로 보이면, 디컴파일 없이 이 opcode 나열만 읽고도 정답 문자열을 바로 찾을 수 있다. <code>COMPARE_OP</code>의 괄호 안 연산자(<code>==</code>, <code>!=</code>, <code>&lt;</code> 등)로 비교 방향도 정확히 알 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>marshal.load()</code>를 실행 중인 파이썬 버전과 다른 버전의 <code>.pyc</code>에 그냥 돌려서 예외를 만나고 "파일이 깨졌다"고 오해하는 것 — 버전을 맞추거나(<code>pyenv</code>로 해당 버전 설치), 최소한 REV-1083에서 확인한 매직 넘버와 실행 중인 인터프리터의 <code>importlib.util.MAGIC_NUMBER</code>가 일치하는지 먼저 확인한다.</li><li>헤더 길이를 3.7+ 기준 16바이트로 고정해서 그보다 오래된 <code>.pyc</code>(8바이트 헤더)에 잘못 적용하는 것.</li><li>opcode 이름과 인자만 보고 제어 흐름(반복문 구조 등)을 완벽히 손으로 복원하려다 시간을 낭비하는 것 — 필요한 부분(비교 상수, 분기 조건)만 빠르게 짚어내는 용도로 쓰는 게 효율적이다.</li><li>파이썬 버전 간 opcode 이름이 다르다는 걸 모르고(예: 3.11부터 <code>CALL_FUNCTION</code>이 <code>CALL</code>로 바뀜) 예전 글의 opcode 이름을 최신 버전에 그대로 대입해 헷갈리는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>먼저 파이썬 버전/매직 넘버부터 확인하지 않았다면 → REV-1083 .pyc 파일에서 Python 버전(매직 넘버) 확인하기</li><li>디컴파일러를 아직 안 써봤다면 먼저 시도해볼 가치가 있다 → REV-1084 uncompyle6/decompyle3로 .pyc 디컴파일하기</li><li>Python 2 바이트코드라 opcode 자체가 낯설다면 → REV-1087 Python 2 vs 3 바이트코드 차이가 리버싱에 미치는 영향</li><li>PyArmor 등으로 코드 자체가 암호화/난독화되어 있어 marshal.load조차 정상 code 객체를 안 준다면 → REV-1086 PyArmor로 난독화된 Python 스크립트 알아보기</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-python">&gt;&gt;&gt; import marshal, dis
+&gt;&gt;&gt; with open("check.pyc", "rb") as f:
+...     f.read(16)
+...     code = marshal.load(f)
+...
+&gt;&gt;&gt; for c in code.co_consts:
+...     if hasattr(c, "co_name") and c.co_name == "check_flag":
+...         dis.dis(c)
+...
+  2           0 RESUME                   0
+  3           2 LOAD_FAST                0 (user_input)
+              4 LOAD_CONST               1 ('CTF{h1dd3n_1n_byt3c0d3}')
+              6 COMPARE_OP              40 (==)
+             10 POP_JUMP_IF_FALSE        4 (to 20)</code></pre>
+<p>디컴파일러 없이도 <code>LOAD_CONST</code> 한 줄에서 정답 플래그 문자열이 그대로 드러난다. 이런 식으로 "비교 상수 찾기" 목적이라면 굳이 완전한 소스 재구성 없이 <code>dis</code> 출력만으로 CTF 문제를 풀 수 있는 경우가 많다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-1083-pyc-magic-number.html">REV-1083 — .pyc 파일에서 Python 버전(매직 넘버) 확인하기</a></li><li><a href="rev-1084-uncompyle6-decompyle3.html">REV-1084 — uncompyle6/decompyle3로 .pyc 디컴파일하기</a></li><li><a href="rev-1087-python2-vs-python3-bytecode.html">REV-1087 — Python 2 vs 3 바이트코드 차이가 리버싱에 미치는 영향</a></li><li><a href="rev-1086-pyarmor-obfuscation-identification.html">REV-1086 — PyArmor로 난독화된 Python 스크립트 알아보기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>dis</code> 모듈 API(<code>dis.dis</code>, <code>dis.get_instructions</code>, <code>dis.Bytecode</code>, <code>Instruction</code> 필드), 출력 컬럼 구성, marshal 기반 pyc 역직렬화 방법, 버전별 바이트코드 포맷 변화(3.6 고정 2바이트 명령어, 3.10 점프 오프셋 변경, 3.11 CACHE/적응형 바이트코드 도입 등), "bytecode는 안정된 인터페이스가 아니다"라는 공식 경고: Python 공식 문서 <code>dis — Disassembler for Python bytecode</code> 기준 (2026-09-10 WebFetch로 원문 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

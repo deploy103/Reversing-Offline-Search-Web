@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pwndbg에서 heap 명령이 이 glibc 버전에서 지원 안 된다고 할 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>Pwndbg에서 heap 명령이 이 glibc 버전에서 지원 안 된다고 할 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">Pwndbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>Pwndbg의 <code>heap</code>, <code>bins</code>, <code>tcache</code>, <code>vis</code> 같은 힙 명령은 내부적으로 대상 프로세스가 사용 중인 <strong>glibc 버전과 malloc 내부 구조체 레이아웃을 자동으로 인식</strong>해야 동작하는데, 이 인식이 실패하면 "not supported"류 에러나 빈 출력이 나오며, 대부분 (1) libc 심볼/버전 정보를 못 읽거나 (2) pwndbg 자체가 오래되어 최신 glibc의 tcache/heap 구조 변경을 모르는 경우이므로 <code>pwndbg&gt; heap</code> 대신 <code>pwndbg&gt; libc_ver</code> 등으로 인식 상태를 먼저 확인하고 pwndbg를 최신화하는 것이 우선이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>pwndbg&gt; bins</code>나 <code>pwndbg&gt; heap</code>을 쳤는데 <code>Could not determine libc version</code> 같은 에러가 뜰 때</li><li><code>tcache bins</code>가 항상 빈 목록으로만 나오고 실제로 해제한 청크가 안 보일 때</li><li>최신 배포판(Ubuntu 24.04 등)의 glibc 2.39+ 바이너리를 분석하는데 pwndbg가 힙 레이아웃을 잘못 해석해서 이상한 값을 보여줄 때</li><li>CTF 문제에서 준 특정 버전의 <code>libc.so.6</code>(예: 2.31, 2.35, 2.39)을 GDB에 로드했는데 pwndbg 힙 명령이 동작하지 않을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>pwndbg가 힙 명령을 위해 필요로 하는 정보</h3>
+<p>pwndbg의 힙 관련 명령은 glibc 소스의 <code>malloc_chunk</code>, <code>malloc_state</code>(arena), <code>tcache_perthread_struct</code> 구조체 레이아웃을 그대로 재현해서 대상 프로세스의 메모리를 해석한다. 이 구조체들은 glibc 버전마다 필드가 달라졌기 때문에(예: tcache는 glibc 2.26부터 도입, tcache의 <code>key</code> 필드는 2.29에서 포인터 방식으로 변경, Safe-Linking은 2.32부터 도입), pwndbg는 실행 중인 프로세스가 <strong>실제로 어떤 glibc를 로드했는지</strong> 정확히 알아야 그에 맞는 구조체 정의를 골라 쓸 수 있다.</p>
+<p>이 버전 인식은 보통 다음 정보로 이루어진다.</p>
+<ul><li>libc 이미지 안의 문자열(<code>GNU C Library ... version 2.35</code>)이나 심볼 버전 정보</li><li>로드된 <code>libc.so.6</code>의 파일 경로/이름에 포함된 버전 힌트</li><li>glibc 디버그 심볼(있다면 <code>malloc_state</code> 구조체 정의를 DWARF에서 직접 읽어옴)</li></ul>
+<h3>"not supported" 계열 문제가 생기는 대표적인 이유</h3>
+<ol><li><strong>pwndbg 자체가 오래되어 최신 glibc를 모르는 경우.</strong> pwndbg는 릴리스마다 지원하는 glibc 범위를 확장해왔다(예: 2024.02.14 릴리스에서 libc 2.12+ 힙 익스플로잇 지원을 정식으로 추가). 오래된 pwndbg로 아주 새 glibc(2.38, 2.39 등)나 아주 오래된 glibc를 분석하면 구조체 오프셋이 안 맞아 값이 깨지거나 명령 자체가 실패할 수 있다.</li><li><strong>libc 버전을 자동으로 못 찾는 경우.</strong> strip된 커스텀 libc, 심볼 버전 문자열이 지워진 libc, 또는 정적 링킹이라 별도의 <code>libc.so.6</code> 매핑이 아예 없는 경우 pwndbg가 버전을 추정할 근거 자체가 없다.</li><li><strong>아직 힙이 초기화되지 않은 시점.</strong> 프로그램 시작 직후(첫 <code>malloc</code> 호출 전)에는 <code>main_arena</code>가 아직 유효한 값으로 채워지지 않아 <code>bins</code>/<code>heap</code> 명령이 이상한 값을 보여주거나 실패할 수 있다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>pwndbg&gt; heap</code> → <code>Could not find the version of glibc used, symbols may be missing</code> 류 경고</li><li><code>pwndbg&gt; bins</code> → <code>Invalid address</code> 또는 빈 리스트만 출력</li><li><code>pwndbg&gt; tcache</code> → tcache 구조체를 아예 못 찾음(2.26 미만 glibc인데 tcache 명령을 쓴 경우도 포함)</li><li><code>vis</code>(heap 시각화) 결과 청크 헤더 크기가 이상하게 커지거나 오프셋이 어긋나 보임</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>pwndbg&gt; libc_ver</code> (또는 <code>heap --help</code> 후 버전 관련 하위 명령)로 pwndbg가 실제로 어떤 glibc 버전을 인식했는지 확인한다.</li><li><code>pip3 install --upgrade pwndbg</code> 혹은 저장소를 <code>git pull</code>해서 pwndbg 자체를 최신화한다.</li><li><code>info sharedlibrary</code>로 실제 로드된 <code>libc.so.6</code> 경로를 확인하고, 그 파일이 문제에서 배포한 libc와 정확히 일치하는지 대조한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 현재 pwndbg가 인식한 libc 버전 확인</strong></p>
+<pre><code class="language-gdb">pwndbg&gt; libc_ver
+GLIBC version: 2.35</code></pre>
+<p>버전이 아예 안 나오거나 <code>Could not determine</code>으로 나오면 자동 인식이 실패한 것이다.</p>
+<p><strong>2) 실제 로드된 libc 경로/버전 직접 확인</strong></p>
+<pre><code class="language-gdb">pwndbg&gt; info sharedlibrary
+0x00007ffff7d9b090  0x00007ffff7f2c1a0  Yes         /home/user/ctf/libc.so.6</code></pre>
+<pre><code class="language-bash">$ ./libc.so.6
+GNU C Library (Ubuntu GLIBC 2.35-0ubuntu3.8) stable release version 2.35.</code></pre>
+<p>libc 파일을 직접 실행하면(실행 권한이 있는 <code>.so</code>는 버전 문자열을 출력하는 경우가 많다) 정확한 버전 문자열을 확인할 수 있다. <code>strings libc.so.6 | grep "GNU C Library"</code>로도 같은 정보를 얻을 수 있다.</p>
+<p><strong>3) pwndbg를 최신 버전으로 업데이트</strong></p>
+<pre><code class="language-bash">$ cd ~/pwndbg
+$ git pull
+$ ./setup.sh</code></pre>
+<p>pip로 설치했다면:</p>
+<pre><code class="language-bash">$ pipx upgrade pwndbg   # 또는 pip3 install --upgrade pwndbg</code></pre>
+<p>pwndbg는 릴리스마다 새 glibc 버전의 malloc 구조체 변경(tcache key 방식, safe-linking, <code>size_t</code> 정렬 규칙 등)을 반영하므로, 최신화만으로 해결되는 경우가 가장 많다.</p>
+<p><strong>4) 그래도 인식이 안 되면 힙이 아직 초기화 전인지 확인</strong></p>
+<pre><code class="language-gdb">pwndbg&gt; break main
+pwndbg&gt; run
+pwndbg&gt; next   # malloc이 최소 한 번은 호출된 지점까지 진행
+pwndbg&gt; heap</code></pre>
+<p>프로그램 진입 직후 바로 <code>heap</code>을 치면 arena가 아직 lazy 초기화되지 않아 실패할 수 있다. 최소 한 번 <code>malloc</code>이 호출된 뒤 시도한다.</p>
+<p><strong>5) 정적 링킹 바이너리라 별도 libc 매핑이 없는 경우</strong></p>
+<pre><code class="language-gdb">pwndbg&gt; info sharedlibrary
+No shared libraries loaded at this time.</code></pre>
+<p>이 경우 pwndbg가 malloc 심볼과 구조체를 정적 바이너리 자체에서 찾아야 하는데, strip되어 있으면 사실상 자동 인식이 불가능하다. <code>nm</code>으로 <code>malloc</code>, <code>main_arena</code> 심볼이 남아있는지 먼저 확인하고, 없다면 REV-0668(strip된 정적 바이너리에서 libc 함수 식별)의 시그니처 매칭 접근이 필요하다.</p>
+<p><strong>6) 디버그 심볼을 설치해 정확도 높이기 (선택)</strong></p>
+<pre><code class="language-bash">$ sudo apt install libc6-dbg</code></pre>
+<p>Ubuntu/Debian 계열에서 <code>libc6-dbg</code> 패키지를 설치하면 pwndbg가 <code>malloc_state</code> 등 구조체 정의를 DWARF에서 직접 읽어와 버전 추정 없이도 정확하게 동작할 수 있다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-gdb">libc_ver                  # pwndbg가 인식한 glibc 버전 확인
+info sharedlibrary        # 로드된 libc 실제 경로 확인
+heap                       # 힙 청크 목록
+bins                       # fastbin/tcache/smallbin/largbin 상태
+tcache                     # tcache 구조 상세
+vis                        # 힙 시각화</code></pre>
+<pre><code class="language-bash">strings libc.so.6 | grep "GNU C Library"   # 정확한 glibc 버전 문자열 확인</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>libc_ver</code>가 버전을 정확히 출력하면 이후 <code>heap</code>/<code>bins</code> 명령의 결과도 신뢰할 수 있다.</li><li><code>bins</code>에서 tcache가 존재해야 할 glibc 2.26 이상인데 <code>tcachebins empty</code>만 계속 나온다면, 실제로 해제된 청크가 없거나(정상) tcache 자체가 비활성화된 빌드(<code>--disable-tunables</code>)일 수 있다.</li><li>청크 크기가 비정상적으로 크거나 음수처럼 보이면 구조체 오프셋 자체가 잘못 해석된 것이므로, 버전 인식 실패를 다시 의심해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>pwndbg가 오래됐다는 것을 모른 채 "이 glibc 버전은 pwndbg가 지원 안 하는구나"라고 단정하고 포기하는 것 — 대부분 <code>git pull</code> 한 번으로 해결된다.</li><li>문제에서 배포한 <code>libc.so.6</code>을 로드하지 않고 시스템 libc로 디버깅하면서 힙 구조가 이상하다고 착각하는 것 — <code>LD_PRELOAD</code>/<code>LD_LIBRARY_PATH</code>(REV-0706, REV-0711 참고)로 반드시 정확한 libc를 강제해야 한다.</li><li>프로그램 시작 직후, 첫 <code>malloc</code> 호출 전에 <code>heap</code>을 실행해서 "안 된다"고 오해하는 것.</li><li>정적 링킹 바이너리에서 힙 명령이 안 되는 걸 pwndbg 버그로 착각하는 것 — 정적 바이너리는 애초에 별도 <code>libc.so.6</code> 매핑이 없어 자동 인식 대상이 아니다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>애초에 서버/문제 환경과 로컬 glibc 버전이 다른 게 원인일 수 있다면 → REV-0711(서버 환경 glibc와 로컬 glibc가 달라 분석이 안 맞을 때)</li><li>정적 링킹 바이너리라 심볼 자체가 안 보인다면 → REV-0646(정적 링킹된 ELF 분석 접근법)</li><li>glibc 버전 차이로 함수 시그니처/구조가 달라지는 것을 더 체계적으로 확인하고 싶다면 → REV-0648(glibc 버전별 함수 시그니처 차이 확인법)</li><li>Pwndbg 설치/명령 자체가 안 먹힐 때는 → REV-0690(Pwndbg가 설치는 됐는데 명령어가 안 먹을 때)</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-gdb">pwndbg&gt; heap
+Could not find the version of glibc used, symbols may be missing
+pwndbg&gt; libc_ver
+GLIBC version: could not determine
+pwndbg&gt; info sharedlibrary
+0x7ffff7d9b090  0x7ffff7f2c1a0  Yes  /home/user/ctf/libc.so.6</code></pre>
+<pre><code class="language-bash">$ strings /home/user/ctf/libc.so.6 | grep "GNU C Library"
+GNU C Library (Ubuntu GLIBC 2.39-0ubuntu8.3) stable release version 2.39.
+$ cd ~/pwndbg &amp;&amp; git pull &amp;&amp; ./setup.sh</code></pre>
+<pre><code class="language-gdb">pwndbg&gt; heap
+Allocated chunk | PREV_INUSE
+Addr: 0x555555559290
+Size: 0x250 (with flag bits: 0x251)</code></pre>
+<p>오래된 pwndbg가 glibc 2.39를 인식 못 하던 문제가 최신화 후 정상적으로 해석됐다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0711-server-vs-local-glibc-mismatch.html">REV-0711 — 서버 환경 glibc와 로컬 glibc가 달라 분석이 안 맞을 때</a></li><li><a href="rev-0706-shared-library-not-found.html">REV-0706 — 공유 라이브러리를 못 찾아서 error while loading shared libraries가 뜰 때</a></li><li><a href="rev-0646-statically-linked-elf-analysis.html">REV-0646 — 정적 링킹된(Statically Linked) ELF 분석 접근법</a></li><li><a href="rev-0648-glibc-version-function-signature-diff.html">REV-0648 — glibc 버전별 함수 시그니처 차이 확인법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Pwndbg의 glibc 힙 지원 범위 확장(libc 2.12+ 힙 익스플로잇 지원 추가 등): pwndbg 공식 GitHub 저장소 릴리스 노트(2024.02.14 등) 기준.</li><li>glibc malloc/tcache 구조체가 버전마다 변경된 사실(tcache 도입 2.26, tcache key 포인터화 2.29, safe-linking 2.32 등): glibc 공식 NEWS 파일 및 소스(<code>malloc/malloc.c</code>) 변경 이력 기준.</li><li><code>libc6-dbg</code> 패키지를 통한 디버그 심볼 활용: Ubuntu/Debian 패키지 문서 기준 (2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDIV: Signed 나눗셈 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>IDIV: Signed 나눗셈</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>IDIV</code>는 부호 있는(signed) 나눗셈을 수행한다. <code>DIV</code>(<a href="rev-0052-div.html">REV-0052</a>)와 레지스터 구조는 똑같지만, 나누기 전에 피제수 상위 절반을 <strong>부호 확장</strong>(<code>CDQ</code>/<code>CQO</code> 등)으로 채워야 한다는 점이 결정적으로 다르다 — 이걸 빠뜨리면 양수는 우연히 맞고 음수만 틀리는 아주 헷갈리는 버그가 생긴다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리에서 <code>cdq</code> 또는 <code>cqo</code>가 <code>idiv</code> 바로 앞에 항상 붙어 있는 이유가 궁금할 때</li><li>나눗셈 코드가 양수 입력에서는 잘 되는데 음수 입력에서만 결과가 이상할 때</li><li><code>int</code>로 나눗셈했는데 결과가 <code>floor()</code>가 아니라 다르게 반올림되는 것 같을 때 (<code>-7 / 2</code>가 왜 <code>-3</code>인지)</li><li><code>DIV</code>(<a href="rev-0052-div.html">REV-0052</a>)와 <code>IDIV</code>의 차이, 컴파일러가 둘 중 무엇을 왜 골랐는지 알고 싶을 때</li><li>IDA/Ghidra 의사코드가 <code>CONCAT44(extraout_EDX, EAX)</code> 같은 이상한 표현을 보여줄 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>오퍼랜드 구조는 DIV와 완전히 동일하다 — 단, 부호 있는 값으로 해석</h3>
+<p><code>IDIV</code>도 오퍼랜드는 제수 하나뿐이고, 피제수는 암묵적 레지스터 쌍에서 가져오며, 몫/나머지가 나오는 레지스터도 <code>DIV</code>와 정확히 같은 자리다:</p>
+<table><thead><tr><th>IDIV 형태</th><th>피제수(암묵)</th><th>몫</th><th>나머지</th></tr></thead><tbody><tr><td><code>IDIV r/m8</code></td><td>AX (16비트)</td><td>AL</td><td>AH</td></tr><tr><td><code>IDIV r/m16</code></td><td>DX:AX (32비트)</td><td>AX</td><td>DX</td></tr><tr><td><code>IDIV r/m32</code></td><td>EDX:EAX (64비트)</td><td>EAX</td><td>EDX</td></tr><tr><td><code>IDIV r/m64</code></td><td>RDX:RAX (128비트)</td><td>RAX</td><td>RDX</td></tr></tbody></table>
+<p>차이는 딱 하나: 이 값들이 전부 <strong>부호 있는(2의 보수)</strong> 값으로 해석된다는 것이다.</p>
+<h3>반드시 알아야 할 핵심 — 피제수 상위 절반은 "0"이 아니라 "부호 확장"이어야 한다</h3>
+<p><code>DIV</code>에서는 상위 레지스터(EDX)를 단순히 0으로 지우면 됐다(<code>xor edx,edx</code>). 하지만 <code>IDIV</code>는 부호 있는 나눗셈이므로, 피제수의 상위 절반은 <strong>하위 절반 값의 부호에 맞춰 확장</strong>되어야 한다:</p>
+<ul><li>하위 값이 <strong>양수</strong>라면 → 상위 절반은 전부 <strong>0</strong>이어야 한다.</li><li>하위 값이 <strong>음수</strong>라면 → 상위 절반은 전부 <strong>1</strong>(0xFFFFFFFF 등)이어야 한다.</li></ul>
+<p>이건 정확히 2의 보수 부호 확장(sign extension) 규칙이고, x86은 이 작업을 전담하는 명령어를 따로 두고 있다. 컴파일러는 <code>IDIV</code> 바로 앞에 <strong>반드시</strong> 이 중 하나를 넣는다:</p>
+<table><thead><tr><th>명령어</th><th>동작</th></tr></thead><tbody><tr><td><code>CBW</code></td><td>AL(8비트) → AX(16비트)로 부호 확장</td></tr><tr><td><code>CWD</code></td><td>AX(16비트) → DX:AX(32비트)로 부호 확장</td></tr><tr><td><code>CDQ</code></td><td>EAX(32비트) → EDX:EAX(64비트)로 부호 확장 — <code>idiv r/m32</code> 앞에 가장 흔히 보임</td></tr><tr><td><code>CDQE</code></td><td>EAX(32비트) → RAX(64비트)로 부호 확장 (나눗셈 전용은 아니고 다른 용도로도 쓰임, 간단히만 알아두면 됨)</td></tr><tr><td><code>CQO</code></td><td>RAX(64비트) → RDX:RAX(128비트)로 부호 확장 — <code>idiv r/m64</code> 앞에 가장 흔히 보임</td></tr></tbody></table>
+<p>표준 관용구는 이렇다:</p>
+<pre><code class="language-asm">cdq                 ; EDX = EAX의 부호를 32비트 전체로 확장
+idiv ecx             ; (EDX:EAX) / ECX, signed</code></pre>
+<p>64비트에서는:</p>
+<pre><code class="language-asm">cqo                  ; RDX = RAX의 부호를 64비트 전체로 확장
+idiv rcx</code></pre>
+<p><strong><code>CDQ</code>/<code>CQO</code>가 실제로 하는 일</strong>: 개념적으로는 EAX(또는 RAX)를 산술 오른쪽으로 31비트(또는 63비트) 시프트해서 부호 비트를 모든 비트에 복사하는 것과 같다. EAX의 최상위 비트(부호 비트)가 0이면 EDX는 전부 0이 되고, 최상위 비트가 1이면 EDX는 전부 1(0xFFFFFFFF)이 된다 — 이게 정확히 2의 보수 부호 확장이다.</p>
+<h3>이 셋업을 빠뜨리면 왜 "양수는 되는데 음수만 틀리는" 버그가 생기는가</h3>
+<p>초보자가 흔히 저지르는 실수는 두 가지다: <code>cdq</code>/<code>cqo</code>를 아예 빠뜨리거나, <code>DIV</code>용 관용구인 <code>xor edx,edx</code>를 실수로 <code>IDIV</code> 앞에 쓰는 것. 두 경우 모두 <strong>양수 입력에서는 우연히 정상 동작한다는 것이 이 버그를 특히 위험하게 만든다.</strong> 왜냐하면 양수를 부호 확장한 상위 절반도 어차피 전부 0이기 때문에, "부호 확장"과 "그냥 0으로 지우기"가 양수에 한해서는 결과가 똑같이 나온다. <strong>버그는 오직 음수 입력을 넣을 때만 드러난다</strong> — 그래서 간단한 양수 테스트 케이스로는 절대 못 잡아내는 전형적인 함정이고, CTF 문제 풀이 중 셀프 작성 어셈블리나 패치 코드에서 자주 나오는 실수다.</p>
+<p>구체적인 숫자로 추적해보자. <code>-14 / 4</code>를 32비트로 계산한다고 하자(정답은 <code>-3</code>, 나머지 <code>-2</code> — C의 0을 향한 절삭 규칙).</p>
+<p><strong>올바른 경우 (<code>cdq</code> 사용):</strong></p>
+<pre><code>eax = -14  (비트 패턴: 0xFFFFFFF2)
+cdq        ; eax의 부호비트(1, 음수)가 전체로 퍼져서 edx = 0xFFFFFFFF
+idiv ecx    ; ecx = 4
+; (edx:eax) = 0xFFFFFFFF_FFFFFFF2 (부호 있는 -14, 64비트로 정확히 확장된 값)
+; 결과: eax = -3 (몫), edx = -2 (나머지)  ← 정답</code></pre>
+<p><strong>틀린 경우 (<code>xor edx,edx</code>를 잘못 사용, 또는 이전 값이 우연히 0이 아닌 경우):</strong></p>
+<pre><code>eax = -14  (비트 패턴: 0xFFFFFFF2)
+xor edx, edx   ; edx = 0  &lt;- 잘못된 셋업! 부호 확장이 아니라 그냥 0
+idiv ecx        ; ecx = 4
+; (edx:eax) = 0x00000000_FFFFFFF2 (이건 -14가 아니라 아주 큰 양수로 해석됨: 4294967282)
+; 결과: 완전히 엉뚱한 몫이 나오거나, 몫이 32비트를 넘으면 #DE 크래시</code></pre>
+<p>같은 명령어(<code>idiv ecx</code>)인데 그 앞의 EDX 셋업 방식 하나 때문에 결과가 하늘과 땅 차이로 갈린다.</p>
+<h3>플래그: IDIV 이후에도 CF, OF, SF, ZF, AF, PF는 전부 미정의(undefined)</h3>
+<p><code>DIV</code>와 마찬가지로 <code>IDIV</code> 실행 후 모든 플래그는 undefined다. 결과를 검사하는 분기가 필요하면 컴파일러는 <code>idiv</code> 뒤에 별도로 <code>test</code>/<code>cmp</code>를 추가한다 — <code>idiv</code> 직후에 곧바로 <code>jz</code>/<code>js</code> 같은 분기가 있다면, 그건 idiv의 결과가 아니라 그 앞의 다른 명령이나 그 뒤에 숨은 별도 비교 명령을 보고 있는 것이다. (플래그 전반 정리는 <a href="rev-0088-flags-overview.html">REV-0088</a> 참고.)</p>
+<h3>부호 있는 나눗셈의 반올림 방향 — "0을 향한 절삭(truncate toward zero)"</h3>
+<p><code>IDIV</code>는 몫을 계산할 때 소수점 이하를 <strong>0 방향으로 잘라낸다.</strong> 이것은 C99/C11 표준에서 정의한 정수 나눗셈 <code>/</code>의 동작과 정확히 일치한다. 그래서 컴파일러는 signed <code>/</code>와 <code>%</code>를 별도의 보정 코드 없이 그냥 <code>idiv</code> 하나로 처리할 수 있다(과거 일부 아키텍처나 오래된 C 표준은 음의 무한대 방향으로 내림(<code>floor</code>)했기 때문에 나눗셈 결과를 보정하는 추가 명령이 필요했다).</p>
+<p>예시로 <code>-7 / 2</code>는 수학적으로 <code>-3.5</code>인데, IDIV/C는 이걸 <strong><code>-3</code>으로 자른다</strong> (<code>-4</code>가 아니다!). <code>floor(-3.5) = -4</code>와 헷갈리지 말 것 — x86 <code>IDIV</code>와 C의 정수 <code>/</code>는 항상 0에 더 가까운 쪽으로 자른다.</p>
+<h3>아주 중요한 리버싱 인사이트 — CDQ/CQO vs XOR EDX,EDX로 원본 변수의 signed/unsigned를 역추적</h3>
+<p>DIV/IDIV, MUL/IMUL 어느 쪽을 쓰든 원본 C 소스는 남아있지 않지만, 나눗셈 직전의 셋업 명령만 보면 원본 변수의 부호 여부를 정확히 추론할 수 있다:</p>
+<ul><li>나눗셈 직전에 <strong><code>cdq</code>/<code>cqo</code>(부호 확장)</strong> 가 있다 → 원본 변수는 <strong><code>int</code>/<code>long</code> 같은 signed 타입</strong>이었고, <code>idiv</code>가 쓰인다.</li><li>나눗셈 직전에 <strong><code>xor edx,edx</code>/<code>xor rdx,rdx</code>(제로 확장)</strong> 가 있다 → 원본 변수는 <strong><code>unsigned int</code>/<code>unsigned long</code>/<code>size_t</code> 같은 unsigned 타입</strong>이었고, <code>div</code>(<a href="rev-0052-div.html">REV-0052</a>)가 쓰인다.</li></ul>
+<p>디스어셈블리만 봐서는 사라진 타입 정보를 이 규칙 하나로 되살릴 수 있다 — 이 문서 전체에서 가장 실전에 유용한 리버싱 휴리스틱 중 하나다.</p>
+<h3>컴파일러 패턴 — 몫과 나머지 동시 사용</h3>
+<p><code>DIV</code>와 마찬가지로 <code>IDIV</code> 한 번으로 몫(EAX)과 나머지(EDX)가 동시에 나오므로, <code>a/b</code>와 <code>a%b</code>가 같이 쓰인 코드는 <code>idiv</code>가 한 번만 등장한다.</p>
+<pre><code class="language-c">int q = a / b;
+int r = a % b;</code></pre>
+<pre><code class="language-asm">mov  eax, a
+cdq
+idiv ecx        ; ecx = b
+; eax = q, edx = r</code></pre>
+<h3>IDA/Ghidra 의사코드에서 보이는 모습</h3>
+<p>대부분은 그냥 깔끔하게 <code>a / b</code>, <code>a % b</code>로 표시되거나, signed임을 명시하려고 <code>(int)a / (int)b</code>처럼 캐스트가 붙기도 한다. 가끔 Ghidra가 <code>CDQ</code>+<code>IDIV</code> 조합을 완전히 인식하지 못하면 <code>CONCAT44(extraout_EDX, EAX)</code> 같은 로우레벨 표현이 그대로 남아있는 경우가 있다 — 이건 디컴파일러가 EDX:EAX 레지스터 쌍 패턴을 온전히 해석하지 못했다는 표시이니, 그럴 땐 raw 디스어셈블리를 직접 보고 <code>cdq</code>/<code>idiv</code> 조합을 손으로 해석하면 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>cdq</code> 바로 다음 줄에 <code>idiv reg</code> — 표준 signed 32비트 나눗셈. 정상.</li><li><code>cqo</code> 바로 다음 줄에 <code>idiv reg</code> — 표준 signed 64비트 나눗셈. 정상.</li><li><code>idiv</code> 바로 위에 <code>xor edx,edx</code>가 있다 — signed 나눗셈에 unsigned 셋업이 섞인 것처럼 보이면 버그 의심(직접 작성한 셸코드/패치 코드에서 특히 주의).</li><li>IDA/Ghidra 의사코드에 <code>CONCAT44(extraout_EDX, EAX)</code> 등장 — 디컴파일러가 나눗셈 레지스터 쌍 패턴을 완전히 인식하지 못한 것.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>idiv</code> 명령어를 만나면 순서대로 확인한다:</p>
+<ol><li>오퍼랜드 폭이 몇 비트인지 (8/16/32/64) → 피제수 레지스터 쌍이 무엇인지 결정</li><li><code>idiv</code> 바로 위쪽에 폭에 맞는 부호 확장 명령(<code>cbw</code>/<code>cwd</code>/<code>cdq</code>/<code>cqo</code>)이 있는지 — 없다면 버그 의심 지점</li><li><code>cdq</code>(32비트용)와 <code>cqo</code>(64비트용)가 실제 나눗셈 폭과 맞는지 확인 — 폭이 안 맞으면 그것도 버그</li><li><code>idiv</code> 직후 EAX(몫)와 EDX(나머지) 중 무엇이 쓰이는지 확인</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 정상적인 32비트 signed 나눗셈 셋업 확인</strong></p>
+<pre><code class="language-asm">mov  eax, [rbp-4]   ; eax = a (int)
+cdq                   ; edx = eax의 부호 확장 (필수)
+idiv dword ptr [rbp-8]   ; eax(quotient) = a / b, edx(remainder) = a % b</code></pre>
+<p><strong>2) 부호 확장 명령이 없거나 폭이 안 맞는 경우</strong> <code>idiv ecx</code>(32비트) 앞에 <code>cdq</code>가 아니라 <code>cwd</code>(16비트용)나 아예 아무 것도 없다면, 실제 실행 시 EDX 값이 어떻게 되는지 디버거로 직접 확인한다. 음수 테스트 입력을 넣어서 결과가 틀어지는지 확인하는 것이 가장 확실하다.</p>
+<p><strong>3) 음수 vs 양수 입력으로 버그 재현</strong> 버그가 의심되면 양수 입력(예: <code>14 / 4</code>)과 음수 입력(예: <code>-14 / 4</code>)을 각각 넣어보고 결과를 비교한다. 양수만 맞고 음수가 틀리면 부호 확장 셋업 문제가 거의 확실하다.</p>
+<p><strong>4) 몫/나머지 사용처 추적</strong> <code>idiv</code> 직후 EAX와 EDX 사용처를 각각 찾아 <code>/</code>와 <code>%</code> 중 무엇에 대응하는지 표시한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>F5</code>(디컴파일), 레지스터 창에서 EDX/EAX 확인, <code>F2</code>(idiv 주소에 브레이크포인트), <code>F9</code>(실행)</li><li>x64dbg: <code>idiv</code> 라인 우클릭 → 브레이크포인트, 상단 레지스터 패널에서 EDX/EAX 확인</li><li>GDB/Pwndbg: <code>break *0x주소</code>, <code>info registers edx eax</code>, 음수/양수 입력값을 바꿔가며 <code>run</code>으로 재현</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>idiv</code> 실행 직후 EAX/EDX 값이 음수 입력에서만 이상하면 부호 확장 셋업 누락을 의심한다.</li><li><code>-7 / 2</code>가 <code>-3</code>으로 나오는 건 정상(0을 향한 절삭)이지, <code>-4</code>가 나와야 정상인 게 아니다.</li><li><code>cdq</code>/<code>cqo</code>가 보이면 원본 변수는 signed, <code>xor edx,edx</code>가 보이면 원본 변수는 unsigned — 타입을 역추적하는 근거로 삼는다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>cdq</code>/<code>cqo</code>를 빠뜨리거나 <code>xor edx,edx</code>(DIV용 관용구)를 실수로 IDIV 앞에 쓰는 것 — 음수 입력에서만 결과가 틀어지는, 양수 테스트로는 절대 못 잡는 버그가 생긴다.</li><li><code>cdq</code>(32비트용)와 <code>cqo</code>(64비트용)를 헷갈려서 실제 나눗셈 폭과 다른 부호 확장 명령을 쓰는 것 — 실제 사용 중인 폭에 맞는 EDX/RDX가 오염된다.</li><li><code>IDIV</code>가 <code>floor()</code>처럼 반올림한다고 착각하는 것 — 실제로는 0을 향해 자르므로 <code>-7 / 2 = -3</code>이지 <code>-4</code>가 아니다.</li><li><code>idiv</code> 직후 곧바로 조건 분기가 그 결과를 반영한다고 가정하는 것 — 플래그는 전부 undefined이므로 결과 검사는 별도 <code>test</code>/<code>cmp</code>로 나타난다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>버그가 음수 입력에서만 재현되는가? 그렇다면 <code>cdq</code>/<code>cqo</code> 부호 확장 셋업부터 의심할 것.</li><li><code>idiv</code> 앞의 셋업 명령이 정확히 나눗셈 폭(8/16/32/64비트)과 일치하는지 다시 확인했는가?</li><li>이 명령어가 <code>IDIV</code>가 아니라 <code>DIV</code>(<a href="rev-0052-div.html">REV-0052</a>)는 아닌지 니모닉을 다시 확인했는가?</li><li>반올림 방향이 이상하다고 느껴진다면 "0을 향한 절삭"이 맞는지, 기대값이 <code>floor()</code> 기준으로 잘못 계산된 건 아닌지 재확인할 것.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 표준 32비트 signed 나눗셈 (정상)</strong></p>
+<pre><code class="language-c">int a = -14;
+int b = 4;
+int q = a / b;   // -3
+int r = a % b;   // -2</code></pre>
+<pre><code class="language-asm">mov  eax, -14
+cdq                ; 필수: eax의 부호를 edx 전체로 확장
+mov  ecx, 4
+idiv ecx            ; eax = -3 (몫), edx = -2 (나머지)</code></pre>
+<p><strong>예제 2 — <code>cdq</code>를 빠뜨린 깨진 코드 (음수에서만 터지는 버그 재현)</strong></p>
+<pre><code class="language-asm">mov  eax, -14
+; cdq   &lt;-- 이 줄이 빠졌다! edx에 이전 값이 남아있거나 실수로 0으로 지워짐
+mov  ecx, 4
+idiv ecx            ; edx:eax가 -14가 아니라 거대한 양수로 해석되어 완전히 틀린 몫/나머지가 나오거나 #DE 발생</code></pre>
+<p>같은 입력, 같은 <code>idiv ecx</code>인데 <code>cdq</code> 한 줄이 있고 없고에 따라 결과가 완전히 달라진다. 양수 <code>a</code>로 테스트하면 이 버그는 절대 드러나지 않는다는 점을 다시 강조한다.</p>
+<p><strong>예제 3 — 64비트 signed 나눗셈</strong></p>
+<pre><code class="language-c">long long a = -1000000000000LL;
+long long b = 7;
+long long q = a / b;</code></pre>
+<pre><code class="language-asm">mov  rax, -1000000000000
+cqo                  ; rax의 부호를 rdx 전체로 확장 (64비트용)
+mov  rcx, 7
+idiv rcx              ; rax = 몫</code></pre>
+<p><strong>예제 4 — 몫과 나머지 동시 사용</strong></p>
+<pre><code class="language-c">int q = a / b;
+int r = a % b;
+printf("%d %d", q, r);</code></pre>
+<pre><code class="language-asm">mov  eax, a
+cdq
+idiv ecx             ; ecx = b, 이 한 줄로 eax=q, edx=r 둘 다 계산됨
+mov  [rbp-4], eax   ; q 저장
+mov  [rbp-8], edx   ; r 저장</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0052-div.html">REV-0052 — DIV: Unsigned 나눗셈</a></li><li><a href="rev-0050-mul.html">REV-0050 — MUL: Unsigned 곱셈</a></li><li><a href="rev-0051-imul.html">REV-0051 — IMUL: Signed 곱셈과 컴파일러 패턴</a></li><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a></li><li><a href="rev-0041-movsx-movsxd.html">REV-0041 — MOVSX와 MOVSXD: Sign Extension 이해</a></li><li><a href="rev-0069-jg-jge-jl-jle.html">REV-0069 — JG JGE JL JLE: Signed 비교 분기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>IDIV</code> 명령어 동작(오퍼랜드 폭별 피제수/몫/나머지 레지스터, 플래그 undefined 여부, <code>#DE</code> 예외 조건): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "IDIV—Signed Divide" 섹션 기준 (2026-09-08 검증).</li><li><code>CDQ</code>/<code>CQO</code>/<code>CWD</code>/<code>CBW</code>/<code>CDQE</code> 부호 확장 명령어 동작: 동 매뉴얼 "CWD/CDQ/CQO—Convert Word to Doubleword/Convert Doubleword to Quadword" 섹션 기준.</li><li>부호 있는 정수 나눗셈의 0을 향한 절삭(truncate toward zero) 규칙: ISO/IEC 9899 (C99/C11) 표준의 정수 나눗셈 연산자(<code>/</code>, <code>%</code>) 정의 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

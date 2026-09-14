@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>스택 정렬(16바이트 정렬)이 왜 중요한지 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>스택 정렬(16바이트 정렬)이 왜 중요한지</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>x64 호출 규약(Windows·SysV 공통)은 <code>call</code> 명령이 실행되는 시점에 스택 포인터(<code>RSP</code>)가 항상 16바이트 배수 주소를 가리키도록 요구하며, 이는 <code>movaps</code>/<code>movdqa</code> 같은 정렬된 SIMD 명령어가 정렬되지 않은 주소에서 실행되면 크래시나는 것을 막기 위한 규약이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>함수 프롤로그의 <code>sub rsp, 0x28</code>, <code>sub rsp, 0x38</code>처럼 스택을 내리는 크기가 8의 배수가 아니라 이상하게 애매한 숫자로 보일 때</li><li><code>call</code> 직전에 <code>and rsp, 0FFFFFFFFFFFFFFF0h</code>처럼 스택 포인터를 강제로 특정 배수로 맞추는 코드가 보일 때</li><li>리버싱한 함수를 직접 호출하는 스크립트/셸코드를 만들었는데 <code>movaps</code> 명령에서 세그폴트가 날 때</li><li>IDA/Ghidra 스택 프레임 레이아웃에서 로컬 변수 크기 합과 <code>sub rsp</code> 크기가 딱 안 맞고 패딩이 껴 있는 것처럼 보일 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>정렬이 필요한 이유 — SIMD 명령어의 하드웨어 제약</h3>
+<p>현대 CPU는 SSE/AVX 같은 SIMD(Single Instruction Multiple Data) 명령어로 16바이트(SSE, <code>XMM</code> 레지스터) 또는 32바이트(AVX, <code>YMM</code> 레지스터) 단위 데이터를 한 번에 처리한다. 이 중 <code>movaps</code>, <code>movapd</code>, <code>movdqa</code> 같은 "정렬된(aligned) 이동" 명령어는 <strong>피연산자 메모리 주소가 반드시 16바이트 배수여야 한다</strong>는 하드웨어 제약이 있다. 주소가 16의 배수가 아닌 상태에서 이 명령어를 실행하면 CPU가 <code>#GP</code>(General Protection Fault) 예외를 발생시키고, 이는 프로그램 크래시(세그폴트)로 이어진다. (정렬 요구가 없는 <code>movups</code>, <code>movupd</code>, <code>movdqu</code> 같은 "정렬 안 된(unaligned)" 버전도 있지만 대체로 약간 느리다.)</p>
+<p>컴파일러는 지역 배열/구조체를 스택에 SIMD로 빠르게 초기화하거나 복사하는 코드를 자주 생성하는데, 이때 스택에 있는 그 데이터의 주소가 16바이트 배수라는 것을 컴파일러가 보장할 수 있어야 정렬된 명령어를 안전하게 쓸 수 있다. 그래서 x64 호출 규약 자체가 "함수 호출 시점의 스택 정렬"을 표준으로 못 박아버렸다.</p>
+<h3>x64 호출 규약의 정렬 규칙</h3>
+<p>Windows x64(Microsoft x64 calling convention)와 Linux SysV x64(System V AMD64 ABI) 모두 동일한 규칙을 정의한다: <strong><code>call</code> 명령이 실행되는 순간, <code>RSP</code>는 16바이트 배수여야 한다.</strong> 여기서 미묘한 부분은, <code>call</code>은 실행되면서 8바이트짜리 반환 주소를 스택에 <code>push</code>하므로, <code>call</code> 실행 직후(피호출 함수 진입 시점)에는 <code>RSP</code>가 항상 <code>16의 배수 - 8</code>, 즉 <code>RSP % 16 == 8</code>인 상태가 된다는 점이다.</p>
+<p>이 규칙은 함수 진입 시 자동으로 성립하는 게 아니라, <strong>모든 함수가 이 규칙을 지키도록 스스로 스택을 관리해야</strong> 유지된다. 함수 프롤로그에서 로컬 변수 공간을 확보하려고 <code>sub rsp, N</code>을 실행할 때, 컴파일러는 이 함수가 끝나고 자신이 호출하는 다른 함수를 <code>call</code>하는 시점에 다시 16바이트 정렬이 맞아떨어지도록 <code>N</code> 값을 계산한다.</p>
+<h3>sub rsp 크기가 8의 배수인데 16의 배수가 아닌 이유</h3>
+<p>함수 진입 시점에 <code>RSP % 16 == 8</code>(반환 주소 push 때문)이므로, 그 상태에서 로컬 변수를 위해 <code>sub rsp, N</code>을 하고 나면 최종 <code>RSP</code>가 다시 16의 배수가 되려면 <strong><code>N</code>도 8의 배수이면서 동시에 <code>(N + 8) % 16 == 0</code>, 즉 <code>N % 16 == 8</code></strong>이어야 한다. 그래서 함수 프롤로그에 <code>sub rsp, 0x28</code>(0x28 = 40 = 16*2+8), <code>sub rsp, 0x38</code>(56 = 16*3+8)처럼 "16으로 나누면 8이 남는" 애매해 보이는 숫자가 자주 나오는 것이다. 필요한 로컬 변수 크기가 이 조건에 딱 맞지 않으면, 컴파일러는 남는 공간을 패딩으로 채워서라도 정렬 조건을 맞춘다.</p>
+<h3>Windows x64의 섀도우 스페이스와 함께 고려</h3>
+<p>Windows x64는 함수를 호출할 때 인자를 레지스터(<code>RCX</code>/<code>RDX</code>/<code>R8</code>/<code>R9</code>)로 넘기더라도, 피호출 함수가 이 값을 스택에 저장할 수 있도록 최소 32바이트(0x20)의 "섀도우 스페이스(shadow space)"를 호출자가 미리 확보해야 한다. 이 32바이트도 16의 배수이므로 정렬 계산에 자연스럽게 들어맞고, 그 결과 Windows x64 함수 프롤로그에서 <code>sub rsp, 0x28</code>(섀도우 스페이스 0x20 + 정렬 유지용 8) 같은 패턴이 매우 흔하게 보인다.</p>
+<h3>정렬이 깨졌을 때 컴파일러가 직접 고치는 코드</h3>
+<p>함수 안에서 <code>alloca()</code>처럼 런타임에 크기가 결정되는 가변 크기 스택 할당을 쓰면, 컴파일러는 컴파일 타임에 정확한 오프셋을 계산할 수 없다. 이런 경우 런타임에 직접 스택 포인터를 강제로 정렬시키는 코드를 넣는다.</p>
+<pre><code class="language-asm">and rsp, 0FFFFFFFFFFFFFFF0h   ; RSP를 16의 배수로 강제로 내림(하위 4비트 클리어)</code></pre>
+<p><code>0xF0</code> 마스크(하위 4비트를 0으로)로 <code>AND</code>하면 <code>RSP</code>가 반드시 16의 배수 주소로 내려간다(REV-0026 마스크 개념과 동일한 원리). 이런 코드를 보면 "이 함수는 SIMD 정렬이 필요한 지역 변수가 있거나, 가변 크기 스택 할당을 쓴다"고 해석할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>함수 프롤로그에 <code>sub rsp, 0x28</code>, <code>sub rsp, 0x38</code>, <code>sub rsp, 0x48</code>처럼 16으로 나누면 나머지가 8인 값이 반복됨</li><li><code>call</code> 직전에 <code>and rsp, ...F0h</code>로 스택 포인터를 강제 정렬하는 코드</li><li><code>movaps xmm0, [rsp+20h]</code> 같은 정렬 SIMD 명령어가 스택 접근에 쓰이는 함수</li><li>리버싱한 코드를 직접 호출하는 셸코드/후킹 코드를 짤 때, <code>call</code> 전 스택 정렬을 맞추지 않아 특정 함수에서만 크래시가 남</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>크래시가 <code>movaps</code>/<code>movdqa</code> 명령어(정렬 SIMD)에서 발생했다면, 가장 먼저 그 시점의 <code>RSP</code>(또는 접근 대상 주소)가 16의 배수인지 계산기로 확인한다. GDB/x64dbg에서 <code>RSP</code> 값을 16진수로 보고 마지막 자리가 <code>0</code>으로 끝나는지(16의 배수는 항상 16진수 마지막 자리가 0) 확인하면 빠르다.</p>
+<h2>단계별 절차</h2>
+<ol><li>크래시 지점의 명령어가 <code>movaps</code>/<code>movdqa</code> 등 정렬 요구 명령어인지 확인한다.</li><li>그 명령어가 접근하는 메모리 주소를 계산한다(레지스터 + 오프셋).</li><li>GDB에서 <code>p/x $rsp</code> 또는 x64dbg에서 레지스터 창으로 실제 주소값을 확인하고, 16진수 마지막 자리가 0인지 본다(0이 아니면 정렬 안 됨).</li><li>직접 함수를 호출하는 코드(셸코드, 후킹, 수동 <code>call</code>)를 작성했다면 <code>call</code> 직전 <code>RSP</code>가 16의 배수인지 확인하고, 필요하면 <code>push</code>로 8바이트를 더 넣거나 <code>and rsp, -0x10</code>으로 강제 정렬한다.</li><li>함수 프롤로그의 <code>sub rsp, N</code> 크기를 보고 <code>N % 16 == 8</code>인지 검산해, 정상적인 x64 정렬 규약을 따르는 함수인지 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code>(gdb) p/x $rsp                 # 현재 RSP를 16진수로 확인
+(gdb) p $rsp % 16               # 16으로 나눈 나머지 확인 (0이어야 call 가능 시점)
+(gdb) x/4xg $rsp                # RSP 주변 8바이트씩 4개 확인</code></pre>
+<pre><code class="language-python"># 파이썬으로 정렬 여부 빠르게 검산
+rsp = 0x7fffffffe4a8
+print(rsp % 16)   # 0이면 16바이트 정렬됨</code></pre>
+<p>x64dbg: 레지스터 패널에서 RSP 값 우클릭 → Follow in Dump으로 실제 메모리 상태 확인.</p>
+<h2>출력 해석</h2>
+<ul><li><code>RSP % 16 == 0</code>이면 그 시점에서 <code>call</code>을 실행해도 안전하다(정렬 유지).</li><li><code>RSP % 16 == 8</code>이면 방금 <code>call</code>이 실행되어 반환 주소가 push된 직후 상태(함수 진입 시점)로, 정상이다.</li><li>그 외의 나머지 값(1~7, 9~15)이 나온다면 어딘가에서 정렬 규약을 어긴 것 — 직접 작성한 셸코드/후킹 코드에서 <code>push</code>/<code>sub rsp</code> 개수를 잘못 맞췄을 가능성이 크다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>모든 <code>sub rsp</code> 크기가 16의 배수여야 한다고 착각하는 것 — 정확히는 함수 진입 시점의 오프셋(-8)까지 감안해 "16으로 나누면 8이 남는" 크기가 정상이다.</li><li>직접 어셈블리로 함수를 호출하는 코드를 짤 때 정렬을 신경 쓰지 않고 아무 때나 <code>call</code>을 실행해서, 특정 SIMD 명령어를 쓰는 라이브러리 함수(<code>printf</code>의 부동소수점 처리 경로 등)에서만 간헐적으로 크래시가 나는 것을 디버깅하지 못하는 것.</li><li><code>and rsp, 0xF0</code> 계열 코드를 보고 "이건 마스킹으로 값을 필터링하는 암호화 로직"이라고 오해하는 것 — 실제로는 스택 정렬을 위한 관용구다.</li><li>x86(32비트)도 x64와 같은 16바이트 정렬 규약을 강제한다고 착각하는 것 — x86 cdecl/stdcall은 이런 엄격한 16바이트 정렬 요구가 없다(SSE를 쓰는 일부 함수에서만 별도로 신경 쓴다). 16바이트 정렬 요구는 x64 호출 규약의 특징이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>애초에 함수 프롤로그의 <code>sub rsp</code> 크기가 스택 프레임 전체에서 어떤 역할인지 헷갈리면 → REV-0031 스택 프레임이 무엇인지</li><li>AND로 하위 비트를 지우는 마스킹 원리 자체가 헷갈리면 → REV-0026 8비트 16비트 24비트 32비트 64비트 마스크</li><li>Windows x64와 SysV x64의 인자 전달 레지스터 차이가 궁금하면 → REV-0032 함수 인자와 반환값이 어디에 있는지</li><li>셸코드/직접 호출 코드에서 계속 크래시가 난다면 GDB로 크래시 순간의 <code>RSP</code>와 명령어를 함께 확인하는 절차부터 다시 밟는다.</li></ul>
+<h2>미니 예제</h2>
+<p>Windows x64에서 흔히 보이는 프롤로그를 보자.</p>
+<pre><code class="language-asm">; void __fastcall Func(int a1, int a2)
+sub     rsp, 28h        ; 0x28 = 40 = 16*2 + 8, 진입시 RSP%16==8과 맞물려 call 시점엔 다시 16배수
+mov     [rsp+30h], ecx  ; a1을 섀도우 스페이스에 저장
+mov     [rsp+38h], edx  ; a2를 섀도우 스페이스에 저장
+call    SomeOtherFunc   ; 이 시점에 RSP는 반드시 16의 배수
+add     rsp, 28h
+retn</code></pre>
+<p><code>sub rsp, 28h</code>는 섀도우 스페이스 <code>0x20</code>과 정렬 유지용 <code>8</code>을 합친 크기다. 만약 이 함수를 리버싱해서 직접 호출하는 파이썬/pwntools 셸코드를 짠다면, 자신의 <code>call SomeOtherFunc</code> 이전에 스택이 16의 배수가 되도록 호출자 쪽에서도 정렬을 맞춰야 한다는 뜻이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0031-stack-frame.html">REV-0031 — 스택 프레임이 무엇인지</a></li><li><a href="rev-0032-args-and-return-location.html">REV-0032 — 함수 인자와 반환값이 어디에 있는지</a></li><li><a href="rev-0026-bit-masks.html">REV-0026 — 8비트 16비트 24비트 32비트 64비트 마스크</a></li><li><a href="rev-0037-optimization-weirdness.html">REV-0037 — 컴파일러 최적화가 디컴파일 결과를 이상하게 만드는 이유</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>x64 호출 규약의 16바이트 스택 정렬 요구 및 섀도우 스페이스: Microsoft x64 Calling Convention 공식 문서, System V AMD64 ABI 문서 기준 (2026-09-09 검증).</li><li><code>movaps</code>/<code>movdqa</code> 등 정렬 SIMD 명령어의 하드웨어 정렬 요구와 <code>#GP</code> 예외: Intel 64 and IA-32 Architectures Software Developer's Manual, Instruction Set Reference 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

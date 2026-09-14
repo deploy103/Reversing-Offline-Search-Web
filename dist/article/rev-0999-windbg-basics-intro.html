@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinDbg 기초 소개와 언제 쓰는지 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / tools</div>
+<article class="article-body">
+<h1>WinDbg 기초 소개와 언제 쓰는지</h1>
+<div class="article-meta"><span class="tag">tools</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">WinDbg</span></div>
+<h2>한 줄 요약</h2>
+<p>WinDbg는 마이크로소프트가 공식 제공하는 윈도우 전용 디버거로, x64dbg가 유저모드 프로그램을 다루는 데 최적화되어 있는 반면 WinDbg는 <strong>커널 모드 디버깅</strong>과 <strong>크래시 덤프(.dmp) 파일 사후 분석</strong>에서 사실상 대체 불가능한 표준 도구이며, 리버싱 입문자는 평소에는 x64dbg를 쓰다가 드라이버 분석이나 블루스크린(BSOD) 원인 분석이 필요할 때 WinDbg로 넘어가면 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>프로그램이 크래시 나서 만들어진 <code>.dmp</code>(덤프) 파일을 열어서 원인을 분석해야 할 때</li><li><code>.sys</code> 드라이버 파일이나 커널 모드 코드를 디버깅해야 할 때(x64dbg는 유저모드 전용)</li><li>블루스크린(BSOD)이 발생했는데 그 원인이 된 드라이버/모듈을 찾아야 할 때</li><li>마이크로소프트 심볼 서버(symbol server)를 이용해서 윈도우 시스템 DLL의 함수 이름을 정확히 복원하고 싶을 때</li><li><code>!analyze -v</code>, <code>k</code>, <code>dt</code> 같은 WinDbg 전용 명령을 라이트업에서 봤는데 뭘 하는 명령인지 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<p>WinDbg는 마이크로소프트가 Windows SDK/WDK(Windows Driver Kit)의 일부로 배포하는 디버거로, 최신 버전은 Microsoft Store에서 "WinDbg Preview"로도 받을 수 있다. x64dbg가 GUI 중심에 유저모드 실행 파일(EXE/DLL) 분석에 특화되어 직관적인 반면, WinDbg는 명령어 기반(콘솔형 인터페이스)이고 다음 두 가지 영역에서 x64dbg가 하지 못하는 일을 한다.</p>
+<ol><li><strong>커널 모드 디버깅</strong> — 윈도우 커널 자체나 <code>.sys</code> 드라이버 파일은 유저모드 디버거로는 디버깅할 수 없다. WinDbg는 두 대의 컴퓨터(또는 VM)를 네트워크/시리얼/USB로 연결해 한쪽(타겟)의 커널을 다른 쪽(호스트)에서 멈추고 조사하는 커널 디버깅을 지원한다.</li><li><strong>사후 크래시 덤프 분석</strong> — 프로그램이나 시스템이 크래시났을 때 생성되는 <code>.dmp</code> 파일을 열어, 크래시가 "실제로 일어나는 순간"이 아니라 "이미 끝난 뒤에" 그 시점의 메모리/레지스터/콜스택 상태를 그대로 재구성해서 분석할 수 있다. 이는 재현이 어려운 간헐적 크래시나 고객 PC에서만 발생하는 문제를 분석할 때 특히 중요하다.</li></ol>
+<p>WinDbg의 명령어 체계는 GDB와 개념적으로 비슷한 부분이 많지만(중단점, 스텝, 레지스터/메모리 조회) 문법이 다르다. 핵심 명령 몇 가지는 다음과 같다.</p>
+<ul><li><strong><code>g</code>(Go)</strong> — 실행을 계속 진행한다. GDB의 <code>continue</code>, x64dbg의 <code>F9</code>에 대응.</li><li><strong><code>bp 주소</code></strong> — 소프트웨어 브레이크포인트를 건다. GDB의 <code>break</code>에 대응.</li><li><strong><code>k</code></strong> — 현재 콜스택(call stack)을 출력한다. GDB의 <code>bt</code>(backtrace)에 대응.</li><li><strong><code>dt 타입이름 주소</code></strong> — 지정한 구조체 타입으로 메모리를 해석해서 필드별로 보여준다("display type"). C의 구조체 정의를 알고 있을 때 메모리를 필드 단위로 읽는 데 필수적인 명령이다.</li><li><strong><code>!analyze -v</code></strong> — 크래시 덤프를 열었을 때 가장 먼저 치는 명령. WinDbg 확장 명령(익스텐션 커맨드, <code>!</code>로 시작)이 자동으로 크래시 원인을 분석해서 스택 트레이스, 예외 코드, 문제가 된 모듈 이름 등을 요약해서 보여준다.</li></ul>
+<p><code>!</code>로 시작하는 명령은 "확장 명령(extension command)"이라고 부르며, 기본 명령어 세트로는 부족한 고수준 분석(힙 분석, 예외 분석, 프로세스/스레드 목록 등)을 제공하는 별도의 확장 DLL이 제공하는 기능이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>크래시 덤프를 WinDbg로 열면(<code>File &gt; Open Dump File</code>) 명령창에 다음과 비슷한 안내가 뜬다.</p>
+<pre><code class="language-text">Microsoft (R) Windows Debugger Version ...
+Loading Dump File [C:\dumps\crash.dmp]
+...
+This dump file has an exception of interest stored in it.
+...
+0:000&gt; </code></pre>
+<p><code>0:000&gt;</code>이 WinDbg의 명령 프롬프트다. 여기에 <code>!analyze -v</code>를 입력하면 자동 분석이 시작된다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>지금 하려는 작업이 정말 커널 디버깅이나 덤프 분석이 필요한 작업인지부터 확인한다. 일반적인 유저모드 EXE 리버싱(패스워드 검증 로직 찾기, 문자열 xref 추적 등)이라면 x64dbg가 훨씬 편하고 빠르다. WinDbg는 다음 두 상황 중 하나일 때만 꺼낸다: (1) <code>.sys</code> 드라이버나 커널 코드를 봐야 할 때, (2) 이미 만들어진 <code>.dmp</code> 크래시 덤프 파일을 분석해야 할 때.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 크래시 덤프 파일 열기</strong> <code>File &gt; Open Dump File</code>(또는 명령줄에서 <code>windbg -z crash.dmp</code>)로 덤프를 로드한다.</p>
+<p><strong>2) 자동 분석 먼저 실행</strong></p>
+<pre><code class="language-windbg">!analyze -v</code></pre>
+<p>크래시 원인 후보, 예외 코드, 문제가 발생한 모듈/함수, 콜스택 요약이 자동으로 출력된다. 대부분의 분석은 이 명령의 출력을 읽는 것부터 시작한다.</p>
+<p><strong>3) 콜스택 직접 확인</strong></p>
+<pre><code class="language-windbg">k</code></pre>
+<p><code>!analyze -v</code> 요약만으로 부족하면 <code>k</code>로 직접 콜스택을 확인해서 어떤 함수 호출 경로로 여기까지 왔는지 본다.</p>
+<p><strong>4) 특정 구조체로 메모리 해석</strong></p>
+<pre><code class="language-windbg">dt ntdll!_TEB @$teb</code></pre>
+<p>현재 스레드의 TEB(Thread Environment Block)를 구조체 필드 단위로 펼쳐서 보여준다. <code>dt</code>는 "이 메모리 영역을 이 타입으로 해석해서 보여줘"라는 의미로, C 구조체 정의를 아는 상태에서 raw 메모리를 사람이 읽을 수 있게 바꿔준다.</p>
+<p><strong>5) 라이브 프로세스에 브레이크포인트 걸고 진행</strong></p>
+<pre><code class="language-windbg">bp mymodule!MyFunction
+g</code></pre>
+<p>유저모드 프로세스를 WinDbg로 직접 붙여서(Attach) 디버깅할 때도 <code>bp</code>로 브레이크포인트를 걸고 <code>g</code>로 실행을 재개하는 흐름은 GDB/x64dbg와 개념적으로 동일하다.</p>
+<p><strong>6) 심볼(symbol) 경로 설정 — 함수 이름이 안 보일 때</strong></p>
+<pre><code class="language-windbg">.symfix
+.reload</code></pre>
+<p><code>.symfix</code>는 마이크로소프트 공식 심볼 서버를 심볼 경로로 자동 설정하고, <code>.reload</code>는 현재 로드된 모듈의 심볼을 다시 불러온다. 이 두 명령을 실행해야 <code>ntdll.dll</code>, <code>kernel32.dll</code> 같은 윈도우 시스템 모듈의 함수 이름이 주소 대신 사람이 읽을 수 있는 이름으로 표시된다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-windbg">g                       ; 실행 계속(Go)
+p                       ; 한 줄 실행(Step Over, 함수 호출은 통째로 건너뜀)
+t                       ; 한 줄 실행(Step Into, 함수 호출 내부로 들어감)
+bp 주소또는심볼         ; 소프트웨어 브레이크포인트 설정
+bl                      ; 브레이크포인트 목록 확인
+bc 번호                 ; 브레이크포인트 삭제
+k                       ; 콜스택(backtrace) 출력
+r                       ; 레지스터 값 확인
+dt 타입 주소            ; 구조체 타입으로 메모리 해석
+dd / dq / db 주소       ; 메모리를 4바이트/8바이트/1바이트 단위로 덤프
+u 주소                  ; 디스어셈블(unassemble)
+!analyze -v             ; 크래시 자동 분석(덤프 분석의 시작점)
+!process 0 0            ; 전체 프로세스 목록(커널 디버깅 시)
+.symfix / .reload       ; 심볼 서버 자동 설정 및 심볼 재로딩</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>!analyze -v</code> 결과에 나오는 <strong><code>FAULTING_IP</code></strong> — 크래시가 발생한 정확한 명령어 주소. 이 주소가 어떤 모듈(DLL/드라이버) 소속인지가 문제의 첫 단서다.</li><li><strong><code>STACK_TEXT</code></strong> — 크래시 시점의 콜스택. 위에서부터 "가장 최근에 호출된 함수"이며, 이 목록을 위에서 아래로 읽으면 어떤 함수 호출 경로로 크래시 지점까지 왔는지 알 수 있다.</li><li><strong><code>BUCKET_ID</code></strong> / <strong><code>FAILURE_BUCKET_ID</code></strong> — 마이크로소프트가 유사한 크래시를 자동 분류하는 데 쓰는 식별자로, 같은 버그로 인한 다른 크래시 리포트와 비교할 때 유용하다.</li><li><code>k</code> 출력에서 함수 이름 대신 <code>모듈+0x1234</code> 형태(예: <code>ntdll!0x7ffabc123456</code>)로만 나온다면, 그 모듈의 심볼이 로드되지 않았다는 뜻이다 — <code>.symfix</code>/<code>.reload</code>를 실행해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>일반적인 유저모드 EXE 리버싱까지 전부 WinDbg로 하려다가, x64dbg의 직관적인 GUI(레지스터 뷰, 메모리 뷰, 그래프 뷰가 한 화면에 동시에 보이는 구조)에 비해 훨씬 느리고 번거로운 경험을 하는 것 — 용도가 다른 도구라는 점을 먼저 이해해야 한다.</li><li>심볼 경로를 설정하지 않고(<code>.symfix</code>/<code>.reload</code> 생략) 콜스택을 봐서, 함수 이름 없이 주소만 잔뜩 나오는 화면을 보고 "덤프가 망가졌다"고 오해하는 것.</li><li>오프라인 환경에서는 마이크로소프트 심볼 서버에 접속할 수 없으므로 <code>.symfix</code>가 제대로 동작하지 않을 수 있다는 점을 모르고 계속 시도하는 것 — 오프라인 대회 환경에서는 시스템 DLL 심볼이 없는 상태로 분석해야 할 수도 있음을 감안해야 한다.</li><li>커널 디버깅을 하려면 두 대의 머신(또는 VM 스냅샷 2개) 구성이 필요하다는 걸 모르고, 한 대의 컴퓨터에서 자기 자신의 커널을 실시간으로 디버깅하려 시도하는 것.</li><li><code>!analyze -v</code>가 제시하는 결론(추정 원인 모듈)을 그대로 최종 원인으로 확정해버리는 것 — 이 명령은 자동 추정이며, 실제로는 <code>k</code>(콜스택)와 <code>dt</code>(구조체 조회)로 직접 확인하는 검증이 필요한 경우가 많다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>함수 이름이 하나도 안 보인다면 → <code>.symfix</code> 후 <code>.reload</code> 실행, 오프라인이면 애초에 온라인 심볼 서버 접속이 안 될 수 있음을 감안한다.</li><li>WinDbg와 GDB/x64dbg 명령어를 서로 대응시켜 외우고 싶다면 → REV-0813 디버거별 명령어 대응표(GDB vs x64dbg vs WinDbg).</li><li>시간을 거슬러 재실행(Time Travel Debugging) 개념이 궁금하다면 → REV-0822 Time Travel Debugging 개념 소개(WinDbg 참고).</li><li>드라이버(.sys) 파일 자체를 처음 만났을 때 최소한 뭘 확인해야 하는지는 → REV-0562 드라이버(.sys) 파일을 만났을 때 최소 대응.</li><li>유저모드 EXE 분석에 더 편한 도구가 필요하면 → REV-0280 x64dbg 설치 및 REV-0281 x64dbg 단축키 치트시트.</li></ul>
+<h2>미니 예제</h2>
+<p>간단한 크래시 덤프를 열어 원인을 좁혀가는 전형적인 흐름이다.</p>
+<pre><code class="language-windbg">0:000&gt; !analyze -v
+...
+FAULTING_IP:
+mymodule!ProcessData+0x42
+...
+EXCEPTION_CODE: (NTSTATUS) 0xc0000005 - Access violation
+...
+STACK_TEXT:
+00 mymodule!ProcessData+0x42
+01 mymodule!HandleRequest+0x1a0
+02 kernel32!BaseThreadInitThunk+0x14
+
+0:000&gt; k
+ # Child-SP          RetAddr           Call Site
+00 00000000`0012fa20 00007ff6`12340a10 mymodule!ProcessData+0x42
+01 00000000`0012fa60 00007ff8`abcd1234 mymodule!HandleRequest+0x1a0
+02 00000000`0012fb00 00000000`00000000 kernel32!BaseThreadInitThunk+0x14
+
+0:000&gt; dt mymodule!MYSTRUCT @rcx
+   +0x000 field1 : 0x1337
+   +0x008 field2 : 0x00000000`00000000</code></pre>
+<p><code>EXCEPTION_CODE: 0xc0000005</code>(Access Violation, 잘못된 메모리 접근)이 크래시 원인이고, <code>STACK_TEXT</code>를 보면 <code>HandleRequest</code>가 <code>ProcessData</code>를 호출했다가 그 안의 <code>+0x42</code> 오프셋에서 문제가 생겼다는 흐름을 알 수 있다. 이어서 <code>dt</code>로 관련 구조체(<code>MYSTRUCT</code>)의 필드값을 확인하면, <code>field2</code>가 <code>NULL</code>인 상태에서 참조되어 크래시가 났다는 식의 구체적 원인까지 좁혀갈 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0813-debugger-command-mapping-table.html">REV-0813 — 디버거별 명령어 대응표(GDB vs x64dbg vs WinDbg)</a></li><li><a href="rev-0822-time-travel-debugging-windbg-intro.html">REV-0822 — Time Travel Debugging 개념 소개(WinDbg 참고)</a></li><li><a href="rev-0562-driver-sys-basics.html">REV-0562 — 드라이버(.sys) 파일을 만났을 때 최소 대응</a></li><li><a href="rev-0280-x64dbg-install.html">REV-0280 — x64dbg 설치와 오프라인 준비</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>WinDbg 명령어(<code>g</code>, <code>bp</code>, <code>k</code>, <code>dt</code>, <code>dd</code>, <code>u</code>, <code>!analyze -v</code>, <code>.symfix</code>, <code>.reload</code>)와 커널/유저모드 디버깅 구분, 크래시 덤프 분석 개념은 마이크로소프트 공식 문서(Microsoft Learn, "Debugging Tools for Windows", "WinDbg overview", "Getting Started with WinDbg") 기준으로 정리했다(2026-09-09 검증).</li><li>예외 코드 <code>0xc0000005</code>(STATUS_ACCESS_VIOLATION)는 Windows NTSTATUS 값 공식 문서 기준이다.</li><li>마이크로소프트 공식 심볼 서버 및 <code>.symfix</code>/<code>.reload</code> 동작은 Microsoft Learn "Symbols" 문서 기준이다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

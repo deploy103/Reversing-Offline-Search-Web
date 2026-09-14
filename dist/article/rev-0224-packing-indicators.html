@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>패킹된 바이너리인지 의심하는 기준 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / packing</div>
+<article class="article-body">
+<h1>패킹된 바이너리인지 의심하는 기준</h1>
+<div class="article-meta"><span class="tag">packing</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Detect It Easy</span><span class="tag">UPX</span><span class="tag">x64dbg</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>파일 크기에 비해 문자열/함수/import가 비정상적으로 적고, 섹션 이름이 낯설거나 엔트로피가 8.0에 가깝고, entry point가 정상적인 컴파일러 stub이 아니라 이상한 곳으로 바로 점프한다면 패킹(packing)을 의심해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA나 Ghidra에 바이너리를 열었는데 함수가 1~5개밖에 안 잡히고 나머지가 전부 회색(코드 아님)으로 보일 때</li><li><code>strings</code> 명령이나 IDA Strings 창(Shift+F12)에 의미 있는 문자열이 거의 안 나올 때</li><li>Imports 창에 <code>LoadLibraryA</code>, <code>GetProcAddress</code> 몇 개 말고는 API가 거의 없을 때</li><li>파일 크기는 몇백 KB인데 실제 코드 섹션은 몇 KB짜리 스텁(stub) 코드만 있을 때</li><li>30초 트리아지(REV-0001) 도중 "뭔가 이상하다"는 느낌을 받았을 때 구체적인 체크리스트가 필요할 때</li></ul>
+<h2>핵심 개념</h2>
+<p><strong>패킹(packing)</strong>은 원본 실행 파일(코드+데이터)을 압축하거나 암호화한 뒤, 그 압축/암호화된 덩어리와 함께 "실행 시점에 원본을 메모리에 복원하고 원래 코드로 점프하는" 작은 압축 해제 스텁(stub)을 합쳐 새 실행 파일을 만드는 기법이다. 원래 목적은 파일 크기를 줄이는 것이었지만(UPX 등), 리버싱 관점에서는 정적 분석(디스어셈블/디컴파일)을 방해하는 효과가 있어서 악성코드나 CTF 문제에서 안티 리버싱 목적으로도 널리 쓰인다.</p>
+<p>패킹된 파일을 디스크에서 열어보면 디스어셈블러가 보는 것은 <strong>압축된 원본 데이터</strong>이지 실제 실행될 코드가 아니다. 진짜 코드는 프로그램이 실행되어 압축 해제 스텁이 메모리에 원본을 풀어놓은 <strong>다음에만</strong> 존재한다. 그래서 IDA/Ghidra 같은 정적 분석 도구는 패킹된 파일을 열면 "코드가 거의 없다"는 이상한 결과를 보여주게 된다.</p>
+<p>이 개념을 이해하면 왜 아래 징후들이 패킹의 단서가 되는지 자연스럽게 설명된다: 압축된 데이터는 사람이 읽을 수 있는 문자열이 아니고(문자열 부족), 원본 프로그램이 쓰던 API 호출 흔적도 아직 바인딩되지 않았고(import 부족), 코드처럼 보이는 부분도 실제로는 무작위에 가까운 압축 바이트일 뿐이다(엔트로피 상승, 함수 인식 실패).</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>다음 항목이 <strong>여러 개 동시에</strong> 겹치면 패킹을 강하게 의심해야 한다. 하나만으로는 오탐(예: 정말로 문자열이 적은 유틸리티)일 수 있다.</p>
+<ol><li><strong>함수 개수가 비정상적으로 적음</strong> — IDA Functions 창(Ctrl+P)에서 파일 크기 대비 함수가 몇 개 안 잡힘. 정상적인 C/C++ 프로그램은 몇백 KB만 되어도 수십~수백 개의 함수(라이브러리 함수 포함)가 잡히는 것이 보통이다.</li><li><strong>문자열이 거의 없음</strong> — <code>strings</code> 명령이나 Strings 창에 의미 있는 텍스트가 안 보이고, 있어도 압축 알고리즘 관련 매직 바이트나 랜덤해 보이는 조각뿐.</li><li><strong>Import table이 텅 비어 있음</strong> — Imports 창에 <code>kernel32.dll</code>의 <code>LoadLibraryA</code>, <code>GetProcAddress</code>, <code>VirtualAlloc</code>, <code>VirtualProtect</code> 정도만 있고 나머지 API가 하나도 안 보임. 이는 원본이 쓰는 진짜 API들이 압축 해제 이후 스텁이 직접 주소를 찾아서 쓰기 때문이다(REV-0229 참고).</li><li><strong>섹션 이름이 낯설거나 크기가 이상함</strong> — 표준 PE는 보통 <code>.text</code>, <code>.data</code>, <code>.rdata</code>, <code>.rsrc</code> 등을 쓰는데, <code>UPX0</code>, <code>UPX1</code>, <code>.aspack</code>, <code>.themida</code>, <code>.vmp0</code> 같은 패커 고유 섹션 이름이 보이거나, <code>.text</code> 섹션의 "raw size"는 0에 가까운데 "virtual size"만 몇 배 큰 경우(압축 해제 후 펼쳐질 공간만 미리 예약해둔 것).</li><li><strong>섹션 엔트로피가 높음</strong> — Detect It Easy나 PE-bear로 섹션별 엔트로피를 보면 코드/데이터 섹션이 7.5~8.0 bits/byte에 가까움(정상 <code>.text</code>는 보통 5.5~6.5 정도). 자세한 내용은 REV-0228 참고.</li><li><strong>entry point 코드가 짧고 이상함</strong> — IDA View에서 entry point로 가보면 익숙한 컴파일러 초기화 코드(<code>__security_init_cookie</code>, <code>__libc_start_main</code> 호출 등)가 아니라, 몇 개의 <code>PUSHAD</code>/<code>POPAD</code>, 큰 루프, 이상한 API 호출(<code>VirtualAlloc</code>, <code>VirtualProtect</code>) 몇 줄만 있고 바로 알 수 없는 주소로 점프함.</li><li><strong>파일 자체의 엔트로피가 높음</strong> — Detect It Easy의 "Entropy" 탭에서 파일 전체 엔트로피를 보여주는데, 실행 파일 전체가 7.9 이상이면 거의 확실히 압축 또는 암호화되어 있다는 뜻이다.</li><li><strong>패커 시그니처 문자열이 그대로 남아 있음</strong> — <code>strings</code> 결과에 <code>UPX!</code>, <code>This program cannot be run in DOS mode</code>만 있고 그 외 텍스트가 없거나, <code>$Info: This file is packed</code> 같은 패커 특유의 문구가 보임(UPX는 오히려 친절하게 이런 문구를 남긴다).</li></ol>
+<h2>가장 먼저 할 것</h2>
+<p>IDA/Ghidra에서 함수나 문자열이 이상하게 적다고 느끼는 순간, 바로 디스어셈블을 계속 파고들지 말고 <strong>Detect It Easy(DIE)로 먼저 열어본다.</strong> DIE는 시그니처 데이터베이스를 기반으로 "이 파일이 어떤 패커/컴파일러로 만들어졌는지"를 즉시 알려주므로, 몇 분간 헛수고할 시간을 절약해준다. DIE 사용법은 REV-0126(Detect It Easy 기본 사용법, ../windows-pe/rev-0126-die-basics.md)을 참고한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 파일 크기와 문자열 양을 먼저 비교한다</strong></p>
+<p>Windows라면 <code>strings sample.exe | wc -l</code>(WSL/Git Bash), Linux라면 <code>strings sample | wc -l</code>로 문자열 줄 수를 센다. 파일이 200KB인데 문자열이 20줄도 안 되면 의심스럽다.</p>
+<p><strong>2) Imports 창을 확인한다</strong></p>
+<p>IDA에서 <code>View → Open Subviews → Imports</code>를 열어 API 개수를 센다. 10개 미만이고 그나마 <code>LoadLibraryA</code>/<code>GetProcAddress</code>/<code>VirtualAlloc</code>/<code>VirtualProtect</code> 위주라면 패킹 스텁의 전형적인 패턴이다.</p>
+<p><strong>3) 섹션 헤더를 확인한다</strong></p>
+<p>IDA의 <code>View → Open Subviews → Segments</code>나 PE-bear의 Section Headers 탭에서 섹션 이름과 raw size/virtual size 차이를 본다. <code>UPX0</code>처럼 낯선 이름, 또는 raw size가 거의 0인데 virtual size만 큰 섹션이 있는지 확인한다.</p>
+<p><strong>4) Detect It Easy로 패커 시그니처를 확인한다</strong></p>
+<p>파일을 DIE에 드래그하면 상단에 "Packer: UPX(...)" 같은 결과가 바로 뜬다(REV-0225 참고). 시그니처가 안 잡혀도 하단 Entropy 탭에서 전체/섹션별 엔트로피를 확인한다(REV-0228 참고).</p>
+<p><strong>5) entry point 코드를 눈으로 확인한다</strong></p>
+<p>IDA View-A에서 시작 지점 코드를 본다. <code>PUSHAD</code>, 반복문, <code>VirtualAlloc</code>/<code>VirtualProtect</code> 호출 직후 알 수 없는 주소로 <code>JMP</code>하는 패턴이면 패킹 스텁일 가능성이 매우 높다.</p>
+<p><strong>6) 결론을 내리고 다음 단계로 넘어간다</strong></p>
+<p>위 징후 중 3개 이상이 겹치면 "패킹됨"으로 결론짓고, 패커 종류에 따라 다음 문서로 이동한다: UPX라면 REV-0225/REV-0226, 다른 패커거나 커스텀 패커라면 REV-0227(수동 언패킹 개념).</p>
+<h2>명령어/단축키</h2>
+<ul><li><code>strings sample.exe | wc -l</code> : 문자열 줄 수 세기 (WSL/Linux/Git Bash)</li><li><code>strings sample.exe | less</code> : 문자열 목록 훑어보기</li><li>IDA <code>Ctrl+P</code> : Functions window</li><li>IDA <code>Shift+F12</code> : Strings window</li><li>IDA <code>View → Open Subviews → Imports</code> : Import 목록</li><li>IDA <code>View → Open Subviews → Segments</code> : 섹션 헤더 확인</li><li>Detect It Easy: 파일을 창에 드래그 → 상단 결과란 확인, 우측 하단 "Entropy" 버튼 클릭</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>strings</code> 결과가 몇 줄뿐이고 대부분 알아볼 수 없는 조각이면 → 데이터가 압축/암호화되어 사람이 읽을 텍스트가 애초에 존재하지 않는다는 뜻.</li><li>Imports 창에 <code>KERNEL32.dll</code>만 있고 <code>USER32.dll</code>, <code>msvcrt.dll</code> 등 원래 필요할 법한 라이브러리가 안 보이면 → 원본 import table이 아직 복원되지 않은 상태.</li><li>섹션 이름이 <code>UPX0</code>/<code>UPX1</code>이면 → 사실상 UPX로 확정(REV-0225로 이동).</li><li>섹션 이름이 <code>.aspack</code>, <code>.adata</code>, <code>.vmp0</code>, <code>.themida</code>, <code>.enigma1</code> 등이면 각각 ASPack, VMProtect, Themida, Enigma Protector라는 상용/전문 패커의 흔적이다. 이런 패커는 UPX처럼 간단히 <code>-d</code> 옵션으로 풀리지 않고, 수동 언패킹(REV-0227)이나 동적 분석이 필요하다.</li><li>Detect It Easy가 "Nothing found"라고만 뜨고 아무 패커도 못 잡으면 → 알려지지 않은 커스텀 패커이거나, 컴파일러가 만든 정상 실행 파일일 수 있으니 엔트로피와 entry point 코드를 직접 눈으로 재확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>문자열이 적다는 이유 하나만으로 성급하게 "패킹됨"이라 단정하는 것. 원래 문자열이 적은 아주 작은 유틸리티 프로그램도 있으므로, 반드시 여러 징후를 함께 봐야 한다.</li><li>Import가 적은 것을 보고 바로 포기하는 것. 정적 링크(static linking)된 바이너리도 import가 적게 보일 수 있으니 섹션 이름/엔트로피와 함께 판단해야 한다.</li><li>DIE 같은 시그니처 기반 도구의 결과를 절대적으로 믿는 것. 시그니처 DB에 없는 최신/변형 패커는 "Unknown"으로 나올 수 있으므로 시그니처가 안 잡혀도 다른 징후를 계속 확인해야 한다.</li><li>패킹을 확인한 뒤 곧바로 언패킹 도구부터 실행하는 것. 어떤 패커인지 먼저 식별해야(REV-0225 등) 올바른 언패킹 방법을 고를 수 있다.</li><li>entry point 코드를 안 보고 넘어가는 것. 섹션 이름만으로 판단하면 최신 패커가 섹션 이름을 표준처럼 위장한 경우 놓칠 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>패커 시그니처가 안 잡히는데 여전히 의심스럽다면 → REV-0228(엔트로피)로 이동해 섹션별 수치를 직접 확인한다.</li><li>Import가 이상하게 적다면 → REV-0229(Import가 거의 없는 PE)에서 원인을 더 자세히 파악한다.</li><li>패커가 UPX로 확인됐다면 → REV-0226(UPX 기본 언패킹)으로 바로 이동한다.</li><li>UPX가 아닌 다른 패커이거나 시그니처가 안 잡히면 → REV-0227(수동 언패킹 개념)에서 OEP와 덤프 개념을 먼저 이해한다.</li><li>entry point에서 <code>VirtualProtect</code> 호출 후 자기 자신을 덮어쓰는 듯한 루프가 보인다면 → REV-0230(Self-modifying Code 기초)도 함께 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p><code>challenge.exe</code>(320KB)를 IDA에 열었더니 다음과 같았다고 하자.</p>
+<pre><code class="language-text">- Functions window: 함수 3개(sub_401000, sub401020, start)만 존재
+- Strings window: "UPX!" 문자열 하나만 보임
+- Imports: LoadLibraryA, GetProcAddress, ExitProcess 3개뿐
+- Segments: UPX0 (raw size 0, virtual size 0x40000), UPX1 (raw size 0x28000)
+- entry point 코드: PUSHAD → 큰 루프 → POPAD → JMP 알 수 없는 주소</code></pre>
+<p>문자열 "UPX!"와 <code>UPX0</code>/<code>UPX1</code> 섹션 이름만으로도 이미 UPX 패킹이 거의 확정적이다. 이럴 때는 REV-0225로 넘어가 <code>upx -V</code>, <code>strings</code>로 매직 바이트를 한 번 더 확인하고, REV-0226에서 설명하는 <code>upx -d challenge.exe</code> 명령으로 바로 언패킹을 시도하면 된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0001-first-30-seconds.html">REV-0001 — 리버싱 문제 파일을 받았을 때 30초 트리아지</a></li><li><a href="rev-0225-identifying-upx.html">REV-0225 — UPX인지 확인하는 법</a></li><li><a href="rev-0226-upx-basic-unpacking.html">REV-0226 — UPX 기본 언패킹</a></li><li><a href="rev-0227-manual-unpacking-oep.html">REV-0227 — 수동 언패킹 개념 OEP와 Dump</a></li><li><a href="rev-0228-high-entropy-sections.html">REV-0228 — Entropy가 높은 Section의 의미</a></li><li><a href="rev-0229-few-imports.html">REV-0229 — Import가 거의 없는 PE를 봤을 때</a></li><li>../windows-pe/rev-0126-die-basics.md — Detect It Easy 기본 사용법</li><li>../triage/rev-0009-finding-main.md — main 함수가 안 보일 때 찾는 방법</li><li>../triage/rev-0010-stripped-entry-point.md — stripped 바이너리에서 시작점 잡는 방법</li></ul>
+<h2>출처/검증</h2>
+<ul><li>패킹 스텁의 일반적인 동작(PUSHAD/POPAD, VirtualAlloc/VirtualProtect 사용, 섹션 raw/virtual size 불일치)은 UPX 및 여러 상용 패커(ASPack, Themida, VMProtect)의 공개된 동작 방식과 다수의 리버싱 교육 자료에서 공통적으로 설명하는 내용을 바탕으로 정리했다(2026-09-08 검증).</li><li>Detect It Easy의 시그니처 기반 패커 탐지 방식은 프로젝트 공식 저장소(github.com/horsicq/Detect-It-Easy) 설명을 참고했다.</li><li>실제 파일에 대한 판단은 여러 징후를 종합해야 하며, 도구 버전에 따라 시그니처 인식 결과가 달라질 수 있으므로 최신 DIE 데이터베이스로 재검증하는 것을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

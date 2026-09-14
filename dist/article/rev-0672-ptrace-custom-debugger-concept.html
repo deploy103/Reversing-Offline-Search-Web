@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ptrace 기반 자체 디버거 구현 개념 소개 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>ptrace 기반 자체 디버거 구현 개념 소개</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>GDB를 포함한 리눅스의 모든 네이티브 디버거는 결국 <code>ptrace(2)</code> 시스템 콜 하나로 대상 프로세스를 정지시키고, 레지스터와 메모리를 읽고 쓰고, <code>0xCC</code>(<code>int3</code>) 바이트를 심어 브레이크포인트를 구현하는 방식으로 동작하며, 이 원리를 이해하면 GDB가 멈추지 않거나 안티 디버깅에 막힐 때 왜 그런지, 그리고 최소한의 디버거를 직접 짜서 우회할 수 있는지 판단할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>"GDB가 대체 어떻게 프로세스를 멈추고 레지스터를 읽는 걸까"가 궁금할 때</li><li>안티 디버깅 코드에서 <code>ptrace(PTRACE_TRACEME, ...)</code>를 호출하는 걸 보고 이게 왜 디버거를 막는지 원리를 이해하고 싶을 때</li><li>GDB/기존 도구가 안티 디버깅에 막혀서, 최소한의 커스텀 트레이서를 직접 짜서 우회해야 하는 상황일 때</li><li><code>int3</code> 브레이크포인트가 내부적으로 어떻게 원본 바이트를 저장하고 복원하는지 알고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>ptrace(2) — 리눅스 디버깅의 유일한 표준 인터페이스</h3>
+<pre><code class="language-c">long ptrace(enum __ptrace_request request, pid_t pid, void *addr, void *data);</code></pre>
+<p><code>request</code>에 따라 동작이 완전히 달라지는 다목적 시스템 콜이다. 주요 요청 값들:</p>
+<ul><li><code>PTRACE_TRACEME</code>: "내 부모 프로세스가 나를 트레이싱하겠다"고 커널에 선언. 자식 프로세스가 <code>fork()</code> 직후, <code>execve()</code> 직전에 호출하는 것이 표준 패턴.</li><li><code>PTRACE_ATTACH</code> / <code>PTRACE_SEIZE</code>: 이미 실행 중인 프로세스에 트레이서로 붙기(GDB <code>attach &lt;pid&gt;</code>가 내부적으로 이걸 사용)</li><li><code>PTRACE_PEEKTEXT</code> / <code>PTRACE_PEEKDATA</code>: 대상 프로세스 메모리에서 워드(8바이트) 단위로 읽기</li><li><code>PTRACE_POKETEXT</code> / <code>PTRACE_POKEDATA</code>: 대상 프로세스 메모리에 워드 단위로 쓰기</li><li><code>PTRACE_GETREGS</code> / <code>PTRACE_SETREGS</code>: <code>struct user_regs_struct</code>(rax, rbx, rip, rsp 등 전체 레지스터 세트)를 읽고 쓰기</li><li><code>PTRACE_CONT</code>: 정지된 대상 프로세스를 계속 실행</li><li><code>PTRACE_SINGLESTEP</code>: 명령어 하나만 실행하고 다시 SIGTRAP으로 정지(RFLAGS의 트랩 플래그를 이용)</li><li><code>PTRACE_SYSCALL</code>: 다음 시스템 콜 진입/탈출 시점에 정지 (strace의 핵심 메커니즘)</li><li><code>PTRACE_DETACH</code>: 트레이싱 관계 해제</li></ul>
+<h3>최소 디버거의 뼈대 — fork + execve + waitpid</h3>
+<pre><code class="language-c">pid_t child = fork();
+if (child == 0) {
+    ptrace(PTRACE_TRACEME, 0, NULL, NULL);
+    execve("./target", argv, envp);
+} else {
+    int status;
+    waitpid(child, &amp;status, 0);   // execve 직후 자동으로 SIGTRAP 발생, 여기서 멈춤
+    // 이제 child는 정지 상태 — PEEKTEXT/POKETEXT/GETREGS 등을 자유롭게 사용 가능
+    ptrace(PTRACE_CONT, child, NULL, NULL);
+    waitpid(child, &amp;status, 0);
+}</code></pre>
+<p>자식이 <code>PTRACE_TRACEME</code>를 호출한 뒤 <code>execve</code>를 실행하면, 커널은 새 이미지로 교체되는 시점에 자동으로 <code>SIGTRAP</code>을 발생시켜 자식을 정지시킨다. 부모는 <code>waitpid()</code>로 이 정지를 감지하고, 그 순간부터 자식의 메모리/레지스터를 자유롭게 조작할 수 있다. GDB의 <code>run</code> 명령이 내부적으로 정확히 이 순서를 따른다.</p>
+<h3>int3(0xCC) 소프트웨어 브레이크포인트의 원리</h3>
+<ol><li>브레이크포인트를 걸 주소의 원본 바이트 1개를 <code>PTRACE_PEEKTEXT</code>로 읽어서 백업해둔다.</li><li>그 주소의 첫 바이트를 <code>0xCC</code>(<code>INT3</code> 명령어의 인코딩)로 <code>PTRACE_POKETEXT</code>를 이용해 덮어쓴다.</li><li><code>PTRACE_CONT</code>로 실행을 재개한다.</li><li>CPU가 그 주소에 도달하면 <code>int3</code>를 실행하며 <code>SIGTRAP</code>을 발생시키고 프로세스가 커널에 의해 정지된다.</li><li>트레이서는 <code>waitpid()</code>로 이를 감지하고, <code>PTRACE_GETREGS</code>로 레지스터를 읽는다. 이때 <code>rip</code>는 <code>int3</code> 명령어(1바이트) 실행 직후 위치, 즉 <strong>원래 걸었던 주소보다 1 크다</strong>.</li><li>트레이서는 <code>rip</code>를 원래 주소로 되돌리고(<code>rip -= 1</code>), 백업해둔 원본 바이트를 <code>PTRACE_POKETEXT</code>로 복원해야 이후 정상 실행이 가능하다.</li><li>다시 실행을 이어가려면 원본 바이트를 임시로 복원 → 한 스텝(<code>PTRACE_SINGLESTEP</code>) 실행 → 다시 <code>0xCC</code>로 덮어쓰는 절차가 필요하다(같은 지점에 브레이크포인트를 유지하려면).</li></ol>
+<p>GDB의 소프트웨어 브레이크포인트(<code>break *0x401234</code>)가 바로 이 절차를 자동으로 해준다. Pwndbg/GDB에서 <code>x/1xb 0x401234</code>로 브레이크포인트를 건 주소를 보면 <code>0xcc</code> 바이트가 실제로 박혀있는 걸 확인할 수 있다.</p>
+<h3>왜 PTRACE_TRACEME가 안티 디버깅에 쓰이나</h3>
+<p><code>ptrace</code>는 한 프로세스에 트레이서가 <strong>하나만</strong> 붙을 수 있다는 제약이 있다. 만약 GDB가 이미 <code>PTRACE_ATTACH</code>로 대상 프로세스에 붙어있는 상태라면, 대상 프로세스 자신이 <code>ptrace(PTRACE_TRACEME, ...)</code>를 호출했을 때 이미 트레이서가 있으므로 이 호출이 실패(<code>-1</code> 반환, <code>errno = EPERM</code>)한다. 크래크미/안티 디버깅 코드는 이 실패 여부를 검사해서 "이미 디버거가 붙어있다"를 감지한다(자세한 내용은 REV-0234 참고).</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>Ghidra/IDA 디컴파일 결과에서 다음과 같은 패턴이 보이면 자체적으로 ptrace를 안티 디버깅에 쓰는 코드다.</p>
+<pre><code class="language-c">long ret = ptrace(PTRACE_TRACEME, 0, NULL, NULL);
+if (ret == -1) {
+    puts("Debugger detected!");
+    exit(1);
+}</code></pre>
+<h2>가장 먼저 할 것</h2>
+<p>크래크미가 <code>ptrace</code>를 호출하는지 먼저 정적으로 확인한다.</p>
+<pre><code class="language-bash">nm ./chall | grep -w ptrace     # 동적 링킹 + 심볼 있으면
+objdump -d ./chall | grep -A2 "call.*ptrace@plt"</code></pre>
+<p>또는 동적으로 바로 확인한다.</p>
+<pre><code class="language-bash">strace -e trace=ptrace ./chall</code></pre>
+<h2>단계별 절차 (최소 디버거 직접 짜보기 개념 흐름)</h2>
+<p><strong>1) 자식 프로세스 생성 및 트레이싱 선언</strong> <code>fork()</code> → 자식에서 <code>ptrace(PTRACE_TRACEME, ...)</code> → <code>execve()</code></p>
+<p><strong>2) 부모에서 execve 직후 정지 감지</strong> <code>waitpid(child, &amp;status, 0)</code> — 이 시점 자식은 새 이미지로 교체되었지만 아직 진입점 실행 전.</p>
+<p><strong>3) 원하는 주소에 브레이크포인트 심기</strong> <code>PTRACE_PEEKTEXT</code>로 원본 워드 백업 → 최하위 바이트만 <code>0xCC</code>로 바꾼 워드를 <code>PTRACE_POKETEXT</code>로 쓰기.</p>
+<p><strong>4) 실행 재개 및 정지 대기</strong> <code>PTRACE_CONT</code> → <code>waitpid()</code> → <code>SIGTRAP</code> 확인.</p>
+<p><strong>5) 레지스터 확인/조작</strong> <code>PTRACE_GETREGS</code>로 <code>struct user_regs_struct</code> 읽기 → <code>rip</code> 보정 → 필요하면 <code>PTRACE_SETREGS</code>로 값 변경.</p>
+<p><strong>6) 원본 바이트 복원 후 계속 실행</strong> <code>PTRACE_POKETEXT</code>로 원본 복원 → <code>PTRACE_CONT</code> 또는 필요하면 <code>PTRACE_SINGLESTEP</code> 한 번 후 다시 <code>0xCC</code> 재설치.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">strace -e trace=ptrace ./chall
+nm ./chall | grep -w ptrace
+objdump -d ./chall | grep -B2 -A2 "ptrace"
+gdb ./chall
+  (gdb) catch syscall ptrace</code></pre>
+<p>GDB에서 <code>catch syscall ptrace</code>를 걸어두면, 대상 프로그램이 스스로 <code>ptrace</code>를 호출하는 순간마다 GDB가 멈춰서 안티 디버깅 로직을 그 자리에서 관찰할 수 있다.</p>
+<h2>출력 해석</h2>
+<pre><code>$ strace -e trace=ptrace ./chall
+ptrace(PTRACE_TRACEME)                 = 0
++++ exited with 0 +++</code></pre>
+<p>반환값 <code>0</code>이면 트레이서가 없어 <code>PTRACE_TRACEME</code>가 성공한 것 — 정상 실행 상태다. 만약 GDB로 이미 attach된 상태에서 프로그램 자신이 <code>PTRACE_TRACEME</code>를 호출하면 <code>-1 EPERM (Operation not permitted)</code>가 찍히고, 이 값을 검사해 디버거 존재를 감지한다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>ptrace</code> 요청 상수(<code>PTRACE_PEEKTEXT</code> 등)를 절대적인 것으로 착각하고 다른 아키텍처/OS에도 그대로 적용되리라 가정하는 것 — <code>ptrace</code>는 리눅스(및 BSD 계열) 고유 인터페이스이며 값과 의미가 플랫폼마다 다르다.</li><li>브레이크포인트를 걸고 원본 바이트 복원을 잊어버려서, <code>PTRACE_CONT</code> 이후 대상 프로세스가 <code>0xCC</code>(정의되지 않은 목적의 명령어가 아니라 항상 트랩을 발생시키는 명령)를 반복 실행하며 무한히 SIGTRAP만 반복하는 상황을 만드는 것.</li><li>트레이서가 이미 하나 붙어있는 프로세스에 GDB로 또 attach하려다 <code>ptrace: Operation not permitted</code> 에러를 보고 원인을 못 찾는 것 — 프로세스당 트레이서는 하나뿐이라는 제약을 기억해야 한다.</li><li><code>PTRACE_GETREGS</code>로 얻은 <code>rip</code>가 브레이크포인트를 건 주소보다 1 크다는 걸 깜빡하고 그대로 분석해서 엉뚱한 명령어를 보고 있다고 착각하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>ptrace</code> 기반 안티 디버깅 자체를 우회하는 구체적 방법이 궁금하다면 → REV-0234 ptrace PTRACE_TRACEME 안티디버깅</li><li>시그널(특히 SIGTRAP)의 의미를 더 정확히 이해하고 싶다면 → REV-0671 Linux 시그널(SIGSEGV 등)과 리버싱에서의 의미</li><li>GDB의 표준 브레이크포인트 명령을 다시 짚고 싶다면 → REV-0186 GDB break와 address breakpoint</li><li>seccomp가 <code>ptrace</code> 자체를 막는 경우도 있으니 → REV-0673 seccomp가 걸린 바이너리를 만났을 때 알아채는 법</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">// 개념 스켈레톤 - 실제 프로덕션 코드 아님
+#include &lt;sys/ptrace.h&gt;
+#include &lt;sys/wait.h&gt;
+#include &lt;sys/user.h&gt;
+#include &lt;unistd.h&gt;
+
+int main(void) {
+    pid_t child = fork();
+    if (child == 0) {
+        ptrace(PTRACE_TRACEME, 0, NULL, NULL);
+        execl("./target", "target", NULL);
+    } else {
+        int status;
+        waitpid(child, &amp;status, 0);          // execve 직후 SIGTRAP
+        struct user_regs_struct regs;
+        ptrace(PTRACE_GETREGS, child, NULL, &amp;regs);
+        // regs.rip == 진입점 주소
+        ptrace(PTRACE_CONT, child, NULL, NULL);
+        waitpid(child, &amp;status, 0);
+    }
+    return 0;
+}</code></pre>
+<p>이 20줄 남짓한 코드가 GDB <code>run</code> 명령의 핵심 골격과 동일한 원리로 동작한다 — <code>fork</code> → <code>PTRACE_TRACEME</code> → <code>execve</code> → 부모의 <code>waitpid</code>.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0234-ptrace-traceme.html">REV-0234 — ptrace PTRACE_TRACEME 안티디버깅</a></li><li><a href="rev-0671-linux-signals-reversing.html">REV-0671 — Linux 시그널(SIGSEGV 등)과 리버싱에서의 의미</a></li><li><a href="rev-0186-gdb-break.html">REV-0186 — GDB break와 address breakpoint</a></li><li><a href="rev-0673-seccomp-detection.html">REV-0673 — seccomp가 걸린 바이너리를 만났을 때 알아채는 법</a></li><li><a href="rev-0112-strace-basics.html">REV-0112 — strace로 시스템 콜에서 힌트 찾기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>ptrace(2)</code> 시스템 콜 시그니처, 요청 상수(<code>PTRACE_TRACEME</code>, <code>PTRACE_PEEKTEXT</code>, <code>PTRACE_POKETEXT</code>, <code>PTRACE_GETREGS</code>, <code>PTRACE_CONT</code>, <code>PTRACE_SINGLESTEP</code>, <code>PTRACE_SYSCALL</code> 등)와 동작: Linux man-pages 프로젝트 <code>ptrace(2)</code> 문서 기준.</li><li><code>int3</code>(0xCC) 소프트웨어 브레이크포인트의 SIGTRAP 발생 및 rip 보정(+1) 필요성: x86/x86-64 아키텍처 매뉴얼(인터럽트 3, INT3) 및 GDB/디버거 구현 표준 관행 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

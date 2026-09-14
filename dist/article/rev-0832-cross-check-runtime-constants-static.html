@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>동적분석 중 발견한 상수를 정적분석과 다시 대조하는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>동적분석 중 발견한 상수를 정적분석과 다시 대조하는 법</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>디버거에서 우연히 발견한 특이한 값(XOR 키, 매직 넘버, 비교 대상 상수 등)은 그 자체로는 "왜 그 값인지" 알 수 없으므로, IDA/Ghidra의 상수 검색(Immediate Value Search) 기능으로 바이너리 전체에서 그 값이 어디에 하드코딩되어 있는지 역으로 찾아 정적 분석과 대조하면 그 값의 의미와 전체 알고리즘에서의 역할을 확정할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>REV-0828/0829 방식으로 동적 관찰을 하다가 반환값이나 중간 계산 값에서 낯선 상수(예: <code>0x9E3779B9</code>, <code>0xDEADBEEF</code>, 특정 문자열 길이 등)를 발견했을 때</li><li>그 상수가 프로그램 전체에서 딱 한 번만 쓰이는지, 여러 곳에서 재사용되는지 궁금할 때</li><li>동적으로 확인한 값이 정적 분석에서 이미 본 것 같은데 정확히 어느 명령의 오퍼랜드였는지 기억이 안 날 때</li><li>동적분석으로 세운 가설(REV-0829)을 정적 분석으로 최종 확정하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>동적 관찰과 정적 분석은 서로 다른 것을 더 잘 본다</h3>
+<p>동적분석(디버거)은 "실제로 이 순간 이 레지스터에 이 값이 들어있다"는 사실을 정확히 보여주지만, 그 값이 코드 전체에서 어떤 위치의 상수에서 유래했는지, 다른 곳에서도 같은 상수가 쓰이는지는 한 번의 실행 흐름만으로는 알기 어렵다. 반대로 정적분석(IDA/Ghidra)은 바이너리 전체를 한 번에 훑을 수 있지만, 실행 중 실제로 그 상수가 어떤 값으로 나타나는지, 어떤 조건에서 그 코드에 도달하는지는 직접 보여주지 못한다. 두 값을 대조하는 것은 이 둘의 장점을 합치는 작업이다.</p>
+<h3>상수 검색 기능</h3>
+<ul><li><strong>IDA</strong>: <code>Alt+B</code>(Binary search) 또는 Search → Sequence of bytes로 특정 바이트 패턴을 찾을 수 있다. 4바이트/8바이트 정수를 리틀엔디언 바이트 순서로 변환해 검색하면 <code>mov eax, 0x9E3779B9</code> 같은 명령의 오퍼랜드를 찾아낼 수 있다. 또한 <code>.rodata</code>/<code>.data</code> 영역에서 같은 값을 가진 전역 변수를 찾을 수도 있다.</li><li><strong>Ghidra</strong>: Search → Memory → 원하는 값(Hex, 바이트 순서 옵션)으로 바이너리 전체 스캔이 가능하다. Listing 창에서 특정 상수를 우클릭 → "Find Uses of"(또는 유사 기능)로 해당 상수가 인용되는 다른 위치를 찾을 수도 있다.</li><li><strong>디버거 자체 검색</strong>: x64dbg는 Memory Map/Dump 창에서 우클릭 → Find Pattern으로 실행 중인 프로세스 메모리에서 같은 값을 검색할 수 있다. GDB/Pwndbg는 <code>find</code> 명령(<code>find start, end, 0x9E3779B9</code>)으로 특정 범위 내 메모리에서 값을 찾는다.</li></ul>
+<h3>바이트 순서(엔디언)에 주의</h3>
+<p>x86/x64는 리틀엔디언이므로, 레지스터에서 본 값 <code>0x9E3779B9</code>를 IDA의 바이트 검색에 그대로 넣으면 안 되고 <code>B9 79 37 9E</code> 순서로 바이트를 뒤집어 검색해야 한다(IDA의 Binary search는 16진수 값 검색 모드에서 이를 자동 처리해주는 옵션이 있는 버전도 있으니 UI를 확인한다).</p>
+<h3>찾은 위치에서 확인할 것</h3>
+<p>상수가 발견된 위치의 함수 전체를 살펴보고, 그 상수가 XOR 키인지, 배열 크기인지, 특정 알고리즘(예: Fibonacci 해시의 골든 레이시오 상수)의 매직 넘버인지 문맥으로 판단한다. 잘 알려진 상수(예: CRC32 다항식, MD5/SHA 초기값)라면 검색 엔진에 그 16진수 값을 검색해 어떤 알고리즘의 특징적인 상수인지 바로 식별할 수 있는 경우도 많다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>GDB/x64dbg에서 레지스터나 메모리를 덤프했는데 <code>0x9E3779B9</code>, <code>0xEDB88320</code>처럼 낯설지만 규칙적으로 보이는 16진수 값이 나타남</li><li>같은 상수가 여러 번의 실행에서 매번 동일하게 나타나 하드코딩된 값임이 확실해짐</li><li>정적 분석에서 본 적 있는 것 같은 상수인데 정확한 위치(주소, 함수명)가 기억나지 않음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>디버거에서 발견한 값을 정확한 형식(몇 바이트인지, 부호 여부, 16진수 표기)으로 먼저 기록한다. 그 다음 그 값이 잘 알려진 알고리즘 상수인지부터 빠르게 검색해보고(예: 웹 검색), 아니라면 IDA/Ghidra의 상수 검색 기능으로 바이너리 내 위치를 찾는다.</p>
+<h2>단계별 절차</h2>
+<ol><li>디버거에서 발견한 상수의 정확한 값과 크기(4바이트/8바이트) 기록</li><li>잘 알려진 알고리즘 상수(CRC, 해시 초기값, 골든 레이시오 등)인지 먼저 확인</li><li>IDA는 <code>Alt+B</code>로 Binary search, Ghidra는 Search → Memory로 해당 값을 바이너리 전체에서 검색(엔디언 순서 주의)</li><li>검색 결과로 나온 위치들을 하나씩 열어 어떤 명령의 오퍼랜드인지, 어느 함수 안에 있는지 확인</li><li>그 함수의 앞뒤 문맥(호출자, 인접 상수들)을 REV-0165 방식으로 분석해 알고리즘 전체 그림 완성</li><li>여러 위치에서 같은 상수가 재사용된다면, 공용 유틸리티 함수(예: 공통 해시 함수)일 가능성을 의심하고 각 호출 지점을 REV-0834 방식으로 비교</li></ol>
+<h2>명령어/단축키</h2>
+<p>IDA:</p>
+<pre><code>Alt+B                     ; Binary search
+Search → Sequence of bytes</code></pre>
+<p>Ghidra:</p>
+<pre><code>Search → Memory... (Hex 값 입력, byte order 옵션 확인)</code></pre>
+<p>GDB/Pwndbg(Linux):</p>
+<pre><code>find &amp;_start, +0x100000, 0x9E3779B9
+info symbol 0x4011a0</code></pre>
+<p>x64dbg(Windows):</p>
+<pre><code>Dump 창 우클릭 → Find Pattern
+Memory Map 에서 대상 모듈 범위 확인 후 검색 범위 지정</code></pre>
+<h2>출력 해석</h2>
+<ul><li>IDA Binary search로 값을 찾으면 커서가 그 바이트 위치로 자동 이동한다. 그 위치가 코드 영역(<code>.text</code>)이면 어떤 명령의 즉시값(immediate)인지, 데이터 영역(<code>.rodata</code>/<code>.data</code>)이면 어떤 전역 변수의 초기값인지 구분해서 본다.</li><li>GDB <code>find</code> 결과로 여러 주소가 나오면, 각 주소에 <code>info symbol 주소</code>를 실행해 어느 함수/섹션에 속하는지 심볼 이름을 확인한다.</li><li>같은 상수가 코드 여러 곳에서 나온다면, 컴파일러가 상수를 인라인한 결과일 수도 있고, 정말로 같은 알고리즘이 여러 번 호출되는 구조일 수도 있으니 각 호출 문맥을 비교해서 판단해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>값을 검색할 때 엔디언을 뒤집지 않고 그대로 바이트 검색해서 아무 결과도 못 찾는 것</li><li>4바이트 값인데 8바이트로(또는 그 반대로) 잘못 검색해서 매칭이 안 되는 것</li><li>상수를 찾았다고 바로 "이게 XOR 키다"라고 단정하고, 실제로 그 상수가 쓰이는 연산(비교인지 XOR인지 덧셈인지)을 확인하지 않는 것</li><li>이미 알려진 알고리즘 상수(예: CRC32 다항식)를 처음 보는 값이라 착각해서 알고리즘 전체를 처음부터 새로 분석하려고 시도하는 것 — 먼저 검색해보면 시간을 크게 아낄 수 있음</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>상수 검색의 기본 개념과 정적 분석 단독 활용법은 → REV-0165 상수 검색으로 알고리즘 찾기</li><li>문자열 상수 하나로 알고리즘 전체를 추정하는 실전 사례가 궁금하면 → REV-0756 문자열 상수 하나로 알고리즘 전체를 추정하는 실전 사례</li><li>이 상수를 발견한 원래의 동적 관찰 방법이 기억나지 않으면 → REV-0828 동적분석으로 검증 함수의 입출력만 계속 관찰하는 전략</li><li>같은 상수가 여러 함수에서 호출 순서상 어떻게 재사용되는지 더 넓게 보고 싶다면 → REV-0834 API 호출 순서만으로 프로그램 동작을 재구성하는 법</li></ul>
+<h2>미니 예제</h2>
+<pre><code>(gdb) p/x $eax
+$1 = 0x9e3779b9</code></pre>
+<p>IDA에서:</p>
+<pre><code>Alt+B → Hex string: B9 79 37 9E
+→ 결과: .text:00401050  mov  ecx, 9E3779B9h</code></pre>
+<p>디버거에서 우연히 본 <code>0x9e3779b9</code>가 IDA 검색으로 <code>0x401050</code> 위치의 <code>mov ecx, 9E3779B9h</code> 명령에서 나온 것임을 확인했다. 이 값은 흔히 해시 함수에서 쓰이는 골든 레이시오 기반 상수로 잘 알려져 있어, 이 함수가 단순 비교가 아니라 해시 계산 루틴이라는 것도 함께 짐작할 수 있었다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0165-constant-search.html">REV-0165 — 상수 검색으로 알고리즘 찾기</a></li><li><a href="rev-0756-string-constant-algorithm-case-study.html">REV-0756 — 문자열 상수 하나로 알고리즘 전체를 추정하는 실전 사례</a></li><li><a href="rev-0828-observe-io-validation-function.html">REV-0828 — 동적분석으로 검증 함수의 입출력만 계속 관찰하는 전략</a></li><li><a href="rev-0834-reconstruct-behavior-from-api-order.html">REV-0834 — API 호출 순서만으로 프로그램 동작을 재구성하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>IDA Binary search(<code>Alt+B</code>)와 바이트 시퀀스 검색: Hex-Rays IDA 공식 문서 기준.</li><li>Ghidra Search → Memory 기능: Ghidra 공식 문서(Search Memory 절) 기준.</li><li>GDB <code>find</code> 명령과 <code>info symbol</code>: GNU GDB 공식 매뉴얼 기준.</li><li>골든 레이시오 기반 해시 상수(<code>0x9E3779B9</code> 등)는 다수의 공개 해시 알고리즘 구현체(예: Fibonacci hashing)에서 반복적으로 확인되는 값 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

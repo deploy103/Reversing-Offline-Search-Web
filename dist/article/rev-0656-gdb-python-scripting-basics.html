@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GDB Python 스크립팅 기초(gdb.Breakpoint 등) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>GDB Python 스크립팅 기초(gdb.Breakpoint 등)</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>GDB는 Python 인터프리터가 내장되어 있어서, <code>gdb.Breakpoint</code>를 상속한 클래스의 <code>stop()</code> 메서드로 "이 지점에 멈출 때마다 자동으로 값을 읽고, 조건에 안 맞으면 다시 실행을 이어가라"는 로직을 짤 수 있고, 이걸로 수동 <code>continue</code> 반복을 없애고 루프/브루트포스성 분석을 자동화할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>break strcmp</code> 같은 브레이크포인트가 루프 안에서 수백 번 걸려서 <code>continue</code>를 수백 번 쳐야 하는 상황일 때</li><li>특정 함수가 호출될 때마다 인자 값을 자동으로 기록/출력하고, 조건이 맞을 때만 진짜로 멈추게 하고 싶을 때</li><li>GDB <code>.gdbinit</code>이나 CTF 문제에서 <code>.py</code> 확장자의 GDB 스크립트를 보고 이게 뭘 하는 건지 읽어야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>GDB에 Python이 내장돼 있다</h3>
+<p>현대 GDB(Ubuntu/Debian 기본 패키지 포함 대부분의 배포판)는 <code>--with-python</code> 옵션으로 빌드되어 Python 인터프리터를 내장하고 있다. GDB 프롬프트에서 바로 확인할 수 있다:</p>
+<pre><code>(gdb) python print("hello from gdb python")
+hello from gdb python</code></pre>
+<p>한 줄짜리 명령은 <code>python &lt;코드&gt;</code>(별칭 <code>py</code>)로 실행하고, 여러 줄을 대화형으로 입력하려면 <code>python</code> 또는 <code>pi</code>(python-interactive)만 치고 엔터를 누른 뒤 코드를 여러 줄 입력하다가 <code>end</code>로 마무리한다.</p>
+<h3>gdb 모듈 — GDB를 제어하는 Python API</h3>
+<p>GDB는 자체 <code>gdb</code> 모듈을 Python 쪽에 노출한다. 대표적인 것들:</p>
+<ul><li><code>gdb.execute("break main", to_string=True)</code> — 일반 GDB 명령을 문자열로 실행. <code>to_string=True</code>면 출력이 화면 대신 문자열로 반환된다.</li><li><code>gdb.parse_and_eval("$rdi")</code> — GDB 표현식을 평가해서 <code>gdb.Value</code> 객체로 반환. 레지스터, 변수, 역참조(<code>*(int*)$rsp</code>) 모두 가능하다.</li><li><code>gdb.selected_frame()</code> — 현재 선택된 스택 프레임 객체를 반환. <code>.read_var("변수명")</code>으로 지역 변수도 읽을 수 있다.</li><li><code>gdb.Breakpoint</code> — 브레이크포인트를 클래스로 감싸서 동작을 커스터마이즈하는 핵심 클래스.</li><li><code>gdb.FinishBreakpoint</code> — 현재 프레임이 리턴할 때 자동으로 멈추는 특수 브레이크포인트(REV-0657의 <code>finish</code> 명령을 스크립트로 자동화한 버전). <code>return_value</code> 속성으로 리턴값을 읽는다.</li></ul>
+<h3>gdb.Breakpoint와 stop() — 핵심 패턴</h3>
+<p><code>gdb.Breakpoint</code>를 상속해서 <code>stop()</code> 메서드를 오버라이드하면, 그 브레이크포인트에 걸릴 때마다 이 메서드가 호출된다. <strong><code>stop()</code>이 <code>True</code>를 반환하면 GDB가 실제로 멈추고, <code>False</code>를 반환하면 자동으로 실행을 계속 이어간다.</strong> 이게 "수동으로 continue를 반복하지 않아도 되는" 핵심 메커니즘이다.</p>
+<pre><code class="language-python">import gdb
+
+class CountingBreak(gdb.Breakpoint):
+    def __init__(self, location):
+        super().__init__(location)
+        self.hit_count = 0
+
+    def stop(self):
+        self.hit_count += 1
+        arg1 = gdb.parse_and_eval("$rdi")
+        arg2 = gdb.parse_and_eval("$rsi")
+        print(f"[{self.hit_count}] strcmp(0x{int(arg1):x}, 0x{int(arg2):x})")
+        return False  # 멈추지 않고 자동으로 계속 진행
+
+CountingBreak("strcmp")</code></pre>
+<p>이 스크립트를 <code>trace_strcmp.py</code>로 저장하고 <code>gdb -q -x trace_strcmp.py ./chall</code> 로 실행하면, <code>strcmp</code>가 호출될 때마다 인자가 자동으로 출력되면서 프로그램이 끊기지 않고 계속 실행된다.</p>
+<h3>이벤트 훅 — gdb.events</h3>
+<p>브레이크포인트를 굳이 걸지 않아도 전역 이벤트에 콜백을 등록할 수 있다.</p>
+<pre><code class="language-python">def on_exit(event):
+    print(f"exit code = {event.exit_code}")
+
+gdb.events.exited.connect(on_exit)</code></pre>
+<p><code>gdb.events.stop</code>(어떤 이유로든 정지할 때), <code>gdb.events.exited</code>(프로세스 종료), <code>gdb.events.new_objfile</code>(공유 라이브러리 로드) 등이 자주 쓰인다.</p>
+<h3>스크립트 로딩 방법</h3>
+<ul><li><code>source script.py</code> — GDB 프롬프트에서 직접 로드. 확장자가 <code>.py</code>면 Python으로, <code>.gdb</code>면 기존 GDB 명령 스크립트로 자동 인식한다.</li><li><code>gdb -x script.py ./chall</code> — 실행과 동시에 스크립트 로드.</li><li><code>.gdbinit</code>/<code>gdbinit.d</code> 안에서 <code>source ~/my_script.py</code>로 항상 자동 로드되게 설정 가능. Pwndbg, GEF, peda 같은 도구들도 결국 이 방식으로 GDB에 Python 스크립트를 얹은 것이다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>CTF 문제 저장소나 write-up에 <code>solve.py</code>가 아니라 <code>.gdbinit</code> 파일 안에 <code>python</code>으로 시작하는 블록이나, 별도의 <code>*.py</code> 파일을 <code>gdb -x</code>로 로드하라는 안내가 있다면 GDB Python 스크립팅을 활용하는 것이다. 코드 안에 <code>class ... (gdb.Breakpoint):</code>, <code>def stop(self):</code>, <code>gdb.execute(...)</code> 패턴이 보이면 이 문서의 내용이 바로 적용된다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>GDB에 Python이 제대로 빌드되어 있는지부터 확인한다:</p>
+<pre><code class="language-bash">gdb -q -ex "python print(gdb.VERSION)" -ex quit</code></pre>
+<p>오류 없이 버전 문자열이 출력되면 Python 지원이 켜져 있는 것이다. 이후 위 <code>CountingBreak</code> 예제를 그대로 파일로 저장해 실행해보면서 감을 잡는 것이 가장 빠르다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 목표 함수와 읽고 싶은 값 정하기</strong> 예: <code>scanf</code> 호출마다 두 번째 인자(버퍼 주소)를 기록하고 싶다고 하자.</p>
+<p><strong>2) 클래스 작성</strong></p>
+<pre><code class="language-python">import gdb
+
+class ScanfWatch(gdb.Breakpoint):
+    def stop(self):
+        buf = gdb.parse_and_eval("$rsi")
+        print(f"scanf buffer = {buf}")
+        return False
+
+ScanfWatch("scanf")</code></pre>
+<p><strong>3) 조건부로 진짜 멈추게 하기</strong> 특정 조건일 때만 실제로 정지하고 싶으면 <code>return True</code>를 조건 안에 넣는다:</p>
+<pre><code class="language-python">class StrcmpBreak(gdb.Breakpoint):
+    def stop(self):
+        arg1 = gdb.parse_and_eval("(char*)$rdi").string()
+        if arg1.startswith("A"):
+            print(f"A로 시작하는 입력 발견: {arg1}")
+            return True  # 이번엔 진짜로 멈춘다
+        return False
+
+StrcmpBreak("strcmp")</code></pre>
+<p><strong>4) 실행</strong></p>
+<pre><code class="language-bash">gdb -q -x script.py ./chall
+(gdb) run</code></pre>
+<p><strong>5) 종료 시 통계 출력하기</strong> <code>gdb.events.exited</code>를 연결해서 마지막에 호출 횟수 요약을 찍을 수 있다.</p>
+<pre><code class="language-python">bp = ScanfWatch("scanf")
+def summary(event):
+    print(f"총 scanf 호출 횟수 관련 정보는 별도 카운터로 추적")
+gdb.events.exited.connect(summary)</code></pre>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">gdb -q -x script.py ./chall          # 스크립트와 함께 실행
+(gdb) source script.py               # 실행 중 스크립트 로드
+(gdb) python print("hi")             # 한 줄 파이썬 실행
+(gdb) pi                             # 대화형 파이썬 REPL 진입 (python-interactive)
+(gdb) python-interactive             # pi의 전체 이름</code></pre>
+<h2>출력 해석</h2>
+<pre><code>$ gdb -q -x trace_strcmp.py ./chall
+Breakpoint 1 at 0x401040
+Starting program: /home/user/chall
+[1] strcmp(0x7ffd12340a10, 0x402004)
+[2] strcmp(0x7ffd12340a10, 0x402010)
+Wrong password.
+[Inferior 1 (process 12345) exited with code 01]</code></pre>
+<p><code>[1]</code>, <code>[2]</code> 접두어는 우리가 만든 <code>CountingBreak.stop()</code> 안의 <code>self.hit_count</code>가 매 호출마다 증가하며 출력된 것이다. 프로그램이 멈추지 않고 끝까지 실행되어 <code>[Inferior ... exited]</code>까지 자동으로 도달한 것이 핵심 — <code>stop()</code>이 계속 <code>False</code>를 반환했기 때문에 사람이 <code>continue</code>를 한 번도 안 눌러도 됐다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>stop()</code>에서 <code>return</code> 문 자체를 빠뜨리는 것 — 파이썬에서 값 없는 <code>return</code>이나 함수 끝까지 실행되면 <code>None</code>을 반환하는데, GDB는 이를 <code>False</code>(멈추지 않음)로 취급하지 않고 예외를 던지거나 예측 못한 동작을 할 수 있다. 항상 <code>True</code>/<code>False</code>를 명시적으로 반환한다.</li><li><code>gdb.parse_and_eval</code>의 결과인 <code>gdb.Value</code>를 그냘 <code>print()</code>에 넣고 정수 연산을 시도하다 타입 에러가 나는 것 — 정수로 쓰려면 <code>int(value)</code>로 변환해야 한다.</li><li>브레이크포인트 위치 문자열(<code>"strcmp"</code>, <code>"*0x401136"</code>)에 오타가 있으면 <code>gdb.Breakpoint</code> 생성 시 조용히 실패하거나 "Function \"xxx\" not defined" 에러가 난다 — <code>info breakpoints</code>로 실제 등록됐는지 확인한다.</li><li>PIE 바이너리에서 심볼 이름 대신 고정 주소로 브레이크포인트를 걸면 ASLR 때문에 실행마다 주소가 달라져 브레이크포인트가 엉뚱한 곳에 걸린다(REV-0103, REV-0194 참고) — 가능하면 심볼 이름이나 <code>break *(0x555555554000 + offset)</code> 같은 base 상대 표현을 쓴다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>리턴값만 자동으로 확인하고 싶다면 수동 <code>finish</code>보다 <code>gdb.FinishBreakpoint</code>가 더 편하다 → REV-0657 GDB finish로 반환값 확인하기</li><li>원격 프로세스를 디버깅하면서 같은 스크립트를 쓰고 싶다면 → REV-0658 GDB 원격 디버깅(gdbserver) 기초</li><li>Pwndbg/GEF 자체가 이런 Python 스크립팅으로 만들어진 확장이라는 걸 알고 싶다면 → REV-0192 Pwndbg 설치와 실행, REV-0286 Pwndbg 명령어 치트시트</li><li>기본 브레이크포인트 문법 자체가 헷갈린다면 → REV-0186 GDB break와 address breakpoint</li></ul>
+<h2>미니 예제</h2>
+<p><code>strcmp</code> 인자를 자동 기록하면서, 특정 접두사가 나올 때만 멈추는 완전한 스크립트:</p>
+<pre><code class="language-python">import gdb
+
+class SmartBreak(gdb.Breakpoint):
+    def __init__(self):
+        super().__init__("strcmp")
+        self.count = 0
+
+    def stop(self):
+        self.count += 1
+        try:
+            s1 = gdb.parse_and_eval("(char*)$rdi").string()
+        except Exception:
+            s1 = "&lt;읽기 실패&gt;"
+        print(f"[{self.count}] strcmp arg1 = {s1!r}")
+        if s1.startswith("flag"):
+            print("&gt;&gt;&gt; flag 관련 문자열 비교 발견, 여기서 멈춤")
+            return True
+        return False
+
+SmartBreak()
+gdb.execute("run")</code></pre>
+<pre><code class="language-bash">$ gdb -q -x smart.py ./chall
+[1] strcmp arg1 = 'test'
+[2] strcmp arg1 = 'flag{fake_prefix}'
+&gt;&gt;&gt; flag 관련 문자열 비교 발견, 여기서 멈춤
+
+Breakpoint 1, 0x0000555555555169 in strcmp ()</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0657-gdb-finish-return-value.html">REV-0657 — GDB에서 함수 반환값을 finish로 확인하는 법</a></li><li><a href="rev-0658-gdb-remote-debugging-gdbserver.html">REV-0658 — GDB 원격 디버깅(gdbserver) 기초</a></li><li><a href="rev-0186-gdb-break.html">REV-0186 — GDB break와 address breakpoint</a></li><li><a href="rev-0284-gdb-commands-cheatsheet.html">REV-0284 — GDB 명령어 치트시트</a></li><li><a href="rev-0192-pwndbg-install.html">REV-0192 — Pwndbg 설치와 실행</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>gdb.Breakpoint</code>, <code>gdb.FinishBreakpoint</code>, <code>gdb.events</code>, <code>gdb.parse_and_eval</code>, <code>python</code>/<code>pi</code> 명령: GDB 공식 매뉴얼 "Python API" 챕터(<code>gdb.org</code> 온라인 문서) 기준.</li><li><code>stop()</code> 반환값에 따른 자동 재개 동작: GDB Python API <code>Breakpoint.stop()</code> 문서 설명 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

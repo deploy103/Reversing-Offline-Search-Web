@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>libc 함수 사전: strcpy strncpy strcat strncat · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>libc 함수 사전: strcpy strncpy strcat strncat</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">ltrace</span><span class="tag">objdump</span></div>
+<h2>한 줄 요약</h2>
+<p><code>strcpy</code>/<code>strcat</code>은 목적지 버퍼 크기를 전혀 확인하지 않아 CTF 스택 오버플로우의 대표 원인이고, <code>strncpy</code>/<code>strncat</code>은 길이 제한(<code>n</code>)을 받지만 <strong><code>strncpy</code>는 소스가 <code>n</code> 이상이면 널 종료를 보장하지 않는다</strong>는 함정이 있어 "안전한 함수"라고 무조건 믿으면 안 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>call strcpy@plt</code>가 보이고 목적지가 고정 크기 스택 버퍼인데 소스 길이가 사용자 입력이라 오버플로우 여부를 확인하고 싶을 때</li><li><code>strncpy</code>를 썼는데도 이후 코드에서 이상한 길이의 문자열이 출력될 때(널 종료 누락 의심)</li><li><code>strcat</code>으로 문자열을 이어붙이는데 목적지 버퍼에 이미 얼마나 차 있는지 계산해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<pre><code class="language-c">char *strcpy(char *dest, const char *src);
+char *strncpy(char *dest, const char *src, size_t n);
+char *strcat(char *dest, const char *src);
+char *strncat(char *dest, const char *src, size_t n);</code></pre>
+<p>네 함수 모두 <strong>반환값은 <code>dest</code> 포인터 그대로</strong>다(체이닝 목적, 성공/실패 판단용이 아님).</p>
+<p><strong>strcpy</strong>: <code>src</code>의 널 종료(<code>\0</code>)까지 통째로 <code>dest</code>에 복사한다. <code>dest</code>의 크기를 전혀 알지 못하므로 <code>src</code>가 <code>dest</code>보다 길면 그만큼 뒤쪽 메모리(스택이면 저장된 레지스터·카나리·리턴 주소, 힙이면 다음 청크 헤더)를 덮어쓴다.</p>
+<p><strong>strncpy</strong>: 최대 <code>n</code>바이트까지만 복사한다. 그런데 동작이 두 갈래로 갈린다:</p>
+<ul><li><code>src</code>가 <code>n</code>바이트보다 <strong>짧으면</strong> 나머지를 <code>\0</code>으로 채운다(<code>dest</code> 전체가 항상 <code>n</code>바이트만큼 초기화됨).</li><li><code>src</code>가 <code>n</code>바이트보다 <strong>길거나 같으면</strong> 정확히 <code>n</code>바이트만 복사하고 <strong>널 종료를 붙이지 않는다.</strong> 이 경우 <code>dest</code>는 널로 끝나지 않는 문자열이 되어, 이후 <code>strlen(dest)</code>나 <code>printf("%s", dest)</code>를 호출하면 버퍼 뒤 메모리까지 읽어버리는 out-of-bounds read가 발생할 수 있다.</li></ul>
+<p><strong>strcat</strong>: <code>dest</code>의 기존 널 종료 위치를 찾은 뒤 그 위치부터 <code>src</code>를 이어 붙인다. <code>strcpy</code>와 마찬가지로 <code>dest</code>의 남은 공간을 전혀 확인하지 않는다 — 오히려 <code>dest</code>에 이미 데이터가 있는 상태에서 추가로 덮어쓰므로 오버플로우 위치를 계산할 때 기존 문자열 길이까지 더해야 한다.</p>
+<p><strong>strncat</strong>: <code>n</code>은 "복사할 <code>src</code>의 최대 바이트 수"이며, <strong>널 종료 문자는 <code>n</code>에 포함되지 않는다.</strong> 즉 <code>strncat(dest, src, n)</code>은 최악의 경우 <code>dest</code>에 <code>n+1</code>바이트(데이터 <code>n</code> + 널 1)를 추가로 쓸 수 있다. <code>strncpy</code>의 <code>n</code>(전체 버퍼 크기 개념)과 의미가 다르다는 점이 흔한 혼동 포인트다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>lea rdi, [rbp-0x??]</code> (목적지, 스택 버퍼) 이후 <code>lea rsi, [입력버퍼]</code> 후 <code>call strcpy@plt</code></li><li><code>mov edx, N</code> 처럼 세 번째 인자에 상수가 들어가면 <code>strncpy</code>/<code>strncat</code></li><li><code>strncpy</code> 호출 뒤 별도로 <code>mov byte ptr [dest+n-1], 0</code>을 수동으로 추가하는 코드가 있으면, 개발자가 널 종료 누락 문제를 알고 방어한 것</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>어느 함수인지(인자 개수 2개=strcpy/strcat, 3개=strncpy/strncat) 먼저 구분하고, 목적지 버퍼의 실제 크기(스택 프레임 오프셋 차이 또는 <code>sizeof</code>로 알 수 있는 배열 크기)를 소스 길이와 비교한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>objdump -d ./chall | grep -B6 'call.*strn\?cpy@plt\|call.*strn\?cat@plt'</code>로 인자 세팅 확인.</li><li>GDB에서 <code>break strcpy</code>(또는 대상 함수) 후 <code>x/s $rdi</code>(dest), <code>x/s $rsi</code>(src) 확인.</li><li><code>strncpy</code>/<code>strncat</code>이면 <code>print $rdx</code>로 <code>n</code> 값 확인.</li><li><code>finish</code> 후 <code>x/s $rdi</code>(dest 재확인)로 실제 복사된 결과와 널 종료 여부(<code>x/32xb $rdi</code>로 원시 바이트까지)를 확인.</li><li><code>info frame</code>으로 dest 버퍼와 저장된 canary/리턴 주소 사이 거리를 계산해 오버플로우 가능성 판단.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">objdump -d ./chall | grep 'strcpy@plt\|strncpy@plt\|strcat@plt\|strncat@plt'
+ltrace -s 200 ./chall</code></pre>
+<p>GDB/Pwndbg: <code>break strcpy</code>, <code>break strncpy</code>, <code>x/s $rdi</code>, <code>x/s $rsi</code>, <code>x/32xb $rdi</code>, <code>print $rdx</code></p>
+<h2>출력 해석</h2>
+<ul><li><code>x/32xb $rdi</code> 실행 후 복사된 데이터 바로 뒤에 <code>0x00</code>이 없다면(다른 데이터가 바로 이어짐) <code>strncpy</code>의 널 미종료 케이스에 해당한다.</li><li><code>ltrace</code>에서 <code>strcpy(dest, "AAAA...(긴 문자열)")</code> 형태로 소스 길이가 눈에 띄게 길게 로그되면 오버플로우 재현 입력을 그대로 참고할 수 있다.</li><li><code>strcat</code> 호출 전후로 <code>x/s $rdi</code>를 두 번 찍어 길이 차이를 재면 실제로 몇 바이트가 추가됐는지 확인 가능하다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>strncpy</code>를 쓰면 무조건 안전하다고 믿는 것 — 널 종료를 보장하지 않는 케이스를 놓치면 여전히 정보 유출(out-of-bounds read) 취약점이 될 수 있다.</li><li><code>strncat</code>의 <code>n</code>을 목적지 버퍼의 <strong>남은 공간</strong>이 아니라 <strong>버퍼 전체 크기</strong>로 잘못 계산하는 것 — <code>strncat</code>은 <code>dest</code>에 이미 있는 데이터 길이를 고려하지 않고 그 뒤에 최대 <code>n</code>바이트를 추가로 붙인다.</li><li><code>strcpy</code>/<code>strcat</code> 호출을 보고 바로 "이건 취약점이다"라고 단정하는 것 — 목적지가 충분히 큰 고정 배열이고 소스 길이가 프로그램 로직상 항상 제한되어 있다면 실제로는 안전할 수 있다. 반드시 실제 크기 비교를 해봐야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>포맷 문자열 기반 복사(sprintf류)가 궁금하면 → REV-0628.</li><li>문자열 비교 함수(strcmp/strncmp/memcmp)가 궁금하면 → REV-0110.</li><li>문자열 탐색 함수(strchr/strstr/strtok)가 궁금하면 → REV-0630.</li><li>스택 오버플로우로 이어지는 입력 함수 자체가 궁금하면 → REV-0109.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">char dest[8];
+strncpy(dest, "ABCDEFGHIJ", 8);  // 정확히 8바이트 복사, 널 종료 없음!
+printf("%s\n", dest);            // dest 뒤 스택 메모리까지 이어서 출력될 수 있음</code></pre>
+<pre><code class="language-gdb">(gdb) break strncpy
+(gdb) run
+(gdb) x/s $rsi
+0x402004: "ABCDEFGHIJ"
+(gdb) print $rdx
+$1 = 8
+(gdb) finish
+(gdb) x/9xb $rdi
+0x7fffffffe408: 0x41 0x42 0x43 0x44 0x45 0x46 0x47 0x48 0x?? </code></pre>
+<p>9번째 바이트(<code>dest[8]</code>, 배열 범위 밖)가 <code>0x00</code>이 아니라 임의 값이면 널 종료가 안 된 상태임을 직접 확인한 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0628-libc-sprintf-snprintf.html">REV-0628 — libc 함수 사전: sprintf snprintf 계열</a></li><li><a href="rev-0630-libc-strchr-strstr-strtok.html">REV-0630 — libc 함수 사전: strchr strstr strtok</a></li><li><a href="rev-0110-comparison-functions.html">REV-0110 — strcmp strncmp memcmp 비교 추적</a></li><li><a href="rev-0109-input-functions.html">REV-0109 — scanf fgets read 입력 추적</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>strcpy</code>/<code>strncpy</code>/<code>strcat</code>/<code>strncat</code> 시그니처와 널 종료 규칙: ISO C 표준(C11 7.24.2.3, 7.24.2.4, 7.24.3.1, 7.24.3.2) 및 Linux man-pages <code>strcpy(3)</code>, <code>strncpy(3)</code>, <code>strcat(3)</code>, <code>strncat(3)</code> 기준.</li><li><code>strncpy</code> 널 미종료 함정은 다수의 공식 보안 코딩 가이드(CERT C, <code>strncpy(3)</code> man 페이지 CAVEATS 섹션)에서 공통적으로 지적하는 내용.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

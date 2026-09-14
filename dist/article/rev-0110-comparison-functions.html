@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>strcmp strncmp memcmp 비교 추적 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>strcmp strncmp memcmp 비교 추적</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">ltrace</span></div>
+<h2>한 줄 요약</h2>
+<p>"입력한 값이 맞는지 틀린지" 판별하는 CTF 리버싱 문제 대부분은 결국 <code>strcmp</code>/<code>strncmp</code>/<code>memcmp</code> 호출(또는 이를 흉내낸 수동 반복문) 한 지점으로 귀결되며, 이 함수들의 <strong>두 번째 인자(RSI)</strong> 에 정답/비교 대상 문자열이 들어있는 경우가 많아 그 인자를 GDB로 들여다보는 것이 가장 빠른 "정답 찾기" 방법이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>"비밀번호를 맞히면 통과" 류의 CTF 리버싱 문제에서 정답 문자열이 어디 저장돼 있는지, 비교 로직이 어디인지 찾고 싶을 때</li><li>디스어셈블리에서 <code>call strcmp</code>, <code>call memcmp</code> 다음에 <code>test eax, eax</code> 또는 <code>cmp eax, 0</code>이 나오는 패턴을 봤는데 이걸 어떻게 해석해야 할지 모를 때</li><li><code>strings ./chall</code>로 찾은 후보 문자열이 실제 정답인지, 아니면 다른 용도(에러 메시지 등)인지 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>세 함수의 시그니처와 반환값 의미</h3>
+<table><thead><tr><th>함수</th><th>시그니처</th><th>비교 범위</th><th>반환값</th></tr></thead><tbody><tr><td><code>strcmp</code></td><td><code>int strcmp(const char *s1, const char *s2)</code></td><td>NUL 바이트가 나올 때까지 전체</td><td><code>0</code>=완전히 같음, 음수/양수=다름(사전순 비교)</td></tr><tr><td><code>strncmp</code></td><td><code>int strncmp(const char *s1, const char *s2, size_t n)</code></td><td>최대 <code>n</code>바이트 또는 NUL까지</td><td><code>strcmp</code>과 동일한 규칙</td></tr><tr><td><code>memcmp</code></td><td><code>int memcmp(const void *s1, const void *s2, size_t n)</code></td><td>정확히 <code>n</code>바이트(NUL 무시, 바이너리 비교)</td><td>같으면 <code>0</code>, 다르면 음수/양수</td></tr></tbody></table>
+<p>세 함수 모두 SysV AMD64 규약(REV-0106)에 따라 <code>RDI=s1</code>, <code>RSI=s2</code>, (<code>strncmp</code>/<code>memcmp</code>라면) <code>RDX=n</code>으로 인자를 받고, 결과는 <code>EAX</code>에 담긴다. <strong>"같다"는 결과가 <code>0</code>이라는 점</strong>이 초보자가 가장 헷갈리는 부분이다 — 조건문에서 <code>if (strcmp(input, answer) == 0)</code>처럼 "0이면 성공" 로직이 흔하다.</p>
+<h3>어느 쪽이 사용자 입력이고 어느 쪽이 정답인가</h3>
+<p>관례상 <code>s1</code>(<code>RDI</code>, 첫 번째 인자)에 사용자 입력을, <code>s2</code>(<code>RSI</code>, 두 번째 인자)에 하드코딩된 정답/비교 대상을 넣는 코드가 많지만, <strong>컴파일러나 프로그래머에 따라 순서가 반대일 수도 있다.</strong> <code>strcmp</code>의 결과는 순서를 바꿔도 부호만 반대일 뿐 "같다/다르다" 판정 자체는 동일하므로, 순서가 바뀌어도 로직에는 영향이 없다. 따라서 실전에서는 두 인자를 모두 GDB로 확인해서, 둘 중 어느 쪽이 프로그램 시작부터 고정된 값(<code>.rodata</code> 섹션의 문자열, 즉 바이너리에 이미 박혀있는 값)이고 어느 쪽이 방금 사용자가 입력한 값(스택/힙 버퍼)인지로 구분하는 것이 정확하다.</p>
+<h3>정답 문자열을 정적으로 먼저 찾는 법</h3>
+<p><code>strcmp</code>/<code>strncmp</code>로 비교되는 하드코딩된 문자열은 대개 <code>.rodata</code>(읽기 전용 데이터) 섹션에 있고, <code>strings ./chall</code>로도 바로 보인다. 하지만 여러 후보 문자열이 있을 때 어떤 것이 진짜 비교 대상인지 정적으로 판단하기 어렵다면, <code>call strcmp</code> 직전에 <code>lea rsi, [rip+0x...]</code>(RIP 상대 주소로 <code>.rodata</code>의 문자열을 가리키는 코드) 패턴을 찾아 그 주소가 가리키는 문자열을 확인하는 방법이 가장 확실하다.</p>
+<h3>memcmp가 쓰이는 이유 — 문자열 검색 회피</h3>
+<p>프로그래머(또는 CTF 문제 제작자)가 <code>strings</code>나 <code>grep</code>으로 정답이 쉽게 노출되는 것을 피하고 싶을 때, 정답 문자열을 평문으로 두지 않고 바이트 배열로 흩어 놓거나 XOR로 인코딩해둔 뒤 <code>memcmp</code>로 비교하는 경우가 흔하다. 이런 경우 <code>.rodata</code>를 <code>strings</code>로 훑어도 정답이 그대로 안 보이고, <code>memcmp</code> 호출부에서 두 번째 인자가 가리키는 바이트들을 직접 덤프해서 디코딩 로직(XOR 키 등)을 역으로 따라가야 한다.</p>
+<h3>바이트 단위 수동 비교(strcmp 흉내)로 문자열 검색을 피하는 경우</h3>
+<p>가장 흔한 CTF 안티-치트 패턴 중 하나는 <code>strcmp</code>를 아예 안 쓰고, <code>for</code> 루프를 돌면서 <code>cmp byte ptr [rdi+i], byte ptr [rsi+i]</code> 형태로 한 바이트씩 직접 비교하는 코드다. 이렇게 하면 import 목록(REV-0101)에 <code>strcmp</code>가 아예 안 나타나서 "비교 함수가 없다"고 착각하기 쉽다. 이런 경우는 루프 안에서 <code>cmp</code>/<code>jne</code> 패턴이 반복되는 것을 찾아야 한다 — REV-0110이 이 문서에서 다루는 범위를 넘어가지만, "정답 문자열이 안 보이면 반복문 안의 바이트 비교를 의심하라"는 원칙만은 기억해두자.</p>
+<h3>strncmp/memcmp의 길이(n) 인자가 알려주는 것</h3>
+<p><code>strncmp(input, "flag{", 5)</code>처럼 <code>n</code>이 정답 전체 길이보다 짧다면, "정답의 앞부분(접두사)만 확인하는" 로직이라는 뜻이다. 이런 패턴은 여러 단계로 나뉜 비교(각 부분마다 다른 <code>strncmp</code> 호출)로 이어지는 경우가 많아, <code>n</code> 값을 확인하는 것만으로도 전체 정답의 구조(길이, 몇 조각으로 나뉘어 검증되는지)를 짐작할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>call strcmp</code> 또는 <code>call strcmp@plt</code> 바로 다음에 <code>test eax, eax</code>(또는 <code>cmp eax, 0</code>) → <code>jne</code>/<code>jnz</code>(다르면 실패 경로로 분기) 패턴</li><li><code>call memcmp</code> 직전에 <code>mov edx, N</code>(고정 길이 리터럴)이 보임 — 이 <code>N</code>이 비교 대상의 바이트 길이</li><li><code>.rodata</code> 섹션에 <code>flag{</code>, <code>Correct!</code>, <code>Wrong password</code> 같은 문자열이 함께 존재 — <code>strings</code> 실행 시 바로 눈에 띔</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>strings ./chall | grep -i 'flag\|correct\|wrong\|password'</code> 같은 명령으로 후보 문자열을 먼저 훑는다. 후보가 나오면 IDA에서 그 문자열의 Xref를 따라가 어떤 함수, 어떤 비교 호출 직전에 쓰이는지 확인한다. 후보가 하나도 안 나온다면 <code>memcmp</code>/수동 바이트 비교 인코딩을 의심하고 동적 분석(GDB)으로 넘어간다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 후보 문자열 정적 검색</strong></p>
+<pre><code class="language-bash">strings ./chall | grep -iE 'flag|correct|wrong|password|success'</code></pre>
+<p><strong>2) 비교 함수 호출부 찾기</strong></p>
+<pre><code class="language-bash">objdump -d ./chall | grep -B15 'call.*strcmp@plt'</code></pre>
+<p><strong>3) GDB로 두 인자를 모두 확인</strong></p>
+<pre><code class="language-gdb">break *0x&lt;call주소&gt;
+run
+x/s $rdi
+x/s $rsi</code></pre>
+<p><code>strncmp</code>/<code>memcmp</code>라면 길이도 함께 확인:</p>
+<pre><code class="language-gdb">p/x $rdx</code></pre>
+<p><strong>4) 반환값과 분기 조건 확인</strong></p>
+<pre><code class="language-gdb">finish
+p $eax</code></pre>
+<p><code>$eax</code>가 <code>0</code>이면 두 인자가 같다는 뜻이다. 이후 코드가 <code>test eax,eax; jne fail</code>이라면, <code>eax==0</code>일 때(즉 같을 때) <code>jne</code>가 분기하지 않고 정상 경로(성공)로 이어진다는 뜻이다.</p>
+<p><strong>5) memcmp/수동 비교로 인코딩된 경우 바이트 덤프</strong></p>
+<pre><code class="language-gdb">x/16xb $rsi</code></pre>
+<p>16진수 바이트 나열을 직접 보고, 필요하면 파이썬 등으로 XOR/인코딩을 역산한다(이 단계는 알고리즘 분석 영역이므로 상황에 따라 다르다).</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">strings ./chall | grep -iE 'flag|correct|wrong|password'
+objdump -d ./chall | grep -B15 'call.*strcmp@plt'</code></pre>
+<p>GDB: <code>x/s $rdi</code>, <code>x/s $rsi</code>, <code>p/x $rdx</code>, <code>finish</code>, <code>p $eax</code>, <code>x/16xb $rsi</code></p>
+<h2>출력 해석</h2>
+<ul><li><code>x/s $rsi</code>가 사람이 읽을 수 있는 평문 문자열이면 인코딩 없이 그대로 비교하는 문제다.</li><li><code>x/16xb $rsi</code>가 사람이 읽을 수 없는 바이트 나열이면, 이 값 자체가 정답이 아니라 인코딩된 형태이거나 이미 사용자 입력을 가공한 중간 버퍼일 수 있다 — 어느 쪽 버퍼인지(<code>.rodata</code> 고정값 vs 런타임 계산값) 주소 범위로 구분한다(<code>.rodata</code>는 실행 파일 매핑 영역, 스택/힙 버퍼는 다른 범위).</li><li><code>finish</code> 이후 <code>$eax</code>가 <code>0</code>이 아니면 두 값이 다르다는 뜻이며, 부호(양수/음수)는 사전순으로 어느 쪽이 더 큰지를 나타내지만 "같다/다르다" 판정에서는 대개 무시된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>strcmp</code> 반환값 <code>0</code>을 "실패"로 착각하는 것 — C 관례에서 <code>0</code>은 대개 "같다/성공"을 뜻하지만, 이 관례가 헷갈려 부호를 반대로 해석하는 실수가 잦다. 반드시 실제 분기 코드(<code>jne</code>가 실패로 가는지 성공으로 가는지)까지 같이 확인한다.</li><li><code>strcmp</code>만 찾다가 <code>memcmp</code>나 수동 바이트 비교 루프를 놓치는 것 — import 목록에 <code>strcmp</code>가 없다고 비교 로직이 없다고 단정하면 안 된다.</li><li><code>s1</code>, <code>s2</code> 중 아무 쪽이나 정답이라고 가정하는 것 — 반드시 GDB로 두 인자 모두 확인해서 어느 쪽이 고정값(<code>.rodata</code>)이고 어느 쪽이 사용자 입력인지 구분해야 한다.</li><li>정답이 한 번의 <code>strcmp</code>로 끝날 거라 가정하는 것 — <code>strncmp</code>로 여러 조각을 나눠 검증하거나, <code>strcmp</code> 여러 번을 조합하는 문제도 흔하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>사용자 입력이 어디서 들어와서 이 비교 지점까지 오는지 앞 단계를 보고 싶다면 → REV-0109 scanf fgets read 입력 추적</li><li>호출 규약 자체가 헷갈린다면 → REV-0106 SysV AMD64 Calling Convention</li><li>코드 수정 없이 <code>strcmp</code> 호출과 인자를 빠르게 다 보고 싶다면 → REV-0111 ltrace로 라이브러리 호출 빠르게 보기</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ strings ./chall | grep -i flag
+flag{th1s_1s_n0t_th3_r3al_fl4g}
+Correct!
+Wrong password.</code></pre>
+<pre><code class="language-gdb">(gdb) break *0x401203
+(gdb) run
+input: test123
+(gdb) x/s $rdi
+0x7fffffffe4a0: "test123"
+(gdb) x/s $rsi
+0x402010: "flag{th1s_1s_n0t_th3_r3al_fl4g}"
+(gdb) finish
+(gdb) p $eax
+$1 = -3</code></pre>
+<p><code>$eax</code>가 <code>0</code>이 아니므로("-3", 즉 다름) 비교 실패, 방금 입력한 <code>test123</code>이 정답이 아님을 확인했다. 정답 후보 문자열(<code>.rodata</code>에서 나온 <code>flag{...}</code>)을 그대로 입력하면 <code>$eax</code>가 <code>0</code>이 되는지 재확인해보는 것이 다음 단계다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0109-input-functions.html">REV-0109 — scanf fgets read 입력 추적</a></li><li><a href="rev-0106-sysv-amd64-calling-convention.html">REV-0106 — SysV AMD64 Calling Convention</a></li><li><a href="rev-0111-ltrace-basics.html">REV-0111 — ltrace로 라이브러리 호출 빠르게 보기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>strcmp</code>/<code>strncmp</code>/<code>memcmp</code> 함수 시그니처 및 반환값 규칙: ISO C 표준 라이브러리(<code>&lt;string.h&gt;</code>) 명세 및 Linux man-pages(<code>strcmp(3)</code>, <code>strncmp(3)</code>, <code>memcmp(3)</code>) 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

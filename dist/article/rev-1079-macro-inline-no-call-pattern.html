@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>매크로/인라인 함수가 CALL 없이 전개되는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / c-analysis</div>
+<article class="article-body">
+<h1>매크로/인라인 함수가 CALL 없이 전개되는 패턴</h1>
+<div class="article-meta"><span class="tag">c-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>전처리기 매크로(<code>#define</code>)는 컴파일 이전 텍스트 치환 단계에서 이미 호출 지점에 그대로 풀려서 들어가므로 애초에 함수라는 개념 자체가 존재하지 않고, <code>static inline</code> 함수는 컴파일러가 실제로 인라인을 적용하면 <code>call</code>/<code>push</code>/<code>pop</code>/<code>ret</code> 없이 그 함수의 본문이 호출 지점에 통째로 복사되어 나타난다 — 둘 다 최종 결과는 "함수처럼 보이던 코드가 CALL 명령 없이 사라진다"는 점에서 같다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>소스코드에는 분명 함수/매크로 호출이 있는데 디스어셈블 결과에는 <code>call</code> 명령이 하나도 없어서 "이 함수가 사라졌나?" 의심될 때</li><li>똑같은 계산(예: 제곱, 최댓값)을 하는 짧은 코드 블록이 여러 함수 안에 반복해서 나타나는데, 소스에서는 한 번만 정의된 함수/매크로를 호출하고 있을 때</li><li>IDA/Ghidra의 Functions 목록에 소스코드에서 정의한 짧은 헬퍼 함수 이름이 안 보여서 "빌드가 잘못됐나?" 의심될 때</li><li>매크로에 부작용이 있는 인자(<code>x++</code> 같은)가 들어갔을 때 왜 여러 번 증가하는지 원인을 어셈블리로 추적해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>매크로와 인라인 함수는 "함수처럼 보이지만 실제로는 별도의 호출 가능한 코드 블록을 만들지 않는다"는 공통점이 있다. 매크로는 전처리기가 소스 텍스트 자체를 치환하므로 컴파일러는 매크로라는 것을 아예 모르고 이미 풀려있는 코드만 본다. <code>static inline</code> 함수는 실제로 함수로 정의되지만, 컴파일러가 호출부에 본문을 복사해 넣기로 결정하면(주로 <code>-O1</code> 이상, 함수가 짧을 때) 별도의 <code>call</code>이 생기지 않는다.</p>
+<pre><code class="language-c">#define SQUARE(x) ((x) * (x))
+
+static inline int cube(int x) {
+    return x * x * x;
+}
+
+int compute(int n) {
+    return SQUARE(n) + cube(n);
+}</code></pre>
+<p>x86-64 SysV, <code>-O1</code>, Intel 문법:</p>
+<pre><code class="language-asm">compute:
+    imul    edx, edi, edi     ; edx = n*n            (SQUARE(n) 매크로가 이미 전처리 단계에서 (n)*(n)으로 치환된 결과, 호출 개념 자체가 없음)
+    imul    eax, edx, edi     ; eax = edx*n = n*n*n   (cube(n) 인라인 함수 본문이 그대로 복사되어 전개된 결과, call 없음)
+    add     eax, edx          ; eax = cube(n) + SQUARE(n)
+    ret</code></pre>
+<p>전체 함수가 <code>imul</code> 두 번과 <code>add</code> 한 번, <code>ret</code> 하나로 끝난다. 소스에는 <code>SQUARE</code>라는 매크로와 <code>cube</code>라는 별도의 함수가 있었지만, 최종 어셈블리에는 그 어느 쪽도 독립된 코드 블록이나 <code>call</code> 명령으로 존재하지 않는다. <code>SQUARE(n)</code>은 전처리기가 <code>((n) * (n))</code>으로 그냥 텍스트를 바꿔버렸을 뿐이고, <code>cube(n)</code>은 컴파일러가 <code>n * n * n</code> 계산을 <code>compute</code> 함수 내부에 직접 풀어서 넣은 것이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>소스에서 이름이 붙은 함수인데 IDA/Ghidra Functions 목록, 또는 <code>nm</code>/<code>objdump</code> 심볼 목록에 그 이름이 안 보임(완전히 인라인되어 독립 함수로 남지 않음)</li><li>여러 다른 함수 안에서 똑같은 짧은 명령어 시퀀스(같은 연산 순서)가 반복해서 나타남 — 각각이 매크로/인라인 함수를 호출한 자리에 복사되어 들어간 것</li><li><code>call</code> 명령이 있어야 할 자리에 대신 몇 개의 산술/논리 명령어만 있고 <code>push</code>(인자 준비)/<code>pop</code>(정리)도 없음</li><li>컴파일러 최적화 리포트(<code>-Winline</code>, <code>-fopt-info-inline</code> 등)를 켜면 "inlined into"라는 메시지로 실제 인라인 여부를 컴파일 시점에 확인 가능</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>사라진 것으로 보이는 함수 이름을 심볼 테이블(<code>nm</code>, IDA Functions 목록)에서 검색해 정말 독립된 함수로 존재하지 않는지 확인한다. 존재하지 않는다면, 그 함수를 호출했을 것으로 예상되는 다른 함수들의 본문 안에서 비슷한 연산 패턴이 반복되는지를 찾는다.</p>
+<h2>단계별 절차</h2>
+<ol><li>사라진 함수/매크로 이름을 심볼 테이블에서 검색해 독립 함수로 남아있는지 확인한다.</li><li>없다면, 그 함수를 호출했을 상위 함수들의 디스어셈블을 열어 짧고 반복적인 연산 시퀀스를 찾는다.</li><li>그 시퀀스가 매크로/인라인 함수의 원래 로직(제곱, 최댓값 등 단순 계산)과 일치하는지 소스와 대조한다.</li><li>여러 호출 지점에서 같은 패턴이 복사되어 나타나는지 확인해, 이것이 인라인/매크로 전개의 결과임을 확정한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: Functions 창(<code>Shift+F3</code>)에서 이름 검색, 없으면 인라인/매크로로 사라졌을 가능성 우선 고려</li><li>Ghidra: Symbol Tree에서 함수 검색, Decompile 결과에 원래 함수 호출 흔적이 없는지 확인</li><li>GDB: <code>info functions 함수이름</code>으로 심볼 존재 여부 확인</li><li>컴파일 시점 확인(소스가 있을 때): gcc <code>-Winline</code>, <code>-fopt-info-inline-optimized</code> 로 실제 인라인된 함수 목록 출력</li></ul>
+<h2>출력 해석</h2>
+<p><code>call</code> 없이 산술 명령만 반복된다면, 그 코드는 매크로 전개 또는 성공적인 인라인화의 결과다. 반대로 짧은 함수인데도 여전히 <code>call</code>이 남아있다면, <code>-O0</code>로 컴파일되었거나(인라인은 대개 최적화가 있어야 실제로 적용됨) 컴파일러가 인라인하기엔 함수가 너무 크다고 판단했거나, <code>inline</code> 힌트만 주고 <code>static</code>을 빼서 별도 심볼이 유지된 경우일 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>inline</code> 키워드가 있으면 무조건 인라인된다고 생각하는 것 — <code>inline</code>은 컴파일러에게 주는 힌트일 뿐이며, 실제 적용 여부는 컴파일러의 판단(함수 크기, 최적화 레벨)에 달려 있다.</li><li>매크로 인자에 부작용이 있는 표현식(<code>SQUARE(x++)</code>)을 넣었을 때 실제로 몇 번 평가되는지 어셈블리로 확인하지 않고 "함수처럼 한 번만 평가될 것"이라 가정하는 것 — 매크로는 텍스트 치환이므로 인자가 매크로 본문에서 여러 번 나타나면 그만큼 여러 번 평가된다.</li><li><code>-O0</code>로 빌드된 바이너리에서 <code>static inline</code> 함수를 찾다가 실제로는 <code>call</code>이 남아있는 걸 보고 "인라인이 안 됐으니 이 지식이 틀렸다"고 오해하는 것 — <code>-O0</code>에서는 최적화 자체가 거의 꺼져 있어 인라인도 잘 일어나지 않는 경우가 많다.</li><li>매크로 전개와 인라인 함수 전개를 구분하지 않고 뭉뚱그려 "둘 다 그냥 컴파일러가 알아서 한 것"이라고만 생각하는 것 — 매크로는 전처리기(컴파일 이전) 단계, 인라인은 컴파일러 최적화(컴파일 중) 단계로 서로 다른 시점에 일어난다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>인라인으로 인해 함수 흐름이 어떻게 바뀌는지 더 배경지식이 필요하면 → REV-0357 함수 인라인이 코드 흐름에 미치는 영향</li><li>CALL이 하나도 없는 함수를 실제로 만나서 원인을 찾는 실전 절차가 필요하면 → REV-0495 인라인된 함수 때문에 CALL이 하나도 없는 함수를 만났을 때</li><li>컴파일러가 인라인한 <code>memcpy</code>/<code>memset</code> 같은 표준 라이브러리 함수 패턴이 궁금하면 → REV-1070 컴파일러가 인라인한 memcpy/memset이 어셈블리에서 보이는 패턴(예정)</li></ul>
+<h2>미니 예제</h2>
+<p>매크로 인자의 부작용이 여러 번 평가되는 것을 실제로 보여주는 예다.</p>
+<pre><code class="language-c">#define DOUBLE_IT(x) ((x) + (x))
+
+int demo(int n) {
+    return DOUBLE_IT(n++);   /* 위험한 사용: n++이 매크로 본문에서 두 번 나타남 */
+}</code></pre>
+<pre><code class="language-asm">demo:
+    push    rbp
+    mov     rbp, rsp
+    mov     [rbp-4], edi      ; n 저장
+    mov     eax, [rbp-4]      ; eax = n            (첫 번째 (x) 자리, 치환 결과 n)
+    mov     edx, [rbp-4]      ; edx = n            (아직 증가 전 값)
+    add     edx, 1
+    mov     [rbp-4], edx      ; n = n + 1          (첫 번째 (x)에서 n++가 부작용으로 증가 실행)
+    mov     ecx, [rbp-4]      ; ecx = n(이미 증가된 값!)   (두 번째 (x) 자리, 다시 n++로 치환되어 또 증가)
+    add     ecx, 1
+    mov     [rbp-4], ecx      ; n = n + 1          (두 번째 증가)
+    add     eax, ecx          ; 결과 = 첫 evaluation 값 + 두 번째 evaluation 이후 값 (정의되지 않은/혼란스러운 결과)
+    pop     rbp
+    ret</code></pre>
+<p><code>DOUBLE_IT(n++)</code>가 <code>((n++) + (n++))</code>로 그대로 텍스트 치환되기 때문에 <code>n++</code>이라는 부작용이 코드에 두 번 나타나고, 실제로 <code>n</code>이 두 번 증가한다. 이는 함수 호출이었다면 인자가 딱 한 번만 평가되어 절대 일어날 수 없는 현상으로, 매크로가 "함수처럼 보이지만 함수가 아니다"라는 것을 보여주는 대표적인 함정이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0357-function-inlining-code-flow.html">REV-0357 — 함수 인라인이 코드 흐름에 미치는 영향</a></li><li><a href="rev-0495-no-call-due-to-inlining.html">REV-0495 — 인라인된 함수 때문에 CALL이 하나도 없는 함수를 만났을 때</a></li><li><a href="rev-1070-inlined-memcpy-memset-asm-pattern.html">REV-1070 — 컴파일러가 인라인한 memcpy/memset이 어셈블리에서 보이는 패턴</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>전처리기 매크로가 컴파일 이전 텍스트 치환 단계에서 처리되어 컴파일러가 함수 호출로 인식하지 않는다는 규칙: C 표준(ISO/IEC 9899) 전처리기(preprocessing) 섹션 기준.</li><li><code>inline</code>/<code>static inline</code> 키워드가 컴파일러에게 힌트일 뿐이며 실제 인라인 적용은 최적화 레벨과 함수 크기에 따라 컴파일러가 결정한다는 점: gcc/clang 공식 문서(inline 함수 처리) 및 실제 <code>-O0</code> vs <code>-O1</code> 출력 비교로 반복 확인 (2026-09-10 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

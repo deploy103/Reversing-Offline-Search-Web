@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windows 문자열 ASCII와 UTF-16 찾기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>Windows 문자열 ASCII와 UTF-16 찾기</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>Windows PE 바이너리는 리눅스 ELF와 달리 문자열이 1바이트 ASCII가 아니라 <strong>문자당 2바이트인 UTF-16LE(와이드 문자열)</strong>로 저장되는 경우가 매우 흔하기 때문에, 기본 설정의 <code>strings</code> 명령이나 IDA의 기본 문자열 필터로는 아무것도 안 잡히는 경우가 많고, Shift+F12 필터 옵션이나 <code>u"..."</code> 표시 방식을 알아야 이를 놓치지 않는다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA Strings 창(Shift+F12)이나 <code>strings</code> 명령을 돌렸는데 화면에 보이는 문자열이 거의 없거나, 있어야 할 텍스트가 안 보일 때</li><li>Hex Viewer로 파일을 열었을 때 문자열처럼 보이는데 글자마다 <code>00</code> 바이트가 하나씩 끼어 있어서 "점들이 섞여 있다"고 느껴질 때</li><li>소스코드에 <code>L"문자열"</code>, <code>TEXT("문자열")</code>, <code>WCHAR</code>, <code>LPWSTR</code>, <code>LPCWSTR</code> 같은 표기가 보이거나, 함수 이름이 <code>MessageBoxW</code>, <code>CreateFileW</code>처럼 끝에 <code>W</code>가 붙어있는 이유가 궁금할 때</li><li>x64dbg에서 문자열 참조(String references)가 예상보다 훨씬 적게 나올 때</li><li>Windows 프로그램과 리눅스 프로그램의 문자열 저장 방식이 왜 다른지 비교하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>ASCII/UTF-8 vs UTF-16LE</h3>
+<p>리눅스 ELF 바이너리는 대부분 문자열을 <strong>1바이트 = 1문자</strong>인 ASCII 또는 UTF-8로 저장한다. 예를 들어 <code>"Hello"</code>는 <code>48 65 6C 6C 6F</code>(5바이트)로 그대로 저장된다. <code>strings</code> 명령이나 IDA의 기본 문자열 필터는 이런 1바이트 문자열을 찾도록 기본 설정되어 있다.</p>
+<p>반면 Windows API는 오래전부터 <strong>UTF-16LE(2바이트 = 1문자, 리틀 엔디안)</strong>을 네이티브 문자 인코딩으로 사용해왔다. 같은 <code>"Hello"</code>가 UTF-16LE로 저장되면 <code>48 00 65 00 6C 00 6C 00 6F 00</code>(10바이트)가 된다 — 각 문자 뒤에 <code>00</code> 바이트가 하나씩 끼어 있는 모습이다. Hex Viewer에서 문자열이 있어야 할 자리에 아스키 문자와 <code>.</code>(점, 즉 0x00을 표현할 수 없어서 표시되는 문자)가 번갈아 나오는 것처럼 보인다면 이게 바로 와이드 문자열이다.</p>
+<h3>왜 Windows는 UTF-16을 쓰는가</h3>
+<p>Windows NT 계열은 설계 초기부터 국제화(다국어 지원)를 염두에 두고 유니코드(당시 UCS-2, 이후 UTF-16으로 확장)를 시스템 내부 문자 인코딩으로 채택했다. 그래서 대부분의 Win32 API는 함수 이름 끝에 <code>A</code>(ANSI, 1바이트 코드페이지 기반)와 <code>W</code>(Wide, UTF-16) 두 버전이 함께 존재한다. 예를 들어:</p>
+<ul><li><code>MessageBoxA</code> / <code>MessageBoxW</code></li><li><code>CreateFileA</code> / <code>CreateFileW</code></li><li><code>GetProcAddress</code>는 함수 이름 자체는 항상 ANSI(<code>LPCSTR</code>)만 받지만, <code>LoadLibraryA</code>/<code>LoadLibraryW</code>는 둘 다 있다.</li></ul>
+<p>내부적으로 <code>A</code> 버전은 결국 문자열을 UTF-16으로 변환한 뒤 <code>W</code> 버전을 호출하는 얇은 래퍼(wrapper)인 경우가 대부분이다. 최신 Visual Studio 프로젝트는 기본적으로 유니코드(<code>UNICODE</code>, <code>_UNICODE</code> 매크로 정의)로 빌드되므로, 소스코드에서 그냥 <code>MessageBox(...)</code>나 <code>TEXT("문자열")</code>이라고 써도 실제로는 <code>MessageBoxW</code>가 호출되고 문자열은 UTF-16으로 저장된다.</p>
+<h3>소스코드에서 보이는 표기</h3>
+<ul><li><code>L"문자열"</code> — 컴파일러에게 이 리터럴을 UTF-16(wide) 문자열로 저장하라고 지시하는 C/C++ 접두사.</li><li><code>TEXT("문자열")</code> 또는 <code>_T("문자열")</code> — <code>UNICODE</code> 매크로가 정의되어 있으면 <code>L"문자열"</code>로, 아니면 그냥 <code>"문자열"</code>로 치환되는 매크로. 유니코드/ANSI 양쪽 빌드를 모두 지원하려는 코드에서 흔히 쓰인다.</li><li><code>WCHAR</code>, <code>wchar_t</code> — UTF-16 코드 유닛 하나를 담는 타입(Windows에서는 2바이트).</li><li><code>LPWSTR</code>/<code>LPCWSTR</code> — wide 문자열(널 종료 <code>WCHAR*</code>)에 대한 포인터 타입.</li></ul>
+<h3>리눅스 배경지식이 있는 사람이 특히 주의할 점</h3>
+<p>리눅스에서 <code>strings binary</code>만 치면 대부분의 문자열이 다 나오는 것에 익숙하다면, Windows PE에서 똑같이 했을 때 결과가 훨씬 빈약해 보여서 "이 프로그램엔 문자열이 별로 없나?"라고 착각하기 쉽다. 실제로는 문자열 대부분이 UTF-16으로 저장되어 있어서 1바이트 기준 스캔에 걸리지 않는 것뿐이다. 이 차이를 모르면 정적 분석 초반부터 중요한 힌트(에러 메시지, 정답 문자열 등)를 통째로 놓치게 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Hex Viewer에서 <code>48 00 65 00 6C 00 6C 00 6F 00</code> 처럼 각 아스키 문자 바이트 사이에 <code>00</code>이 규칙적으로 끼어 있는 패턴.</li><li>IDA의 기본 텍스트 뷰에서 와이드 문자열이 <code>L"Hello"</code> 또는 도구/버전에 따라 <code>u"Hello"</code>(유니코드 리터럴 표기)로 표시됨 — 일반 ASCII 문자열은 그냥 <code>"Hello"</code>로 표시되어 시각적으로 구분된다.</li><li>IDA Strings 창(Shift+F12)에 문자열이 거의 없거나 예상보다 훨씬 적게 나오는데, 실제 파일 크기나 UI가 있는 프로그램인데도 문자열이 부족해 보임.</li><li>x64dbg의 String references 창(우클릭 → Search for → All modules → String references)에서 나온 목록에 아스키 문자열만 보이고 UI 텍스트가 안 보임.</li><li>Import 목록에 <code>MessageBoxW</code>, <code>CreateFileW</code>, <code>lstrlenW</code> 처럼 끝에 <code>W</code>가 붙은 함수가 많음 — 이는 그 프로그램이 유니코드(와이드) 빌드라는 강한 신호다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문자열 검색 결과가 빈약해 보이면 곧바로 "문자열이 없다"고 결론짓지 말고, 먼저 IDA Strings 창의 설정에서 UTF-16 필터가 켜져 있는지, 혹은 <code>strings</code> 계열 도구에 와이드 문자열 옵션이 있는지부터 확인한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) IDA Strings 창에서 인코딩 필터 확인</strong></p>
+<p><code>Shift+F12</code>로 Strings 창을 연다. 창을 우클릭하고 <code>Setup...</code>(또는 <code>Strings window setup</code>)을 선택하면 어떤 인코딩(C-style ASCII, Unicode C-style 등)을 찾을지 체크박스로 고를 수 있다. 기본값에 따라 유니코드(UTF-16) 옵션이 꺼져 있을 수 있으니, <code>Unicode 16-bit</code>나 이에 해당하는 항목이 체크되어 있는지 확인하고 없으면 켠 뒤 창을 새로고침(우클릭 → Refresh)한다.</p>
+<p><strong>2) IDA 디스어셈블리에서 와이드 문자열 리터럴 표시 확인</strong></p>
+<p><code>.rdata</code>/<code>.data</code> 섹션의 데이터를 보다가 문자로 보이는 바이트 나열이 있으면, 그 위치에서 <code>A</code>(Ascii로 변환) 또는 배열 재해석 단축키를 눌러보고, 자동으로 <code>L"..."</code> 혹은 <code>u"..."</code> 형태로 표시되는지 확인한다. IDA는 2바이트 간격으로 나열된 아스키 값 패턴을 감지하면 유니코드 문자열로 자동 인식하는 경우가 많다.</p>
+<p><strong>3) Sysinternals Strings로 와이드 문자열까지 함께 추출</strong></p>
+<p>명령줄에서 Sysinternals의 <code>strings.exe</code>(또는 GNU <code>strings</code>의 <code>-e l</code> 옵션)을 쓰면 ASCII와 UTF-16LE 문자열을 한 번에 뽑아낼 수 있다.</p>
+<pre><code class="language-text">strings.exe -n 4 sample.exe</code></pre>
+<p>GNU binutils의 <code>strings</code>(WSL 등)라면 인코딩을 명시해서 두 번 돌린다.</p>
+<pre><code class="language-bash">strings -a -e s sample.exe   # 1바이트(ASCII/Latin-1) 문자열
+strings -a -e l sample.exe   # 리틀 엔디안 16비트(UTF-16LE) 문자열</code></pre>
+<p><strong>4) x64dbg에서 String references로 동적 확인</strong></p>
+<p>디스어셈블리 창에서 우클릭 → <code>Search for</code> → <code>Current Module</code>(또는 <code>All Modules</code>) → <code>String references</code>를 선택하면, x64dbg가 코드에서 참조하는 문자열들을 ASCII/UTF-16 구분 없이 스캔해서 목록으로 보여준다.</p>
+<p><strong>5) Import 목록으로 유니코드 빌드 여부 먼저 짐작하기</strong></p>
+<p>PE-bear나 IDA Imports 창에서 <code>...W</code> 로 끝나는 함수가 대부분이면 이 프로그램은 유니코드(와이드) 빌드이므로, 문자열도 대부분 UTF-16일 것이라고 미리 예상하고 검색 전략을 세울 수 있다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>Shift+F12</code>(Strings 창 열기), 창 우클릭 → <code>Setup...</code>(인코딩 필터 변경) → 우클릭 → <code>Refresh</code></li><li>IDA: 데이터 영역에서 <code>A</code>(Ascii 문자열로 변환/재해석)</li><li>x64dbg: 디스어셈블리 우클릭 → <code>Search for</code> → <code>String references</code></li><li>Sysinternals Strings: <code>strings.exe -n 4 &lt;파일&gt;</code> (ASCII+유니코드 모두 탐지)</li><li>GNU strings(WSL): <code>strings -e s &lt;파일&gt;</code>(ASCII), <code>strings -e l &lt;파일&gt;</code>(UTF-16LE)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Hex Viewer에서 <code>xx 00 xx 00 ...</code> 패턴이 규칙적으로 이어지면 UTF-16LE 와이드 문자열이다. <code>00 xx 00 xx</code>(0이 먼저 오는 패턴)라면 빅 엔디안이거나 다른 정렬이므로 흔치 않은 경우다 — x86/x64 Windows는 거의 항상 리틀 엔디안 UTF-16LE다.</li><li>IDA에서 문자열이 <code>L"..."</code>/<code>u"..."</code>로 표시되면 와이드 문자열, 그냥 <code>"..."</code>이면 1바이트(ASCII/UTF-8) 문자열이라는 뜻이다.</li><li><code>strings -e l</code> 결과에 의미 있는 텍스트가 쏟아지는데 <code>strings -e s</code>(1바이트) 결과는 빈약하다면, 이 바이너리는 문자열 대부분을 UTF-16으로 저장하는 유니코드 빌드다.</li><li>Import에 <code>A</code> 버전 함수(<code>MessageBoxA</code> 등)만 있다면 ANSI 빌드일 가능성이 높으므로 문자열도 1바이트일 확률이 높다 — 다만 혼용되는 경우도 있으므로 둘 다 검색해보는 것이 안전하다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>strings</code> 명령이나 IDA 기본 필터로 아무것도 안 나온다고 "이 파일엔 힌트가 없다"고 성급히 결론 내리는 것 — Windows PE에서는 UTF-16 검색을 반드시 별도로 해봐야 한다.</li><li>Hex Viewer에서 <code>48 00 65 00</code>처럼 보이는 걸 그냥 "패딩이 섞인 이상한 데이터"로 넘겨버리고 문자열로 인식하지 못하는 것.</li><li><code>L"..."</code> 리터럴을 일반 문자열과 혼동해서, char 배열 크기 계산(바이트 수)을 문자 개수와 같다고 착각하는 것 — UTF-16 문자열은 문자 개수 × 2바이트(+ 널 종료 2바이트)만큼 메모리를 차지한다.</li><li>ANSI(<code>A</code>)와 와이드(<code>W</code>) 버전 API가 인자로 받는 문자열 포인터의 실제 바이트 레이아웃이 다르다는 것을 잊고, 두 버전을 같은 방식으로 덤프해서 읽으려는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>문자열을 찾았는데 그 문자열이 왜 이 위치에서 참조되는지 흐름을 추적하고 싶다면 → REV-0142 IDA에 바이너리 처음 열었을 때 해야 할 것(Xref 추적 관련)</li><li>x64dbg로 직접 실행하며 문자열이 만들어지는 과정을 보고 싶다면 → REV-0127 x64dbg로 EXE 첫 분석 시작</li><li>문자열을 이용해 동적으로 API를 찾는 코드(<code>GetProcAddress</code>에 넘기는 함수 이름 문자열 등)를 만났다면 → REV-0129 GetProcAddress LoadLibrary 동적 API 해석</li></ul>
+<h2>미니 예제</h2>
+<p>소스코드가 다음과 같다고 하자.</p>
+<pre><code class="language-c">#include &lt;windows.h&gt;
+int WINAPI WinMain(HINSTANCE h, HINSTANCE p, LPSTR cmd, int show) {
+    MessageBoxW(NULL, L"Access Denied", L"Error", MB_OK);
+    return 0;
+}</code></pre>
+<p>이 프로그램을 컴파일한 exe의 <code>.rdata</code> 섹션에는 다음과 같은 바이트가 들어있다(16진수, 일부 생략).</p>
+<pre><code class="language-text">41 00 63 00 63 00 65 00 73 00 73 00 20 00 44 00 65 00 6E 00 69 00 65 00 64 00 00 00
+; A  .  c  .  c  .  e  .  s  .  s  .    .  D  .  e  .  n  .  i  .  e  .  d  . NUL</code></pre>
+<p><code>strings -e s</code>로는 이 문자열이 전혀 안 잡히고, <code>strings -e l</code>이나 IDA Strings 창의 Unicode 필터로만 <code>Access Denied</code>가 보인다. IDA 디스어셈블리에서는 이 데이터가 <code>L"Access Denied"</code> 형태로 자동 표시되며, <code>call MessageBoxW</code> 직전 <code>lea rdx, [해당 주소]</code> 코드가 이 문자열을 인자로 넘기는 지점이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0127-x64dbg-first-analysis.html">REV-0127 — x64dbg로 EXE 첫 분석 시작</a></li><li><a href="rev-0129-getprocaddress-loadlibrary.html">REV-0129 — GetProcAddress LoadLibrary 동적 API 해석</a></li><li><a href="rev-0142-ida-first-open.html">REV-0142 — IDA에 바이너리 처음 열었을 때 해야 할 것</a></li><li><a href="rev-0125-pe-bear-basics.html">REV-0125 — PE-bear로 헤더 분석하는 방법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Win32 API의 <code>A</code>/<code>W</code> 함수 쌍과 UTF-16(와이드 문자) 사용 관례는 Microsoft 공식 문서(learn.microsoft.com, "Unicode and Character Sets", "Conventions for Function Prototypes") 기준.</li><li>IDA Strings 창의 인코딩 필터(Setup) 및 유니코드 문자열 자동 인식 동작은 Hex-Rays 공식 문서(docs.hex-rays.com) 및 기본 UI 동작 기준.</li><li>Sysinternals Strings 및 GNU binutils <code>strings -e</code> 옵션은 각 공식 문서(learn.microsoft.com/sysinternals, GNU binutils manual) 기준(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

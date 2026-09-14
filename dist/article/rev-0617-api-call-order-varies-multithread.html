@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>실행마다 API 호출 순서가 달라 보일 때(멀티스레드) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>실행마다 API 호출 순서가 달라 보일 때(멀티스레드)</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>API 호출 순서가 실행마다 뒤바뀌어 보이는 것은 버그도 아니고 분석 도구 문제도 아니라, 프로그램이 <strong>여러 스레드</strong>를 만들어 동시에 실행하고 OS 스케줄러가 그 스레드들을 매번 다른 순서/타이밍으로 CPU에 배정하기 때문이다. 해결책은 순서 자체를 "고정"시키려 하지 말고, 스레드별로(TID 기준으로) 분리해서 각 스레드가 하는 일을 따로따로 파악하는 것이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>x64dbg나 Process Monitor로 API 호출 로그를 볼 때, 같은 바이너리를 다시 실행했는데 호출 순서가 바뀌어서 "이게 원래 로직이 맞나?" 헷갈릴 때</li><li>브레이크포인트를 걸어놨는데 예상한 순서와 다르게 걸려서 분석 흐름이 꼬일 때</li><li><code>CreateThread</code> 임포트가 여러 번 호출되는 것을 발견했을 때</li><li>디버깅 중 x64dbg Threads 창에 스레드가 2개 이상 떠 있는 것을 봤을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Windows는 선점형 멀티태스킹 OS이며, 프로세스 안의 여러 스레드는 OS 스케줄러가 정하는 타임 슬라이스에 따라 번갈아 실행된다. 스레드 간 실행 순서는 CPU 코어 수, 시스템 부하, 캐시 상태 등 여러 외부 요인에 따라 매 실행마다 달라질 수 있다. 이것을 <strong>비결정적(non-deterministic) 실행</strong>이라고 부른다.</p>
+<p>리버싱 관점에서 중요한 점은, 로그에 찍힌 API 호출들이 "하나의 순서 있는 이야기"가 아니라 <strong>여러 스레드의 로그가 뒤섞여 있는 것</strong>일 수 있다는 사실이다. 예를 들어 스레드 A가 파일을 읽고, 스레드 B가 동시에 네트워크 통신을 하고 있다면, 로그에는 두 스레드의 API 호출이 시간 순서대로 인터리빙(interleaving)되어 나타난다. 매 실행마다 A와 B 중 누가 먼저 CPU를 받는지가 달라지므로 겉보기 순서가 바뀐다.</p>
+<p>이건 분석을 방해하려는 의도적 안티 디버깅 기법이 아니라(단, 일부러 여러 스레드에 로직을 흩어 분석을 어렵게 만드는 경우도 있긴 하다), 대부분은 그냥 프로그램이 실제로 멀티스레드 구조이기 때문에 생기는 자연스러운 현상이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Import 목록에 <code>CreateThread</code>, <code>_beginthreadex</code>, <code>CreateRemoteThread</code> 등이 있고 xref가 2개 이상</li><li>x64dbg 왼쪽 하단 또는 상단 "Threads" 탭에 여러 개의 스레드 ID(TID)가 나열되어 있음</li><li>Process Monitor에서 같은 프로세스인데 "Thread ID" 컬럼 값이 여러 개로 다름</li><li>같은 조건으로 재실행했는데 로그 파일의 줄 순서가 매번 바뀜(단, 각 스레드 "내부"의 상대적 순서는 보통 유지됨)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>로그나 브레이크포인트 히트 지점마다 <strong>TID(스레드 ID)를 함께 기록</strong>한다. x64dbg는 브레이크포인트가 걸릴 때 상단 상태 표시줄과 Threads 창에 현재 실행 중인 스레드 ID를 보여주므로, 이것부터 확인해서 "이 호출이 어느 스레드에서 왔는지" 구분한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><strong>스레드 생성 지점 찾기</strong>: IDA에서 <code>CreateThread</code>(또는 <code>_beginthreadex</code>) 임포트에 <code>X</code>를 눌러 몇 개의 스레드가 어디서 생성되는지 먼저 파악한다. 각 호출의 <code>lpStartAddress</code> 인자(콜백 함수, REV-0616 참고)를 확인해 "이 스레드는 어떤 함수를 실행하는가"를 목록으로 정리한다.</li><li><strong>x64dbg Threads 창 활용</strong>: 실행 중 Threads 탭을 열어두면 현재 떠 있는 모든 스레드의 TID, 시작 주소, 우선순위, 현재 상태(Running/Suspended/Waiting)를 볼 수 있다.</li><li><strong>스레드별로 분리해서 관찰</strong>: Threads 탭에서 특정 스레드를 우클릭 → "Suspend"로 다른 스레드를 일시 정지시키고, 분석하려는 스레드 하나만 "Resume" 상태로 두면 그 스레드의 API 호출만 순서대로 관찰할 수 있다.</li><li><strong>조건부 브레이크포인트로 TID 필터링</strong>: 특정 스레드의 동작만 보고 싶다면, 브레이크포인트 조건식에 <code>TID == 0x1234</code>처럼 스레드 ID 조건을 걸어 그 스레드가 그 지점을 지날 때만 멈추게 한다(REV-0183 조건부 브레이크포인트 참고).</li><li><strong>로그에는 항상 TID를 남긴다</strong>: 직접 로깅 스크립트나 Process Monitor를 쓸 때도 TID 컬럼을 반드시 켜두고, 나중에 TID별로 정렬해서 "각 스레드 내부의 순서"를 먼저 재구성한 뒤, 스레드 간 상호작용(동기화 객체, 공유 변수)이 있는 지점만 별도로 분석한다.</li><li><strong>동기화 객체 확인</strong>: 스레드들이 <code>WaitForSingleObject</code>, <code>EnterCriticalSection</code>, <code>CreateMutex</code> 등을 쓰고 있다면, 그 지점이 스레드 간 순서를 강제하는 "고정된 순서점"이므로 여기를 기준으로 삼으면 나머지 구간의 순서 뒤섞임은 신경 쓰지 않아도 되는 경우가 많다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: Threads 탭에서 우클릭 → "Suspend"/"Resume"/"Switch to thread"</li><li>x64dbg: 브레이크포인트 조건식에 <code>TID == &lt;값&gt;</code> 입력(조건부 브레이크포인트, REV-0183)</li><li>IDA: Imports 창에서 <code>CreateThread</code> 더블클릭 후 <code>X</code>로 생성 지점 전부 나열</li><li>Process Monitor(Sysinternals): 컬럼 편집에서 "Thread ID" 표시, 필터에 <code>Thread ID is &lt;값&gt;</code> 추가</li></ul>
+<h2>출력 해석</h2>
+<ul><li>같은 스레드(TID 동일) 내에서의 API 호출 순서는 재실행해도 항상 동일하다. 순서가 매번 바뀌는 것은 "서로 다른 스레드 사이"의 상대적 순서일 뿐이다.</li><li>Threads 창에서 상태가 "Suspended"인 스레드는 아직 실행되지 않았거나 일시 정지된 것이고, "Running"은 스케줄러가 CPU를 배정한 상태다.</li><li><code>WaitForSingleObject</code>의 반환값이 <code>WAIT_OBJECT_0</code>(0)이면 대기 중이던 이벤트/뮤텍스가 시그널되어 정상적으로 깨어난 것이고, <code>WAIT_TIMEOUT</code>(0x102)이면 지정된 시간 내에 시그널되지 않아 타임아웃된 것이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>스레드 구분 없이 로그를 시간순으로만 나열하고 "이게 로직 순서다"라고 잘못 결론 내리는 것. 반드시 TID로 먼저 그룹화해야 한다.</li><li>재현이 안 된다고 생각해서 분석을 포기하는 것. 멀티스레드 프로그램은 재현성이 원래 낮으며, 이는 정상적인 특성이다. 대신 조건부 브레이크포인트나 스레드 Suspend로 관찰 가능한 조건을 인위적으로 만들면 된다.</li><li>스레드를 전부 Suspend한 채로 하나씩 Step만 실행하다가, 동기화 객체를 기다리는 다른 스레드가 영원히 깨어나지 못해 프로그램이 멈춘 것을 "버그"로 오해하는 것. 이 경우 필요한 스레드를 Resume해줘야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>특정 API 호출 이후 화면이 멈춘 것처럼 보인다면 → REV-0618(특정 API 호출 이후 x64dbg가 응답이 없을 때)을 확인한다.</li><li>스레드 시작 함수(콜백) 자체를 못 찾겠다면 → REV-0616(콜백 함수 주소만 있고 호출부가 안 보일 때)을 먼저 본다.</li><li>조건부 브레이크포인트 설정법이 헷갈린다면 → REV-0183(x64dbg 조건부 Breakpoint 기초)을 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p>x64dbg Threads 탭에 스레드 두 개가 떠 있다고 하자.</p>
+<pre><code class="language-text">TID 0x1A04  시작 주소 0x00401500 (ThreadProc_Network)  상태: Running
+TID 0x2A18  시작 주소 0x00401700 (ThreadProc_FileIO)   상태: Running</code></pre>
+<p><code>ReadFile</code>에 브레이크포인트를 걸고 실행했더니 첫 실행에서는 <code>TID 0x1A04</code>가 먼저 걸리고, 재실행하면 <code>TID 0x2A18</code>이 먼저 걸린다. 겉보기엔 순서가 뒤바뀐 것 같지만, 브레이크포인트 조건에 <code>TID == 0x2A18</code>을 걸어 <code>ThreadProc_FileIO</code> 스레드만 따로 관찰해보면, 그 스레드 내부에서는 <code>CreateFileW → ReadFile → CloseHandle</code> 순서가 재실행해도 항상 동일하게 유지된다는 것을 확인할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0616-callback-no-call-site.html">REV-0616 — 콜백 함수 주소만 있고 호출부가 안 보일 때</a></li><li><a href="rev-0618-x64dbg-hangs-after-api-call.html">REV-0618 — 특정 API 호출 이후 x64dbg가 응답이 없을 때</a></li><li><a href="rev-0183-x64dbg-conditional-breakpoints.html">REV-0183 — x64dbg 조건부 Breakpoint 기초</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Windows 스레드 스케줄링이 선점형이며 매 실행마다 스레드 간 상대적 순서가 달라질 수 있다는 내용은 Windows 커널/스케줄러 관련 Microsoft 공식 문서 및 일반적인 운영체제 이론 기준이다.</li><li><code>CreateThread</code>, <code>WaitForSingleObject</code>, <code>EnterCriticalSection</code> 등의 시그니처와 반환값 의미는 Microsoft Win32 API 공식 문서 기준이다.</li><li>x64dbg의 Threads 창, Suspend/Resume, 조건부 브레이크포인트 기능은 x64dbg 공식 문서 기준이며, 미니 예제의 구체적 TID/주소값은 설명을 위해 구성한 예시다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>짧은 if문이 SETcc로 컴파일되는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>짧은 if문이 SETcc로 컴파일되는 패턴</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>bool r = (a == b);</code>처럼 비교 결과 자체를 <code>0</code> 또는 <code>1</code>이라는 <strong>값</strong>으로 저장하기만 하고 그 값에 따라 즉시 다른 실행 경로로 갈라지지는 않는 코드는, <code>CMP</code>/<code>TEST</code> 직후 <code>Jcc</code>로 분기하는 대신 <code>SETcc</code>(REV-0076)로 플래그를 바로 0/1 바이트로 바꿔서 저장하고, 그 뒤에 상위 바이트를 정리하는 <code>MOVZX</code>가 따라붙는 형태로 컴파일되는 경우가 많다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>bool</code>을 반환하거나 대입하는 짧은 비교식(<code>a == b</code>, <code>a &gt; b</code>, <code>x != 0</code>)인데 어셈블리에 <code>Jcc</code>+<code>MOV 0</code>+<code>JMP</code>+<code>MOV 1</code> 같은 분기 구조가 아니라 <code>CMP</code> 직후 바로 <code>SETcc</code>가 나올 때</li><li><code>SETE</code>, <code>SETNE</code>, <code>SETG</code>, <code>SETL</code>, <code>SETA</code>, <code>SETB</code> 뒤에 <code>MOVZX eax, al</code> 같은 코드가 항상 붙어 있어서 왜 al만 쓰고 바로 eax로 확장하는지 궁금할 때</li><li>함수의 반환값이 <code>AL</code>(1바이트)만 사용하는데 IDA가 <code>bool</code> 반환형으로 인식했을 때</li><li>REV-0452(CMOVcc/삼항 연산자 패턴)와 뭐가 다른지 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>SETcc는 "값을 만드는" 명령, CMOVcc는 "값을 고르는" 명령</h3>
+<p>REV-0452에서 다룬 <code>CMOVcc</code>는 <strong>미리 계산된 두 값(a, b) 중 하나를 조건에 따라 선택</strong>하는 명령이다. 반면 <code>SETcc</code>는 선택할 두 값이 없다 — 그냥 <strong>플래그 조건 자체를 0 또는 1이라는 새로운 값으로 만들어낸다.</strong> 이 차이는 원본 C 코드의 형태와 직결된다.</p>
+<ul><li><code>x = cond ? a : b;</code> (서로 다른 두 값 중 선택) → <code>CMOVcc</code> 패턴(REV-0452)</li><li><code>bool b = cond;</code> 또는 <code>int r = (a &gt; b);</code> (조건 자체가 결과값, 참=1/거짓=0) → <code>SETcc</code> 패턴(이 글)</li></ul>
+<h3>전형적인 코드 형태</h3>
+<pre><code class="language-asm">; bool eq = (a == b);
+mov     eax, [a]
+cmp     eax, [b]
+sete    al           ; ZF=1(같음)이면 al=1, 아니면 al=0
+movzx   eax, al       ; 상위 24/56비트를 0으로 채워 eax 전체를 깨끗한 0 또는 1로 만듦</code></pre>
+<p><code>SETcc</code>는 <strong>오직 1바이트 레지스터(AL, BL, CL, DL, 또는 SIL/DIL/R8B 등)에만 쓸 수 있다.</strong> 8/16/32/64비트 전체 레지스터에는 직접 쓸 수 없다. 그리고 <code>SETcc</code>는 그 1바이트 레지스터에 정확히 <code>0</code>(조건 거짓) 또는 <code>1</code>(조건 참)만 써넣으며, <strong>레지스터의 상위 바이트는 전혀 건드리지 않는다.</strong> 그래서 이 값을 진짜 <code>int</code>/<code>bool</code> 변수처럼 온전한 32/64비트 값으로 쓰려면, 반드시 <code>MOVZX</code>(REV-0040, 상위 비트를 0으로 채우는 zero-extension)로 상위 바이트를 정리해야 한다 — 이 <code>SETcc</code> 다음의 <code>MOVZX</code>는 거의 예외 없이 따라붙는 짝꿍이다.</p>
+<h3>CMOVcc 조건 코드와 동일한 규칙</h3>
+<p><code>SETE/SETNE/SETG/SETL/SETGE/SETLE</code>(signed), <code>SETA/SETB/SETAE/SETBE</code>(unsigned) 등, <code>cc</code> 접미사는 REV-0069/REV-0070/REV-0075/REV-0452에서 다룬 <code>Jcc</code>/<code>CMOVcc</code>와 완전히 동일한 조건 코드 인코딩을 공유한다. 즉 "<code>JG</code>가 참일 조건"과 "<code>SETG</code>가 1을 쓰는 조건"은 정확히 같다.</p>
+<h3>짧은 &amp;&amp;/||와 결합될 때</h3>
+<p>여러 비교를 <code>&amp;&amp;</code>/<code>||</code>로 묶은 짧은 표현식도 SETcc + 논리 연산으로 압축되는 경우가 있다.</p>
+<pre><code class="language-c">bool both = (a &gt; 0) &amp;&amp; (b &gt; 0);</code></pre>
+<pre><code class="language-asm">xor     eax, eax
+cmp     [a], 0
+setg    al             ; a &gt; 0 이면 al = 1
+xor     ecx, ecx
+cmp     [b], 0
+setg    cl              ; b &gt; 0 이면 cl = 1
+and     eax, ecx         ; 둘 다 1이어야 최종 결과가 1 (AND = 논리곱)</code></pre>
+<p>이는 REV-0459(<code>&amp;&amp;</code>, <code>||</code>의 단축 평가 컴파일 패턴)와 이어지는 내용이며, 두 조건 모두 부작용이 없고 계산이 저렴할 때 컴파일러가 분기(단축 평가) 대신 이런 비트 연산 압축을 선택한다.</p>
+<h3>레지스터/메모리 효과와 플래그</h3>
+<ul><li><code>SETcc</code>는 <strong>EFLAGS를 전혀 변경하지 않는다</strong> — 오직 읽기만 한다. 그래서 같은 <code>CMP</code>/<code>TEST</code> 결과를 여러 <code>SETcc</code>로 재사용하는 코드(예: <code>sete al</code> 다음에 다른 레지스터에 <code>setne bl</code>)가 가능하다.</li><li>목적지가 <strong>반드시 8비트 레지스터 또는 8비트 메모리</strong>여야 한다 — <code>SETcc eax</code>처럼 32비트 레지스터를 직접 쓸 수 없다.</li><li>목적지 레지스터의 값을 미리 0으로 만들어두는 관용구(<code>xor eax, eax</code> 후 <code>sete al</code>)도 흔하다 — 이러면 <code>MOVZX</code> 없이도 <code>AL</code>을 채우는 즉시 <code>EAX</code> 전체가 0 또는 1이 되기 때문에, 컴파일러가 <code>MOVZX</code> 대신 이 순서를 선택하기도 한다.</li><li>signed/unsigned은 <code>CMOVcc</code>와 마찬가지로 어떤 <code>SETcc</code> 변형(G/L 계열 vs A/B 계열)을 쓰느냐로 결정된다.</li><li>스택/RIP에는 영향이 없다.</li></ul>
+<h3>IDA/Ghidra 디컴파일에서 보이는 형태</h3>
+<p>Hex-Rays와 Ghidra 모두 <code>SETcc</code>+<code>MOVZX</code> 조합을 거의 항상 원본 <code>a == b</code>, <code>a &gt; b</code> 같은 boolean 표현식으로 정확히 복원한다. 함수 반환 타입이 <code>bool</code>이나 <code>BOOLEAN</code>으로 추론되는 것도 이 패턴이 있을 때 흔히 나타난다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">; bool 함수 반환값
+cmp     [rbp-4], 0
+setne   al
+movzx   eax, al
+ret</code></pre>
+<pre><code class="language-asm">; 비교 결과를 정수 0/1로 저장
+cmp     eax, ecx
+setg    al
+movzx   eax, al
+mov     [result], eax</code></pre>
+<pre><code class="language-asm">; 0으로 미리 초기화 후 SETcc (MOVZX 생략형)
+xor     eax, eax
+cmp     rdi, rsi
+sete    al</code></pre>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>CMP</code>/<code>TEST</code> 직후 <code>Jcc</code>가 아니라 <code>SETcc</code>가 오는지 확인한다 — 있으면 boolean 값 생성 패턴이다.</li><li><code>SETcc</code> 목적지가 1바이트 레지스터(<code>AL</code> 등)인지 확인하고, 바로 뒤에 <code>MOVZX</code>(또는 사전 <code>XOR</code>로 상위 비트 정리)가 따라오는지 본다.</li><li>이 0/1 값이 이후 그대로 반환되는지, 다른 변수에 저장되는지, 아니면 추가 논리 연산(<code>AND</code>/<code>OR</code>)에 쓰이는지 추적한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 조건 복원</strong></p>
+<p><code>CMP</code>/<code>TEST</code> 오퍼랜드와 <code>SETcc</code>의 <code>cc</code> 접미사를 REV-0069/REV-0070 대응표에 대입해서 원래 비교 연산자를 복원한다. 예: <code>cmp eax, ecx</code> 후 <code>setl al</code>이면 "eax &lt; ecx이면 al=1" → <code>al = (eax &lt; ecx)</code>.</p>
+<p><strong>2) 확장 방식 확인</strong></p>
+<p><code>MOVZX eax, al</code>이 뒤따르면 부호 없는 0/1 값 그대로 확장(zero-extension)된 것이고, 드물게 <code>MOVSX</code>가 쓰였다면(거의 없음, SETcc 결과는 항상 0 또는 1이라 부호 확장과 결과가 같음) 특별한 의미는 없다.</p>
+<p><strong>3) 최종 사용처 확인</strong></p>
+<p>이 0/1 값이 <code>return</code>으로 바로 나가면 <code>bool</code> 함수, 변수에 저장되면 플래그성 멤버 변수, <code>AND</code>/<code>OR</code>로 다른 SETcc 결과와 합쳐지면 복합 조건식(REV-0459 참고 대상)이다.</p>
+<p><strong>4) CMOVcc 패턴과 구분</strong></p>
+<p>목적지가 항상 0/1 두 값 중 하나라면 <code>SETcc</code>, 서로 다른 임의의 두 값(a, b) 중 하나라면 <code>CMOVcc</code>(REV-0452)다. 헷갈리면 목적지 레지스터 크기(1바이트냐 아니냐)를 보면 바로 구분된다 — <code>SETcc</code>는 항상 1바이트만 쓴다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>F5</code>(디컴파일, bool 표현식으로 복원되는지 확인), <code>SETcc</code> 명령 검색은 <code>Alt+T</code>(텍스트 검색)로 <code>set</code> 입력</li><li>Ghidra: Decompile 창 자동 bool 타입 추론 확인, Listing에서 <code>sete</code>/<code>setne</code>/<code>setg</code> 등 검색</li><li>x64dbg/GDB: <code>SETcc</code> 실행 전후 <code>AL</code>/<code>EAX</code> 값을 스텝 실행으로 비교, <code>p $eax</code>(GDB)로 최종 0/1 값 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>IDA가 <code>return a == b;</code> 또는 <code>v1 = (a &gt; b);</code>로 복원하면, 원본은 <code>SETcc</code>+<code>MOVZX</code> 조합이었다는 뜻이다.</li><li><code>SETcc</code> 뒤에 <code>MOVZX</code>가 없고 바로 <code>AND</code>/<code>OR</code>/<code>TEST</code>가 이어진다면, 그 결과가 다른 boolean 값과 합쳐지는 복합 조건식일 가능성이 높다.</li><li>함수 반환값이 <code>AL</code>만 쓰고 상위 <code>EAX</code>를 신경 안 쓰는 것처럼 보인다면(호출자가 <code>movzx</code>/<code>and eax, 1</code> 등으로 정리), 그 함수가 <code>bool</code> 반환형이라는 강한 신호다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>SETcc</code>가 32/64비트 레지스터 전체에 값을 쓴다고 착각하는 것 — 실제로는 딱 1바이트만 쓰며, 상위 비트를 정리하는 <code>MOVZX</code>가 없으면 그 값을 그대로 32/64비트로 쓸 때 이전에 남아있던 쓰레기 값이 섞일 수 있다(실제로 컴파일러 버그나 인라인 어셈블리 실수로 이런 문제가 생기기도 한다).</li><li><code>SETcc</code>와 <code>CMOVcc</code>를 같은 것으로 뭉뚱그려 이해하는 것 — <code>SETcc</code>는 "조건 자체를 값(0/1)으로 만든다", <code>CMOVcc</code>는 "이미 있는 두 값 중 하나를 고른다"는 근본적인 차이가 있다.</li><li><code>xor eax, eax</code> 다음에 오는 <code>SETcc</code>를 보고 "왜 굳이 0으로 초기화하지? SETcc가 어차피 값을 쓰는데"라고 의아해하는 것 — 이는 <code>MOVZX</code>를 아예 생략하기 위한 최적화 관용구다. <code>AL</code>만 갱신해도 <code>EAX</code> 전체가 이미 0이었으니 상위 바이트가 자동으로 0으로 유지된다.</li><li>부호 있는 값 비교(<code>SETG</code>/<code>SETL</code>)와 부호 없는 값 비교(<code>SETA</code>/<code>SETB</code>)를 혼동해서 결과를 반대로 해석하는 것 — REV-0069/REV-0070과 동일한 원리이므로 그 문서의 대응표를 그대로 적용해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>조건 코드(<code>E</code>, <code>NE</code>, <code>G</code>, <code>L</code>, <code>A</code>, <code>B</code> 등)의 정확한 의미가 헷갈리면 → REV-0069(JG JGE JL JLE), REV-0070(JA JAE JB JBE), REV-0076(SETcc 원본 항목)을 다시 확인한다.</li><li><code>SETcc</code> 결과가 두 개 이상 합쳐지는 복잡한 조건식이면 → REV-0459(여러 조건(&amp;&amp;, ||)이 단축 평가로 컴파일되는 패턴)로 확장해서 이해한다.</li><li>이게 <code>SETcc</code>가 아니라 서로 다른 두 값을 고르는 것 같으면 → REV-0452(삼항 연산자/CMOVcc 패턴)로 이동해서 다시 구분한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — bool 반환 함수</strong></p>
+<pre><code class="language-c">bool is_positive(int x) {
+    return x &gt; 0;
+}</code></pre>
+<pre><code class="language-asm">is_positive proc near
+    cmp     ecx, 0
+    setg    al
+    movzx   eax, al
+    ret</code></pre>
+<p><strong>예제 2 — 동등 비교 결과를 지역 변수에 저장</strong></p>
+<pre><code class="language-c">int flag = (a == b);</code></pre>
+<pre><code class="language-asm">mov     eax, [a]
+cmp     eax, [b]
+sete    al
+movzx   eax, al
+mov     [flag], eax</code></pre>
+<p><strong>예제 3 — 사전 XOR로 MOVZX 생략</strong></p>
+<pre><code class="language-c">bool ge = (x &gt;= 100);</code></pre>
+<pre><code class="language-asm">xor     eax, eax
+cmp     [x], 64h
+setge   al          ; eax의 상위 바이트는 이미 0이므로 MOVZX 불필요</code></pre>
+<p><strong>예제 4 — 여러 SETcc 결과를 AND로 결합</strong></p>
+<pre><code class="language-c">bool in_range = (x &gt;= 0) &amp;&amp; (x &lt; 100);</code></pre>
+<pre><code class="language-asm">xor     eax, eax
+cmp     [x], 0
+setge   al
+xor     ecx, ecx
+cmp     [x], 64h
+setl    cl
+and     eax, ecx      ; 둘 다 참이어야 1</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0076-setcc.html">REV-0076 — SETcc: 조건 결과를 0 또는 1로 만들기</a></li><li><a href="rev-0452-ternary-cmovcc-pattern.html">REV-0452 — 삼항 연산자(?:)가 CMOVcc로 컴파일되는 패턴</a></li><li><a href="rev-0040-movzx.html">REV-0040 — MOVZX: Zero Extension 이해</a></li><li><a href="rev-0069-jg-jge-jl-jle.html">REV-0069 — JG JGE JL JLE: Signed 비교 분기</a></li><li><a href="rev-0070-ja-jae-jb-jbe.html">REV-0070 — JA JAE JB JBE: Unsigned 비교 분기</a></li><li><a href="rev-0459-short-circuit-evaluation.html">REV-0459 — 여러 조건(&amp;&amp;, ||)이 단축 평가로 컴파일되는 패턴</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>SETcc</code> 동작(1바이트 목적지에만 0/1 저장, 플래그 미변경, 조건 코드가 Jcc/CMOVcc와 동일)은 Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2, "SETcc—Set Byte on Condition" 항목 기준.</li><li><code>MOVZX</code>의 zero-extension 동작은 Intel SDM Volume 2, "MOVZX" 항목 기준.</li><li>상위 바이트 정리를 위한 <code>SETcc</code>+<code>MOVZX</code> 또는 <code>XOR</code>+<code>SETcc</code> 코드 생성 관용구는 GCC/Clang/MSVC의 일반적인 boolean 표현식 코드 생성 관례 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

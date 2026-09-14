@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA Pseudocode 창이 비어있을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA Pseudocode 창이 비어있을 때</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p><code>Decompilation failed</code> 같은 에러 문구조차 없이 Pseudocode 창 자체가 그냥 텅 비어 있다면, 대부분은 <strong>커서가 함수 범위 밖에 있어서 F5가 아무 대상도 못 찾은 것</strong>이거나, 이미 다른 함수의 디컴파일 결과가 열려 있는 탭 뒤에 새 탭이 안 생긴 것이므로, 먼저 커서 위치가 정확히 함수 내부(코드 색으로 표시된 영역)에 있는지부터 확인해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>F5를 눌렀을 때 Pseudocode 탭 자체는 열리는데 안에 아무 텍스트도 없을 때</li><li>이전에 다른 함수를 디컴파일해서 본 적이 있는데, 새 함수에서 F5를 눌러도 화면이 안 바뀌고 그대로일 때</li><li>회색 <code>db</code> 데이터나 세그먼트 경계, Import 목록 같은 곳에서 F5를 눌렀을 때</li><li>Pseudocode 창을 닫았다가 다시 열었더니 빈 채로 남아 있을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>F5(Decompile)는 <strong>현재 커서가 놓여 있는 위치를 포함하는 함수 전체</strong>를 대상으로 동작한다. 즉 F5 자체가 "무엇을 디컴파일할지"를 스스로 알아내는 게 아니라, 화면에 보이는 커서 위치에서 그 함수의 경계를 역산해서 그 범위만 처리한다. 따라서 다음과 같은 경우 F5를 눌러도 유효한 대상이 없어서 아무 일도 일어나지 않거나 빈 창만 남는다.</p>
+<ul><li>커서가 함수 정의 영역이 아니라 데이터 영역(<code>db</code>, 문자열, 세그먼트 헤더)에 있는 경우 — 애초에 F5가 처리할 함수가 없다.</li><li>커서가 함수 사이의 정렬용 패딩(<code>align</code>, <code>nop</code> 무더기)에 있는 경우 — 이것도 특정 함수에 속하지 않을 수 있다.</li><li>이미 Pseudocode 탭이 열려 있는 상태에서 다른 함수 위에서 F5를 눌렀는데, 설정에 따라 새 탭이 아니라 같은 탭이 갱신되어야 하는데 포커스가 엉뚱한 창(Hex View, Strings 등)에 가 있어서 실제로는 디스어셈블리 창이 활성 상태가 아니었던 경우 — 이 경우 클릭이 다른 창으로 전달되어 F5가 무시된다.</li><li>Hex-Rays 디컴파일러가 매우 큰 함수를 처리하는 중이라 화면 갱신이 지연되어, 다 끝나기 전까지는 창이 비어 보이는 경우(드물지만 대형 함수에서 발생 가능).</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Pseudocode 탭 제목은 정상적으로 보이지만(<code>Pseudocode-A</code> 등) 내용 영역이 완전히 흰색/회색으로 비어 있음.</li><li>F5를 눌러도 탭이 아예 새로 열리지 않고 이전 화면 그대로 유지됨.</li><li>상태 표시줄에 아무 메시지도 없고 <code>Decompilation failed</code>류 에러도 나타나지 않음.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>IDA View(디스어셈블리 창)를 클릭해서 포커스를 확실히 준 뒤, 실제 코드로 색칠된 니모닉 줄(예: <code>push ebp</code>) 위에 커서를 놓고 다시 F5를 눌러본다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>Ctrl+P</code>(Functions 창)를 열어 대상 함수 이름을 찾아 더블클릭으로 이동한다. 이렇게 하면 커서가 함수 시작 주소에 정확히 놓이므로, 커서 위치 문제를 원천적으로 피할 수 있다.</li><li>이동한 위치가 진짜 코드(니모닉이 보이는 줄)인지 확인한다. 회색 <code>db</code>로 보인다면 이 함수는 아직 코드로 인식되지 않은 것이므로 REV-0772(함수가 아예 안 잡힐 때) 절차를 먼저 따른다.</li><li>IDA View 창 제목 표시줄을 클릭해서 그 창이 확실히 활성 창(포커스)이 되도록 한 다음 F5를 누른다. 단축키는 활성 창 기준으로 동작하므로, 다른 서브뷰(Hex View, Strings, Imports)에 포커스가 가 있으면 F5가 그 창 기준으로 동작하거나 무시될 수 있다.</li><li>그래도 빈 화면이면 기존에 열려 있던 Pseudocode 탭을 닫고(<code>Ctrl+W</code> 또는 탭의 x 버튼), 함수 위에서 다시 F5를 눌러 새 탭을 만든다.</li><li>여전히 안 되면 <code>File → Produce file → Create C file</code> 등으로 전체 디컴파일을 다시 시도하거나, 문제가 되는 함수 하나만 우클릭 → <code>Reanalyze function</code> 후 다시 F5를 누른다.</li><li>그래도 계속 비어 있다면 Hex-Rays 디컴파일러 자체가 이 함수에 대해 내부적으로 조용히 실패하고 있을 가능성이 있다 — 이 경우 보통 Output window에 짧게라도 로그가 남으므로, Output window를 위로 스크롤해서 관련 로그가 있는지 확인하고, 있다면 REV-0774(특정 함수만 계속 디컴파일 실패)에서 다루는 절차로 넘어간다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li><code>F5</code> : 현재 함수 디컴파일</li><li><code>Ctrl+P</code> : Functions 창(정확한 함수 위치로 이동)</li><li><code>Ctrl+W</code> : 현재 탭 닫기</li><li>우클릭 → <code>Reanalyze function</code> : 함수 재분석 후 재시도</li><li><code>Alt+1</code>/<code>Alt+2</code> 등 탭 전환(버전에 따라 다를 수 있음)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>완전히 빈 Pseudocode 창은 "에러"가 아니라 "대상 없음"에 가까운 상태다. 에러 메시지가 있는 <code>Decompilation failed</code>(REV-0152 참고)와는 다른 문제이므로 혼동하지 않는다.</li><li>Output window에 아무 새 로그도 안 남는다면, F5 자체가 아무 동작도 시도하지 않았다는 뜻이므로 커서/포커스 문제일 확률이 매우 높다.</li><li>Output window에 뭔가 로그가 남았는데 화면만 비어 있다면 렌더링 지연이나 다른 버그일 수 있으므로, IDA를 재시작하고 데이터베이스를 다시 열어보는 것도 방법이다(단, 저장 여부를 먼저 확인).</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>커서가 함수 밖(데이터 영역, 세그먼트 경계)에 있는 걸 모르고 "F5가 고장났다"고 오해하는 것.</li><li>Hex View나 Strings 창에 포커스가 가 있는 상태로 F5를 눌러서 아무 반응이 없는 것을 디컴파일러 버그로 착각하는 것.</li><li>빈 화면과 <code>Decompilation failed</code> 에러를 같은 문제로 취급해서 REV-0152의 절차(스택/타입 보정)를 엉뚱하게 적용하는 것 — 원인이 다르므로 먼저 커서/포커스부터 점검해야 한다.</li><li>Functions 창에서 더블클릭 대신 직접 주소를 눈으로 찾아 스크롤하다가 함수 시작 지점을 살짝 벗어난 위치에 커서를 놓는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>함수 자체가 Functions 창에 없다면 → REV-0772 IDA에서 함수가 아예 하나도 안 잡힐 때</li><li>에러 문구가 있는 디컴파일 실패라면 → REV-0152 IDA Decompiler Failed가 뜰 때</li><li>특정 함수만 계속 실패가 반복된다면 → REV-0774</li><li>F5와 Pseudocode 읽는 법 자체가 처음이라면 → REV-0146 IDA F5 디컴파일과 Pseudocode 읽기</li></ul>
+<h2>미니 예제</h2>
+<p>Functions 창에서 <code>sub_401520</code>을 찾아 더블클릭 후 F5를 눌렀는데 이전에는 잘 되던 화면이 갑자기 비어 보이는 상황.</p>
+<pre><code class="language-text">1. 확인해보니 방금 전 Strings 창에서 문자열을 더블클릭해 이동한 상태였고, 그 위치는 데이터 섹션 안이었음
+2. Ctrl+P로 sub_401520을 다시 찾아 더블클릭 → IDA View 커서가 함수 시작 주소로 정확히 이동
+3. IDA View 창 제목을 한 번 클릭해 포커스를 준 뒤 F5 → 정상적으로 Pseudocode 출력됨</code></pre>
+<p>커서 위치와 활성 창 포커스, 이 두 가지만 맞으면 대부분 해결된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0152-ida-decompiler-failed.html">REV-0152 — IDA Decompiler Failed가 뜰 때</a></li><li><a href="rev-0772-ida-no-functions-detected.html">REV-0772 — IDA에서 함수가 아예 하나도 안 잡힐 때</a></li><li><a href="rev-0146-ida-f5-decompile.html">REV-0146 — IDA F5 디컴파일과 Pseudocode 읽기</a></li><li><a href="rev-0774-ida-specific-function-decompile-keeps-failing.html">REV-0774 — IDA에서 특정 함수만 계속 디컴파일이 실패할 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>F5(Decompile)가 커서 위치의 함수를 대상으로 동작한다는 점과 Pseudocode 창/탭 동작 방식: Hex-Rays 공식 사용자 가이드 "Interactive operation" 챕터 기준.</li><li>정확한 탭 전환 단축키는 IDA 버전 및 OS(Windows/Linux)에 따라 다를 수 있어 실제 설치 버전에서 재확인을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

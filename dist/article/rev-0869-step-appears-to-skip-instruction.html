@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Step 중 명령어 하나가 통째로 건너뛰어지는 것처럼 보일 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>Step 중 명령어 하나가 통째로 건너뛰어지는 것처럼 보일 때</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>한 번 Step(F7/F8, <code>si</code>/<code>ni</code>)했는데 예상한 다음 명령어가 아니라 몇 줄 뒤에서 멈춘 것처럼 보인다면, 실제로 명령어가 사라진 게 아니라 ①<code>POPF</code>/<code>POPFD</code>로 트랩 플래그(TF)를 몰래 지워 싱글스텝을 무력화하는 안티디버깅 트릭이거나, ②<code>REP</code> 접두사가 붙은 문자열 명령이 반복 전체를 한 단위로 처리되고 있거나, ③실제로는 분기(Jcc/JMP)가 일어났는데 그 사실을 놓친 경우인 경우가 대부분이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리 창에서 다음 줄이 뻔히 보이는데, <code>F7</code>(Step Into) 한 번에 몇 줄이나 더 아래로 실행 위치가 이동해 있을 때</li><li><code>POPF</code>, <code>POPFD</code>, <code>PUSHF</code> 같은 명령어 주변에서 유독 스텝이 이상하게 동작할 때</li><li><code>REP MOVSB</code>, <code>REP STOSB</code> 같은 문자열 반복 명령을 스텝하는데 카운터(RCX)가 한 번에 0까지 떨어져 버릴 때</li><li>분기 명령어를 지나쳤는데 분기했는지 안 했는지 신경 쓰지 않고 그냥 다음 줄이라고 착각했을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>원인 ① 트랩 플래그(TF) 조작 안티디버깅</h3>
+<p>싱글스텝(F7/<code>si</code>)은 CPU의 EFLAGS/RFLAGS 레지스터에 있는 TF(Trap Flag) 비트를 1로 세팅해서 구현된다. TF가 1이면 CPU는 명령어를 하나 실행할 때마다 디버그 예외(#DB)를 발생시켜 디버거가 다시 제어권을 갖게 한다. 그런데 대상 프로그램이 <code>pushfd</code>로 플래그를 스택에 저장한 뒤, 그 값에서 TF 비트를 강제로 0으로 만들고 <code>popfd</code>로 다시 로드하면, 디버거가 방금 세팅한 TF가 몰래 지워진다. 그러면 디버거는 "한 스텝만 실행하고 멈출 것"이라 기대하지만 실제로는 TF가 없는 상태로 여러 명령어가 그대로 쭉 실행되다가, 다음으로 디버거가 개입할 수 있는 지점(다음 브레이크포인트나 사용자의 강제 정지)에서야 멈춘다. 이 때문에 마치 "명령어 여러 개가 한꺼번에 건너뛰어진 것"처럼 보인다.</p>
+<h3>원인 ② REP 접두사 문자열 명령</h3>
+<p><code>REP MOVSB</code>, <code>REP STOSB</code>, <code>REPE CMPSB</code> 같은 명령어는 <code>RCX</code>(또는 <code>ECX</code>)가 0이 될 때까지 내부적으로 반복한다(REV-0401 LOOP와 유사한 개념). 디버거 구현에 따라 Step Over(F8)로 이 명령어를 지나가면 반복 전체가 끝난 뒤의 다음 명령어까지 한 번에 진행되도록 처리하는 경우가 있어, 겉보기엔 "한 줄인데 안에서 수천 바이트가 복사되고 카운터가 단번에 0이 된 것"처럼 보일 수 있다. 이는 버그가 아니라 그 명령어 자체의 반복 특성과 디버거의 Step Over 구현 방식 때문이다. Step Into(F7)로도 같은 주소에서 여러 번 멈추는 대신 한 번에 끝나 보인다면 디버거/CPU 조합에 따른 정상 범위의 차이일 수 있다.</p>
+<h3>원인 ③ 분기를 놓친 것</h3>
+<p><code>Jcc</code>나 <code>JMP</code>가 실제로 분기했는데, 디스어셈블리 창을 계속 위에서 아래로 스크롤하며 "다음 줄"이라고 무심코 넘겨짚는 경우가 있다. 실제로는 명령어가 사라진 게 아니라 분기가 정상적으로 다른 주소로 이동한 것이다(REV-0174 참고).</p>
+<h3>확인 방법</h3>
+<p>스텝 전후의 <code>RIP</code>(x64) 값을 직접 비교하고, 그 사이의 주소 차이가 방금 실행된 명령어의 바이트 길이와 정확히 일치하는지 확인한다. 일치하지 않는다면 분기했거나(다른 주소로 이동), TF가 지워져 여러 명령어가 실행된 것이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>스텝 직전/직후 <code>RIP</code>(EIP) 값의 차이가 방금 그 줄의 명령어 길이보다 훨씬 크다.</li><li>스텝 직전 근처 코드에 <code>pushfd</code> ... <code>and</code>/<code>or</code>/<code>xor</code> ... <code>popfd</code> 패턴이 보인다(플래그 레지스터를 직접 조작).</li><li><code>rep movsb</code>/<code>rep stosb</code>류의 명령어 직후에 카운터 레지스터가 한 번에 0이 되어 있다.</li><li>방금 지나간 줄이 사실 <code>je</code>/<code>jmp</code> 같은 분기 명령어였는데 이를 인지하지 못했다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>스텝 직전/직후 RIP 값을 비교해서 차이가 정상적인 명령어 길이 범위인지 확인한다.</li><li>방금 지나간 명령어가 분기 명령어였는지부터 확인한다.</li><li>아니라면 그 직전에 <code>pushfd</code>/<code>popfd</code>나 플래그 조작 패턴이 있었는지 몇 줄 위를 살펴본다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>TF 조작이 의심될 때</strong></p>
+<ol><li>의심되는 <code>popfd</code>/<code>popf</code> 명령어 직전에 브레이크포인트를 건다.</li><li>그 명령어를 한 스텝 실행하기 전후로 EFLAGS의 TF 비트(비트 8)를 직접 확인한다.</li></ol>
+<ul><li>GDB: <code>p/x $eflags</code> (TF는 0x100 비트)</li><li>x64dbg: 플래그 창에는 보통 TF가 따로 노출되지 않으므로, 레지스터 창에서 EFLAGS 전체 값을 16진수로 보고 <code>0x100</code> 비트를 직접 확인한다.</li></ul>
+<ol><li><code>popfd</code> 실행 직후 TF 비트가 사라졌다면, 이 프로그램은 싱글스텝을 무력화하려는 안티디버깅을 쓰고 있는 것이다.</li><li>우회하려면 하드웨어 브레이크포인트나 소프트웨어 브레이크포인트로 원하는 지점 이후에 직접 멈추도록 전략을 바꾼다(무작정 싱글스텝으로 그 구간을 지나가지 않는다).</li></ol>
+<p><strong>REP 명령이 의심될 때</strong></p>
+<ol><li>그 명령어 앞뒤로 소프트웨어 브레이크포인트를 걸어(스텝 대신) 반복 전체를 건너뛰고 결과만 확인한다.</li><li>반복 도중 값을 보고 싶다면, 카운터 레지스터에 대한 조건부 브레이크포인트나 하드웨어 워치포인트를 거는 것이 스텝보다 안정적이다.</li></ol>
+<p><strong>분기를 놓쳤는지 확인</strong></p>
+<ol><li>스텝 전 RIP와 스텝 후 RIP를 나란히 기록해두고, 그 사이 실행된 명령어가 <code>Jcc</code>/<code>JMP</code>였다면 정상적인 분기다(REV-0174 참고).</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>GDB: <code>p/x $eflags</code>, <code>si</code>(명령어 단위 스텝), <code>x/i $pc</code></li><li>x64dbg: 레지스터 창에서 EFLAGS 값 직접 확인, <code>F7</code>(Step Into), <code>F8</code>(Step Over), 하드웨어 브레이크포인트(Dump 우클릭 → Hardware Breakpoint)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>p/x $eflags</code>에서 <code>0x100</code> 비트가 켜져 있으면 TF=1(싱글스텝 활성), 꺼져 있으면 TF=0으로 다음 스텝에서 CPU가 자동으로 멈추지 않는다.</li><li>스텝 전후 RIP 차이가 그 명령어의 실제 바이트 길이와 정확히 같다면 정상 진행이고, 훨씬 크다면 TF 소실이나 분기가 원인이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>TF가 지워진 것을 "디버거 버그"로 오해하고 다른 디버거로 계속 바꿔가며 재현을 시도하는 것 — TF 조작은 디버거와 무관하게 CPU 플래그 레벨에서 일어나는 현상이므로 어떤 디버거를 써도 똑같이 나타난다.</li><li>REP 명령어의 반복 특성을 모르고 "명령어 하나가 수천 바이트를 이동시켰다"는 것 자체를 이상하게 여기는 것 — 이는 REP 접두사의 정상 동작이다.</li><li>분기 명령어를 놓치고 계속 "다음 줄로 넘어갔다"고 가정한 채 로직을 재구성해서 완전히 다른 흐름을 그려버리는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>TF 조작이 확인됐다면 → 그 구간은 싱글스텝 대신 하드웨어/소프트웨어 브레이크포인트로 우회하는 전략으로 바꾼다.</li><li>이 문제가 다른 안티디버깅 징후와 함께 나타난다면 → REV-0871(안티디버깅 원인 좁히기)을 참고한다.</li><li>타이밍 기반 안티디버깅과 함께 나타난다면 → REV-0872도 함께 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<pre><code>0x00401230:  pushfd
+0x00401231:  and dword ptr [esp], 0FFFFFEFFh   ; TF 비트(0x100) 클리어
+0x00401238:  popfd
+0x00401239:  call sub_401500</code></pre>
+<p><code>popfd</code> 직전에 브레이크포인트를 걸고 <code>p/x $eflags</code>로 확인하면 TF 비트가 이미 0으로 세팅된 값이 스택에 있는 것을 볼 수 있다. 이 상태로 <code>popfd</code>가 실행되면 이후 싱글스텝은 더 이상 명령어 단위로 멈추지 않으므로, <code>call sub_401500</code> 이후 여러 명령어를 한 번에 지나쳐 다음 브레이크포인트(또는 예외)에서야 멈추게 된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0871-anti-debug-cause-narrowing-practical.html">REV-0871 — 안티디버깅 때문에 디버거에서 갑자기 종료될 때 원인 좁히기(실전)</a></li><li><a href="rev-0872-timing-anti-debug-slow-stepping-detected.html">REV-0872 — 타이밍 기반 안티디버깅으로 스텝 실행이 너무 느려서 걸릴 때</a></li><li><a href="rev-0174-before-conditional-branch.html">REV-0174 — 조건 분기 직전에 무엇을 봐야 하는가</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>트랩 플래그(TF)와 싱글스텝 디버그 예외(#DB) 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 3B, "Debug, Branch Profile, TSC, and Resource Monitoring Features" 섹션 기준.</li><li><code>PUSHF</code>/<code>POPF</code>를 이용한 TF 조작 안티디버깅 기법: 일반 안티디버깅 참고 자료 및 Intel 매뉴얼의 EFLAGS 설명 기준.</li><li>REP 접두사 문자열 명령어의 반복 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "REP/REPE/REPZ/REPNE/REPNZ" 섹션 기준.</li><li>2026-09-09 검증.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>컴파일러가 인라인한 memcpy/memset이 어셈블리에서 보이는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / c-analysis</div>
+<article class="article-body">
+<h1>컴파일러가 인라인한 memcpy/memset이 어셈블리에서 보이는 패턴</h1>
+<div class="article-meta"><span class="tag">c-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>memcpy</code>/<code>memset</code>의 복사·채우기 크기가 컴파일 시점에 고정된 작은 값이면 컴파일러는 함수를 호출(<code>CALL memcpy</code>)하지 않고 그 크기에 딱 맞는 <code>mov</code>(또는 <code>REP MOVSB</code>/<code>REP STOSB</code>) 명령을 코드에 직접 박아 넣는데, 이를 "인라인(inline)"이라고 하며 라이브러리 호출의 오버헤드(스택 정리, 인자 전달)를 없앤 결과다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>소스에 <code>memcpy(dst, src, N)</code>이나 <code>memset(buf, 0, N)</code>이 분명히 있는데 디스어셈블리에 <code>CALL memcpy</code>/<code>CALL memset</code>이 안 보일 때</li><li>구조체 대입(<code>*a = *b;</code>)이나 배열 초기화(<code>int arr[4] = {0};</code>)를 했는데 함수 호출 없이 갑자기 <code>mov</code>가 여러 줄 나열되어 있을 때</li><li>짧은 <code>mov</code>/<code>movdqu</code> 나열이 반복적으로 나와서 이게 무슨 의도인지 못 알아볼 때</li><li><code>REP MOVSB</code>, <code>REP STOSB</code> 명령을 보고 이게 <code>memcpy</code>/<code>memset</code>과 어떤 관계인지 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<p><code>memcpy(dst, src, n)</code>은 "src에서 n바이트를 dst로 복사"하고, <code>memset(buf, c, n)</code>은 "buf의 n바이트를 모두 c로 채운다"는 뜻이다. 컴파일러가 <code>n</code>이 <strong>상수이고 충분히 작다</strong>는 것을 컴파일 시점에 알면, 함수 호출 없이 그 크기만큼의 <code>mov</code>/레지스터 이동으로 직접 풀어 쓴다. 이렇게 하면 <code>CALL</code>/<code>RET</code>, 인자를 레지스터에 옮기는 준비 코드가 전부 사라지고 실행 속도도 빨라진다.</p>
+<p>이 최적화는 구조체 대입, 배열 초기화, 작은 버퍼 복사·초기화 어디서나 자동으로 일어난다 — 프로그래머가 <code>memcpy</code>를 직접 호출하지 않아도 컴파일러가 이런 대입을 알아서 <code>memcpy</code>와 동등한 코드로 바꾸고, 그 코드를 다시 인라인하는 경우가 흔하다.</p>
+<p>크기가 커지면(수십~수백 바이트 이상) 컴파일러는 대신 <code>REP MOVSB</code>/<code>REP STOSB</code>(REV-0080, REV-0081, REV-0082) 같은 반복 문자열 명령이나 SIMD(<code>movdqu</code> 등)로 묶어서 처리하기도 하고, 크기가 아주 크거나 런타임에만 정해지는 경우에는 결국 진짜 <code>CALL memcpy</code>/<code>CALL memset</code>으로 남는다. 즉 <strong>크기가 작고 컴파일 시점에 고정 → 인라인, 크기가 크거나 가변적 → 라이브러리 호출 또는 REP 명령</strong>이라는 스펙트럼이 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>함수 호출 없이 <code>mov</code> 여러 줄이 연속으로 나열되고, 각 줄의 목적지 오프셋이 4/8씩 순서대로 증가함 — 작은 고정 크기 복사</li><li><code>mov dword [rax], 0</code>, <code>mov dword [rax+4], 0</code> 처럼 0을 대입하는 <code>mov</code>가 연속으로 나열 — 작은 고정 크기 채우기(memset 0)</li><li><code>rep movsb</code>/<code>rep stosb</code> 앞에 <code>mov rcx, N</code>(반복 횟수), <code>mov rdi, dst</code>, <code>mov rsi, src</code>(또는 <code>al</code>에 채울 값) 준비 코드 — 중간 크기 복사/채우기</li><li><code>movups</code>/<code>movdqu</code> 같은 SIMD 명령으로 16바이트씩 한 번에 복사 — 컴파일러/최적화 옵션에 따라 등장</li><li>진짜 <code>CALL memcpy</code>/<code>CALL memset</code>이 남아있다면 크기가 런타임 변수이거나 너무 커서 인라인하지 않은 경우</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>연속된 <code>mov</code>(또는 <code>movdqu</code>)들이 목적지 주소가 순서대로 증가하는 패턴인지 확인한다. 그렇다면 이는 어떤 복사/초기화 작업이 인라인된 것이며, 총 몇 바이트를 다루는지(마지막 오프셋 + 크기)로 원본 <code>memcpy</code>/<code>memset</code>의 <code>n</code> 값을 역산할 수 있다.</p>
+<h2>단계별 절차</h2>
+<ol><li>함수 호출이 없는데 <code>mov</code>가 연속으로 여러 줄 나오는 구간을 찾는다.</li><li>각 <code>mov</code>의 목적지 오프셋이 이전 줄보다 정확히 그 줄의 크기(4바이트, 8바이트 등)만큼 증가하는지 확인한다 — 순서대로 증가하면 복사/채우기의 흔적이다.</li><li>소스가 되는 값이 매번 다른 메모리(<code>[rsi+N]</code>)에서 오면 <code>memcpy</code>(복사), 매번 같은 상수(주로 0)면 <code>memset</code>(채우기)으로 구분한다.</li><li>마지막 오프셋에 그 줄의 크기를 더해 전체 복사/채우기 크기(원본 <code>n</code>)를 계산한다.</li><li><code>REP MOVSB</code>/<code>REP STOSB</code>가 보이면 그 직전의 <code>RCX</code>(반복 횟수), <code>RSI</code>/<code>RDI</code>(원본/목적지), <code>AL</code>(채울 값, STOS의 경우) 설정 코드를 확인해 같은 정보를 얻는다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 연속된 <code>mov</code>를 선택 후 <code>Analysis</code>가 자동으로 구조체 대입/배열 초기화로 pseudocode에서 합쳐서 보여주는 경우가 많음(컴파일러 최적화 인식 기능)</li><li>Ghidra: <code>Decompile</code> 창에서 인라인된 복사가 <code>*(int *)dst = *(int *)src;</code> 여러 줄 또는 <code>memset</code>/<code>memcpy</code> 호출로 재구성되어 보이기도 함(패턴 인식 기능)</li><li>GDB: <code>x/8xb dst</code>로 복사/채우기 이후 실제 목적지 메모리 내용을 바이트 단위로 확인</li><li>x64dbg: 메모리 덤프 창을 목적지 주소에 맞춰 두고 각 <code>mov</code> 실행 후 값이 채워지는 것을 실시간으로 관찰</li></ul>
+<h2>출력 해석</h2>
+<pre><code class="language-c">struct Vec3 { int x, y, z; };
+
+void copy_vec3(struct Vec3 *dst, struct Vec3 *src) {
+    memcpy(dst, src, sizeof(struct Vec3));  /* 12바이트, 상수 크기 */
+}
+
+void zero_buf(int *buf) {
+    memset(buf, 0, 16);   /* 16바이트, 상수 크기 */
+}</code></pre>
+<pre><code class="language-asm">; copy_vec3, rdi = dst, rsi = src   (12바이트라서 8+4로 나눠 복사)
+copy_vec3:
+    mov     rax, [rsi]        ; src의 앞 8바이트(x, y) 읽기
+    mov     [rdi], rax        ; dst의 앞 8바이트에 쓰기
+    mov     eax, [rsi+8]      ; src의 나머지 4바이트(z) 읽기
+    mov     [rdi+8], eax      ; dst의 나머지 4바이트에 쓰기
+    ret                       ; *** CALL memcpy 없음: 8+4바이트로 직접 인라인 ***
+
+; zero_buf, rdi = buf   (16바이트를 8+8로 나눠 0으로 채움)
+zero_buf:
+    mov     qword [rdi], 0     ; buf[0..7] = 0
+    mov     qword [rdi+8], 0   ; buf[8..15] = 0
+    ret                        ; *** CALL memset 없음: 0을 직접 두 번 씀 ***</code></pre>
+<p><code>copy_vec3</code>은 12바이트를 "8바이트 한 번 + 4바이트 한 번"으로 나눠 복사한다 — 레지스터가 8바이트 단위로 움직이는 게 가장 효율적이기 때문에 크기를 이렇게 쪼갠다. <code>zero_buf</code>는 16바이트를 0으로 채우는데 <code>mov qword [...], 0</code>을 두 번 쓰는 것으로 끝난다. 둘 다 함수 호출이 전혀 없고, 원본 코드의 <code>memcpy</code>/<code>memset</code> 호출은 흔적도 없이 사라졌지만 <strong>동작은 완전히 동일</strong>하다.</p>
+<h2>흔한 실수</h2>
+<ul><li>연속된 <code>mov</code>를 각각 독립된 대입 연산으로 오해하고, 사실은 하나의 <code>memcpy</code>/<code>memset</code> 호출이 쪼개진 것임을 놓치는 것.</li><li><code>mov qword [...], 0</code>이 반복되는 것을 보고 "많은 지역변수를 각각 초기화하는 코드"로 착각하는 것 — 실제로는 하나의 버퍼를 한 번에 0으로 채우는 <code>memset(..., 0, ...)</code>일 수 있다.</li><li><code>REP MOVSB</code>/<code>REP STOSB</code>를 보고 "이건 문자열 명령이니 문자열 처리다"라고 단정하는 것 — 임의의 바이트 복사/채우기(구조체, 배열 등)에도 똑같이 쓰인다.</li><li>인라인된 코드에서 원본 <code>n</code>(복사/채우기 크기)을 계산할 때 오프셋을 잘못 더해 실제 크기보다 크거나 작게 추정하는 것 — 마지막 <code>mov</code>의 오프셋 + 그 <code>mov</code>가 다루는 바이트 수를 정확히 더해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>구조체 필드 오프셋 계산 자체가 헷갈리면 → REV-1061 중첩 구조체 접근이 어셈블리에서 보이는 패턴, REV-0035 구조체 접근이 어셈블리로 변하는 방식</li><li>REP 계열 명령의 기본 동작이 궁금하면 → REV-0080 REP Prefix와 반복 문자열 명령, REV-0081 MOVS 계열, REV-0082 STOS 계열</li><li>진짜 라이브러리 호출(<code>CALL memcpy</code>)이 남아있는 경우의 인자 전달 규칙이 궁금하면 → REV-0071 CALL: 함수 호출, 반환 주소, 인자 추적</li><li>함수 인라인 일반론(memcpy/memset뿐 아니라 모든 함수에 적용되는 인라인 개념)이 궁금하면 → REV-0357 함수 인라인이 코드 흐름에 미치는 영향, REV-1079(예정) 매크로/인라인 함수가 CALL 없이 전개되는 패턴</li></ul>
+<h2>미니 예제</h2>
+<p>크기가 커지면 같은 <code>memcpy</code>가 <code>REP MOVSB</code>로 바뀌는 예(개념 예시, 크기가 런타임 변수인 경우):</p>
+<pre><code class="language-asm">; memcpy(dst, src, n)  n이 변수일 때
+mov     rcx, n      ; 반복 횟수 = n
+mov     rsi, src    ; 원본 시작
+mov     rdi, dst    ; 목적지 시작
+rep     movsb        ; rcx번 반복하며 [rsi]-&gt;[rdi] 복사, 매 반복마다 rsi/rdi 자동 +1</code></pre>
+<p>크기가 상수라 인라인된 <code>mov</code> 나열과, 크기가 변수라 <code>REP MOVSB</code>로 처리된 코드는 결과는 같지만 겉모습이 완전히 다르다. 어느 쪽이든 "함수 호출 없이 메모리 복사/채우기가 일어난다"는 공통점으로 <code>memcpy</code>/<code>memset</code>의 흔적임을 알아챌 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-1061-nested-struct-access-asm-pattern.html">REV-1061 — 중첩 구조체 접근이 어셈블리에서 보이는 패턴</a></li><li><a href="rev-0080-rep-prefix.html">REV-0080 — REP Prefix와 반복 문자열 명령</a></li><li><a href="rev-0081-movs.html">REV-0081 — MOVS MOVSB MOVSW MOVSD MOVSQ</a></li><li><a href="rev-0082-stos.html">REV-0082 — STOS STOSB STOSD STOSQ</a></li><li><a href="rev-0357-function-inlining-code-flow.html">REV-0357 — 함수 인라인이 코드 흐름에 미치는 영향</a></li><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>memcpy</code>/<code>memset</code>의 표준 동작(바이트 단위 복사/채우기)과 크기가 컴파일 시점 상수일 때 컴파일러가 이를 인라인할 수 있다는 최적화 규칙: ISO C 표준 라이브러리(<code>&lt;string.h&gt;</code>) 및 GCC 공식 문서(builtin memcpy/memset 최적화 설명) 기준.</li><li>gcc/clang이 작은 고정 크기 <code>memcpy</code>/<code>memset</code>을 함수 호출 없이 <code>mov</code> 나열로, 중간 크기는 <code>REP MOVSB</code>/<code>STOSB</code>로 대체하는 패턴은 x86-64 리눅스/윈도우 환경에서 반복 확인되는 표준 최적화 패턴이다(2026-09-10 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

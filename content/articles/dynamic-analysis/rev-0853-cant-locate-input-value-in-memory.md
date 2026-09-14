@@ -120,7 +120,7 @@ x64dbg: bp fgets / bp recv, 인자 확인은 Registers 창
 ```gdb
 (gdb) break scanf
 (gdb) run
-Enter value: 
+Enter value:
 (gdb) continue
 # 프로그램이 scanf에서 멈춤
 

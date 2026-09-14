@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>팀 대회에서 리버싱 문제를 분업하는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>팀 대회에서 리버싱 문제를 분업하는 법</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>팀 리버싱은 "한 문제를 여러 명이 동시에 정독"하는 것보다 <strong>정적 분석 담당·동적 검증 담당·스크립팅 담당</strong>으로 역할을 나누고 공유 노트로 진행 상황을 실시간 동기화하는 쪽이 훨씬 빠르며, 역할이 겹치면 반드시 그 자리에서 조율해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>팀으로 대회에 참가했는데 리버싱 문제를 누가 맡을지, 한 문제를 여러 명이 봐도 되는지 애매할 때</li><li>팀원이 이미 분석한 내용을 모르고 처음부터 다시 분석해서 시간을 낭비했을 때</li><li>문제 하나가 너무 커서 혼자 다 보기엔 시간이 부족하다고 느껴질 때</li><li>팀 내에서 "누가 뭘 하고 있는지" 공유가 안 돼서 혼선이 생겼을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>리버싱은 겉보기에 "혼자 조용히 코드를 읽는" 작업처럼 보이지만, 팀 대회에서는 협업 방식에 따라 같은 인원으로도 처리 속도가 몇 배 차이 난다. 핵심은 <strong>같은 일을 두 명이 동시에 하지 않는 것</strong>과 <strong>한 명의 발견을 다른 사람이 즉시 활용할 수 있게 만드는 것</strong> 두 가지다.</p>
+<h3>역할을 세 갈래로 나누기</h3>
+<p>한 문제에 두 명 이상을 투입할 여유가 있다면, 같은 화면을 같이 보는 대신 역할을 분리한다.</p>
+<ul><li><strong>정적 분석 담당</strong>: IDA/Ghidra로 전체 구조를 훑고, 함수 이름을 정리하고, 검증 로직이 있을 법한 함수를 좁혀서 나머지에게 전달한다(REV-0006).</li><li><strong>동적 검증 담당</strong>: 정적 담당이 세운 가설(예: "이 함수가 flag 검증 함수다")을 x64dbg/GDB로 실제 실행하며 확인한다. 브레이크포인트를 걸고 인자·반환값을 관찰해 가설을 참/거짓으로 빠르게 확정한다.</li><li><strong>스크립팅/솔버 담당</strong>: 로직이 확정된 부분부터 Python으로 재구현하기 시작한다(REV-0017, REV-0222). 전체 로직이 다 밝혀지기 전에도 이미 밝혀진 부분(예: 앞 4바이트 변환 로직)을 먼저 스크립트로 옮겨두면, 뒷부분이 밝혀지는 즉시 이어붙일 수 있다.</li></ul>
+<p>세 역할이 순차적이 아니라 <strong>병렬로</strong> 돌아가는 것이 핵심이다. 정적 담당이 모든 걸 다 알아낼 때까지 기다리지 않고, 확실해진 조각부터 바로바로 다음 역할에게 넘긴다.</p>
+<h3>문제가 여러 개로 나뉘는 경우</h3>
+<p>바이너리 자체가 REV-0313(여러 검증 함수)이나 REV-0314(다단계 검증) 구조라면, 각 검증 함수/스테이지를 팀원별로 나눠 맡는 것이 자연스럽다. 이때는 반드시 <strong>입력 전체 포맷을 먼저 한 사람이 정리</strong>해서 공유해야 한다 — 그렇지 않으면 각자 분석한 조각을 나중에 합칠 때 오프셋이나 순서가 안 맞아 다시 맞춰야 하는 일이 생긴다.</p>
+<h3>공유 노트가 없으면 분업이 무너진다</h3>
+<p>분업의 전제는 "내가 지금 뭘 확인했는지"를 남이 즉시 알 수 있어야 한다는 것이다. 팀 노트(공유 문서, 팀 디스코드 채널, 공유 마크다운 파일 등)에 최소한 다음을 실시간으로 남긴다.</p>
+<ul><li>지금 누가 어떤 함수/구간을 보고 있는지(중복 방지)</li><li>확정된 사실(주소, 상수, 함수 이름)과 아직 가설 단계인 것을 구분</li><li>막힌 지점과 도움이 필요한 부분</li></ul>
+<p>REV-0014(리버싱 노트 작성법)의 개인 노트 습관을 팀 단위로 확장한 것이 이 공유 노트다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>팀 채널에 "나 지금 sub_401200 보고 있어" 같은 메시지가 없어서 다른 사람도 같은 함수를 열어보고 있다.</li><li>한 명이 이미 찾은 상수/문자열을 다른 사람이 다시 처음부터 찾고 있다.</li><li>스크립트 담당이 "전체 로직이 다 나올 때까지" 아무것도 안 하고 대기만 하고 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문제를 받으면 먼저 REV-0310 기준으로 대략적인 난이도와 구조(단일 검증인지 다단계인지)를 1~2분 안에 훑어서 팀 채널에 공유한다. 그다음 인원 배분을 정한다 — 소규모(1~2명)면 정적/동적을 한 사람이 오가도 되지만, 3명 이상이면 위 세 역할로 명확히 나눈다.</p>
+<h2>단계별 절차</h2>
+<ol><li>문제를 연 사람이 먼저 REV-0310 체크포인트로 구조를 훑고 팀 채널에 요약 공유(파일 종류, 대략적 난이도, 단일/다단계 여부)</li><li>인원과 문제 규모에 따라 정적/동적/스크립팅 역할 배분을 팀 채널에 명시적으로 선언("나는 정적 분석 볼게", "나는 x64dbg로 검증할게")</li><li>정적 담당은 함수 이름 정리와 가설을 30분 단위로 공유 노트에 업데이트</li><li>동적 담당은 정적 담당의 가설을 받는 즉시 검증하고 참/거짓 결과를 노트에 기록</li><li>스크립팅 담당은 확정된 조각이 나오는 즉시 Python으로 옮겨 붙이기 시작(전체 완성까지 기다리지 않음)</li><li>30분~1시간마다 팀 채널에서 짧게 진행 상황을 재확인하고 역할이 겹치거나 비효율적인 부분이 있으면 그 자리에서 재배분</li><li>문제를 풀면 즉시 공유 노트에 최종 로직과 스크립트를 남겨 REV-0318(다음 문제 재사용)로 이어지게 한다</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>팀 노트 실시간 공유: 공유 마크다운(예: HackMD, 팀 디스코드 채널 고정 메시지) 활용</li><li>IDA: <code>File → Produce file → Create IDC/Python script</code> 등으로 현재까지 이름 붙인 함수 목록을 파일로 내보내 팀원에게 전달 가능</li><li>공유 시 상수/오프셋은 항상 16진수 표기와 접근 방식(어떤 함수의 몇 번째 인자인지)을 같이 적는다</li></ul>
+<h2>출력 해석</h2>
+<ul><li>역할을 나눴는데도 계속 같은 질문이 반복된다면, 공유 노트 업데이트 주기가 너무 길다는 신호다 — 주기를 15~20분으로 줄인다.</li><li>스크립팅 담당이 계속 할 일이 없다고 느낀다면, 정적/동적 담당이 조각 단위로 결과를 넘기지 않고 전체를 다 풀고 나서 한 번에 넘기려 하고 있다는 신호다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>세 명이 각자 처음부터 IDA를 열어서 같은 함수를 동시에 정독하는 것 — 첫 5분만 병렬로 훑고 바로 역할을 나눠야 한다.</li><li>역할을 나눴다고 선언만 하고 실제로는 서로 뭘 하는지 공유하지 않아서 결국 다시 중복되는 것.</li><li>스크립팅 담당이 로직이 100% 확정될 때까지 기다리는 것 — 확정된 부분부터 먼저 구현해야 병목이 줄어든다.</li><li>팀 내 실력 차이를 무시하고 무조건 균등하게 나누는 것 — 정적 분석에 강한 사람과 디버깅에 강한 사람을 각자의 강점에 맞게 배치하는 게 더 빠르다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>역할을 나눴는데도 진행이 느리다 → REV-0310 리버싱 문제 난이도를 빠르게 가늠하는 체크포인트로 문제 규모를 다시 확인</li><li>문제 자체가 여러 검증 함수/스테이지로 나뉜 구조라 분담 기준이 더 필요하다 → REV-0313 여러 개의 검증 함수가 있는 문제 접근 순서, REV-0314 다단계 검증(Stage 1/2/3)이 있는 문제 공략법</li><li>시간이 부족해져서 문제를 포기하거나 부분점수만 노려야 하는 상황이다 → REV-0312 시간이 부족할 때 부분점수를 노리는 전략</li><li>개인 노트 작성법 자체가 익숙하지 않다 → REV-0014 리버싱 노트 작성법: 함수 이름 바꾸기와 가설 기록</li></ul>
+<h2>미니 예제</h2>
+<p>세 명이 참가한 팀이 다단계 검증 문제(REV-0314 유형)를 받았다. A가 먼저 5분간 훑어 "Stage 1은 XOR, Stage 2는 알 수 없는 변환, Stage 3은 서버 응답 비교"라고 채널에 공유했다. B는 Stage 2의 변환 로직을 정적으로 분석하기 시작했고, C는 x64dbg로 Stage 1을 실제로 밟아보며 XOR 키를 즉시 확정해서 채널에 올렸다. A는 확정된 Stage 1 로직을 바로 Python으로 옮겨 스크립트 뼈대를 만들기 시작했다. B가 Stage 2 로직을 확정하자 A는 그 부분만 스크립트에 추가하면 되었고, 처음부터 끝까지 한 사람이 순서대로 풀었을 때보다 훨씬 빨리 끝났다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0310-difficulty-triage-checkpoints.html">REV-0310 — 리버싱 문제 난이도를 빠르게 가늠하는 체크포인트</a></li><li><a href="rev-0313-multiple-check-functions-order.html">REV-0313 — 여러 개의 검증 함수가 있는 문제 접근 순서</a></li><li><a href="rev-0314-multi-stage-validation-strategy.html">REV-0314 — 다단계 검증(Stage 1/2/3)이 있는 문제 공략법</a></li><li><a href="rev-0006-finding-check-function.html">REV-0006 — Flag 검증 함수 찾는 가장 흔한 경로</a></li><li><a href="rev-0014-reversing-notes.html">REV-0014 — 리버싱 노트 작성법: 함수 이름 바꾸기와 가설 기록</a></li><li><a href="rev-0017-recover-logic-before-solver.html">REV-0017 — 솔버를 짜기 전에 직접 로직을 복원하는 순서</a></li><li><a href="rev-0312-partial-score-strategy-time-pressure.html">REV-0312 — 시간이 부족할 때 부분점수를 노리는 전략</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>팀 CTF 협업 방식(역할 분담, 실시간 노트 공유): CTF 팀 대회 실전 경험칙 요약 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

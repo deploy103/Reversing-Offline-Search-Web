@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VEH(Vectored Exception Handler) 기반 안티디버깅 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>VEH(Vectored Exception Handler) 기반 안티디버깅</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>AddVectoredExceptionHandler</code>로 등록한 VEH(Vectored Exception Handler)는 SEH보다 먼저, 그리고 함수 단위가 아니라 프로세스 전체에 걸쳐 예외를 가로챌 수 있기 때문에, 프로그램이 일부러 예외(잘못된 명령어, 0으로 나누기, <code>INT3</code> 등)를 발생시키고 그 처리 여부·타이밍·<code>CONTEXT</code> 값을 관찰해 디버거를 탐지하거나, 아예 정상 실행 흐름 자체를 VEH 콜백 안에 숨겨서 디버거로는 정상적으로 따라가기 어렵게 만드는 데 널리 쓰인다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>코드에서 <code>AddVectoredExceptionHandler</code>를 호출하는 부분을 발견했는데 등록된 콜백 함수가 하는 일이 단순 에러 처리로 보이지 않을 때</li><li>함수 여러 곳에서 일부러 잘못된 명령어(<code>0xCC</code>, <code>0x0F0B</code>(<code>UD2</code>) 등)나 0으로 나누기 같은 코드가 나타나고, 이후 실행이 전혀 다른 곳으로 이어지는 것을 발견했을 때</li><li>REV-0539에서 SEH 기반 안티디버깅을 이해했고, "함수 단위가 아니라 프로그램 전체에 적용되는 버전"이 궁금할 때</li><li>x64dbg로 실행하면 예외가 프로그램 코드가 아니라 계속 디버거 메시지로만 뜨고 정상 흐름을 이어갈 수 없는 상황을 마주쳤을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>VEH란 무엇인가</h3>
+<p><code>AddVectoredExceptionHandler(ULONG First, PVECTORED_EXCEPTION_HANDLER Handler)</code>는 프로세스 전역에 예외 콜백을 등록하는 Win32 API다.</p>
+<pre><code class="language-c">LONG CALLBACK MyVeh(PEXCEPTION_POINTERS ExceptionInfo) {
+    // ExceptionInfo-&gt;ExceptionRecord-&gt;ExceptionCode 로 어떤 예외인지 확인
+    // ExceptionInfo-&gt;ContextRecord 로 레지스터 상태 확인/수정 가능
+    return EXCEPTION_CONTINUE_EXECUTION; // 또는 EXCEPTION_CONTINUE_SEARCH
+}
+AddVectoredExceptionHandler(1, MyVeh); // First=1: 체인 맨 앞에 등록</code></pre>
+<p>SEH(REV-0134, REV-0539)가 특정 스택 프레임(함수 호출 범위)에 묶여 있는 반면, VEH는 등록되는 순간부터 프로세스 전체·모든 스레드에서 발생하는 예외를 함수 범위와 무관하게 가로챌 수 있다. <code>First</code> 인자가 1이면 이미 등록된 다른 VEH나 SEH보다도 먼저 호출되도록 체인 맨 앞에 삽입된다.</p>
+<h3>안티디버깅에 쓰이는 이유</h3>
+<ol><li><strong>먼저 개입할 수 있다</strong>: VEH는 SEH보다도 먼저 호출되므로, 디버거가 개입하기 전에 프로그램이 스스로 예외를 처리하고 흐름을 바꿀 여지가 생긴다. 다만 디버거가 붙어 있으면 커널 차원에서 디버거에게 먼저 통지되는 first-chance 순서(REV-0539) 자체는 VEH도 피해갈 수 없다 — 그래서 VEH 트릭은 "예외가 최종적으로 어떻게 처리되는가"를 이용하는 방식이 많다.</li><li><strong>정상 흐름을 예외 처리 안에 숨길 수 있다</strong>: 프로그램이 코드 곳곳에 일부러 잘못된 명령어(<code>UD2</code>, 잘못된 opcode 등)를 심어두고, <code>EXCEPTION_ILLEGAL_INSTRUCTION</code> 예외가 발생하면 VEH 콜백이 <code>ExceptionInfo-&gt;ContextRecord-&gt;Rip</code>를 원하는 다음 주소로 직접 바꿔서 실행을 이어간다. 정적 디스어셈블리만 봐서는 "여기서 크래시가 나야 정상인데 실행이 계속된다"는 게 이해되지 않고, VEH 콜백이 <code>Rip</code>를 조작한다는 사실을 알아야만 실제 실행 흐름을 재구성할 수 있다. 이는 사실상 <strong>VEH를 이용한 제어 흐름 난독화(control-flow obfuscation)</strong> 기법으로, 순수 탐지보다 한 단계 더 나아간 응용이다.</li><li><strong>싱글스텝 트랩과 결합</strong>: <code>CONTEXT</code>의 <code>EFlags</code>에서 트랩 플래그(TF, bit 8)를 세팅해 강제로 <code>EXCEPTION_SINGLE_STEP</code> 예외를 반복 발생시키고, VEH 콜백에서 이를 처리하며 매 명령어 실행 사이에 검사를 끼워 넣는 방식도 있다. 이 경우 디버거로 싱글 스텝하려 하면 VEH가 자기 자신의 싱글스텝 메커니즘과 충돌해 훨씬 이상하게 동작한다.</li></ol>
+<h3>VEH vs SEH vs UnhandledExceptionFilter 정리</h3>
+<table><thead><tr><th>구분</th><th>등록 범위</th><th>처리 순서</th><th>대표 API</th></tr></thead><tbody><tr><td>SEH</td><td>함수(스택 프레임) 단위</td><td>VEH 다음</td><td><code>__try</code>/<code>__except</code></td></tr><tr><td>VEH</td><td>프로세스 전역</td><td>SEH보다 먼저(단, first/last 순서에 따라 다름)</td><td><code>AddVectoredExceptionHandler</code></td></tr><tr><td>UnhandledExceptionFilter</td><td>프로세스 전역, 최종 단계</td><td>아무도 처리 못 했을 때 마지막</td><td><code>SetUnhandledExceptionFilter</code></td></tr></tbody></table>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>AddVectoredExceptionHandler</code> 호출과 그 두 번째 인자(콜백 함수 포인터)가 Import/코드에서 확인됨.</li><li>콜백 함수 내부에서 <code>ExceptionInfo-&gt;ExceptionRecord-&gt;ExceptionCode</code>를 여러 <code>STATUS_*</code> 상수와 비교하는 분기.</li><li>콜백 함수가 <code>ExceptionInfo-&gt;ContextRecord-&gt;Rip</code>(x64) 또는 <code>Eip</code>(x86) 값을 직접 대입해서 반환하는 코드 — 이것이 있으면 VEH가 실행 흐름을 능동적으로 바꾸는 것.</li><li>코드 여러 곳에 정상적인 명령어 흐름과 안 맞는 잘못된 opcode(<code>0x0F 0x0B</code> = <code>UD2</code>)가 흩어져 있음.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>AddVectoredExceptionHandler</code> 호출을 찾으면 곧바로 두 번째 인자(콜백 함수 포인터)로 이동해서, 그 함수가 <code>ExceptionCode</code>를 어떻게 분기 처리하는지, 그리고 <code>ContextRecord</code>를 수정하는지부터 확인한다. <code>ContextRecord</code>(특히 <code>Rip</code>/<code>Eip</code>)를 수정한다면 이건 단순 탐지가 아니라 흐름 제어에 VEH를 쓰고 있다는 뜻이므로 분석 전략을 바꿔야 한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 콜백 함수 진입</strong></p>
+<p>IDA에서 <code>AddVectoredExceptionHandler</code> 호출부의 두 번째 인자(함수 포인터)를 따라가 콜백 함수 본체를 연다.</p>
+<p><strong>2) 예외 코드 분기 확인</strong></p>
+<p><code>EXCEPTION_ACCESS_VIOLATION</code>(<code>0xC0000005</code>), <code>EXCEPTION_ILLEGAL_INSTRUCTION</code>(<code>0xC000001D</code>), <code>EXCEPTION_SINGLE_STEP</code>(<code>0x80000004</code>), <code>EXCEPTION_BREAKPOINT</code>(<code>0x80000003</code>) 등 어떤 코드를 기다리는지 확인한다.</p>
+<p><strong>3) CONTEXT 조작 여부 확인</strong></p>
+<p>콜백이 <code>ContextRecord-&gt;Rip</code>/<code>Eip</code>, <code>Dr7</code>, <code>EFlags</code> 등을 수정하는지 본다. 수정한다면 예외 발생 지점과 실제 다음 실행 지점이 다르다는 뜻이므로, 예외를 유발하는 명령어 바로 다음 줄이 아니라 VEH가 설정하는 실제 목적지를 별도로 추적해야 한다.</p>
+<p><strong>4) x64dbg로 동적 확인</strong></p>
+<p>VEH 콜백 시작에 브레이크포인트를 걸고, <code>ExceptionInfo</code> 구조체(첫 인자, x64에서는 <code>RCX</code>)를 따라가 실제 <code>ExceptionCode</code>와 <code>ContextRecord</code> 값을 관찰한다.</p>
+<pre><code class="language-text">bp &lt;veh_callback_주소&gt;
+run
+dump rcx        ; EXCEPTION_POINTERS 구조체 확인</code></pre>
+<p><strong>5) 우회 방법 이해</strong></p>
+<p>가장 확실한 방법은 실제 예외 유발 지점과 VEH가 설정하는 목적지 주소를 모두 파악해서, IDA에서 그 목적지로 향하는 화살표(수동 xref, 코멘트)를 직접 그려주며 진짜 실행 흐름을 재구성하는 것이다. 탐지 목적으로만 쓰인 경우라면 콜백 내부의 감지 분기를 패치하거나, <code>RemoveVectoredExceptionHandler</code>를 강제로 호출해 아예 등록을 해제해버리는 방법도 있다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: 콜백 함수 시작에 <code>bp</code>, <code>dump rcx</code>(x64 첫 인자인 <code>EXCEPTION_POINTERS*</code> 확인)</li><li>x64dbg: <code>Options → Preferences → Exceptions</code>에서 특정 예외를 자동으로 프로그램에 전달하도록 설정</li><li>IDA: 콜백 함수 안에서 <code>ContextRecord-&gt;Rip</code>에 해당하는 오프셹(x64 <code>CONTEXT.Rip</code>는 오프셋 <code>0xF8</code>)에 대입하는 코드를 찾아 실제 점프 목적지 역산</li></ul>
+<h2>출력 해석</h2>
+<ul><li>VEH 콜백이 <code>EXCEPTION_CONTINUE_EXECUTION</code>(<code>-1</code>)을 반환하면 예외가 여기서 완전히 처리되어 프로그램이 (수정된 <code>CONTEXT</code> 기준으로) 계속 실행된다는 뜻이다.</li><li><code>EXCEPTION_CONTINUE_SEARCH</code>(<code>0</code>)를 반환하면 이 예외가 처리되지 않았으니 다음 핸들러(다른 VEH, SEH, 결국 디버거)에게 넘어간다는 뜻이다.</li><li>콜백 안에서 <code>Rip</code>/<code>Eip</code>를 원래 예외 발생 지점보다 훨씬 뒤(또는 전혀 다른 함수)로 세팅한다면, 그 목적지가 바로 "이 예외를 트리거로 삼아 진짜 실행하고 싶었던 코드"다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>VEH가 SEH를 완전히 대체한다고 생각하는 것 — 둘은 별개의 메커니즘이며 한 프로그램에 둘 다 쓰일 수 있다.</li><li>예외를 유발하는 명령어 바로 다음 줄을 "다음 실행 지점"이라고 가정하는 것 — VEH가 <code>Rip</code>를 조작하면 실제 다음 실행 지점은 전혀 다른 곳일 수 있다.</li><li><code>AddVectoredExceptionHandler</code>의 <code>First</code> 인자(체인 순서)를 무시하는 것 — 여러 VEH가 등록되어 있으면 어느 것이 먼저 실행되는지가 분석 순서에 영향을 준다.</li><li>콜백 함수를 찾고 나서 정적 분석만으로 끝내는 것 — <code>ContextRecord</code> 조작 여부는 동적으로 실제 값을 찍어봐야 확실히 알 수 있는 경우가 많다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>SEH 기반 기법과 first-chance/second-chance 원리를 먼저 확인하고 싶다면 → REV-0539 SEH 기반 안티디버깅 심화</li><li>싱글스텝 트랩 플래그 관련 세부 사항이 궁금하다면 → REV-0536 하드웨어 브레이크포인트(DR 레지스터) 탐지 기법</li><li>예외 정보 테이블(.pdata)의 구조가 궁금하다면 → REV-0546 — .pdata 섹션과 x64 예외 처리 정보 읽는 법</li><li>SEH의 가장 기초 개념부터 다시 보고 싶다면 → REV-0134 SEH와 예외 기반 제어 흐름 기초</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">#include &lt;windows.h&gt;
+
+LONG CALLBACK VehHandler(PEXCEPTION_POINTERS info) {
+    if (info-&gt;ExceptionRecord-&gt;ExceptionCode == EXCEPTION_ILLEGAL_INSTRUCTION) {
+        // 진짜 로직으로 실행 흐름을 이어감 (UD2 다음 2바이트 스킵)
+        info-&gt;ContextRecord-&gt;Rip += 2;
+        return EXCEPTION_CONTINUE_EXECUTION;
+    }
+    return EXCEPTION_CONTINUE_SEARCH;
+}
+
+int main(void) {
+    AddVectoredExceptionHandler(1, VehHandler);
+    __asm { ud2 }              // 일부러 잘못된 명령어 실행 → VEH가 가로챔
+    printf("Enter flag: ");    // VEH가 Rip를 옮겨줘야 여기까지 도달
+    return 0;
+}</code></pre>
+<p>디버거 없이 실행하면 <code>ud2</code>에서 예외가 발생하고 VEH가 즉시 <code>Rip</code>를 2바이트 뒤로 옮겨 실행을 이어가지만, 디버거로 실행하면 이 예외가 먼저 디버거에 통지되어 "Illegal Instruction" 상태로 멈추므로, 사용자가 <code>Shift+F9</code>로 넘겨주지 않는 한 정상 흐름을 볼 수 없다는 차이가 관찰의 핵심이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0539-seh-anti-debugging-advanced.html">REV-0539 — SEH 기반 안티디버깅 심화</a></li><li><a href="rev-0134-seh-basics.html">REV-0134 — SEH와 예외 기반 제어 흐름 기초</a></li><li><a href="rev-0536-hardware-breakpoint-detection.html">REV-0536 — 하드웨어 브레이크포인트(DR 레지스터) 탐지 기법</a></li><li><a href="rev-0546-pdata-exception-handling.html">REV-0546 — .pdata 섹션과 x64 예외 처리 정보 읽는 법</a></li><li><a href="rev-0529-windows-anti-debugging-techniques-quickref.html">REV-0529 — Windows 안티디버깅 기법 종류 빠른 참조표</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>AddVectoredExceptionHandler</code>, <code>RemoveVectoredExceptionHandler</code>, <code>PVECTORED_EXCEPTION_HANDLER</code> 시그니처와 VEH/SEH 처리 순서는 Microsoft 공식 문서(learn.microsoft.com, "Vectored Exception Handling") 기준.</li><li><code>EXCEPTION_POINTERS</code>/<code>CONTEXT</code> 구조체 필드(<code>ExceptionRecord</code>, <code>ContextRecord</code>, <code>Rip</code>)는 <code>winnt.h</code> 공식 헤더 정의 기준.</li><li>VEH를 이용한 제어 흐름 난독화 및 안티디버깅 응용 패턴은 공개된 안티디버깅/언패킹 리서치 자료(Check Point Anti-Debug Tricks, 다수의 CTF 리버싱 라이트업)에서 반복적으로 확인되는 일반적 구현 방식을 정리한 것이다(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

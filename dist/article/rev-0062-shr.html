@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SHR: 논리 오른쪽 시프트 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>SHR: 논리 오른쪽 시프트</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>SHR</code>(Shift Right, Logical)은 오퍼랜드의 모든 비트를 오른쪽으로 밀고 <strong>빈 왼쪽(상위) 자리를 항상 0으로 채우는</strong> 명령어로, 부호를 무시하고 값을 순수한 비트 패턴으로 취급한다 — 부호 없는(unsigned) 정수를 2의 거듭제곱으로 나누는 데 쓰인다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>shr eax, 1</code> 같은 코드가 나오는데 나눗셈처럼 보여서 무슨 나눗셈인지 궁금할 때</li><li>같은 시프트인데 <code>SHR</code>과 <a href="rev-0063-sar.html"><code>SAR</code></a>의 결과가 음수에서 다르게 나오는 이유가 궁금할 때</li><li>큰 양수(부호 있는 관점에서는 음수로 보이는)를 시프트했는데 결과가 예상과 다를 때</li><li>unsigned 나눗셈이 왜 <code>DIV</code> 대신 <code>SHR</code>로 컴파일됐는지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>SHR dest, count</code></pre>
+<ul><li><code>dest</code>는 레지스터 또는 메모리, <code>count</code>는 즉시값 또는 <code>CL</code> 레지스터.</li><li><code>dest = dest &gt;&gt; count</code> (<strong>논리적</strong> 오른쪽 시프트: 빈 상위 비트는 항상 0으로 채움)</li><li>예: <code>shr eax, 1</code>, <code>shr eax, 3</code>, <code>shr eax, cl</code>.</li><li><code>count</code>는 32비트 오퍼랜드에서 <code>&amp; 0x1F</code>, 64비트에서 <code>&amp; 0x3F</code>로 마스킹된다 (<a href="rev-0061-shl-sal.html">SHL/SAL</a>과 동일한 규칙).</li></ul>
+<h3>레지스터/메모리에 미치는 효과 — "논리적"의 의미</h3>
+<pre><code>eax = 1000 0000 0000 0000 0000 0000 0000 0000   (0x80000000)
+shr eax, 1
+eax = 0100 0000 0000 0000 0000 0000 0000 0000   (0x40000000)</code></pre>
+<p><code>SHR</code>은 값을 <strong>순수 비트 패턴(unsigned)</strong>으로만 취급한다. 원래 최상위 비트(부호 비트)가 1이었든 0이었든 상관없이, 시프트 후 새로 생기는 빈 상위 비트는 <strong>무조건 0</strong>으로 채운다. 이것이 "논리적(logical)" 시프트라는 이름의 의미다 — 값의 부호를 전혀 고려하지 않고 순수하게 비트만 민다.</p>
+<h3>플래그 변화</h3>
+<ul><li><strong>CF</strong>: 마지막으로 밀려 나간 비트(최하위 쪽에서 빠져나간 비트) 값이 그대로 들어감</li><li><strong>OF</strong>: <code>count == 1</code>일 때만 정의됨 — 시프트 전 원래 값의 최상위 비트(부호 비트)와 같음. (SHR로 상위 비트가 무조건 0이 되므로, 원래 부호 비트가 1이었다면 "부호가 바뀐 것"으로 간주해 OF=1)</li><li><strong>SF/ZF/PF</strong>: 결과값 기준으로 세팅</li><li><strong>AF</strong>: 정의되지 않음</li><li><strong>count == 0</strong>이면 플래그 전혀 변화 없음 (SHL과 동일한 규칙)</li></ul>
+<h3>신호 있음/없음(signed/unsigned) — SHR이 unsigned 전용인 이유</h3>
+<p><strong>이것이 SHR을 이해하는 데 가장 중요한 부분이다.</strong> <code>SHR</code>은 값을 항상 unsigned로 취급하고 상위 빈 자리를 0으로 채우기 때문에, <strong>음수(부호 있는 관점에서)에 SHR을 적용하면 나눗셈으로서는 완전히 틀린 결과가 나온다.</strong></p>
+<p><strong>구체적인 예시로 확인해보자</strong>: <code>eax = 0xFFFFFFFE</code>라는 32비트 값이 있다고 하자.</p>
+<ul><li><strong>signed(부호 있는) 해석</strong>: 이 값은 -2다 (2의 보수).</li><li><strong>unsigned(부호 없는) 해석</strong>: 이 값은 4294967294다 (거의 최댓값).</li></ul>
+<p>여기에 <code>shr eax, 1</code>을 적용하면:</p>
+<pre><code>0xFFFFFFFE = 1111 1111 1111 1111 1111 1111 1111 1110
+shr eax, 1 (모든 비트 오른쪽으로 1칸, 상위는 0으로 채움)
+결과       = 0111 1111 1111 1111 1111 1111 1111 1111 = 0x7FFFFFFF</code></pre>
+<p>결과 <code>0x7FFFFFFF</code>는 <strong>2147483647</strong> (거의 int의 최댓값, signed로도 양수!)이다.</p>
+<ul><li><strong>"−2를 2로 나누면 −1이어야 한다"</strong>는 게 signed 나눗셈의 상식이지만, <code>SHR</code>로 계산한 결과는 전혀 다른 <strong>2147483647</strong>이 나왔다. <code>SHR</code>은 부호를 무시하고 "4294967294를 2로 나누면 2147483647"이라는, unsigned 관점에서는 정확하지만 signed 나눗셈으로는 완전히 틀린 계산을 한 것이다.</li><li>반대로 이 값을 signed로 올바르게 2로 나누려면 <a href="rev-0063-sar.html"><code>SAR</code></a>(산술 오른쪽 시프트)을 써야 한다. <code>sar eax, 1</code>을 적용하면 <code>0xFFFFFFFF</code>(-1)가 나와 signed 나눗셈 "−2 / 2 = −1"과 정확히 일치한다.</li></ul>
+<p><strong>결론</strong>: <code>SHR</code>은 값이 <strong>unsigned</strong>라고 확신할 수 있을 때만 나눗셈 대체로 안전하다. 값이 signed일 가능성이 있다면 반드시 <code>SAR</code>이 쓰였는지 확인해야 하며, <code>SHR</code>이 쓰인 코드를 보면 그 변수는 컴파일러가 <code>unsigned</code>/<code>size_t</code> 계열 타입으로 판단했다는 강력한 단서가 된다.</p>
+<h3>스택/RSP/RIP 변화</h3>
+<p>없음.</p>
+<h3>컴파일러 패턴 — unsigned 나눗셈 최적화</h3>
+<p><code>unsigned int</code> 변수를 2의 거듭제곱 상수로 나누는 코드(<code>x / 2</code>, <code>x / 4</code>, <code>x / 8</code> 등, <code>x</code>가 unsigned)는 느린 <code>DIV</code> 대신 <code>SHR</code>로 컴파일되는 경우가 매우 흔하다. 이것이 <strong>컴파일러가 SHR을 선택했다는 사실 자체가 그 변수의 타입이 unsigned라는 강력한 증거</strong>가 되는 이유다. 반대로 같은 나눗셈이라도 변수가 signed(<code>int</code>)라면 컴파일러는 <a href="rev-0063-sar.html"><code>SAR</code></a>에 부가적인 보정 코드(반올림 처리를 위한 <code>ADD</code>)를 덧붙인 형태로 컴파일한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>shr eax, 1</code> — unsigned <code>x / 2</code></li><li><code>shr eax, 3</code> — unsigned <code>x / 8</code></li><li><code>shr eax, 8</code> / <code>shr eax, 16</code> — 바이트/워드 단위로 상위 비트를 끌어내리는 패턴 (특정 바이트 추출, 색상값의 R/G/B 채널 분리 등)</li><li><code>shr eax, 31</code> — 최상위 비트(부호 비트였던 자리)만 0/1로 추출 (unsigned 관점에서 "MSB가 켜져 있었나" 검사)</li><li><code>shr eax, cl</code> — 가변 시프트 (커스텀 해시/체크섬, 비트필드 언패킹)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>결과가 <a href="rev-0063-sar.html"><code>SAR</code></a>이 아니라 정말 <code>SHR</code>인지 니모닉을 정확히 확인 (E 사용 여부: SHR vs SAR)</li><li>원본 소스가 unsigned 타입일 가능성이 높다고 가정하고 문맥 확인</li><li>시프트 대상 값이 음수(0x80000000 이상)일 수 있는 값이면 결과가 "논리적"으로 나온다는 점 명심</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) unsigned 나눗셈 인식</strong></p>
+<pre><code class="language-asm">mov  eax, [size]   ; size는 unsigned int 또는 size_t
+shr  eax, 2         ; eax = size / 4</code></pre>
+<p><strong>2) 색상/비트필드 채널 분리</strong></p>
+<pre><code class="language-asm">mov  eax, [color]     ; 0xAARRGGBB
+shr  eax, 16
+and  eax, 0FFh         ; R 채널 추출</code></pre>
+<p><strong>3) SHR과 SAR을 같은 값에 적용해서 차이 직접 확인 (디버거 실습)</strong></p>
+<pre><code class="language-asm">mov eax, 0FFFFFFFEh   ; -2 (signed) / 4294967294 (unsigned)
+shr eax, 1              ; 결과: 0x7FFFFFFF (완전히 다른 값, unsigned 나눗셈 결과)</code></pre>
+<pre><code class="language-asm">mov eax, 0FFFFFFFEh
+sar eax, 1              ; 결과: 0xFFFFFFFF (-1, signed 나눗셈 결과와 일치)</code></pre>
+<p>x64dbg나 GDB에서 위 두 코드를 직접 실행해 레지스터 값을 비교해보면 SHR/SAR 차이가 명확히 체감된다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>Python으로 unsigned 시프트 재현: <code>(x &amp; 0xFFFFFFFF) &gt;&gt; n</code> (파이썬은 부호 없는 시프트만 존재하므로 그대로 SHR과 동일)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>IDA/Ghidra는 대상 변수가 <code>unsigned int</code>/<code>uint</code>로 선언되어 있으면 <code>shr</code>을 <code>x / N</code> 또는 <code>x &gt;&gt; N</code>으로, 변수 타입 자체를 unsigned로 추론해서 보여준다.</li><li>만약 디컴파일된 의사코드에서 나눗셈 결과가 이상하게 크게 보인다면, 원본 변수가 사실 음수(signed)인데 SHR이 아니라 <a href="rev-0063-sar.html">SAR</a>이 쓰였어야 할 코드를 잘못 읽고 있는 게 아닌지(또는 반대로 SAR을 SHR로 착각한 게 아닌지) 디스어셈블리 원문을 다시 확인해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>SHR</code>과 <code>SAR</code>을 같은 명령어의 변형 정도로 가볍게 여기는 것 — 음수(또는 최상위 비트가 1인 값)에서는 결과가 완전히 다르다. 이건 x86에서 signed/unsigned를 구분하는 가장 대표적인 사례다.</li><li>부호 있는 변수(<code>int</code>)에 <code>SHR</code>이 쓰였다고 가정하고 나눗셈 값을 계산하는 것 — 컴파일러는 signed 나눗셈에는 SHR을 쓰지 않는다(SAR + 보정 코드를 쓴다). SHR이 보이면 그 값은 unsigned로 취급되고 있다고 봐야 한다.</li><li><code>shr eax, 31</code>의 결과를 "부호 비트를 signed로 그대로 가져온 것"이라 착각하는 것 — SHR은 논리 시프트이므로 결과는 항상 0 또는 1(unsigned 값)이지, 음수가 아니다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>SHR 결과가 나눗셈으로는 말이 안 되는 큰 값이 나온다면 → 원래 값이 음수(signed)였을 가능성을 의심하고, 실제로는 <a href="rev-0063-sar.html">SAR</a>이 쓰였어야 하는지 코드를 다시 확인.</li><li>변수 타입이 signed인지 unsigned인지 애매하면 → SHR이 쓰였다면 unsigned, SAR이 쓰였다면 signed라는 이 문서의 결론을 역으로 적용해 타입을 추론.</li><li>시프트 후 AND 마스킹이 뒤따르면 → 비트필드/색상 채널 등 특정 비트 구간만 추출하는 언패킹 코드일 가능성이 높음.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — unsigned 나눗셈</strong></p>
+<pre><code class="language-c">unsigned int half = x / 2;   // x는 unsigned int</code></pre>
+<pre><code class="language-asm">mov eax, [x]
+shr eax, 1</code></pre>
+<p><strong>예제 2 — 바이트 추출 (색상 채널)</strong></p>
+<pre><code class="language-c">unsigned char green = (color &gt;&gt; 8) &amp; 0xFF;</code></pre>
+<pre><code class="language-asm">mov eax, [color]
+shr eax, 8
+and eax, 0FFh</code></pre>
+<p><strong>예제 3 — SHR과 SAR의 극명한 차이</strong></p>
+<pre><code class="language-c">unsigned int a = 0xFFFFFFFE;
+unsigned int r1 = a &gt;&gt; 1;   // 0x7FFFFFFF (unsigned 시프트)
+
+int b = -2;
+int r2 = b &gt;&gt; 1;             // -1 (signed 시프트, 컴파일러는 SAR 사용)</code></pre>
+<pre><code class="language-asm">mov eax, 0FFFFFFFEh
+shr eax, 1        ; r1 = 0x7FFFFFFF
+
+mov eax, 0FFFFFFFEh
+sar eax, 1        ; r2 = 0xFFFFFFFF (-1)</code></pre>
+<p><strong>예제 4 — 최상위 비트만 추출</strong></p>
+<pre><code class="language-c">unsigned int msb = x &gt;&gt; 31;   // 0 또는 1</code></pre>
+<pre><code class="language-asm">mov eax, [x]
+shr eax, 31</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0063-sar.html">REV-0063 — SAR: 산술 오른쪽 시프트</a></li><li><a href="rev-0061-shl-sal.html">REV-0061 — SHL과 SAL: 왼쪽 시프트</a></li><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>SHR 명령어의 오퍼랜드/플래그 동작(논리 시프트 정의, CF/OF 규칙): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "SAL/SAR/SHL/SHR—Shift" 섹션 기준 (2026-09-08 검증).</li><li>unsigned 나눗셈에 대한 컴파일러의 SHR 치환 최적화: Agner Fog, "Optimizing subroutines in assembly language" 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

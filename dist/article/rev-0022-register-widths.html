@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>32비트와 64비트 레지스터 차이 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>32비트와 64비트 레지스터 차이</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>x86 계열 CPU는 같은 물리적 레지스터를 8/16/32/64비트 폭으로 쪼개 부르는 이름이 따로 있고(예: <code>AL</code>⊂<code>AX</code>⊂<code>EAX</code>⊂<code>RAX</code>), x64에서는 32비트 하위 레지스터에 값을 쓰면 상위 32비트가 자동으로 0으로 지워지지만 16비트·8비트에 쓰면 상위 비트가 그대로 남는다는 것이 가장 중요한 함정이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리에 <code>EAX</code>, <code>RAX</code>, <code>AX</code>, <code>AL</code>처럼 이름이 다른데 왜 같은 레지스터를 가리키는 것 같은지 헷갈릴 때</li><li><code>mov eax, 0</code>은 상위 비트까지 지우는 것 같은데 <code>mov al, 0</code>은 왜 그렇지 않은지 궁금할 때</li><li><code>R8D</code>, <code>R9W</code>, <code>R12B</code>처럼 처음 보는 레지스터 이름이 나왔을 때</li><li>바이트 스트림에 <code>0x48</code>, <code>0x49</code> 같은 낯선 접두 바이트(REX 프리픽스)가 계속 붙어있는 이유가 궁금할 때</li><li>x86 코드와 x64 코드에서 함수 인자를 넘기는 방식이 왜 다른지 확인해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>1) 하나의 레지스터, 여러 개의 이름</h3>
+<p>x86/x64 CPU는 물리적으로 64비트(x64 기준) 저장 공간을 가진 범용 레지스터(General Purpose Register, GPR)를 여러 개 갖고 있다. 이 저장 공간의 <strong>일부만 잘라서 접근</strong>할 수 있도록 폭마다 다른 이름을 붙여 놓았다. 즉 <code>EAX</code>와 <code>RAX</code>는 "다른 레지스터"가 아니라 "같은 물리적 저장 공간을 얼마나 넓게 보느냐"의 차이다.</p>
+<p>레지스터 하나(<code>A</code> 계열, 즉 RAX/EAX/AX/AH/AL)를 기준으로 포함 관계를 그려보면:</p>
+<pre><code>RAX  (64비트, bit63 ~ bit0)                x64 전용
+ └─ EAX (하위 32비트, bit31 ~ bit0)         x86/x64 공통
+     └─ AX  (하위 16비트, bit15 ~ bit0)     x86/x64 공통
+         ├─ AH (bit15 ~ bit8, 상위 바이트)  x86/x64 공통 (레거시)
+         └─ AL (bit7 ~ bit0, 하위 바이트)   x86/x64 공통</code></pre>
+<p><code>RAX</code>의 하위 32비트를 떼어낸 것이 <code>EAX</code>이고, <code>EAX</code>의 하위 16비트를 떼어낸 것이 <code>AX</code>이며, <code>AX</code>는 다시 <code>AH</code>(상위 바이트)와 <code>AL</code>(하위 바이트)로 나뉜다. 이 네 이름은 전부 <strong>같은 물리적 비트를 공유</strong>한다. <code>AL</code>에 값을 쓰면 <code>AX</code>, <code>EAX</code>, <code>RAX</code>의 하위 8비트도 함께 바뀐 것이다.</p>
+<h3>2) 전체 레지스터 이름표 (x86 8개 + x64에서 추가되는 R8~R15)</h3>
+<p>x86(32비트)에서 쓰던 범용 레지스터는 8개(<code>A</code>, <code>B</code>, <code>C</code>, <code>D</code>, <code>SI</code>, <code>DI</code>, <code>BP</code>, <code>SP</code> 계열)이고, x64에서는 여기에 <code>R8</code>~<code>R15</code>가 새로 8개 더 생겨서 총 16개가 된다.</p>
+<table><thead><tr><th>64비트 (x64 전용)</th><th>32비트</th><th>16비트</th><th>8비트(하위)</th><th>8비트(상위, 레거시)</th></tr></thead><tbody><tr><td>RAX</td><td>EAX</td><td>AX</td><td>AL</td><td>AH</td></tr><tr><td>RBX</td><td>EBX</td><td>BX</td><td>BL</td><td>BH</td></tr><tr><td>RCX</td><td>ECX</td><td>CX</td><td>CL</td><td>CH</td></tr><tr><td>RDX</td><td>EDX</td><td>DX</td><td>DL</td><td>DH</td></tr><tr><td>RSI</td><td>ESI</td><td>SI</td><td>SIL</td><td>(없음)</td></tr><tr><td>RDI</td><td>EDI</td><td>DI</td><td>DIL</td><td>(없음)</td></tr><tr><td>RBP</td><td>EBP</td><td>BP</td><td>BPL</td><td>(없음)</td></tr><tr><td>RSP</td><td>ESP</td><td>SP</td><td>SPL</td><td>(없음)</td></tr><tr><td>R8</td><td>R8D</td><td>R8W</td><td>R8B</td><td>(없음)</td></tr><tr><td>R9</td><td>R9D</td><td>R9W</td><td>R9B</td><td>(없음)</td></tr><tr><td>R10</td><td>R10D</td><td>R10W</td><td>R10B</td><td>(없음)</td></tr><tr><td>R11</td><td>R11D</td><td>R11W</td><td>R11B</td><td>(없음)</td></tr><tr><td>R12</td><td>R12D</td><td>R12W</td><td>R12B</td><td>(없음)</td></tr><tr><td>R13</td><td>R13D</td><td>R13W</td><td>R13B</td><td>(없음)</td></tr><tr><td>R14</td><td>R14D</td><td>R14W</td><td>R14B</td><td>(없음)</td></tr><tr><td>R15</td><td>R15D</td><td>R15W</td><td>R15B</td><td>(없음)</td></tr></tbody></table>
+<p><strong>읽는 규칙</strong>: <code>R8</code>~<code>R15</code>는 새 레지스터라서 접미사로 폭을 구분한다 — <code>D</code>(Doubleword, 32비트), <code>W</code>(Word, 16비트), <code>B</code>(Byte, 8비트), 접미사 없음(64비트). 반면 <code>A</code>/<code>B</code>/<code>C</code>/<code>D</code> 계열은 8086 시절부터 내려온 레거시 이름이라 접미사 규칙이 다르고(<code>E</code> 접두사=32비트, <code>R</code> 접두사=64비트), <code>AH</code>처럼 상위 바이트를 따로 부르는 이름은 원래 8개 레지스터 중 <code>AX</code>/<code>BX</code>/<code>CX</code>/<code>DX</code> 4개에만 존재한다. <code>SI</code>/<code>DI</code>/<code>BP</code>/<code>SP</code>와 <code>R8</code>~<code>R15</code>는 <strong>8비트 접근 시 항상 하위 바이트만 있고, "상위 바이트" 별명은 아예 없다.</strong> (<code>SIL</code>, <code>R8B</code> 등은 전부 하위 바이트다.)</p>
+<h3>3) x86과 x64의 근본적 차이</h3>
+<ul><li>x86(32비트 모드)에는 <code>EAX</code>까지만 존재한다. <code>RAX</code>, <code>R8</code>~<code>R15</code>는 x64(64비트 모드)에서만 존재하며, 32비트 모드의 어셈블러/디스어셈블러는 이 이름들을 아예 인식하지 못한다.</li><li>x64는 x86의 상위 호환이다. 즉 x64 CPU에서도 <code>EAX</code>, <code>AX</code>, <code>AL</code> 같은 32/16/8비트 이름은 그대로 쓸 수 있다. 다만 <strong>그 레지스터가 물리적으로는 64비트 RAX의 일부</strong>라는 점이 x86 시절과 다르다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA/Ghidra에서 x64 바이너리인데 <code>mov eax, [rbp-4]</code>처럼 32비트 레지스터와 64비트 레지스터가 한 함수 안에 섞여 나오는 경우 — 정상이다. 정수 연산은 대개 32비트(<code>int</code>)로, 포인터 연산은 64비트(<code>long</code>/포인터)로 하기 때문이다.</li><li>x64dbg/GDB 레지스터 창에 <code>RAX</code>, <code>RBX</code>, ... <code>R8</code>, <code>R9</code>, ... <code>R15</code>까지 16개가 보이는데, x32dbg나 32비트 GDB에서는 <code>EAX</code>부터 <code>EDI</code>까지 8개만 보이는 경우</li><li>디스어셈블리 바이트 열에 <code>48 89 E5</code>, <code>40 8A C1</code>처럼 <code>4X</code> 계열 바이트가 명령어 앞에 자주 붙어있는 경우 (REX 프리픽스, x64 코드라는 신호)</li><li><code>lea rax, [rip+0x2ee5]</code>처럼 <code>rip</code>을 직접 피연산자로 쓰는 명령어가 보이는 경우 — x64 전용 주소 지정 방식</li><li>함수 진입부에서 <code>RCX</code>/<code>RDX</code>/<code>R8</code>/<code>R9</code>(Windows) 또는 <code>RDI</code>/<code>RSI</code>/<code>RDX</code>/<code>RCX</code>/<code>R8</code>/<code>R9</code>(Linux)가 스택으로 옮겨지는(spill) 코드가 반복되는 경우</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>바이너리를 열었을 때 IDA/Ghidra의 아키텍처 표시나 <code>file</code> 명령 출력을 확인해서 <strong>x86인지 x64인지부터 확정</strong>한다. x86이면 <code>RAX</code>, <code>R8</code>~<code>R15</code>, <code>RIP</code> 상대 주소 지정, REX 프리픽스 자체가 존재하지 않으므로 애초에 헷갈릴 이유가 없다. x64라면 지금 보고 있는 레지스터가 32비트 하위 이름(<code>EAX</code>)인지 64비트 전체 이름(<code>RAX</code>)인지를 먼저 구분하고, 값을 쓰는 명령이면 "이 write가 상위 32비트를 지우는가"를 항상 함께 확인한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 레지스터 이름만 보고 폭을 즉시 판별하기</strong></p>
+<ul><li><code>R</code>로 시작하고 접미사가 없으면(<code>RAX</code>, <code>R12</code>) → 64비트</li><li><code>E</code>로 시작하거나 <code>D</code>로 끝나면(<code>EAX</code>, <code>R12D</code>) → 32비트</li><li>접미사가 <code>W</code>이거나 레거시 2글자 이름이면(<code>R12W</code>, <code>AX</code>, <code>CX</code>) → 16비트</li><li>접미사가 <code>B</code>, <code>L</code>이거나 <code>H</code>로 끝나면(<code>R12B</code>, <code>AL</code>, <code>SIL</code>, <code>AH</code>) → 8비트</li></ul>
+<p><strong>2) x64에서 부분 쓰기(partial write)가 상위 비트에 미치는 영향을 확인하기</strong></p>
+<p>이것이 x64 리버싱에서 가장 자주 나오는 함정이다.</p>
+<pre><code class="language-asm">; RAX = 0x1122334455667788 인 상태에서 시작
+
+mov eax, 0        ; 32비트 쓰기 -&gt; RAX 전체가 0x0000000000000000 이 된다
+                   ; (제로 익스텐션: 상위 32비트도 함께 0으로 지워짐)
+
+mov ax,  0         ; 16비트 쓰기 -&gt; RAX = 0x1122334455660000
+                   ; (상위 48비트는 건드리지 않고 그대로 남음)
+
+mov al,  0         ; 8비트 쓰기 -&gt; RAX = 0x1122334455667700
+                   ; (상위 56비트는 건드리지 않고 그대로 남음)</code></pre>
+<p>즉 규칙은 다음과 같다:</p>
+<ul><li><strong>32비트 서브 레지스터(<code>EAX</code> 등)에 쓰면 x64에서는 항상 상위 32비트가 0으로 초기화(제로 익스텐션)된다.</strong> 이건 x64 아키텍처가 정의한 특수 규칙이다.</li><li><strong>16비트/8비트 서브 레지스터(<code>AX</code>, <code>AL</code>, <code>AH</code> 등)에 쓰면 상위 비트는 전혀 건드리지 않는다.</strong> 이전에 그 레지스터에 어떤 값이 있었든 그대로 남는다.</li></ul>
+<p>이 차이 때문에 <code>mov eax, 0</code>을 보고 "RAX 전체가 0이 됐다"고 판단하는 건 <strong>맞고</strong>, <code>mov al, 0</code>을 보고 같은 식으로 "RAX 전체가 0이 됐다"고 판단하면 <strong>틀린다.</strong> <code>al</code>만 0이 되고 나머지 56비트는 직전 값이 그대로 남아있는 "쓰레기값 포함 레지스터"가 된다. 함수 반환값을 <code>al</code>로만 설정하고 <code>eax</code>/<code>rax</code>는 건드리지 않는 컴파일러 출력(예: bool 반환 함수)을 볼 때 이 규칙을 모르면 반환값 전체를 잘못 해석하기 쉽다.</p>
+<p><strong>3) REX 프리픽스 인식하기</strong></p>
+<p>x64 명령어에서 <code>R8</code>~<code>R15</code>를 쓰거나, 64비트 연산 크기를 지정하거나, <code>SIL</code>/<code>DIL</code>/<code>BPL</code>/<code>SPL</code> 같은 새 8비트 하위 레지스터를 쓰려면 명령어 앞에 <strong>REX 프리픽스</strong>(1바이트, <code>0x40</code>~<code>0x4F</code> 범위)가 붙어야 한다. REX 바이트의 <code>W</code> 비트(REX.W, 값이 1이면 <code>0x48</code>/<code>0x49</code>/<code>0x4C</code>/<code>0x4D</code> 등)가 켜져 있으면 오퍼랜드 크기가 64비트라는 뜻이다. 바이트 덤프에서 이 범위의 바이트가 명령어 시작 부분에 자주 보인다면 그 자체로 "이건 x64 코드"라는 신호로 읽을 수 있다. x86(32비트) 코드에는 REX 프리픽스가 아예 존재하지 않는다.</p>
+<p><strong>4) RIP 상대 주소 지정 인식하기</strong></p>
+<p>x64에서만 가능한 주소 지정 방식으로, 현재 명령어 포인터(<code>RIP</code>)를 기준으로 상대 오프셋을 더해 메모리를 가리킨다.</p>
+<pre><code class="language-asm">lea rax, [rip+0x2ee5]   ; RAX = 현재 명령어의 다음 주소 + 0x2ee5</code></pre>
+<p>x86(32비트)에는 <code>EIP</code>를 직접 피연산자로 쓰는 주소 지정 모드가 없다. 그래서 32비트 위치독립코드(PIE/PIC)는 <code>call</code> 직후 <code>pop</code>으로 스택에 쌓인 반환 주소(=다음 명령어 주소=EIP 값)를 레지스터로 꺼내는 우회 트릭을 써야 했다. x64는 이 트릭 없이 <code>lea reg, [rip+offset]</code> 한 줄로 끝난다. PIE로 빌드된 ELF나 ASLR이 걸린 실행 파일을 리버싱할 때 문자열/전역변수 참조가 대부분 이 형태로 나타난다.</p>
+<h2>명령어/단축키</h2>
+<p><strong>x64dbg</strong></p>
+<ul><li>레지스터 창(오른쪽 패널)에서 <code>RAX</code> 더블클릭 → 값을 직접 수정. 우클릭 → <code>Zero</code>로 0으로 초기화, <code>Change value</code> → 16진수 입력.</li><li>상태표시줄에서 현재 프로세스가 32비트(x32dbg)인지 64비트(x64dbg)인지 확인 — 실행 파일 자체에 따라 자동으로 결정된다.</li></ul>
+<p><strong>GDB / Pwndbg</strong></p>
+<pre><code>(gdb) info registers          # 전체 레지스터 확인 (x64면 rax~r15, x86이면 eax~edi까지만)
+(gdb) p $rax                  # 64비트 값
+(gdb) p $eax                  # 하위 32비트만 (gdb가 자동으로 서브 레지스터 이름 인식)
+(gdb) p/x $al                 # gdb는 al 같은 8비트 서브 레지스터를 직접 지원하지 않을 수 있음
+                               # 이 경우 p $rax &amp; 0xff 로 계산</code></pre>
+<p><strong>IDA / Ghidra</strong></p>
+<ul><li>디스어셈블리 창에서 레지스터 이름 위에 마우스를 올리면 같은 함수 내에서 그 레지스터가 다시 쓰이는 다른 줄이 하이라이트된다. 서브 레지스터(<code>AL</code>)와 전체 레지스터(<code>RAX</code>)가 같이 하이라이트되는지 확인하면 포함 관계를 눈으로 검증할 수 있다.</li><li>IDA의 Hex-Rays 디컴파일러는 부분 쓰기를 <code>LOBYTE(v1) = 0;</code>, <code>(unsigned int)v1 = 0;</code> 같은 캐스트 표현으로 보여줄 때가 있다. 이 캐스트가 바로 "몇 비트짜리 쓰기였는가"를 알려주는 단서다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>디스어셈블리에 <code>EAX</code>만 나오고 <code>RAX</code>는 전혀 안 나오는 함수 조각이라도, 물리적으로는 여전히 64비트 <code>RAX</code>의 일부를 쓰고 있는 것이다. <code>EAX</code>에 값을 쓴 순간 <code>RAX</code> 상위 32비트는 0으로 정리된다.</li><li><code>movzx eax, al</code> 같은 코드는 "AL의 값을 EAX 전체로 제로 확장하라"는 뜻이다. 이렇게 하면 32비트 쓰기 규칙 덕분에 결과적으로 RAX 전체가 AL 값 하나로 깨끗하게 정리된다. 부분 쓰기의 "쓰레기 상위 비트" 문제를 컴파일러가 회피할 때 자주 쓰는 패턴이다.</li><li>함수 프롤로그에서 <code>sub rsp, 0x20</code>처럼 32(0x20)의 배수로 스택을 내리는 코드가 보이면, x64 호출 규약에서 요구하는 스택 정렬(16바이트 정렬) 및 Windows의 섀도우 스페이스 확보와 관련된 것으로 해석한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>mov al, 0</code>을 보고 "이 레지스터(RAX) 전체가 0이 됐다"고 오해하는 것. 8비트/16비트 쓰기는 상위 비트를 지우지 않는다. 오직 32비트 쓰기만 상위 32비트를 제로 익스텐션한다.</li><li><code>R8</code>, <code>R9</code> 같은 x64 전용 레지스터를 x86(32비트) 바이너리 디스어셈블리에서 봤다고 착각하는 것. x86 모드에는 애초에 존재하지 않으므로, 만약 실제로 보인다면 아키텍처 판단 자체가 잘못됐을 가능성을 먼저 의심한다.</li><li><code>AH</code>, <code>BH</code>, <code>CH</code>, <code>DH</code>(상위 바이트 레거시 이름)를 <code>R8B</code>~<code>R15B</code> 같은 새 8비트 레지스터에도 있을 거라 착각하는 것. <code>R8</code>~<code>R15</code> 계열과 <code>SI</code>/<code>DI</code>/<code>BP</code>/<code>SP</code> 계열은 상위 바이트 별명이 없다.</li><li>EFLAGS와 RFLAGS를 완전히 다른 것으로 오해하는 것. x64에서 플래그 레지스터가 64비트(<code>RFLAGS</code>)로 넓어지긴 했지만, 실제로 의미 있게 쓰이는 비트(ZF, CF, SF, OF, PF, AF 등 조건 분기에 쓰이는 플래그들)는 여전히 하위 32비트 안에 있고 상위 비트는 예약(reserved)되어 사실상 쓰이지 않는다. 조건 점프(<code>JZ</code>, <code>JNZ</code> 등) 해석 방식 자체는 x86과 x64가 동일하다.</li><li>32비트/64비트 함수 인자 전달 방식을 x86 cdecl 감각으로 x64에 그대로 적용하는 것. x64에서는 첫 몇 개 정수/포인터 인자가 레지스터로 전달되므로, 스택만 보고 인자를 찾으려 하면 놓친다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>x86과 x64가 명령어 인코딩·레지스터 개수·호출 규약 전반에서 어떻게 다른지 전체 그림이 필요하면 → <a href="rev-0021-x86-vs-x64.html">rev-0021-x86-vs-x64.md</a>로 이동.</li><li>멀티바이트 값을 메모리에 어떤 순서(리틀 엔디안/빅 엔디안)로 저장하는지 헷갈리면 → <a href="rev-0023-endianness.html">rev-0023-endianness.md</a>로 이동.</li><li><code>and eax, 0FFh</code>처럼 마스크로 하위 비트만 남기는 코드와, 그것이 어떤 하위 레지스터 이름(<code>AL</code>)에 대응하는지 정리가 필요하면 → <a href="rev-0026-bit-masks.html">rev-0026-bit-masks.md</a>로 이동.</li><li>함수 인자가 레지스터로 넘어오는지 스택으로 넘어오는지 확신이 안 서면 → 호출 규약(calling convention) 관련 항목에서 Windows x64(RCX/RDX/R8/R9)와 SysV x64(RDI/RSI/RDX/RCX/R8/R9)를 비교해서 확인.</li></ul>
+<h2>미니 예제</h2>
+<p>Windows x64에서 흔히 보이는 bool 반환 함수의 디스어셈블리를 예로 보자.</p>
+<pre><code class="language-asm">; int __fastcall CheckFlag(int a1)
+mov     eax, 1          ; EAX = 1 (상위 32비트도 함께 0으로 정리됨, RAX = 0x0000000000000001)
+cmp     ecx, 10          ; 인자(a1, RCX로 전달됨)와 10 비교
+jge     short loc_return
+mov     al, 0            ; AL만 0으로 설정! RAX 상위 56비트는 위에서 남은 값이 그대로 유지됨
+loc_return:
+retn</code></pre>
+<p>이 코드에서 <code>mov eax, 1</code>은 <code>RAX</code> 전체를 <code>0x1</code>로 깨끗하게 만들지만, 그 이후 조건이 성립해 <code>mov al, 0</code>이 실행되면 <code>RAX</code>는 <code>0x0000000000000000</code>이 아니라 <strong><code>AL</code>만 0이 되고 나머지 비트는 직전의 <code>0x1</code>에서 온 상위 비트(이 경우는 이미 0이라 눈에 안 띄지만, 만약 RAX에 다른 쓰레기 값이 있었다면 그대로 남는다)</strong>가 된다. 호출자가 <code>int</code> 반환값 전체를 32비트로 읽는 관례에 의존한다면, 이런 부분 쓰기 뒤에 상위 바이트가 정리되지 않은 채로 남아 있을 경우가 실제 버그의 원인이 될 수도 있다 — 그래서 컴파일러는 보통 <code>mov al, 0</code> 대신 <code>xor eax, eax</code>처럼 32비트 단위로 레지스터를 정리하는 코드를 선호한다. <code>xor eax, eax</code>는 자기 자신과 XOR해서 0을 만드는 관용구이면서, 동시에 32비트 쓰기이므로 <code>RAX</code> 상위 비트까지 깔끔하게 0으로 만든다는 점도 함께 기억해두면 좋다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0021-x86-vs-x64.html">rev-0021-x86-vs-x64.md</a> — x86과 x64 아키텍처 전반 비교</li><li><a href="rev-0023-endianness.html">rev-0023-endianness.md</a> — 리틀 엔디안/빅 엔디안과 메모리 바이트 순서</li><li><a href="rev-0026-bit-masks.html">rev-0026-bit-masks.md</a> — 8/16/24/32/64비트 마스크와 하위 레지스터 대응</li></ul>
+<h2>출처/검증</h2>
+<ul><li>범용 레지스터 명명 규칙, REX 프리픽스, RIP 상대 주소 지정: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 1 (Basic Architecture), "General-Purpose Registers" 및 "REX Prefixes" 섹션 기준 개념 설명 (2026-09-08 검증).</li><li>32비트 서브 레지스터 쓰기 시 상위 32비트 제로 익스텐션 규칙: Intel SDM Volume 1, Section 3.4.1.1 "General-Purpose Registers in 64-Bit Mode" 기준.</li><li>Windows x64 호출 규약(RCX/RDX/R8/R9, 섀도우 스페이스)과 SysV x64 호출 규약(RDI/RSI/RDX/RCX/R8/R9): Microsoft x64 Calling Convention 문서 및 System V AMD64 ABI 문서 기준 개념 설명.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

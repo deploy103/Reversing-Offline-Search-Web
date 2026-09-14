@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>x64dbg Dump와 Stack View · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>x64dbg Dump와 Stack View</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>x64dbg의 <strong>Dump 창</strong>(좌하단)은 임의의 메모리 주소를 바이트/문자열 형태로 보여주는 헥스 뷰어이고, <strong>Stack 창</strong>(우하단)은 현재 스레드의 스택 메모리를 RSP 기준으로 자동 정렬해서 보여주는 창으로, 함수 인자와 리턴 주소를 확인할 때는 Stack을, 임의의 버퍼/문자열/구조체를 확인할 때는 Dump를 쓴다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>함수 호출 직전에 멈춰서 인자가 몇 개, 어떤 값으로 전달됐는지 보고 싶을 때</li><li>이 함수를 호출한 곳(리턴 주소)이 어디인지 스택에서 확인하고 싶을 때</li><li>포인터가 가리키는 메모리에 실제로 어떤 데이터(문자열, 구조체)가 들어있는지 보고 싶을 때</li><li>메모리 값을 직접 수정해서 프로그램 동작을 실험해보고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>CPU 탭 하단의 두 창은 둘 다 "메모리를 보여준다"는 점은 같지만 용도가 다르다.</p>
+<p><strong>Dump 창</strong>은 사용자가 지정한 임의의 주소부터 시작하는 메모리를 순수하게 바이트 나열로 보여준다. 왼쪽에 주소, 가운데에 헥스 바이트, 오른쪽에 그 바이트를 ASCII/유니코드 문자로 해석한 미리보기가 함께 나온다. 여러 탭을 만들어서 동시에 여러 주소를 볼 수 있고, 표시 형식(1바이트/2바이트/4바이트/8바이트 정수, float, ASCII, UTF-16 등)을 우클릭 메뉴에서 바꿀 수 있다.</p>
+<p><strong>Stack 창</strong>은 항상 <strong>현재 RSP(스택 포인터) 위치를 기준</strong>으로 자동 갱신되는 특수한 Dump다. 스택은 함수 호출 시 리턴 주소, 저장된 레지스터, 지역 변수, (윈도우 x64 호출 규약에서는) 그림자 공간(shadow space) 등이 쌓이는 영역이라서, Stack 창은 각 칸 오른쪽에 x64dbg가 자동으로 "이 값이 리턴 주소인지, 어떤 함수의 어떤 인자로 추정되는지" 같은 주석을 붙여준다. 이 자동 주석 덕분에 함수에 처음 진입했을 때 인자를 눈으로 훑어보기가 Dump보다 훨씬 편하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Stack 창 맨 위 몇 줄에 파란 화살표나 강조 표시가 있는 칸이 현재 RSP가 가리키는 주소다.</li><li>Stack 창의 값 옆에 <code>return to sample.00401050 from sample.00401020</code> 같은 주석이 자동으로 붙어 있으면, 그 칸이 <code>CALL</code> 명령어가 스택에 저장한 리턴 주소라는 뜻이다.</li><li>Dump 창에서 값이 실제로는 다른 메모리를 가리키는 포인터처럼 보이면(그럴듯한 주소 범위의 8바이트 값), 그 칸을 우클릭해 <code>Follow in Dump</code>를 실행하면 새 탭 없이 그 포인터가 가리키는 위치로 바로 이동한다.</li><li>문자열이 들어있는 영역은 Dump 창 오른쪽 ASCII 미리보기 열에 읽을 수 있는 텍스트로 나타난다. 유니코드 문자열은 우클릭 → 코드 페이지를 UTF-16으로 바꿔야 정상적으로 보인다.</li><li>Dump/Stack 어느 쪽이든, 값을 더블클릭하면 헥스 바이트가 직접 편집 가능한 상태로 바뀐다(수정 후 Enter로 반영).</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>함수 인자나 리턴 주소처럼 "스택에 있는 게 확실한 값"을 보고 싶다면 곧바로 Stack 창을 보고, 반대로 "레지스터나 다른 곳에 있는 포인터가 실제로 뭘 가리키는지" 보고 싶다면 그 값을 우클릭해서 <code>Follow in Dump</code>로 Dump 창에 띄운다. 두 창을 혼동해서 같은 값을 두 번 찾아 헤매지 않도록 한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 레지스터/디스어셈블리에서 Dump로 보내기</strong></p>
+<p>레지스터 창에서 포인터로 보이는 값(RCX, RDX 등)을 우클릭하고 <code>Follow in Dump</code>를 선택하면, Dump 창에 그 주소부터 시작하는 메모리가 뜬다. 디스어셈블리에서 <code>[주소]</code> 형태의 오퍼랜드를 우클릭해도 같은 메뉴가 나온다.</p>
+<p><strong>2) Dump 창에서 직접 주소로 이동하기</strong></p>
+<p>Dump 창 안에서 우클릭 → <code>Go to → Expression</code>(또는 Dump 창을 클릭한 상태에서 Ctrl+G)을 쓰면 임의의 주소/표현식으로 이동할 수 있다. CPU 탭의 Ctrl+G와 별개로, Dump 창 자체의 위치를 옮기는 기능이다.</p>
+<p><strong>3) 표시 형식 바꾸기</strong></p>
+<p>Dump 창을 우클릭하면 <code>Hex → Byte/Word/Dword/Qword</code>, <code>Text → ASCII/UNICODE</code>, <code>Integer → signed/unsigned</code>, <code>Float</code> 등 다양한 표시 형식 메뉴가 나온다. 구조체나 배열을 볼 때는 Dword(4바이트)나 Qword(8바이트) 정수 표시로 바꾸면 읽기 편하고, 문자열을 볼 때는 ASCII 또는 UNICODE 텍스트 표시로 바꾼다.</p>
+<p><strong>4) Stack 창에서 인자/리턴 주소 확인하기</strong></p>
+<p>함수 진입 직후(브레이크포인트에 걸려 멈춘 시점)에는 Stack 창 맨 위 근처에 방금 <code>CALL</code>이 쌓아놓은 리턴 주소가 있고, Windows x64 호출 규약에서는 처음 네 개 정수 인자가 RCX, RDX, R8, R9 레지스터로 전달되므로 스택에는 그 대신 "그림자 공간(shadow space, 32바이트)"이 예약되어 있다. 다섯 번째 이후 인자나 x86(32비트) 코드의 인자는 스택에 직접 쌓이므로, Stack 창에서 리턴 주소 다음 칸들을 순서대로 보면 된다.</p>
+<p><strong>5) 리턴 주소로 거슬러 올라가기</strong></p>
+<p>Stack 창에서 리턴 주소로 인식된 칸을 우클릭 → <code>Follow in Disassembler</code>를 선택하면, 이 함수를 호출한 코드 지점으로 바로 이동한다. "누가 이 함수를 호출했는지" 확인할 때 Call Stack 탭과 함께 유용하게 쓴다.</p>
+<p><strong>6) Dump 값 직접 수정하기 (실험용)</strong></p>
+<p>Dump 창에서 바이트를 더블클릭하면 편집 모드가 되어 헥스 값을 바로 고칠 수 있다. 예를 들어 비교 대상 버퍼 값을 바꿔서 분기가 어떻게 달라지는지 실험해볼 수 있다. 이 변경은 메모리에서만 즉시 반영되며, 원본 파일을 영구적으로 바꾸려면 별도 패치 과정이 필요하다(패치와 저장 문서 참고).</p>
+<h2>명령어/단축키</h2>
+<ul><li>우클릭(레지스터/디스어셈블리 오퍼랜드) → <code>Follow in Dump</code> : Dump 창으로 해당 주소 이동</li><li>우클릭(레지스터/스택 값) → <code>Follow in Stack</code> : Stack 창으로 해당 주소 이동</li><li>Dump 창 우클릭 → <code>Follow in Disassembler</code> : 그 주소를 코드로 간주하고 디스어셈블리로 이동</li><li>Dump 창 안에서 <code>Ctrl+G</code> : Dump 창 자체를 임의 주소로 이동</li><li>Dump/Stack 값 더블클릭 : 헥스 바이트 직접 편집</li><li>Dump 창 우클릭 → <code>Hex/Text/Integer/Float</code> : 표시 형식 전환</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Stack 창 주석에 "return to ..." 문구가 있으면 그 칸은 리턴 주소다. 이게 없이 그냥 숫자만 있으면 지역 변수, 저장된 레지스터, 또는 그림자 공간의 쓰레기 값일 가능성이 크다.</li><li>Dump 창 ASCII 미리보기 열에 의미 있는 텍스트가 보이면 그 영역은 문자열 데이터다. 미리보기가 <code>.....</code>처럼 온통 점으로 보이면 텍스트가 아니라 이진 데이터(코드, 압축/암호화된 데이터 등)일 가능성이 높다.</li><li>Dump 창에서 값이 갑자기 <code>??</code>나 접근 불가 표시로 나오면, 그 주소가 현재 프로세스 메모리에 매핑되어 있지 않다는 뜻이다. Memory Map 탭에서 실제로 유효한 주소 범위인지 먼저 확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Dump 창과 Stack 창을 같은 것으로 착각해서, 인자를 찾겠다고 Dump 창에서 RSP 주소를 손으로 입력해 스택을 흉내 내려는 경우 — 그냥 Stack 창을 보면 자동으로 주석까지 붙어 훨씬 편하다.</li><li>Windows x64 호출 규약에서 처음 네 인자가 레지스터(RCX/RDX/R8/R9)로 전달된다는 걸 모르고, 함수 진입 직후 Stack 창에서 인자 4개를 찾으려다 못 찾아 헤매는 경우 — 이 경우는 레지스터 창을 같이 봐야 한다.</li><li>Dump 값을 실수로 편집해버려서 프로그램이 이상하게 죽는 경우 — 편집 모드는 더블클릭 한 번으로 바로 활성화되므로, 단순히 값을 보려다가 실수로 바꾸지 않도록 주의한다.</li><li>유니코드 문자열을 ASCII 모드로 보고 있어서 글자 사이에 빈 칸(널 바이트)이 섞여 이상하게 보이는데 이걸 "문자열이 깨졌다"고 오해하는 경우 — 코드 페이지를 UNICODE(UTF-16LE)로 바꾸면 정상적으로 보인다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>어떤 레지스터가 최근에 바뀌었는지부터 보고 싶다면 → ./rev-0177-x64dbg-cpu-view.md 문서를 참고한다.</li><li>지금 보고 있는 주소가 어느 모듈/섹션에 속하는지 궁금하면 → ./rev-0182-x64dbg-memory-map.md 문서를 참고한다.</li><li>이 지점에서 값이 특정 조건일 때만 멈추게 하고 싶다면 → ./rev-0183-x64dbg-conditional-breakpoints.md 문서를 참고한다(예: <code>[rsp] == 0xDEADBEEF</code> 같은 스택 값 조건도 가능하다).</li><li>Dump에서 값을 바꾼 걸 파일에 영구 반영하고 싶다면 → ./rev-0184-x64dbg-patching.md 문서를 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p>함수 진입 직후 인자와 리턴 주소를 확인하는 흐름이다.</p>
+<pre><code class="language-text">1. 대상 함수 시작 주소에 F2로 브레이크포인트, F9로 실행해 멈춤
+2. Stack 창 맨 위 칸에서 "return to ..." 주석이 붙은 리턴 주소 확인
+3. 레지스터 창에서 RCX/RDX/R8/R9 값 확인 (x64 첫 4개 정수 인자)
+4. RCX 값이 포인터처럼 보이면 우클릭 → Follow in Dump로 실제 데이터 확인
+5. Dump 창 우클릭 → Text → UNICODE로 바꿔 문자열 인자를 읽기 쉽게 변환</code></pre>
+<h2>Dump 창을 여러 탭으로 동시에 쓰기</h2>
+<p>Dump 창 아래쪽에는 여러 개의 탭을 추가할 수 있는 <code>+</code> 버튼(또는 우클릭 → <code>New Dump tab</code>)이 있다. 인자로 넘어온 버퍼 주소, 전역 변수 주소, 방금 할당된 힙 주소처럼 서로 다른 메모리 영역을 동시에 비교해서 봐야 할 때는 탭을 여러 개 열어두고 각각 다른 주소로 고정해두면, Ctrl+G로 계속 오가며 이전 위치를 잊어버리는 일을 줄일 수 있다. 각 Dump 탭은 독립적으로 표시 형식(Hex/Text/Integer 등)을 다르게 설정할 수 있어서, 한 탭은 헥스로, 다른 탭은 유니코드 텍스트로 같은 버퍼의 서로 다른 해석을 동시에 볼 수도 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0177-x64dbg-cpu-view.html">REV-0177 — x64dbg CPU View 읽는 법</a></li><li><a href="rev-0182-x64dbg-memory-map.html">REV-0182 — x64dbg Memory Map과 Module View</a></li><li><a href="rev-0183-x64dbg-conditional-breakpoints.html">REV-0183 — x64dbg 조건부 Breakpoint 기초</a></li><li><a href="rev-0184-x64dbg-patching.html">REV-0184 — x64dbg CTF용 간단 패치와 저장</a></li><li><a href="rev-0173-tracing-stack.html">REV-0173 — 스택 값을 실행 중 추적하는 법</a></li><li><a href="rev-0175-args-before-call.html">REV-0175 — CALL 직전 함수 인자 확인하는 법</a></li><li><a href="rev-0176-return-value-after-call.html">REV-0176 — CALL 직후 반환값 확인하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Dump/Stack 창의 역할 구분, "Follow in Dump/Stack/Disassembler" 계열 메뉴, 다중 데이터 타입 표시(멀티 데이터타입 메모리 덤프, 다이내믹 스택 뷰)는 공식 문서 help.x64dbg.com의 Feature-set 페이지에 명시된 기능 목록("multi-datatype memory dump", "dynamic stack view")을 근거로 정리했다(2026-09-08 조사, 원문 확인).</li><li>Windows x64 호출 규약의 RCX/RDX/R8/R9 및 32바이트 그림자 공간(shadow space)은 Microsoft의 x64 호출 규약 공식 문서에 기반한 일반적으로 잘 알려진 사실이다.</li><li>정확한 우클릭 메뉴 문구(예: "Follow in Dump"의 철자, 코드 페이지 메뉴 위치)는 x64dbg 버전에 따라 다를 수 있어 라이브 환경에서 재확인을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

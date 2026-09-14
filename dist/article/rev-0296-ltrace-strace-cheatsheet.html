@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ltrace strace 치트시트 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / tools</div>
+<article class="article-body">
+<h1>ltrace strace 치트시트</h1>
+<div class="article-meta"><span class="tag">tools</span><span class="tag">입문</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">ltrace</span><span class="tag">strace</span></div>
+<h2>한 줄 요약</h2>
+<p><code>ltrace</code>는 라이브러리 함수 호출(<code>strcmp</code>, <code>printf</code> 등)을, <code>strace</code>는 커널 시스템 콜(<code>open</code>, <code>read</code>, <code>execve</code> 등)을 실시간으로 보여주며, 둘 다 코드를 읽거나 브레이크포인트를 걸지 않고 프로그램 실행을 관찰하는 가장 빠른 첫 삽질이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>옵션 철자가 기억 안 나서 매번 <code>man</code>을 찾아보기 귀찮을 때</li><li>두 도구 중 어느 것을 먼저 돌려야 할지 헷갈릴 때</li></ul>
+<p>각 도구의 동작 원리, ptrace 기반 안티디버깅과의 상호작용, 출력 해석은 이 문서에서 반복하지 않는다. 아래 원본 문서를 참고할 것.</p>
+<ul><li><a href="rev-0111-ltrace-basics.html">REV-0111 ltrace로 라이브러리 호출 빠르게 보기</a></li><li><a href="rev-0112-strace-basics.html">REV-0112 strace로 시스템 콜에서 힌트 찾기</a></li></ul>
+<h2>핵심 개념</h2>
+<p><code>ltrace</code>/<code>strace</code> 둘 다 <code>ptrace(2)</code> 기반으로 대상 프로세스를 관찰만 할 뿐 코드를 고치지 않는다 — 그래서 "일단 뭔지 몰라도 실행부터 시켜보는" 첫 삽질용으로 가장 부담 없다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>아래 "어느 것을 쓸까" 표에서 지금 궁금한 것에 맞는 도구를 고른다. 확신이 없으면 <code>ltrace</code>부터 돌려본다(정적 링킹이면 예외, 아래 참고).</p>
+<h2>단계별 절차 / 명령어/단축키</h2>
+<p>아래 도구별 절 참고. 순서를 모르겠다면 "조합 예시"부터 그대로 따라 하면 된다.</p>
+<h2>흔한 실수</h2>
+<p>정적 링킹 바이너리에 <code>ltrace</code>를 돌리고 "아무것도 안 나온다"며 도구가 고장났다고 오해하는 것 — 아래 "정적 링킹 바이너리라면" 절 참고.</p>
+<h2>어느 것을 쓸까</h2>
+<table><thead><tr><th>궁금한 것</th><th>도구</th></tr></thead><tbody><tr><td><code>strcmp</code>에 어떤 문자열이 들어가는지, 정답 문자열 노출</td><td><code>ltrace</code></td></tr><tr><td>어떤 파일을 여는지(<code>flag.txt</code> 등), 네트워크/프로세스 동작</td><td><code>strace</code></td></tr><tr><td>정적 링킹 바이너리</td><td><code>strace</code>만 유효 (<code>ltrace</code>는 PLT가 없어 거의 무용지물)</td></tr><tr><td><code>ptrace</code> 기반 안티디버깅 의심</td><td><code>strace -e trace=ptrace</code></td></tr></tbody></table>
+<h2>ltrace — 라이브러리 호출 (REV-0111)</h2>
+<pre><code class="language-bash">ltrace ./chall                       # 기본 실행
+ltrace -e 'strcmp+scanf' ./chall     # 특정 함수만 필터링
+ltrace -s 200 ./chall                # 문자열 인자 길이 늘리기(잘림 방지)
+ltrace -o trace.log ./chall          # 파일로 저장
+ltrace -c ./chall                    # 호출 횟수/시간 요약
+ltrace -f ./chall                    # 자식 프로세스까지 추적</code></pre>
+<h2>strace — 시스템 콜 (REV-0112)</h2>
+<pre><code class="language-bash">strace ./chall                                  # 기본 실행
+strace -e trace=open,openat,read,write ./chall   # 파일 입출력만 필터링
+strace -e trace=execve,fork,clone,ptrace ./chall # 프로세스/안티디버깅 관련만
+strace -f ./chall                                # 자식 프로세스까지 추적(fork 대응)
+strace -tt ./chall                               # 타임스탬프 포함
+strace -o trace.log -c ./chall                   # 저장 + 호출 요약 통계</code></pre>
+<h2>설치 (둘 다 배포판 패키지로 충분)</h2>
+<pre><code class="language-bash">sudo apt install ltrace strace</code></pre>
+<p>오프라인 대회 전에는 반드시 온라인 상태에서 미리 설치해 두어야 한다. 두 도구 모두 <code>ptrace(2)</code> 시스템 콜 기반으로 동작하므로, 컨테이너 환경에서는 <code>--cap-add=SYS_PTRACE</code> 같은 권한이 없으면 아예 동작하지 않을 수 있다는 점도 미리 확인해 둘 것.</p>
+<h2>막혔을 때 다음 체크</h2>
+<p>동작 원리나 ptrace 안티디버깅과의 상호작용이 더 궁금하면 REV-0111/REV-0112 원본 문서를 참고한다.</p>
+<h2>미니 예제 — 조합 예시(둘 다 빠르게 돌려보기)</h2>
+<pre><code class="language-bash">ltrace -s 200 ./chall &lt; &lt;(echo test) 2&gt;&amp;1 | tail -20
+strace -f -e trace=openat,read,write ./chall &lt; &lt;(echo test) 2&gt;&amp;1 | tail -20</code></pre>
+<p><code>ltrace</code>로 비교 함수 인자에 정답 후보가 그대로 보이는지 먼저 확인하고, 안 보이면(값이 암호화/연산되어 있으면) <code>strace</code>로 파일 접근이나 프로세스 생성 패턴을 훑는 순서가 실전에서 자주 쓰인다.</p>
+<h2>정적 링킹 바이너리라면</h2>
+<p><code>ltrace</code>는 PLT 후킹 방식이라 정적 링킹된 바이너리에는 사실상 무용지물이다. <code>file ./chall</code> 결과에 <code>statically linked</code>가 보이면 처음부터 <code>ltrace</code>는 건너뛰고 <code>strace</code>만으로 시스템 콜 레벨 분석을 시작하는 편이 시간을 아낀다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0111-ltrace-basics.html">REV-0111 — ltrace로 라이브러리 호출 빠르게 보기</a></li><li><a href="rev-0112-strace-basics.html">REV-0112 — strace로 시스템 콜에서 힌트 찾기</a></li><li><a href="rev-0294-binutils-cheatsheet.html">REV-0294 — readelf objdump nm strings 치트시트</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>모든 명령/옵션은 이 저장소의 REV-0111, REV-0112 원본 문서(각 도구 공식 man page 기준으로 이미 검증됨)에서 그대로 발췌한 것이며, 이 문서 자체에서 새로 검증한 내용은 없다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

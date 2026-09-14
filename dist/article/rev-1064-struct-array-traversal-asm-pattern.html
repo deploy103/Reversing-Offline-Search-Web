@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>구조체 배열 순회가 어셈블리에서 보이는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / c-analysis</div>
+<article class="article-body">
+<h1>구조체 배열 순회가 어셈블리에서 보이는 패턴</h1>
+<div class="article-meta"><span class="tag">c-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>구조체 배열 <code>arr[i]</code>에 접근할 때 구조체 크기가 1/2/4/8바이트가 아니면(예: 12바이트) 하드웨어 스케일 인덱스를 못 쓰기 때문에 <code>IMUL</code>로 인덱스에 구조체 크기를 직접 곱한 뒤 더하는 코드가 명시적으로 나타난다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>for</code> 루프 안에서 <code>imul rax, rcx, 12</code>처럼 낯선 상수를 곱하는 명령이 반복해서 나올 때</li><li>구조체 배열을 순회하는 루프인데 왜 <code>LEA</code> 스케일(<code>*4</code>, <code>*8</code>)이 아니라 <code>IMUL</code>이 쓰였는지 궁금할 때</li><li><code>sizeof(struct)</code>을 몰라서 IMUL에 곱해진 상수로 구조체 크기를 역산해야 할 때</li><li>IDA/Ghidra가 배열을 <code>int</code> 배열이 아니라 구조체 배열로 인식하지 못해서 오프셋이 뒤죽박죽으로 보일 때</li></ul>
+<h2>핵심 개념</h2>
+<p>REV-1063에서 봤듯 x86-64는 메모리 오퍼랜드에서 인덱스 레지스터에 1/2/4/8배의 스케일만 하드웨어로 지원한다. 구조체 크기가 이 네 값 중 하나가 아니면(패딩 때문에 12바이트, 20바이트 등이 흔함) 컴파일러는 별도의 곱셈 명령(<code>IMUL</code>)으로 "인덱스 × 구조체 크기"를 먼저 계산한 뒤, 그 결과를 배열 시작 주소에 더하는 <code>LEA</code>나 <code>ADD</code>를 이어붙인다.</p>
+<pre><code class="language-c">struct Item { int id; int value; char tag; };  /* 4+4+1 = 9바이트인데 int 정렬로 12바이트 패딩 */</code></pre>
+<p>이 구조체는 <code>sizeof(struct Item) == 12</code>가 된다(REV-0344 정렬/패딩 참고). 배열 <code>arr[i].value</code>에 접근하려면 <code>i * 12 + 4</code>(4는 <code>value</code>의 구조체 내 오프셋)를 계산해야 하고, 12는 스케일 인덱스로 못 쓰는 값이므로 <code>IMUL rax, rcx, 12</code>가 코드에 명시적으로 나타난다.</p>
+<p>반대로 구조체 크기가 우연히 8이나 4로 딱 맞는 경우(예: <code>int</code> 두 개만 있는 8바이트 구조체)는 REV-1063처럼 <code>LEA [base+idx*8]</code>로 압축되어 IMUL이 안 보일 수 있다. <strong>IMUL이 보이면 구조체(또는 배열 원소) 크기가 2의 거듭제곱이 아니라는 강력한 힌트</strong>다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>루프 안에서 <code>imul rax, rcx, N</code> (N이 12, 16, 20, 24 등 흔한 구조체 크기)</li><li>그 결과에 배열 베이스 주소를 더하는 <code>add rax, [rbp-8]</code> 또는 <code>lea rax, [rax+rdx]</code></li><li>최종 필드 접근에서 작은 오프셋이 추가로 붙음: <code>mov eax, [rax+4]</code> (필드 오프셋)</li><li>Ghidra pseudocode에서 <code>arr[i].value</code>로 깨끗하게 복원되지 못하고 <code>*(int *)((char *)arr + i * 12 + 4)</code>처럼 바이트 연산으로 풀려 보이는 경우가 흔함</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>IMUL</code>에 곱해지는 상수를 먼저 확인한다. 이 값이 곧 <code>sizeof(구조체)</code>다. 그다음 그 결과에 최종적으로 더해지는 작은 오프셋(0, 4, 8 등)을 보면 어느 필드에 접근하는지 알 수 있다. IDA에서는 이 구조체 크기로 <code>Structures</code> 창에 새 구조체를 만들어 필드를 채워 넣고, 배열 변수에 <code>struct Item[]</code> 타입을 지정하면 pseudocode가 <code>arr[i].value</code> 형태로 정리된다.</p>
+<h2>단계별 절차</h2>
+<ol><li>루프의 인덱스 변수가 어느 레지스터인지 확인한다(보통 <code>ecx</code>나 <code>edx</code>).</li><li><code>imul reg, idx_reg, N</code> 형태의 곱셈을 찾고 <code>N</code>을 기록한다 — 이것이 구조체(원소) 크기다.</li><li>곱셈 결과가 배열 시작 주소와 더해지는 지점(<code>add</code>, <code>lea</code>)을 찾아 "배열 원소의 시작 주소"가 어디서 만들어지는지 확인한다.</li><li>그 주소에 추가로 붙는 작은 오프셋(<code>[rax+0]</code>, <code>[rax+4]</code>, <code>[rax+8]</code>)을 각각 필드로 매핑한다 — 오프셋 0부터 N-1(패딩 포함)까지 필드들이 순서대로 배치되어 있다고 가정하고 역산한다.</li><li>GDB에서 <code>p sizeof(struct Item)</code>(디버그 정보가 있으면) 또는 <code>p arr[1] - arr[0]</code>으로 실제 구조체 크기를 검증한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>Shift+F9</code>(Structures 창) → <code>Insert</code> → 필드 크기 합이 <code>IMUL</code> 상수와 같은 구조체를 정의</li><li>Ghidra: <code>Data Type Manager</code> → 새 구조체 생성 → 배열 변수에 <code>구조체[]</code> 타입 지정</li><li>GDB: <code>p &amp;arr[1] - &amp;arr[0]</code> (원소 간 실제 바이트 거리 확인), <code>ptype struct Item</code> (디버그 정보 있을 때 정확한 크기/오프셋)</li><li>x64dbg: 곱셈 명령 실행 후 레지스터 값으로 실제 계산된 오프셋 확인</li></ul>
+<h2>출력 해석</h2>
+<pre><code class="language-c">struct Item { int id; int value; char tag; };  /* sizeof == 12 (패딩 포함) */
+
+int get_value(struct Item *arr, int i) {
+    return arr[i].value;
+}</code></pre>
+<pre><code class="language-asm">; get_value, rdi = arr, esi = i
+get_value:
+    push    rbp
+    mov     rbp, rsp
+    mov     [rbp-8], rdi     ; arr
+    mov     [rbp-12], esi    ; i
+    mov     eax, [rbp-12]    ; eax = i
+    movsxd  rdx, eax         ; rdx = (long)i  (부호 확장, int -&gt; long)
+    imul    rax, rdx, 12     ; rax = i * 12   (12 = sizeof(struct Item))
+    add     rax, [rbp-8]     ; rax = arr + i*12  (arr[i]의 시작 주소)
+    mov     eax, [rax+4]     ; eax = arr[i].value  (value의 구조체 내 오프셋 = 4)
+    leave
+    ret</code></pre>
+<p><code>imul rax, rdx, 12</code>가 이 함수의 핵심이다. 12라는 상수는 스케일 인덱스(1/2/4/8)에 속하지 않으므로 반드시 별도의 곱셈 명령으로 나타난다. 이후 <code>[rax+4]</code>는 <code>struct Item</code>의 두 번째 필드(<code>value</code>, <code>id</code> 다음 4바이트 위치)에 대응한다. <code>movsxd</code>는 32비트 인덱스를 64비트 주소 계산에 쓰기 위한 부호 확장으로, 배열 인덱싱에서 거의 항상 함께 등장한다(REV-0041 MOVSX/MOVSXD 참고).</p>
+<h2>흔한 실수</h2>
+<ul><li><code>IMUL</code>의 곱셈 상수를 "그냥 어떤 계산값"으로 넘기고 구조체 크기라는 것을 놓치는 것.</li><li>구조체 크기가 8이나 4로 딱 맞아서 <code>LEA</code> 스케일로 압축된 경우와, 12/20 등이라 <code>IMUL</code>이 명시된 경우를 같은 패턴으로 오해하는 것 — 전자는 REV-1063, 후자는 이 글의 패턴이다.</li><li>필드 오프셋(예: <code>+4</code>)만 보고 그 필드가 몇 번째 필드인지 패딩을 고려하지 않고 단순히 "4바이트씩 나누기"로 계산하는 것 — 구조체 안에 <code>char</code>, <code>short</code> 등이 섞이면 패딩 때문에 균등하게 안 나뉜다(REV-0344).</li><li><code>movsxd</code>(부호 확장) 단계를 무시하고 인덱스 레지스터 크기가 왜 32비트에서 64비트로 바뀌는지 신경 안 쓰는 것 — 음수 인덱스가 있을 경우 부호 확장 여부가 실제 접근 주소를 완전히 바꾼다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>일반 포인터 산술과 스케일 인덱스 압축이 헷갈리면 → REV-1063 포인터 산술이 어셈블리에서 보이는 패턴</li><li>구조체 자체의 필드 오프셋 계산 원리가 궁금하면 → REV-1061 중첩 구조체 접근이 어셈블리에서 보이는 패턴, REV-0035 구조체 접근이 어셈블리로 변하는 방식</li><li>왜 구조체 크기가 필드 합과 다르게 나오는지(패딩)는 → REV-0344 구조체 정렬/패딩이 미치는 영향</li><li>2차원 배열과의 차이가 궁금하면 → REV-1059 2차원 배열 인덱싱이 어셈블리에서 보이는 패턴, REV-0350 다차원 배열이 어셈블리로 어떻게 변하는지</li></ul>
+<h2>미니 예제</h2>
+<p>IMUL 상수만 보고 구조체를 역추정하는 연습:</p>
+<pre><code>imul rax, rdx, 8   -&gt;  구조체 크기 8바이트 후보: {int, int} 또는 {포인터 하나}
+imul rax, rdx, 16  -&gt;  구조체 크기 16바이트 후보: {long, long}, {포인터, 포인터}, {double, int, 패딩}
+imul rax, rdx, 24  -&gt;  구조체 크기 24바이트 후보: {char*, long, int+패딩} 등</code></pre>
+<p>정확한 필드 구성은 이후 각 필드 오프셋(<code>[rax+0]</code>, <code>[rax+8]</code>, <code>[rax+16]</code>)에서 읽는 크기(<code>mov</code>면 4/8바이트, <code>movzx</code>면 1/2바이트)를 함께 봐야 확정할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-1063-pointer-arithmetic-asm-pattern.html">REV-1063 — 포인터 산술이 어셈블리에서 보이는 패턴</a></li><li><a href="rev-1061-nested-struct-access-asm-pattern.html">REV-1061 — 중첩 구조체 접근이 어셈블리에서 보이는 패턴</a></li><li><a href="rev-0344-alignment-padding-struct-impact.html">REV-0344 — 정렬(Alignment)과 패딩이 구조체에 미치는 영향</a></li><li><a href="rev-0035-struct-access-in-asm.html">REV-0035 — 구조체 접근이 어셈블리로 변하는 방식</a></li><li><a href="rev-0041-movsx-movsxd.html">REV-0041 — MOVSX와 MOVSXD: Sign Extension 이해</a></li><li><a href="rev-0350-multidim-array-in-asm.html">REV-0350 — 다차원 배열이 어셈블리로 어떻게 변하는지</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>x86-64 스케일 인덱스가 1/2/4/8만 하드웨어로 지원되는 제약: Intel 64 and IA-32 Architectures Software Developer's Manual 기준.</li><li>구조체 크기가 2의 거듭제곱이 아닐 때 컴파일러가 <code>IMUL</code>로 명시적 곱셈을 삽입하는 패턴: gcc/clang <code>-O0</code> x86-64 리눅스/윈도우 환경에서 반복 확인되는 표준 패턴(2026-09-10 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

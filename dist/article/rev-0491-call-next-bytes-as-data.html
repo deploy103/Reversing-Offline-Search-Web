@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CALL 다음 명령이 인자처럼 보이는 이유(코드로 위장된 데이터) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>CALL 다음 명령이 인자처럼 보이는 이유(코드로 위장된 데이터)</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>CALL</code> 바로 다음 위치에 있는 바이트가 정상적인 명령어처럼 안 보이거나 이상한 값으로 디스어셈블 되는 경우, 이는 컴파일러/작성자가 그 자리를 실행할 코드가 아니라 <strong>데이터</strong>(문자열, 점프 테이블 주소, 상수 등)로 의도적으로 배치했거나, 위치 독립 코드(PIC)/셸코드에서 <code>CALL</code>을 "현재 실행 주소(RIP)를 알아내는 트릭"으로 사용했기 때문이며, 디스어셈블러가 이걸 구분 못 하고 그냥 다음 바이트부터 기계적으로 디코딩하면서 깨져 보이는 것이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>call some_func</code> 바로 다음 줄이 말이 안 되는 명령어(정크처럼 보이는 옵코드)로 디스어셈블 될 때</li><li>셸코드나 PIC(Position-Independent Code) 분석 중 <code>call $+5</code>처럼 다음 명령을 그대로 호출하는 이상한 <code>CALL</code>을 만났을 때</li><li><code>call</code> 직후에 <code>pop rax</code>, <code>pop rsi</code> 같은 명령이 바로 이어지는 패턴을 봤을 때</li><li>스위치문 컴파일 결과에서 <code>call</code> 명령 다음에 정체불명의 오프셋 값 나열이 이어질 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>CALL의 본질을 이용한 트릭: "GetPC idiom"</h3>
+<p>REV-0071(CALL)에서 설명했듯, <code>CALL target</code>은 <strong>다음 실행할 명령의 주소(반환 주소)를 스택에 PUSH</strong>한 뒤 <code>target</code>으로 점프한다. 여기서 중요한 성질은, <code>CALL</code>이 그 자체로 항상 함수 호출을 의미하는 게 아니라 "현재 실행 위치(RIP)를 스택에 남기는 부수 효과"를 가진 명령이라는 점이다.</p>
+<p>x86(32비트)에는 <code>RIP</code> 상대 주소 지정이 없기 때문에(x64에서만 <code>[rip+offset]</code>을 직접 쓸 수 있음), 위치 독립적으로 동작해야 하는 셸코드나 32비트 PIC 코드는 "지금 내가 메모리 몇 번지에서 실행되고 있는가"를 알아낼 방법이 필요했다. 그래서 다음과 같은 관용구(idiom)가 널리 쓰인다:</p>
+<pre><code class="language-asm">call    get_eip        ; "다음 명령의 주소"를 스택에 PUSH하고 get_eip로 점프
+get_eip:
+    pop     eax          ; 방금 스택에 쌓인 반환 주소(=이 pop 명령 자신의 주소)를 EAX로 회수
+    ; 이제 EAX = get_eip 레이블의 실제 런타임 주소. 이걸 기준으로 다른 데이터/코드 위치를 상대 계산한다.</code></pre>
+<p>여기서 <code>CALL</code>은 사실상 함수 호출이 아니라 <strong>"현재 주소를 레지스터로 꺼내는 한 줄짜리 트릭"</strong>으로 쓰인 것이다. <code>RET</code>으로 돌아오지 않고 <code>POP</code>으로 반환 주소를 그냥 일반 데이터처럼 가져가 버리는 게 특징이다.</p>
+<h3>더 흔한 원인: CALL 뒤에 진짜 데이터가 온다</h3>
+<pre><code class="language-asm">call    print_error
+db      "Invalid input\n", 0    ; 이건 코드가 아니라 문자열 리터럴이다!
+next_instruction:
+    ...</code></pre>
+<p><code>print_error</code> 함수가 "자신을 호출한 지점 바로 다음에 있는 데이터(문자열 주소 등)를 인자로 활용"하도록 설계된 경우, 컴파일러/어셈블리 작성자는 <code>CALL</code> 바로 뒤에 코드가 아니라 데이터를 배치한다. 함수 내부에서는 반환 주소(스택 맨 위)를 이용해 그 데이터 위치를 계산해서 읽은 뒤, <strong>반환 주소를 데이터 길이만큼 보정해서 진짜 반환할 위치로 조정</strong>한다. 이런 패턴은 옛날 컴파일러(특히 어셈블리로 직접 짠 에러 처리 루틴)나 일부 난독화 기법에서 나타난다.</p>
+<p>디스어셈블러(IDA/Ghidra)는 기본적으로 <code>CALL</code> 다음 주소도 "당연히 코드겠지"라고 가정하고 계속 명령으로 디코딩을 시도한다. 그 자리가 실제로는 문자열/상수 데이터라면, 디코딩 결과는 의미 없는 옵코드 나열(정크처럼 보이는 명령들)이 된다.</p>
+<h3>점프 테이블 주소 배열도 비슷한 착시를 만든다</h3>
+<p><code>switch</code>문이 점프 테이블로 컴파일되면, 테이블 자체(주소 값들의 배열)가 코드 섹션 안, 종종 관련 <code>CALL</code>이나 간접 <code>JMP</code> 근처에 바로 붙어 있는 경우가 있다. 이 역시 "명령어처럼 안 보이는 이상한 바이트 나열"로 보이지만 실제로는 4바이트/8바이트 단위의 순수 주소 데이터다. 자세한 내용은 REV-0441(Switch문 점프 테이블)에서 다룬다.</p>
+<h3>IDA/Ghidra가 이걸 어떻게 처리하는가</h3>
+<ul><li>IDA는 함수 시그니처 분석이나 사용자의 수동 지정(<code>D</code>로 데이터 정의)을 통해 이런 인라인 데이터를 인식하면 자동으로 회색 처리하거나 <code>db</code>/문자열로 바꿔 보여준다. 하지만 자동 인식에 실패하면 코드처럼 잘못 디스어셈블된 채로 남는다.</li><li>Ghidra도 마찬가지로, 함수 분석기가 이 패턴을 감지하지 못하면 데이터 영역을 코드로 오인해서 디스어셈블리를 깨뜨릴 수 있다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">; GetPC idiom
+call    0x401005          ; 다음 명령 주소로 그냥 점프하는 것처럼 보임(오프셋이 +5뿐)
+0x401005: pop eax          ; call 직후 즉시 pop -&gt; GetPC 트릭 신호</code></pre>
+<pre><code class="language-asm">; 데이터가 뒤에 붙은 패턴
+call    sub_401200
+db 'E','r','r','o','r',0    ; IDA에서는 이 부분이 이상한 명령어들(정크)로 보일 수 있음</code></pre>
+<h2>가장 먼저 할 것</h2>
+<p><code>CALL</code> 바로 다음 코드가 이상해 보이면 먼저 두 가지 신호를 확인한다.</p>
+<ol><li><code>CALL</code> 대상 위치의 <strong>첫 명령이 <code>POP</code>인가?</strong> → GetPC idiom 가능성이 매우 높다.</li><li><code>CALL</code> 대상 함수가 반환 주소를 직접 조작(반환 주소에 어떤 값을 더하거나 그 위치의 데이터를 읽는 코드)하는가? → 데이터가 뒤에 붙은 패턴 가능성.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) CALL 대상의 첫 명령 확인</strong></p>
+<p><code>call X</code>를 따라 <code>X</code>로 이동해서 첫 줄이 무엇인지 본다. <code>pop reg</code>라면 GetPC idiom이다 — 이 경우 그 함수는 사실상 반환하지 않거나(<code>RET</code>을 안 씀), 스택에서 반환 주소를 데이터로 꺼내 쓴다는 뜻이니 "이 함수가 뭘 호출하는지" 찾으려 하지 말고 "현재 위치를 구하는 트릭"으로 이해하고 넘어간다.</p>
+<p><strong>2) 호출된 함수가 반환 주소를 어떻게 쓰는지 확인</strong></p>
+<p>함수 내부에서 <code>[rsp]</code>(x64) 또는 <code>[esp]</code>(x86)를 직접 읽어서 그 주소 근처의 데이터를 참조하는 코드가 있다면, <code>CALL</code> 바로 뒤에 데이터가 붙어 있는 패턴이다. 이 함수는 보통 처리 후 반환 주소를 데이터 크기만큼 보정한 뒤 원래 호출자의 다음 코드로 점프한다.</p>
+<p><strong>3) 깨진 디스어셈블리를 데이터로 재정의</strong></p>
+<p>IDA에서 이상하게 디코딩된 영역을 선택하고 <code>U</code>(Undefine)를 누른 뒤, 실제 내용에 맞게 <code>A</code>(아스키 문자열로 정의) 또는 <code>D</code>(바이트/워드/드워드 데이터로 정의)를 적용한다. 그러면 그 뒤에 이어지는 진짜 코드도 올바른 오프셋부터 다시 디스어셈블된다.</p>
+<p><strong>4) 스위치 점프 테이블인지 확인</strong></p>
+<p>간접 <code>JMP</code>(<code>jmp [rax*4 + table]</code>) 근처에 있는 데이터라면 REV-0441을 참고해서 점프 테이블 패턴인지 확인한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>U</code>(코드/데이터 정의 해제), <code>C</code>(코드로 재정의), <code>A</code>(아스키 문자열로 정의), <code>D</code>(바이트로 정의), <code>Alt+G</code>(구조체/배열로 데이터 재정의)</li><li>Ghidra: 해당 영역 우클릭 → "Clear Code Bytes", 이후 우클릭 → "Data" 하위 메뉴에서 원하는 타입 지정</li><li>x64dbg: 덤프 창에서 실제 메모리 바이트를 직접 확인(디스어셈블리와 별개로 raw hex를 보면 코드/데이터 구분에 도움)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>call X</code> 다음에 <code>pop reg</code>가 바로 나오면 → 거의 항상 GetPC idiom. <code>reg</code>에 현재 실행 위치(대략 <code>call</code> 명령 직후 주소)가 담긴다.</li><li>정크처럼 보이는 명령 나열이 이어지다가 어느 지점부터 다시 말이 되는 코드로 돌아오면 → 그 사이 구간이 데이터였을 가능성이 매우 높다. 데이터 구간의 끝을 문자열 종료(<code>0x00</code>)나 고정 길이로 추정해서 재정의한다.</li><li>Ghidra에서 함수가 이상하게 짧게 끝나거나 코드 흐름이 뚝 끊긴 것처럼 보이면 → 그 함수 뒤에 붙은 인라인 데이터를 함수 본문으로 착각해서 디스어셈블리가 오염됐을 가능성을 의심한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>CALL</code> 뒤에 오는 모든 바이트를 무조건 코드로 가정하고 디스어셈블리 결과를 그대로 믿는 것 — 특히 셸코드나 오래된 스타일의 에러 처리 루틴에서는 데이터가 섞여 있는 경우가 흔하다.</li><li>GetPC idiom(<code>call</code> + <code>pop</code>)을 보고 "이 함수는 아무것도 안 하고 그냥 종료되나?"라고 오해하는 것 — 실제로는 RIP/EIP를 구하는 매우 실용적인 트릭이며, 이후 코드에서 그 레지스터를 기준으로 오프셋 계산을 한다.</li><li>데이터 구간을 코드로 착각해서 강제로 다시 디스어셈블하려다 진짜 코드 시작 위치를 못 찾고 계속 깨진 결과만 보는 것 — 먼저 데이터로 명시적으로 정의(U + A/D)한 뒤에 코드 영역을 다시 찾아야 한다.</li><li><code>CALL</code> 대상 함수가 반환하지 않는다는 걸 모르고 계속 그 함수의 <code>RET</code>을 찾으려 하는 것 — GetPC idiom 함수는 <code>RET</code> 없이 <code>POP</code> 후 <code>JMP</code>로 처리를 이어가는 경우가 많다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>call</code> 뒤가 계속 이상하다면 → 대상 함수의 첫 줄이 <code>pop</code>인지부터 확인.</li><li>데이터인지 코드인지 애매하면 → 동적 디버거로 그 지점을 실제로 실행시켜 <code>RIP</code>가 그 데이터 구간을 건드리는지(즉 정말 실행되는지) 확인한다. 실행되지 않는다면 데이터가 맞다.</li><li>점프 테이블처럼 보이면 → REV-0441로 이동.</li><li>여전히 CALL의 기본 동작 자체가 헷갈리면 → REV-0071(CALL) 복습.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 고전적인 GetPC idiom (32비트 셸코드)</strong></p>
+<pre><code class="language-asm">call    get_eip
+get_eip:
+    pop     ebx              ; ebx = get_eip의 실제 런타임 주소
+    lea     eax, [ebx+msg-get_eip]  ; ebx를 기준으로 다른 데이터 위치 계산
+msg:
+    db "Hello", 0</code></pre>
+<p><strong>예제 2 — CALL 뒤에 문자열 데이터가 바로 붙은 패턴</strong></p>
+<pre><code class="language-asm">call    print_msg
+db "Error: invalid input", 0
+next_code:
+    mov     eax, 1
+
+print_msg:
+    pop     rsi              ; 반환 주소 = 문자열 시작 주소
+    ; rsi가 가리키는 문자열을 출력하는 로직...
+    ; 문자열 길이만큼 반환 주소를 보정한 뒤 next_code로 점프(RET 대신 계산된 주소로 jmp)</code></pre>
+<p><strong>예제 3 — call $+5 (다음 명령으로 그냥 점프하는 최소 형태)</strong></p>
+<pre><code class="language-asm">call    $+5        ; 오프셋 0(다음 명령)으로 CALL -&gt; 사실상 "현재 주소를 스택에 남기기"만을 위한 트릭
+pop     eax          ; eax = call 다음 주소 = 이 pop 명령 자신의 주소</code></pre>
+<p><strong>예제 4 — IDA에서 깨진 디스어셈블리를 데이터로 재정의</strong></p>
+<pre><code class="language-text">1) 이상하게 디코딩된 바이트 범위를 마우스로 드래그해서 선택
+2) 단축키 U (Undefine)
+3) 단축키 A (문자열이라면 아스키로 정의) 또는 D (바이트/워드로 정의)
+4) 데이터 뒤 실제 코드 시작 위치에 커서를 놓고 C (코드로 정의)</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li><li><a href="rev-0072-ret.html">REV-0072 — RET: 함수 반환과 스택 변화</a></li><li><a href="rev-0441-switch-jump-table.html">REV-0441 — Switch문 점프 테이블(Jump Table) 완전 분석</a></li><li><a href="rev-0490-instruction-skipped-illusion.html">REV-0490 — 명령어 하나를 건너뛰고 실행되는 것처럼 보일 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>CALL</code>/<code>RET</code>의 스택·반환 주소 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "CALL—Call Procedure" 섹션 기준 (2026-09-08 검증).</li><li>GetPC idiom(<code>call</code>+<code>pop</code>을 이용한 위치 독립 코드의 현재 주소 확보): 셸코드/PIC 작성 관련 일반 리버싱·익스플로잇 개발 레퍼런스 기준.</li><li>IDA/Ghidra의 코드/데이터 재정의 기능(<code>U</code>/<code>C</code>/<code>A</code>/<code>D</code>, Clear Code Bytes): Hex-Rays IDA 공식 문서 및 Ghidra 공식 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

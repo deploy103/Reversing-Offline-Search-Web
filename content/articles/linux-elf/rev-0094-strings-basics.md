@@ -113,7 +113,7 @@ strings ./chall | sort -u             # 중복 제거
 ```bash
 $ strings -n 6 -t x chall | head
     1188 GCC: (Ubuntu 13.2.0-4ubuntu3) 13.2.0
-    2004 Enter the password: 
+    2004 Enter the password:
     201a Correct! flag{sample_flag_value}
     2035 Wrong password.
 

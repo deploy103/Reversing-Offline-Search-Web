@@ -2,8 +2,7 @@
 """
 Validation script for Reversing-Offline-Search-Web (Phase 1 scope).
 
-Implements the checks from AGENTS.md "Validation" section that are
-applicable at this stage:
+Implements the project's required validation checks:
   - duplicate title
   - duplicate slug
   - invalid/missing frontmatter fields

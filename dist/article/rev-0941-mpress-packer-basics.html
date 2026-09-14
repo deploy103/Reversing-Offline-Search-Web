@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MPRESS 패커 기초 알아보기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / packing</div>
+<article class="article-body">
+<h1>MPRESS 패커 기초 알아보기</h1>
+<div class="article-meta"><span class="tag">packing</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">x64dbg</span><span class="tag">DIE</span><span class="tag">PE-bear</span></div>
+<h2>한 줄 요약</h2>
+<p>MPRESS는 aPLib 압축 알고리즘 기반의 무료 실행 압축기로, x86과 x64 PE를 모두 지원하고 안티 디버깅 기능이 거의 없어 ASPack과 비슷한 수준으로 다루기 쉽지만, .NET 어셈블리를 감싸는 데도 종종 쓰여서 "패킹된 .NET" 상황과 혼동하기 쉽다는 점이 특이하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>DIE 스캔 결과에 <code>MPRESS</code>라는 이름이 나올 때</li><li>섹션 이름이 <code>MPRESS1</code>, <code>MPRESS2</code>로 보일 때</li><li>.NET 프로그램인데 DIE가 native 패커 시그니처와 <code>.NET</code>을 동시에 표시해서 혼란스러울 때</li><li>x64 PE인데 UPX가 아닌 다른 압축 스텁이 있다는 것을 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>MPRESS는 Matthias Prager가 만든 무료 실행 압축기로, 내부적으로 aPLib이라는 가벼운 압축 라이브러리를 사용한다. 특징은 다음과 같다.</p>
+<ul><li><strong>x86/x64 모두 지원</strong>: UPX가 오랫동안 32비트 위주였던 시절에도 MPRESS는 x64 PE를 초기부터 지원했기 때문에, 64비트 전용 CTF 문제나 오래된 x64 malware 샘플에서 종종 발견된다.</li><li><strong>안티 디버깅이 사실상 없음</strong>: 순수 압축 목적의 패커라서 디버거 탐지, SEH 트릭 같은 방해 요소가 거의 없다. ASPack과 마찬가지로 스텁을 그대로 따라가면 OEP를 찾을 수 있다.</li><li><strong>.NET 어셈블리도 감쌀 수 있음</strong>: MPRESS는 순수 native PE뿐 아니라 .NET(관리 코드) 실행 파일의 리소스나 전체 파일을 압축하는 용도로도 쓰인 사례가 있다. 이 경우 DIE가 <code>.NET</code> 표시와 <code>MPRESS</code> 패커 표시를 동시에 보여줄 수 있는데, 이때는 REV-0951에서 다루는 .NET 특유의 언패킹 접근(코드가 IL이라는 점)과 REV-0944의 native 스텁 추적을 구분해서 적용해야 한다 — 스텁 자체는 native 코드로 실행되지만 그 안에 들어있는 진짜 페이로드가 .NET 어셈블리이기 때문이다.</li></ul>
+<h3>스텁 구조</h3>
+<p>MPRESS 스텁도 다른 압축 패커들과 마찬가지로 <code>pushad</code> → 압축 해제 루프(aPLib 알고리즘 기반) → IAT 채우기 → <code>popad</code> → <code>jmp OEP</code> 흐름을 따른다. aPLib 압축 해제 루틴은 UPX의 LZMA/NRV 계열과 바이트 패턴이 다르므로, IDA/Ghidra 시그니처 DB에도 별도로 등록되어 있는 경우가 많다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>DIE에 <code>MPRESS v2.19 -&gt; Matthias Prager</code> 형태의 시그니처</li><li>섹션 이름 <code>MPRESS1</code>, <code>MPRESS2</code></li><li>x86과 x64 PE 양쪽에서 동일한 패턴의 스텁 관찰 가능(레지스터 크기만 다름 — x64는 <code>pushad</code> 대신 개별 레지스터를 <code>push</code>하는 방식으로 대체되는 경우가 많다는 점에 유의)</li><li>안티 디버깅 관련 팝업이나 예외가 거의 발생하지 않음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>DIE로 MPRESS 여부와 대상 아키텍처(x86/x64)를 확인한다. .NET 표시가 같이 뜬다면 먼저 페이로드가 진짜 native 코드인지 IL(.NET)인지부터 구분한다 — 방법은 언패킹 후 파일을 <code>dnSpyEx</code>나 <code>ILSpy</code>로 열어보거나, 언패킹 전 파일 자체에 <code>mscoree.dll</code> import나 <code>.NET</code> 관련 디렉토리 헤더가 있는지 REV-0136 방식으로 확인하는 것이다.</p>
+<h2>단계별 절차</h2>
+<ol><li>DIE로 <code>MPRESS</code> 버전과 대상 비트수 확인, <code>.NET</code> 동시 표시 여부 확인</li><li>원본 백업</li><li>x64dbg로 로드, entry point 스텁 확인(x64는 개별 <code>push</code> 나열, x86은 <code>pushad</code>)</li><li>압축 해제 루프 종료 후 IAT 채우기 루틴이 끝나는 지점을 찾아 <code>jmp OEP</code> 확인</li><li>OEP에서 정지 후 코드 스타일 확인 — native 코드(함수 프롤로그)면 REV-0945로, .NET 로더 코드(예: <code>mscoree.dll</code>의 <code>_CorExeMain</code> 호출)로 이어지면 REV-0951로 이동</li><li>native면 Scylla로 덤프 + IAT 복구</li><li>.NET이면 덤프된 파일을 <code>dnSpyEx</code>로 열어 어셈블리 구조 확인</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>DIE: <code>File → Open</code> 후 상단 배너에서 패커/CLR 헤더 여부 확인</li><li>x64dbg: <code>F8</code>(Step Over)로 압축 해제 루프를 빠르게 넘기고, <code>F7</code>(Step Into)로 IAT 채우기 루틴 세부 관찰</li><li>x64dbg 커맨드바: <code>bp &lt;jmp_oep_addr&gt;</code></li></ul>
+<h2>출력 해석</h2>
+<ul><li>DIE에서 <code>.NET</code> 항목이 함께 표시되면 native 패커 시그니처는 "겉포장"일 뿐이고 실제 프로그램 로직은 IL 코드 안에 있을 가능성이 높다. 이 경우 native 언패킹만으로는 분석이 끝나지 않는다.</li><li>압축 해제 루프가 끝난 직후 코드가 <code>call mscoree.dll!_CorExeMain</code> 형태라면 이 실행 파일은 결국 .NET 런타임을 로드하는 native 부트스트랩일 뿐이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>MPRESS를 무조건 순수 native 패커로 가정하고 언패킹 후에도 IDA에서 의미 있는 함수가 안 보이는 것을 이상하게 여기는 것 — 사실은 .NET 페이로드였을 수 있다.</li><li>x64 스텁에서 <code>pushad</code>가 안 보인다고 "MPRESS가 아니다"라고 오판하는 것. x64는 애초에 <code>pushad</code>/<code>popad</code> 명령이 없으므로 개별 레지스터 push/pop으로 대체된다.</li><li>.NET과 native가 섞인 상황에서 native 언패킹 도구(Scylla 등)로 IAT 복구를 시도하며 시간을 낭비하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>언패킹 후에도 IDA에서 함수가 거의 안 보인다면 → REV-0136 .NET EXE인지 Native EXE인지 구분, REV-0951 패킹된 .NET 바이너리 기초</li><li>OEP까지는 native인데 그 다음이 .NET 로더라면 → REV-0242 .NET 바이너리 식별과 첫 접근</li><li>순수 native로 확인되었다면 → REV-0945 IAT 복구 개념으로 계속 진행</li><li>예상보다 스텁이 복잡하다면 → 다른 패커가 위에 한 번 더 씌워진 이중 패킹 가능성, REV-0224 체크리스트 재확인</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">; x64 MPRESS 스텁 예시(개별 레지스터 push로 pushad 대체)
+entry:
+  push rax
+  push rbx
+  push rcx
+  push rdx
+  ; aPLib 압축 해제 루프
+  call decompress_aplib
+  ; IAT 채우기
+  call resolve_imports
+  pop rdx
+  pop rcx
+  pop rbx
+  pop rax
+  jmp OEP</code></pre>
+<p>OEP에서 <code>call mscoree.dll!_CorExeMain</code>이 보인다면 이 바이너리는 사실 .NET 실행 파일을 감싼 native 래퍼이며, 진짜 분석 대상은 REV-0951에서 다루는 IL 코드다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0939-aspack-packer-basics.html">REV-0939 — ASPack 패커 기초 알아보기</a></li><li><a href="rev-0136-dotnet-vs-native.html">REV-0136 — .NET EXE인지 Native EXE인지 구분</a></li><li><a href="rev-0242-dotnet-identification.html">REV-0242 — .NET 바이너리 식별과 첫 접근</a></li><li><a href="rev-0951-packed-dotnet-confuserex-basics.html">REV-0951 — 패킹된 .NET 바이너리(ConfuserEx 등) 기초 알아보기</a></li><li><a href="rev-0945-iat-reconstruction-concept.html">REV-0945 — 언패킹 후 IAT를 복구하는 개념(Import Reconstruction)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>MPRESS의 aPLib 기반 압축과 x86/x64 지원 범위는 MPRESS 공식 배포 페이지(마티아스 프라거) 및 공개 리버싱 자료에서 공통적으로 확인되는 설명을 기준으로 정리했다.</li><li>.NET 어셈블리를 native 실행 압축기로 감싸는 사례는 다수의 malware 분석 리포트와 CTF 라이트업에서 반복 관찰되는 패턴을 참고했다(2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

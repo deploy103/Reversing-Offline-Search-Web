@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MOVDQA와 MOVDQU: 정수 XMM 이동 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>MOVDQA와 MOVDQU: 정수 XMM 이동</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>MOVDQA</code>/<code>MOVDQU</code>는 128비트 XMM 레지스터를 <strong>"정수/바이트 뭉치(packed integer)"</strong> 로 취급해 이동하는 명령으로, 부동소수점 의미를 부여하지 않는다는 점만 빼면 각각 <a href="rev-0386-movaps.html">MOVAPS</a>(정렬, 예외 발생)/<a href="rev-0387-movups.html">MOVUPS</a>(비정렬)와 동일한 역할을 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>memset</code>/<code>memcpy</code>처럼 정수/바이트 데이터를 다루는 코드가 <code>movdqa</code>/<code>movdqu</code>로 컴파일된 것을 볼 때</li><li>함수 시작부에서 <code>pxor xmm0, xmm0</code> 다음 <code>movdqu [buf], xmm0</code>가 반복되어 "이게 뭘 초기화하는 코드인지" 알고 싶을 때</li><li>문자열/버퍼 비교, 해시 계산 같은 정수 SIMD 코드를 분석할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>DQ = Double Quadword, 정수 데이터를 위한 이동</h3>
+<p><code>DQ</code>는 <strong>Double Quadword</strong>(64비트 quadword 2개 = 128비트)의 약자로, 이 명령이 부동소수점이 아니라 <strong>정수/바이트열</strong>을 128비트 단위로 다룬다는 뜻이다. <code>MOVAPS</code>/<code>MOVUPS</code>가 float 데이터를 위한 이동이라면, <code>MOVDQA</code>/<code>MOVDQU</code>는 정수/바이트 데이터를 위한 이동이다. 비트를 그대로 복사한다는 점에서는 셋 다 동일하지만, <strong>명령어 선택 자체가 컴파일러/사람에게 "이 데이터를 실수로 볼지 정수로 볼지"에 대한 의도를 알려준다</strong>는 점이 리버싱에서 유용하다.</p>
+<h3>Intel 문법과 정렬 규칙</h3>
+<pre><code>MOVDQA xmm_dest, xmm/m128_src   ; 16바이트 정렬 필수, 안 맞으면 #GP
+MOVDQU xmm_dest, xmm/m128_src   ; 정렬 불필요</code></pre>
+<p><code>A</code>(Aligned)/<code>U</code>(Unaligned) 접미사 규칙은 <code>PS</code>/<code>PD</code> 계열과 완전히 동일하다: <code>MOVDQA</code>는 정렬이 안 맞으면 예외가 나고, <code>MOVDQU</code>는 항상 동작한다.</p>
+<h3>플래그, 스택/RSP/RIP 변화</h3>
+<p>EFLAGS를 건드리지 않는다. 스택/RIP에 직접 영향 없음.</p>
+<h3>컴파일러 패턴 — memset/memcpy의 SIMD 전개</h3>
+<p>정수/바이트 버퍼를 다루는 표준 라이브러리 함수의 컴파일러 인라인 전개에서 가장 흔하게 나타난다:</p>
+<ul><li><strong><code>memset(buf, 0, n)</code></strong>: 먼저 <code>pxor xmm0, xmm0</code>(또는 <code>PCMPEQD</code> 자기 자신으로 전부 1을 만든 뒤 필요시 변형)로 XMM 레지스터를 원하는 값(대개 0)으로 채운 뒤, <code>movdqu [buf+offset], xmm0</code>을 반복해 16바이트씩 채운다.</li><li><strong><code>memcpy(dst, src, n)</code></strong>: <code>movdqu xmm0, [src+offset]</code> → <code>movdqu [dst+offset], xmm0</code> 반복.</li><li>버퍼가 지역 배열(스택, 컴파일러가 정렬을 보장)이면 <code>movdqa</code>, 함수 인자로 받은 임의 포인터면 <code>movdqu</code>가 선택되는 경향은 <code>MOVAPS</code>/<code>MOVUPS</code>와 동일하다.</li></ul>
+<h3>IDA/Ghidra 디컴파일</h3>
+<p>대부분 <code>memset</code>/<code>memcpy</code> 호출로 인식되거나(컴파일러 관용구 인식 기능이 있는 경우), 그렇지 않으면 배열 대입/루프 형태로 그대로 남는다. Ghidra는 종종 <code>undefined1 auStack_XX [16]</code> 같은 16바이트 임시 배열에 대한 대입으로 보여준다.</p>
+<h3>MOVDQA/MOVDQU와 MOVAPS/MOVUPS를 같은 자리에 써도 되는가</h3>
+<p>CPU 입장에서 <code>MOVDQA</code>와 <code>MOVAPS</code>는 옮기는 128비트 데이터 자체는 동일하게 취급하며(둘 다 정렬 필수, 예외 조건도 동일), 실행 성능도 사실상 같다. 다만 명령어 인코딩이 다르기 때문에 디스어셈블리 상에서는 구분되어 보인다. 과거 일부 CPU 마이크로아키텍처에서는 정수 파이프라인(<code>MOVDQA</code>)과 부동소수점 파이프라인(<code>MOVAPS</code>) 간 전환에 약간의 지연(domain-crossing penalty)이 있었으나, 최신 CPU에서는 이 차이가 거의 사라졌다. 리버싱 관점에서 중요한 것은 성능이 아니라 <strong>컴파일러가 이 데이터를 정수/바이트로 보고 있는지, 실수로 보고 있는지에 대한 힌트</strong>로 접미사를 활용하는 것이다.</p>
+<h3>부분 초기화와 나머지 바이트 처리</h3>
+<p><code>memset</code>/<code>memcpy</code>가 16의 배수가 아닌 크기를 다룰 때는, SIMD 루프로 큰 덩어리를 처리한 뒤 마지막에 <code>mov</code>(1/2/4/8바이트)로 나머지를 스칼라 처리하는 "테일(tail) 코드"가 이어지는 경우가 매우 흔하다. <code>movdqu</code> 반복 다음에 짧은 <code>mov byte ptr</code>/<code>mov word ptr</code> 몇 줄이 더 있다면, 이는 정확한 나머지 바이트를 처리하는 정상적인 마무리 코드이지 별개의 로직이 아니다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>pxor xmm0, xmm0</code> 직후 여러 줄의 <code>movdqu [rdi+N], xmm0</code> — 버퍼를 0으로 채우는 memset 패턴</li><li><code>movdqu xmm0, [rsi+N]</code> / <code>movdqu [rdi+N], xmm0</code> 쌍의 반복 — memcpy 패턴</li><li>문자열 비교/검색 함수 내부에서 <code>movdqu</code> 뒤에 <code>pcmpeqb</code>가 이어지는 코드 — SIMD 문자열 스캔 (<code>strlen</code>/<code>strchr</code> 최적화 구현)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>이동 직전/직후에 <code>pxor</code>(제로화) 또는 다른 상수 설정이 있는지 확인해 memset류인지 판단한다.</li><li>두 개의 서로 다른 메모리 오퍼랜드 사이를 오가면 memcpy류로 판단한다.</li><li><code>A</code>/<code>U</code> 접미사로 정렬 가정 여부를 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) memset(0) 패턴 인식</strong></p>
+<pre><code class="language-asm">pxor    xmm0, xmm0
+movdqu  [rdi], xmm0
+movdqu  [rdi+16], xmm0
+movdqu  [rdi+32], xmm0</code></pre>
+<p>→ <code>memset(rdi, 0, 48)</code>과 동일한 효과.</p>
+<p><strong>2) memcpy 패턴 인식</strong></p>
+<pre><code class="language-asm">movdqu xmm0, [rsi]
+movdqu [rdi], xmm0</code></pre>
+<p>→ 16바이트 복사, 반복되면 더 큰 버퍼 복사.</p>
+<p><strong>3) 정렬 버전과 비정렬 버전 구분</strong> 지역 배열(스택, 보통 16바이트 정렬)에는 <code>movdqa</code>, 함수 파라미터로 받은 포인터에는 <code>movdqu</code>가 쓰이는지 확인해서 컴파일러가 정렬을 어떻게 판단했는지 역으로 추론한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg/GDB에서 XMM 값을 16진수(정수 뭉치)로 보려면 표시 형식을 "hex bytes"로 지정 (GDB: <code>p/x $xmm0.uint8</code>).</li><li>IDA: <code>movdqu</code>/<code>movdqa</code> 반복이 memset/memcpy로 자동 인식되지 않으면, 반복 오프셋 패턴을 보고 수동으로 크기를 계산한다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>반복 횟수 × 16바이트로 총 복사/초기화 크기를 계산할 수 있다(마지막에 나머지 바이트를 처리하는 스칼라 <code>mov</code>가 덧붙는 경우도 흔하다).</li><li>Ghidra의 <code>undefined1[16]</code> 타입으로 나오는 로컬 변수는 사실상 XMM 레지스터 크기(128비트)의 스크래치 공간임을 뜻한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>movdqa</code>/<code>movdqu</code>를 보고 "정수 암호화/해시 알고리즘"이라 단정하는 것 — 대부분은 memset/memcpy의 SIMD 전개일 뿐이다. <code>pxor</code>로 0을 채우고 반복 저장하는 패턴이면 거의 확실히 memset이다.</li><li><code>DQ</code>(Double Quadword, 128비트 정수 이동)를 <code>DWORD</code>(32비트)와 혼동하는 것 — 이름이 비슷해 보이지만 전혀 다른 크기다.</li><li><code>MOVDQA</code>를 아무 포인터에나 써도 된다고 가정하고 패치하는 것 — 정렬이 안 맞으면 여전히 #GP 예외가 난다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>반복되는 <code>movdqu</code> 블록이 무슨 함수인지 모르겠다면 → 직전에 <code>pxor xmm0, xmm0</code>가 있는지(memset) 또는 서로 다른 두 포인터 사이 이동인지(memcpy) 확인.</li><li>정렬 크래시가 의심되면 → <a href="rev-0386-movaps.html">REV-0386</a>과 동일하게 주소 정렬 여부를 계산.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — memset(buf, 0, 32) 전개</strong></p>
+<pre><code class="language-c">memset(buf, 0, 32);</code></pre>
+<pre><code class="language-asm">pxor   xmm0, xmm0
+movdqu [rdi], xmm0
+movdqu [rdi+16], xmm0</code></pre>
+<p><strong>예제 2 — memcpy 전개</strong></p>
+<pre><code class="language-c">memcpy(dst, src, 16);</code></pre>
+<pre><code class="language-asm">movdqu xmm0, [rsi]
+movdqu [rdi], xmm0</code></pre>
+<p><strong>예제 3 — 정렬된 지역 버퍼 초기화</strong></p>
+<pre><code class="language-asm">sub    rsp, 0x20
+pxor   xmm0, xmm0
+movdqa [rsp], xmm0    ; 스택은 정렬 보장 -&gt; movdqa 사용</code></pre>
+<p><strong>예제 4 — SIMD 문자열 스캔의 일부</strong></p>
+<pre><code class="language-asm">movdqu  xmm1, [rdi]
+pcmpeqb xmm1, xmm0     ; 각 바이트를 0과 비교 (문자열 끝 탐색)</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0386-movaps.html">REV-0386 — MOVAPS: 정렬된 XMM 레지스터 이동</a></li><li><a href="rev-0387-movups.html">REV-0387 — MOVUPS: 비정렬 XMM 레지스터 이동</a></li><li><a href="rev-0392-pxor.html">REV-0392 — PXOR: XMM 레지스터 초기화와 XOR</a></li><li><a href="rev-0394-pcmpeqb.html">REV-0394 — PCMPEQB: SIMD 바이트 비교 명령</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>MOVDQA</code>/<code>MOVDQU</code> 명령어 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A/2B, "MOVDQA—Move Aligned Double Quadword" / "MOVDQU" 섹션 기준 (2026-09-08 검증).</li><li>memset/memcpy의 SIMD 자동 벡터화 및 정렬에 따른 명령 선택: Agner Fog, "Optimizing subroutines in assembly language" 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

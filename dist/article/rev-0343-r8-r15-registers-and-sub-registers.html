@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>x64에서 R8~R15 레지스터와 서브 레지스터 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>x64에서 R8~R15 레지스터와 서브 레지스터</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>R8</code>~<code>R15</code>는 AMD64(x64)에서 새로 추가된 8개의 범용 레지스터로, x86 시절 3비트짜리 레지스터 필드로는 8개(0~7)까지만 지정할 수 있었던 인코딩 한계를 REX 프리픽스의 확장 비트(<code>REX.B</code>/<code>REX.X</code>/<code>REX.R</code>)로 넘어서서 만들어졌으며, 그래서 R8~R15는 32비트 크기로 접근할 때조차 반드시 REX 프리픽스가 붙는다는 점이 <code>EAX</code> 같은 기존 레지스터와의 결정적 차이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>x64 디스어셈블리에서 <code>R8</code>, <code>R9</code>, ..., <code>R15</code>가 처음 등장했을 때 이 레지스터들의 정체와 유래가 궁금할 때</li><li><code>R8D</code>, <code>R9W</code>, <code>R12B</code>처럼 접미사가 붙은 이름이 왜 <code>EAX</code>/<code>AX</code>/<code>AL</code>과 다른 규칙을 따르는지 궁금할 때</li><li>Windows x64(<code>RCX</code>/<code>RDX</code>/<code>R8</code>/<code>R9</code>)나 SysV x64(<code>RDI</code>/<code>RSI</code>/<code>RDX</code>/<code>RCX</code>/<code>R8</code>/<code>R9</code>) 호출 규약에서 왜 하필 <code>R8</code>/<code>R9</code>까지만 인자 레지스터로 쓰이는지 궁금할 때</li><li><code>syscall</code> 명령어 실행 후에 <code>RCX</code>, <code>R11</code> 값이 왜 바뀌어 있는지 이해하고 싶을 때</li><li>함수 프롤로그에서 <code>push r12</code>, <code>push r13</code>처럼 R8~R15 계열이 콜리 세이브로 백업되는 이유가 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 새 레지스터가 필요했는가</h3>
+<p>x86(32비트)은 범용 레지스터가 8개(<code>EAX</code>~<code>EDI</code>)뿐이었다. 컴파일러는 함수 안의 여러 변수를 최대한 레지스터에 담아두고 싶어하는데, 8개로는 복잡한 함수에서 금방 부족해져서 지역 변수를 스택에 자꾸 내렸다 올렸다(spill/reload)하는 코드가 많아진다. AMD64를 설계할 때 레지스터 개수를 16개로 두 배 늘려서 이런 스필/리로드를 줄이고 성능을 높이는 것이 주요 목표 중 하나였다. 그렇게 새로 추가된 8개가 <code>R8</code>~<code>R15</code>다.</p>
+<h3>인코딩 문제 — 3비트로는 8개까지만 지정 가능</h3>
+<p>x86 명령어 인코딩에서 레지스터를 지정하는 필드(오피코드 안의 <code>reg</code> 필드, 또는 ModRM 바이트의 <code>reg</code>/<code>rm</code> 필드)는 <strong>3비트</strong>다. 3비트로 표현 가능한 값은 0~7, 즉 정확히 8개까지다. 그래서 8086부터 80386까지 범용 레지스터가 항상 8개(<code>AX</code>~<code>DI</code>, <code>EAX</code>~<code>EDI</code>)였던 것은 우연이 아니라 이 3비트 필드의 한계 때문이었다.</p>
+<p>AMD64는 레지스터를 16개로 늘리면서 이 3비트 필드 자체를 건드리지 않고, 대신 <strong>REX 프리픽스에 추가 비트를 하나씩 더 두어 3비트 필드를 4비트로 확장</strong>하는 방식을 택했다. 즉 기존 명령어 인코딩과의 호환성을 유지하면서 주소 공간(레지스터 지정 공간)만 넓힌 것이다.</p>
+<h3>REX 프리픽스 구조</h3>
+<p>REX 프리픽스는 명령어 맨 앞에 붙는 1바이트로, 상위 4비트는 항상 <code>0100</code>(이 패턴 자체가 "이건 REX 프리픽스다"라는 표시), 하위 4비트가 <code>W</code>, <code>R</code>, <code>X</code>, <code>B</code> 네 개의 플래그다.</p>
+<pre><code>0100 W R X B   (1바이트, 0x40~0x4F 범위)</code></pre>
+<ul><li><strong>W(Width)</strong>: 1이면 오퍜랜드 크기를 64비트로 지정(<code>REX.W</code>가 켜진 경우가 흔히 보는 <code>0x48</code> 계열). 0이면 기본 32비트(또는 오퍼랜드 크기 접두사에 따라 16비트).</li><li><strong>R(Reg extension)</strong>: ModRM의 <code>reg</code> 필드(3비트)에 이 비트를 최상위 비트로 덧붙여 4비트로 확장. 목적지/소스 중 <code>reg</code> 필드로 지정되는 레지스터가 R8~R15 범위에 있을 때 1이 된다.</li><li><strong>X(Index extension)</strong>: SIB 바이트의 <code>index</code> 필드를 확장. 배열 인덱싱에 R8~R15를 인덱스 레지스터로 쓸 때 필요.</li><li><strong>B(Base extension)</strong>: ModRM의 <code>rm</code> 필드나 SIB의 <code>base</code> 필드, 또는 오피코드에 직접 포함된 레지스터 지정을 확장. 베이스 레지스터나 목적지 레지스터가 R8~R15일 때 1이 된다.</li></ul>
+<p>정리하면, 명령어 하나에서 최대 3개까지 레지스터 피연산자(reg, base, index)가 등장할 수 있는데, 그 각각이 R8~R15 범위인지 여부를 <code>R</code>/<code>B</code>/<code>X</code> 세 비트가 따로따로 표시하는 구조다.</p>
+<h3>왜 R8~R15는 32비트 접근에도 항상 REX가 필요한가</h3>
+<p><code>EAX</code> 같은 기존 레지스터는 3비트 필드만으로 완전히 표현 가능하므로(<code>EAX</code>=000), REX 프리픽스 없이도 인코딩할 수 있다. 반면 <code>R8D</code>(R8의 32비트 서브 레지스터)는 애초에 3비트 필드로는 표현 불가능한 레지스터(8번, 4비트로는 1000)이므로, 32비트 연산이라 해도 반드시 <code>REX.R</code> 또는 <code>REX.B</code>(또는 <code>REX.X</code>) 비트가 세팅된 REX 프리픽스가 함께 와야 한다. 즉 "R8~R15는 항상 REX 프리픽스를 동반한다"는 규칙은 인코딩 공간의 근본적인 한계에서 나온 것이다.</p>
+<h3>서브 레지스터 이름 규칙 — 접미사만 사용</h3>
+<p>R8~R15는 8086 시절의 유산이 없는 완전히 새로운 레지스터이므로, 서브 레지스터 이름도 레거시 규칙(<code>AH</code>/<code>AL</code>처럼 접두사 없이 별도 이름)을 따르지 않고 REV-0342에서 정리한 것처럼 <strong>번호 뒤에 접미사만 붙이는 규칙적인 방식</strong>을 쓴다.</p>
+<table><thead><tr><th>64비트</th><th>32비트</th><th>16비트</th><th>8비트</th></tr></thead><tbody><tr><td>R8</td><td>R8D</td><td>R8W</td><td>R8B</td></tr><tr><td>R9</td><td>R9D</td><td>R9W</td><td>R9B</td></tr><tr><td>R10</td><td>R10D</td><td>R10W</td><td>R10B</td></tr><tr><td>R11</td><td>R11D</td><td>R11W</td><td>R11B</td></tr><tr><td>R12</td><td>R12D</td><td>R12W</td><td>R12B</td></tr><tr><td>R13</td><td>R13D</td><td>R13W</td><td>R13B</td></tr><tr><td>R14</td><td>R14D</td><td>R14W</td><td>R14B</td></tr><tr><td>R15</td><td>R15D</td><td>R15W</td><td>R15B</td></tr></tbody></table>
+<p>접미사 없음(64비트), <code>D</code>(Doubleword, 32비트), <code>W</code>(Word, 16비트), <code>B</code>(Byte, 8비트)가 전부이며, <strong>상위 바이트를 가리키는 이름은 아예 존재하지 않는다</strong>(<code>R8H</code> 같은 이름은 없다). 8비트 접근은 항상 하위 바이트 하나뿐이다.</p>
+<h3>호출 규약에서 R8~R15의 역할</h3>
+<ul><li><strong>정수 인자 전달</strong>: SysV x64(Linux/macOS)는 정수/포인터 인자를 <code>RDI</code>, <code>RSI</code>, <code>RDX</code>, <code>RCX</code>, <code>R8</code>, <code>R9</code> 순서로 최대 6개까지 레지스터로 전달한다. Windows x64는 <code>RCX</code>, <code>RDX</code>, <code>R8</code>, <code>R9</code> 순서로 최대 4개까지 전달한다. 두 규약 모두 정확히 <strong>여덟 번째(R8)와 아홉 번째(R9) 레지스터</strong>에서 인자 전달이 끝난다는 점이 흥미로운 우연이다 — 인자 개수가 이보다 많으면 스택으로 넘어간다.</li><li><strong>RAX 다음으로 소모되는 반환 관련 레지스터</strong>: 함수가 128비트 값을 리턴할 때 <code>RAX</code>:<code>RDX</code> 조합을 쓰는 관례가 있지만, R8~R15가 리턴값 전달에 직접 관여하는 경우는 표준 정수 호출 규약에서는 없다.</li><li><strong><code>syscall</code> 명령어와 R11/RCX</strong>: x64 리눅스에서 <code>syscall</code> 명령어를 실행하면, CPU가 하드웨어 레벨에서 현재 <code>RIP</code>(다음 명령어 주소)를 <code>RCX</code>에, <code>RFLAGS</code>를 <code>R11</code>에 자동으로 저장한 뒤 커널 모드로 진입한다. 그래서 시스템콜 직후 <code>RCX</code>와 <code>R11</code>은 <strong>호출 전의 값이 보존되지 않는(clobbered) 레지스터</strong>로 취급해야 한다. <code>syscall</code>의 인자 전달 자체는 <code>RDI</code>, <code>RSI</code>, <code>RDX</code>, <code>R10</code>, <code>R8</code>, <code>R9</code> 순서를 쓰는데(SysV 함수 호출 규약과 세 번째 인자부터 다르게 <code>RCX</code> 대신 <code>R10</code>을 쓰는 점에 주의 — <code>RCX</code>가 리턴 주소 저장에 쓰이기 때문이다), 이 부분은 REV-0077(SYSCALL)에서 더 자세히 다룬다.</li><li><strong>콜리 세이브(callee-saved) 레지스터</strong>: <code>R12</code>, <code>R13</code>, <code>R14</code>, <code>R15</code>는 SysV x64/Windows x64 모두 콜리 세이브로 지정되어 있다. 즉 이 레지스터들을 함수 안에서 실제로 사용한다면, 함수는 프롤로그에서 원래 값을 <code>push</code>로 백업하고 에필로그에서 <code>pop</code>으로 복원해야 한다(REV-0341 변형 3 참고). 반면 <code>R8</code>~<code>R11</code>은 콜러 세이브(caller-saved)로, 호출된 함수가 자유롭게 값을 덮어써도 되고 호출자가 필요하면 호출 전에 알아서 백업해야 한다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>디스어셈블리 바이트 앞에 <code>4X</code> 계열(REX 프리픽스, <code>0x40</code>~<code>0x4F</code>)이 붙어 있고 오퍼랜드에 <code>R8</code>~<code>R15</code> 계열 이름이 등장 — x64 코드에서 신규 레지스터를 사용 중이라는 신호.</li><li>함수 프롤로그에 <code>push r12</code>, <code>push r13</code>처럼 R12~R15가 저장되는 코드 — 그 함수가 이 레지스터들을 실제로 사용하며 콜리 세이브 규약을 지키고 있다는 뜻(REV-0341 참고).</li><li>함수 진입부에서 4개 이상의 인자를 받는 코드에서 5번째, 6번째 인자가 <code>R8</code>, <code>R9</code>(SysV) 또는 3, 4번째 인자가 <code>R8</code>, <code>R9</code>(Windows)로 전달되는 패턴.</li><li><code>syscall</code> 명령어 직후 코드가 <code>R11</code>이나 <code>RCX</code>를 다시 설정하거나, 이 레지스터들을 값이 살아있다고 가정하지 않고 다시 로드하는 패턴.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>디스어셈블리에서 <code>R8</code>~<code>R15</code> 계열 이름을 만나면, 우선 그 레지스터가 <strong>함수 인자로 쓰였는지(4~6번째 인자), 콜리 세이브 백업 대상인지(R12~R15가 프롤로그에서 push됨), 아니면 syscall 관련 특수 레지스터인지(R11)</strong>부터 구분한다. 이 세 갈래로 나누면 대부분의 등장 맥락이 설명된다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) REX 프리픽스 존재로 x64 코드임을 먼저 확인</strong></p>
+<pre><code>바이트 열: 4D 89 C4       ; 4D = REX(W=1,R=1,X=0,B=1) 프리픽스
+디스어셈블리: mov r12, r8   ; R8, R12 모두 R8~R15 범위라서 REX.R, REX.B 모두 필요</code></pre>
+<p><strong>2) 함수 인자 위치인지 확인 (SysV x64 기준)</strong></p>
+<pre><code class="language-asm">; void log_event(int a, int b, int c, int d, int e, int f)
+mov     [rbp-4],  edi   ; a  (1번째, RDI)
+mov     [rbp-8],  esi   ; b  (2번째, RSI)
+mov     [rbp-0xc], edx  ; c  (3번째, RDX)
+mov     [rbp-0x10], ecx ; d  (4번째, RCX)
+mov     [rbp-0x14], r8d ; e  (5번째, R8D!)
+mov     [rbp-0x18], r9d ; f  (6번째, R9D!)</code></pre>
+<p>5번째, 6번째 인자에서 <code>R8D</code>/<code>R9D</code>가 등장하면 SysV x64 함수 인자 전달 패턴이 맞다.</p>
+<p><strong>3) 콜리 세이브 백업 패턴 확인</strong></p>
+<pre><code class="language-asm">push    r12          ; 프롤로그에서 백업
+push    r13
+...
+pop     r13           ; 에필로그에서 역순 복원
+pop     r12</code></pre>
+<p><strong>4) syscall 전후 R11/RCX 취급 확인</strong></p>
+<pre><code class="language-asm">mov     rax, 1          ; syscall 번호(write)
+mov     rdi, 1
+lea     rsi, [buf]
+mov     rdx, len
+syscall                  ; 이 시점에 RCX &lt;- 리턴주소, R11 &lt;- RFLAGS (하드웨어가 자동 설정)
+; syscall 직후 코드에서 RCX, R11을 이전 값 그대로라고 가정하면 안 됨</code></pre>
+<h2>명령어/단축키</h2>
+<pre><code>(gdb) info registers          # x64면 rax~r15까지 16개 모두 표시
+(gdb) p $r8
+(gdb) p $r8d                  # gdb가 서브 레지스터 이름을 인식</code></pre>
+<p>IDA/Ghidra: 오퍼랜드의 <code>R8</code>~<code>R15</code> 위에서 우클릭 → 관련 교차 참조(cross-reference)로 그 레지스터가 함수 내에서 인자/백업/임시값 중 어느 용도로 쓰였는지 흐름을 따라갈 수 있다.</p>
+<h2>출력 해석</h2>
+<ul><li>함수 진입 직후 <code>R8D</code>/<code>R9D</code>가 즉시 스택으로 spill되는 코드가 보이면, 이 함수는 5개 이상의 인자를 받는 함수라는 뜻이다(SysV 기준).</li><li>프롤로그에서 <code>push r12</code>가 있는데 에필로그에서 대응하는 <code>pop r12</code>가 없다면, 함수 경계 설정을 잘못 잡았거나 조기 리턴 경로(REV-0341 변형 7)에서 다른 방식으로 복원되고 있을 가능성을 의심해야 한다.</li><li><code>syscall</code> 명령어 실행 직후의 <code>R11</code> 값이 실행 전 값과 다르게 나온다면 정상이다. 이건 버그가 아니라 CPU가 <code>RFLAGS</code>를 자동 저장한 결과다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>R8</code>~<code>R15</code>를 x86(32비트) 디스어셈블리에서 봤다고 착각하는 것 — 이 레지스터들은 x64에서만 존재하므로, 실제로 보인다면 아키텍처 판단 자체를 다시 점검해야 한다.</li><li><code>R8H</code> 같은 상위 바이트 이름이 존재할 거라 가정하는 것 — R8~R15에는 상위 바이트 이름이 없다.</li><li><code>R8</code>~<code>R11</code>(콜러 세이브)과 <code>R12</code>~<code>R15</code>(콜리 세이브)를 구분하지 않고 전부 "값이 함수 호출 후에도 보존된다"고 가정하는 것 — 실제로 보존되는 것은 <code>R12</code>~<code>R15</code>뿐이다.</li><li><code>syscall</code> 직후에도 <code>RCX</code>/<code>R11</code>이 이전 값 그대로일 거라 가정하고 디버깅하다가 값이 바뀐 이유를 못 찾아 헤매는 것.</li><li>REX 프리픽스가 항상 64비트 연산(<code>REX.W=1</code>)을 의미한다고 착각하는 것 — REX 프리픽스는 R8~R15 사용만으로도 필요할 수 있으며, 이 경우 <code>REX.W</code>는 0일 수 있다(32비트 연산이지만 R8~R15를 참조).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>EAX</code>/<code>AX</code>/<code>AL</code>/<code>AH</code> 계열의 이름 규칙과 역사가 궁금하면 → REV-0342(레지스터 이름 규칙 EAX AX AL AH 관계)로 이동.</li><li>부분 쓰기 시 제로 익스텐션 등 실제 동작 규칙이 궁금하면 → REV-0022(32비트와 64비트 레지스터 차이)로 이동.</li><li>콜리 세이브 레지스터가 프롤로그/에필로그에서 어떻게 백업/복원되는지 더 자세히 보려면 → REV-0341(함수 프롤로그와 에필로그 자세히 읽기)로 이동.</li><li><code>syscall</code> 명령어 자체의 동작과 인자 전달 규약이 궁금하면 → REV-0077(SYSCALL)로 이동.</li></ul>
+<h2>미니 예제</h2>
+<p>SysV x64에서 6개 인자를 받는 함수의 프롤로그를 보자.</p>
+<pre><code class="language-c">long compute(long a, long b, long c, long d, long e, long f) {
+    return a + b + c + d + e + f;
+}</code></pre>
+<pre><code class="language-asm">compute:
+    mov     [rsp-0x8],  rdi   ; a
+    mov     [rsp-0x10], rsi   ; b
+    mov     [rsp-0x18], rdx   ; c
+    mov     [rsp-0x20], rcx   ; d
+    mov     [rsp-0x28], r8    ; e  &lt;- R8 등장
+    mov     [rsp-0x30], r9    ; f  &lt;- R9 등장
+    mov     rax, [rsp-0x8]
+    add     rax, [rsp-0x10]
+    add     rax, [rsp-0x18]
+    add     rax, [rsp-0x20]
+    add     rax, [rsp-0x28]
+    add     rax, [rsp-0x30]
+    ret</code></pre>
+<p>인자가 4개까지였다면 <code>RDI</code>/<code>RSI</code>/<code>RDX</code>/<code>RCX</code>만으로 끝났겠지만, 5번째와 6번째 인자가 등장하면서 <code>R8</code>, <code>R9</code>가 나타났다. 이 코드에서 <code>mov [rsp-0x28], r8</code> 한 줄만 보고도 "이 함수는 인자가 최소 5개 이상이다"라는 사실을 바로 추론할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0342-register-naming-convention-eax-family.html">REV-0342 — 레지스터 이름 규칙 EAX AX AL AH 관계</a></li><li><a href="rev-0022-register-widths.html">REV-0022 — 32비트와 64비트 레지스터 차이</a></li><li><a href="rev-0341-prologue-epilogue-detailed-reading.html">REV-0341 — 함수 프롤로그와 에필로그 자세히 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>REX 프리픽스 구조(<code>W</code>/<code>R</code>/<code>X</code>/<code>B</code> 비트)와 R8~R15 인코딩 확장 방식: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2, "REX Prefixes" 섹션 기준.</li><li>R8~R15 신규 레지스터 도입 배경 및 성능 목표: AMD64 Architecture Programmer's Manual, Volume 1, "General-Purpose Registers" 섹션 기준.</li><li>SysV x64 함수 인자 전달 순서(RDI/RSI/RDX/RCX/R8/R9) 및 콜러/콜리 세이브 레지스터 구분: System V AMD64 ABI 공식 스펙, "Parameter Passing" 및 "Register Usage" 섹션 기준.</li><li>Windows x64 호출 규약(RCX/RDX/R8/R9): Microsoft x64 Calling Convention 공식 문서 기준.</li><li><code>syscall</code> 명령어가 RCX/R11을 자동으로 사용하는 동작 및 syscall 인자에서 R10을 쓰는 이유: Intel SDM Volume 2 "SYSCALL" 명령어 설명 및 Linux 커널 <code>x86-64 syscall</code> 관례(man 2 syscall, arch/x86 진입점 문서) 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

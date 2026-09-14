@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hex-Rays 마이크로코드가 무엇이고 왜 알아두면 좋은지 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>Hex-Rays 마이크로코드가 무엇이고 왜 알아두면 좋은지</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>마이크로코드(Microcode)는 Hex-Rays 디컴파일러가 어셈블리를 C 유사 Pseudocode로 바꾸는 과정에서 내부적으로 사용하는 <strong>중간 표현(intermediate representation)</strong>으로, 어셈블리보다 추상적이고 최종 Pseudocode보다는 저수준인 이 단계를 들여다보면 "디컴파일러가 왜 이렇게 결론 내렸는지"를 이해하거나 난독화/최적화로 꼬인 코드의 진짜 흐름을 역추적하는 데 도움이 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>F5로 나온 Pseudocode가 실제 어셈블리와 너무 달라 보여서(변수가 사라지거나 합쳐지거나, 조건문이 예상과 다르게 재구성돼서) 그 사이에 무슨 일이 있었는지 알고 싶을 때</li><li>컴파일러 최적화나 경량 난독화로 인해 디컴파일 결과가 이상하게 뭉개졌는데, 디스어셈블리를 한 줄씩 읽는 것보다 한 단계 더 정제된 표현으로 보고 싶을 때</li><li>IDA 디컴파일러 플러그인 개발이나 고급 디옵퓨스케이션(deobfuscation) 스크립트 작성을 시작하려고 하는데, Hex-Rays SDK 문서에 계속 나오는 <code>mba_t</code>, <code>minsn_t</code>, <code>MMAT_*</code> 같은 용어가 뭔지 감이 안 잡힐 때</li><li>REV-0152(Decompilation failed)의 원인을 더 깊이 파고들어, 어느 단계(생성/최적화)에서 디컴파일러가 포기했는지 직접 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 어셈블리와 Pseudocode 사이에 중간 단계가 필요한가</h3>
+<p>어셈블리는 레지스터와 메모리 오퍼랜드, 플래그, 스택 등 CPU에 딱 붙은 저수준 개념으로 이루어져 있다. Pseudocode는 반대로 <code>if</code>/<code>for</code>/<code>while</code>, 지역 변수, 구조체 필드 접근처럼 사람이 읽기 좋은 고수준 개념이다. 이 둘 사이의 간극이 너무 크기 때문에 Hex-Rays 디컴파일러는 한 번에 변환하지 않고, 그 중간에 <strong>마이크로코드</strong>라는 자체 중간 표현을 만들어 여러 단계에 걸쳐 점진적으로 다듬어 나간다. 마이크로코드는 어셈블리 명령어 하나를 여러 개의 단순한 마이크로 명령어(<code>minsn_t</code>)로 쪼개거나(예: <code>add</code>처럼 플래그까지 건드리는 명령을 값 계산과 플래그 계산으로 분리), 반대로 여러 어셈블리 명령을 하나의 더 고수준 연산으로 합치는(예: 곱셈으로 대체된 나눗셈 상수를 다시 나눗셈으로 인식) 방식으로 코드를 재구성한다.</p>
+<h3>성숙도 단계(Maturity Level, MMAT)</h3>
+<p>디컴파일러는 마이크로코드를 한 번에 완성하지 않고 여러 단계(maturity level)를 거치며 점점 다듬는다. Hex-Rays SDK에 정의된 대표적인 단계는 다음과 같다.</p>
+<ul><li><code>MMAT_ZERO</code>: 마이크로코드가 아직 만들어지지 않은 초기 상태</li><li><code>MMAT_GENERATED</code>: 어셈블리로부터 마이크로코드가 막 생성된 직후, 아직 최적화 전</li><li><code>MMAT_PREOPTIMIZED</code>: 지역적인 사전 최적화가 일부 적용된 상태</li><li><code>MMAT_LOCOPT</code>: 지역 최적화 완료, 제어 흐름 그래프(CFG)가 정리된 상태</li><li><code>MMAT_CALLS</code>: 함수 호출의 인자 개수/타입이 분석된 상태</li><li><code>MMAT_GLBOPT1</code> / <code>MMAT_GLBOPT2</code> / <code>MMAT_GLBOPT3</code>: 전역 최적화가 단계적으로 적용되며, <code>MMAT_GLBOPT3</code>에 이르면 마이크로코드가 최종 확정되어 더 이상 바뀌지 않는다.</li></ul>
+<p>각 단계를 거치며 디컴파일러는 죽은 코드 제거, 공통 부분식 제거, 상수 전파 같은 최적화를 적용하는데, 이 과정에서 원래 어셈블리에 있던 변수 몇 개가 하나로 합쳐지거나 아예 사라지기도 한다. Pseudocode가 실제 어셈블리보다 "단순해 보이는" 이유가 바로 이 최적화 단계들 때문이다.</p>
+<h3>마이크로코드를 직접 들여다보는 법</h3>
+<p>IDA 9.2부터는 마이크로코드를 확인할 수 있는 서브뷰가 내장되어 있다. 단축키 <code>Ctrl-Shift-F8</code> 또는 <code>View → Open subviews → Generate microcode</code>로 열 수 있으며, Pseudocode 창에서 함수나 전역 변수 위에 우클릭해도 관련 메뉴가 나온다. 이 서브뷰 안에서는 <code>&gt;</code>와 <code>&lt;</code> 키로 성숙도 단계를 올리거나 내리며, 같은 코드가 각 단계를 거치며 어떻게 점점 단순화되는지 직접 비교할 수 있다. IDA 9.2 이전 버전에는 이 기능이 내장되어 있지 않았으므로, 그 이전에는 커뮤니티가 만든 서드파티 플러그인(예: Lucid, genmc 같은 마이크로코드 뷰어 플러그인)을 설치해 같은 목적을 달성했다.</p>
+<h3>실전에서 언제 유용한가</h3>
+<ul><li>디컴파일 결과가 실제 로직과 다르게 보인다는 의심이 들 때, 마이크로코드 단계별 비교로 어느 최적화 단계에서 정보가 손실/재구성됐는지 확인할 수 있다.</li><li><code>positive sp value</code>, <code>call analysis failed</code> 같은 REV-0152의 실패 메시지가 어느 성숙도 단계에서 발생했는지 파악하면 원인 진단이 빨라진다.</li><li>디컴파일러 플러그인이나 자동 디옵퓨스케이션 스크립트를 작성하려면 Hex-Rays SDK가 제공하는 <code>mba_t</code>(마이크로코드 전체를 담는 객체), <code>minsn_t</code>(개별 마이크로 명령), <code>mop_t</code>(오퍼랜드) 구조를 다뤄야 하므로, 마이크로코드 개념 이해가 선행되어야 한다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Pseudocode에 있는 변수 개수가 실제 어셈블리의 레지스터/스택 슬롯 개수보다 훨씬 적게 보인다.</li><li>나눗셈이 없었는데 Pseudocode에 나눗셈으로 표시되거나(컴파일러가 상수 나눗셈을 곱셈+시프트로 최적화한 것을 디컴파일러가 역으로 인식), 반대로 곱셈/시프트 조합이 그대로 남아 있다.</li><li><code>View → Open subviews</code> 목록에 <code>Generate microcode</code> 항목이 보인다(IDA 9.2 이상).</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>마이크로코드를 볼 필요가 있는 상황인지부터 판단한다. 단순히 함수 로직을 이해하려는 목적이라면 F5 Pseudocode(REV-0146)만으로 충분한 경우가 대부분이며, 마이크로코드는 "Pseudocode가 왜 이렇게 나왔는지" 자체를 파고들어야 하는 고급 상황에서만 필요하다.</p>
+<h2>단계별 절차</h2>
+<ol><li>먼저 F5로 평소처럼 Pseudocode를 확인하고, 실제 어셈블리와 비교했을 때 이상하게 보이는 부분을 특정한다.</li><li>Pseudocode 창에서 해당 함수 위에 커서를 두고 <code>Ctrl-Shift-F8</code>(또는 <code>View → Open subviews → Generate microcode</code>)로 마이크로코드 서브뷰를 연다.</li><li>서브뷰 안에서 <code>&lt;</code> 키를 눌러 가장 이른 단계(<code>MMAT_GENERATED</code>에 가까운 단계)로 내려가서, 최적화가 거의 적용되지 않은 원시 형태의 마이크로코드를 확인한다.</li><li><code>&gt;</code> 키를 눌러 단계를 하나씩 올리며, 어느 단계에서 의심스러운 변수 병합/상수 대체가 일어나는지 비교한다.</li><li>문제의 원인이 되는 단계를 찾았다면, 그 단계에서 어떤 최적화가 적용됐는지(죽은 코드 제거, 공통 부분식 제거, 상수 전파 등) 추정하고, 필요하면 REV-0148(Y로 타입 지정)이나 REV-0153(Stack Pointer 수동 보정)으로 디컴파일러에 더 정확한 정보를 알려준다.</li><li>IDA 9.2 미만 버전을 쓰고 있다면, 서드파티 마이크로코드 뷰어 플러그인의 설치 여부를 먼저 확인한 뒤 같은 방식으로 비교한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li><code>Ctrl-Shift-F8</code> 또는 <code>View → Open subviews → Generate microcode</code>: 마이크로코드 서브뷰 열기(IDA 9.2 이상)</li><li>마이크로코드 서브뷰 안에서 <code>&gt;</code>: 성숙도 단계 한 단계 올리기</li><li>마이크로코드 서브뷰 안에서 <code>&lt;</code>: 성숙도 단계 한 단계 내리기</li><li>Pseudocode 창 우클릭 → 마이크로코드 관련 메뉴 항목: 서브뷰를 여는 대체 경로</li></ul>
+<h2>출력 해석</h2>
+<ul><li>마이크로코드 한 줄은 대략 <code>연산자 오퍼랜드1, 오퍼랜드2, 결과</code> 형태로 표시되며, 어셈블리보다 레지스터/플래그 표현이 명시적으로 분리되어 있다.</li><li>성숙도 단계가 올라갈수록 코드 줄 수가 줄어드는 것이 정상이다 — 최적화가 누적되며 불필요한 계산이 제거되기 때문이다.</li><li><code>MMAT_GLBOPT3</code>에서 보이는 마이크로코드가 최종적으로 Pseudocode 생성의 직접적인 기반이 되므로, Pseudocode의 특정 표현이 의아하다면 이 마지막 단계의 마이크로코드와 대조하는 것이 가장 직접적인 비교다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>마이크로코드를 아무 상황에서나 열어보려 하는 것 — 대부분의 일반적인 분석은 Pseudocode만으로 충분하며, 마이크로코드는 특수한 의문이 있을 때만 유용하다.</li><li>성숙도 단계 이름(MMAT_*)을 외우려고만 하고 실제로 서브뷰에서 <code>&gt;</code>/<code>&lt;</code>로 비교해보지 않는 것 — 이름보다 직접 단계별로 눌러보며 코드가 어떻게 변하는지 눈으로 보는 게 이해가 빠르다.</li><li>IDA 버전이 낮아 내장 마이크로코드 서브뷰가 없는데 최신 문서만 보고 단축키를 찾다가 헤매는 것 — 버전을 먼저 확인하고, 낮은 버전이면 서드파티 플러그인 설치 여부를 점검해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>애초에 디컴파일 자체가 실패한다면 → REV-0152 IDA Decompiler Failed가 뜰 때</li><li>스택 포인터 추적이 어긋난 것이 원인으로 의심된다면 → REV-0153 IDA Stack Pointer 분석이 틀렸을 때</li><li>함수 원형/타입 지정으로 디컴파일 품질을 먼저 올리고 싶다면 → REV-0148 IDA Y로 타입 지정하기</li><li>마이크로코드 관련 빠른 요약표가 필요하다면 → REV-0728 IDA Hex-Rays 마이크로코드 뷰 빠른 참조(개념)</li></ul>
+<h2>미니 예제</h2>
+<p>어떤 함수의 실제 어셈블리에는 <code>imul</code>과 <code>sar</code>(산술 시프트)가 섞여 있는데, F5로 본 Pseudocode에는 다음처럼 단순한 나눗셈으로 나온다.</p>
+<pre><code class="language-c">int __cdecl calc(int a1)
+{
+    return a1 / 10;
+}</code></pre>
+<p>컴파일러가 상수 나눗셈(<code>/ 10</code>)을 곱셈+시프트 조합으로 최적화했고, Hex-Rays 디컴파일러가 마이크로코드의 전역 최적화 단계(<code>MMAT_GLBOPT</code> 계열)에서 이 패턴을 다시 인식해 원래의 나눗셈 표현으로 되돌려 보여준 것이다. 마이크로코드 서브뷰를 열어 <code>&lt;</code>로 이른 단계(<code>MMAT_GENERATED</code>에 가까운 단계)로 내려가면, 여전히 곱셈과 시프트 형태로 표현된 원시 마이크로코드를 확인할 수 있고, <code>&gt;</code>로 단계를 올리면 어느 시점에 나눗셈 형태로 재구성되는지 직접 눈으로 확인할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0146-ida-f5-decompile.html">REV-0146 — IDA F5 디컴파일과 Pseudocode 읽기</a></li><li><a href="rev-0152-ida-decompiler-failed.html">REV-0152 — IDA Decompiler Failed가 뜰 때</a></li><li><a href="rev-0153-ida-stack-pointer-wrong.html">REV-0153 — IDA Stack Pointer 분석이 틀렸을 때</a></li><li><a href="rev-0148-ida-set-type.html">REV-0148 — IDA Y로 타입 지정하기</a></li><li><a href="rev-0728-ida-hexrays-microcode-concept.html">REV-0728 — IDA Hex-Rays 마이크로코드 뷰 빠른 참조(개념)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>마이크로코드의 개념(어셈블리와 Pseudocode 사이의 중간 표현), 성숙도 단계(<code>MMAT_ZERO</code>부터 <code>MMAT_GLBOPT3</code>까지)의 존재와 목적: Hex-Rays 공식 SDK 문서 및 IDA 9.2 릴리스 노트(내장 마이크로코드 뷰어 도입 발표) 기준.</li><li>IDA 9.2에서 마이크로코드 서브뷰가 <code>Ctrl-Shift-F8</code> 또는 <code>View → Open subviews → Generate microcode</code>로 열리고, <code>&gt;</code>/<code>&lt;</code>로 성숙도 단계를 전환한다는 점: Hex-Rays 공식 릴리스 노트(9.2) 기준.</li><li>IDA 9.2 이전에는 이 기능이 내장되어 있지 않았고 커뮤니티 플러그인(Lucid, genmc 등)이 유사한 역할을 대신했다는 배경: Hex-Rays 공식 릴리스 노트의 커뮤니티 언급 및 각 플러그인 공개 저장소 설명 기준.</li><li>이 문서는 2026-09-09 기준 검색 가능한 공식 문서/릴리스 노트를 바탕으로 작성했으며, 실제 설치된 IDA 버전에 따라 메뉴/단축키 유무가 다를 수 있으므로 재확인이 필요하다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

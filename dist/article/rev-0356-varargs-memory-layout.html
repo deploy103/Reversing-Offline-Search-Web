@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>가변 인자 함수(varargs)가 메모리에서 동작하는 방식 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>가변 인자 함수(varargs)가 메모리에서 동작하는 방식</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>printf</code>처럼 인자 개수가 정해지지 않은 가변 인자 함수는 실제로는 특별한 CPU 기능이 있는 게 아니라, 호출자가 인자를 평소처럼 레지스터/스택에 늘어놓고 함수 자신은 포맷 문자열 등으로 "인자가 몇 개인지 추측"해서 <code>va_list</code>라는 규약을 통해 그 값들을 순서대로 읽어가는 것뿐이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>printf</code>, <code>sprintf</code>, <code>scanf</code> 같은 함수를 호출하기 직전에 <code>mov al, 0</code> 또는 <code>mov al, N</code> 같은 코드가 왜 있는지 궁금할 때(SysV x64)</li><li>디스어셈블리에서 함수 시그니처에 인자 개수가 안 보이는데 함수 내부에서 인자를 여러 개 순회하며 읽는 코드를 만났을 때</li><li><code>va_list</code>, <code>va_start</code>, <code>va_arg</code>, <code>va_end</code> 매크로가 실제로 어떤 어셈블리/메모리 구조로 컴파일되는지 알고 싶을 때</li><li>자체 제작 가변 인자 함수(로그 함수 등)를 리버싱하는데 인자가 스택 어디서부터 오는지 헷갈릴 때</li><li>IDA/Ghidra가 가변 인자 함수의 인자 개수를 잘못 추정해서 함수 시그니처가 이상하게 보일 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>CPU에는 "가변 인자"라는 개념이 없다</h3>
+<p><code>int printf(const char *fmt, ...)</code>처럼 인자 개수가 정해지지 않은 함수도, 호출하는 쪽(caller)은 여전히 일반적인 호출 규약(REV-0106, REV-0122)에 따라 인자를 레지스터와 스택에 순서대로 배치한다. CPU와 CALL 명령어 입장에서는 이것이 가변 인자 호출인지 고정 인자 호출인지 전혀 구분하지 않는다. 차이는 오직 <strong>콜리(callee)가 "인자가 몇 개인지, 각각 무슨 타입인지"를 스스로 알아내야 한다</strong>는 점뿐이다.</p>
+<pre><code class="language-c">printf("%d + %d = %d\n", 1, 2, 3);</code></pre>
+<p>이 호출은 SysV x64에서 대략 다음처럼 컴파일된다.</p>
+<pre><code class="language-asm">lea     rdi, [fmt_string]   ; 1번째 인자: 포맷 문자열
+mov     esi, 1               ; 2번째 인자
+mov     edx, 2               ; 3번째 인자
+mov     ecx, 3               ; 4번째 인자
+mov     al, 0                ; SSE 레지스터로 넘긴 가변 인자 개수 = 0
+call    printf</code></pre>
+<p><code>mov al, 0</code>이 가변 인자 함수 호출에서만 나타나는 특징적인 코드다. 다음 절에서 이게 왜 필요한지 설명한다.</p>
+<h3>AL 레지스터로 SSE 인자 개수를 알려주는 이유(SysV x64)</h3>
+<p>SysV AMD64 ABI는 가변 인자 함수에서, 실수(float/double) 인자가 <code>XMM0</code>~<code>XMM7</code> 중 몇 개나 쓰였는지를 콜리가 알아야 한다고 규정한다. 정수 인자는 레지스터 개수(RDI, RSI, RDX, RCX, R8, R9 중 몇 개 썼는지)로 유추 가능하지만, 가변 인자 함수 내부에서 부동소수점 레지스터 저장 영역을 준비하려면 몇 개가 쓰였는지 미리 알아야 하기 때문에, <strong>AL 레지스터에 사용된 벡터 레지스터 개수(0~8)를 넣어서 전달</strong>한다. 부동소수점 인자가 하나도 없으면 <code>mov al, 0</code>이 나온다. 이 규칙은 Windows x64에는 없다(Windows x64는 가변 인자에 다른 방식을 쓴다).</p>
+<h3>콜리는 포맷 문자열로 "인자 개수"를 추측한다</h3>
+<p><code>printf</code> 자신은 컴파일 시점에 몇 개의 인자가 넘어올지 전혀 모른다. 대신 런타임에 첫 번째 인자인 포맷 문자열(<code>"%d + %d = %d\n"</code>)을 파싱해서 <code>%</code> 지정자 개수를 세고, 그 개수만큼 <code>va_arg</code>로 값을 순서대로 꺼내온다. 이것이 <code>printf</code> 계열 함수가 <strong>포맷 문자열과 실제 인자 개수가 안 맞으면 정의되지 않은 동작(쓰레기 값을 읽거나 크래시)</strong>을 일으키는 근본 이유다 — 함수는 인자 개수를 스스로 알 방법이 없고 오직 포맷 문자열의 내용만 믿기 때문이다.</p>
+<h3>va_list의 실제 구조 — Register Save Area</h3>
+<p><code>stdarg.h</code>의 <code>va_start</code>/<code>va_arg</code> 매크로는 컴파일러마다 다르게 구현되지만, SysV x64 리눅스(GCC/Clang)에서는 대략 다음과 같은 구조체로 구현된다.</p>
+<pre><code class="language-c">typedef struct {
+    unsigned int gp_offset;     // 다음에 읽을 정수 레지스터 저장 영역 오프셋
+    unsigned int fp_offset;     // 다음에 읽을 SSE 레지스터 저장 영역 오프셋
+    void *overflow_arg_area;    // 레지스터로 다 못 채운 나머지 인자(스택에서 온 것들)
+    void *reg_save_area;        // 레지스터 인자들이 실제로 복사되어 저장된 스택 영역
+} va_list[1];</code></pre>
+<p>가변 인자 함수가 시작되면, 프롤로그에서 <strong>레지스터로 받은 인자들(RDI~R9, XMM0~XMM7 중 실제로 쓰인 것들)을 전부 스택의 한 영역(Register Save Area)에 미리 복사</strong>해둔다. 그 다음 <code>va_arg</code>가 호출될 때마다 <code>gp_offset</code>/<code>fp_offset</code>을 이 영역의 시작 주소에 더해서 다음 인자를 읽고, 오프셋을 8(또는 16)씩 증가시킨다. 레지스터 몫을 다 쓰면 그 이후 인자는 <code>overflow_arg_area</code>(호출자가 스택에 남겨둔 부분)에서 계속 읽는다.</p>
+<pre><code class="language-asm">; 가변 인자 함수 프롤로그에서 흔히 보이는 패턴 (개념적 예시)
+test    al, al
+je      skip_fp_save
+movaps  [rbp-0x90], xmm0        ; XMM 레지스터 인자들을 Register Save Area에 저장
+movaps  [rbp-0x80], xmm1
+...
+skip_fp_save:
+mov     [rbp-0xd0], rdi          ; GP 레지스터 인자들도 저장
+mov     [rbp-0xc8], rsi
+mov     [rbp-0xc0], rdx
+mov     [rbp-0xb8], rcx
+mov     [rbp-0xb0], r8
+mov     [rbp-0xa8], r9</code></pre>
+<p>이 코드가 있기 때문에, <code>va_arg</code>가 나중에 순서대로 값을 읽어도 그 값이 이미 스택에 안전하게 보관되어 있는 것이다. 함수가 자기 자신의 인자를 받고 나서 곧바로 이걸 다시 스택에 복사하는 것처럼 보이는 이유가 바로 이것이다 — 일반 함수의 인자 스필(REV-0359)과 비슷해 보이지만, 목적이 "va_arg가 나중에 순서대로 접근할 수 있게 미리 한곳에 몰아두는 것"이라는 점이 다르다.</p>
+<h3>Windows x64에서는 더 단순하다</h3>
+<p>Windows x64는 애초에 정수/포인터/부동소수점 인자를 구분 없이 항상 4개까지 <code>RCX, RDX, R8, R9</code>로 전달하고(REV-0122), 가변 인자 함수를 호출할 때도 shadow space(REV-0124)에 인자가 그대로 스필된다. <code>va_arg</code>는 단순히 shadow space 시작 주소부터 8바이트씩 순서대로 읽어가는 방식으로 구현되어, SysV처럼 정수/부동소수점 레지스터를 별도 영역으로 나누는 복잡함이 없다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>SysV x64에서 <code>printf</code>/<code>sprintf</code> 등 가변 인자 함수 호출 직전에 <code>mov al, N</code>(N은 0~8)이 있는 코드</li><li>함수 프롤로그에서 인자 레지스터(<code>RDI, RSI, RDX, RCX, R8, R9</code>, <code>XMM0</code>~<code>XMM7</code>)를 스택의 넓은 영역(보통 176바이트 전후, Register Save Area 크기)에 몰아서 저장하는 코드</li><li><code>va_list</code> 타입의 지역 변수가 4개 필드(<code>gp_offset</code>, <code>fp_offset</code>, <code>overflow_arg_area</code>, <code>reg_save_area</code>)를 가진 구조체로 디컴파일되는 경우</li><li>함수 시그니처에 <code>...</code>(ellipsis)가 있거나, 첫 인자가 포맷 문자열이고 함수 본문이 그 문자열을 파싱하는 루프를 포함하는 경우</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>가변 인자 함수로 의심되는 호출을 만나면, 먼저 호출 직전 코드에서 <code>mov al, N</code>이 있는지(SysV x64 신호) 확인하고, 첫 번째 인자로 넘어가는 문자열(포맷 문자열일 가능성이 높음)을 <code>.rodata</code>/<code>.rdata</code>에서 찾아 실제 내용을 읽어본다. 포맷 지정자(<code>%d</code>, <code>%s</code> 등) 개수를 세면 이 호출에서 실제로 몇 개의 가변 인자가 쓰이는지 바로 알 수 있다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 호출부에서 mov al, N 확인(SysV x64)</strong></p>
+<p><code>call printf</code> 직전에 <code>mov al, N</code>이 있으면 N이 SSE 레지스터로 넘어간 부동소수점 인자 개수다. Windows x64에는 이 코드가 없다.</p>
+<p><strong>2) 포맷 문자열을 찾아 지정자 개수 세기</strong></p>
+<p>첫 번째 인자(RDI 또는 RCX)로 들어가는 문자열 리터럴 주소를 따라가서 실제 내용을 확인하고, <code>%d</code>, <code>%s</code>, <code>%x</code> 등 지정자 개수를 세면 이 호출에 필요한 가변 인자 개수를 알 수 있다.</p>
+<p><strong>3) 가변 인자 함수 내부라면 프롤로그의 Register Save Area 저장 코드 확인</strong></p>
+<p><code>stdarg.h</code>를 쓰는 자체 함수를 분석 중이라면, 프롤로그에서 인자 레지스터들을 한 번에 스택으로 복사하는 넓은 블록을 찾는다. 이 블록의 시작 주소가 <code>va_list</code>의 <code>reg_save_area</code>다.</p>
+<p><strong>4) va_arg 호출 지점을 오프셋 증가 패턴으로 추적</strong></p>
+<p>함수 본문에서 <code>gp_offset</code>/<code>fp_offset</code> 역할을 하는 변수가 8(또는 16)씩 증가하면서 <code>reg_save_area + offset</code>을 읽는 반복 패턴이 있으면, 그것이 <code>va_arg</code>가 인라인된 결과다.</p>
+<p><strong>5) 디버거로 실제 스택 값을 확인</strong></p>
+<p>GDB/x64dbg로 가변 인자 함수 프롤로그 직후에 브레이크포인트를 걸고, Register Save Area로 추정되는 스택 영역을 덤프해서 예상한 인자 값들이 순서대로 들어있는지 검증한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">(gdb) break *0x555555555169    # 가변 인자 함수 프롤로그 직후
+(gdb) run
+(gdb) x/8xg $rbp-0xd0           # Register Save Area로 추정되는 영역 덤프
+(gdb) print (char*)$rdi          # 포맷 문자열로 추정되는 포인터 내용 확인
+(gdb) x/s $rdi                   # 포맷 문자열 직접 읽기</code></pre>
+<p>IDA: 포맷 문자열 인자에서 <code>Alt+T</code>(텍스트 검색) 또는 문자열 창(<code>Shift+F12</code>)으로 <code>.rodata</code>의 실제 문자열 확인. Ghidra: Decompile 창에서 <code>va_list</code> 관련 구조체가 자동 인식되면 필드 이름이 표시됨.</p>
+<h2>출력 해석</h2>
+<ul><li><code>mov al, N</code>에서 N이 0이면 이 호출에는 부동소수점 가변 인자가 없다는 뜻이지, 가변 인자 자체가 없다는 뜻은 아니다(정수 가변 인자는 여전히 있을 수 있음).</li><li>포맷 문자열의 지정자 개수와 실제 호출부에서 준비된 레지스터/스택 인자 개수가 안 맞으면, 그 호출은 버그이거나(format string bug 취약점의 전형적 형태) 컴파일러가 이미 상수 폴딩으로 인자를 줄인 것일 수 있다 — 원본 소스를 확인해야 확실하다.</li><li>Register Save Area 크기가 SysV x64에서 보통 176바이트(정수 레지스터 6개×8 + XMM 레지스터 8개×16)로 고정되어 있으면 이는 컴파일러가 항상 최대 크기로 예약해두는 것이며, 실제로 그 인자들이 모두 쓰였다는 뜻은 아니다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>가변 인자 함수를 "특수한 CPU 명령어/모드로 처리된다"고 오해하는 것 — 실제로는 평범한 레지스터/스택 전달 규약 위에서, 콜리가 포맷 문자열이나 별도의 카운트 인자로 개수를 스스로 알아내는 소프트웨어적인 관례일 뿐이다.</li><li><code>mov al, N</code>을 함수 인자 개수 전체로 오해하는 것 — 이 값은 오직 <strong>SSE(부동소수점) 레지스터로 넘어간 가변 인자 개수</strong>이며 정수 인자 개수와는 무관하다.</li><li>포맷 문자열 스캔 로직을 몰라서, 왜 <code>printf("%s", ptr)</code>에서 <code>ptr</code>이 문자열이 아닌 값이면 크래시가 나는지 이해하지 못하는 것 — 함수는 포맷 문자열만 믿고 그 타입으로 값을 해석하기 때문에, 포맷과 실제 인자 타입이 다르면 미정의 동작이 된다.</li><li>Windows x64와 SysV x64의 가변 인자 구현 방식이 같다고 가정하는 것 — Windows는 부동소수점/정수 구분이 없고 shadow space를 그대로 활용하는 훨씬 단순한 구조다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>일반적인 함수 인자/반환값의 레지스터·스택 위치가 헷갈리면 → REV-0032 함수 인자와 반환값이 어디에 있는지</li><li>SysV x64와 Windows x64의 정수 인자 전달 규칙 자체가 헷갈리면 → REV-0106 SysV AMD64 Calling Convention / REV-0122 Microsoft x64 Calling Convention</li><li>인자 레지스터가 스택으로 복사되는 이유가 일반적인 스필과 뭐가 다른지 헷갈리면 → REV-0359 레지스터 스필(Register Spill)이 스택에 미치는 영향</li><li>Windows x64 shadow space의 정확한 크기/역할이 궁금하면 → REV-0124 Shadow Space가 무엇인지</li><li>실제 <code>printf</code> 계열 함수의 내부 동작이 궁금하면 → REV-0635 libc printf family</li></ul>
+<h2>미니 예제</h2>
+<p>직접 만든 간단한 로그 함수로 가변 인자 흐름을 살펴보자.</p>
+<pre><code class="language-c">#include &lt;stdarg.h&gt;
+#include &lt;stdio.h&gt;
+
+void log_ints(int count, ...) {
+    va_list ap;
+    va_start(ap, count);
+    for (int i = 0; i &lt; count; i++) {
+        int v = va_arg(ap, int);
+        printf("arg[%d] = %d\n", i, v);
+    }
+    va_end(ap);
+}
+
+int main(void) {
+    log_ints(3, 10, 20, 30);
+    return 0;
+}</code></pre>
+<p><code>main</code>에서의 호출부(SysV x64):</p>
+<pre><code class="language-asm">mov     ecx, 30          ; 4번째 실인자
+mov     edx, 20          ; 3번째 실인자
+mov     esi, 10          ; 2번째 실인자
+mov     edi, 3            ; count = 3 (1번째 인자)
+mov     al, 0             ; 부동소수점 가변 인자 없음
+call    log_ints</code></pre>
+<p><code>log_ints</code> 프롤로그(개념적으로 단순화):</p>
+<pre><code class="language-asm">log_ints:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 0xd0
+    test    al, al
+    je      .no_fp
+    ; xmm0~xmm7을 reg_save_area 상단에 저장(생략)
+.no_fp:
+    mov     [rbp-0xd0], edi   ; count
+    mov     [rbp-0xc8], esi    ; 2번째 인자(=10)
+    mov     [rbp-0xc0], edx    ; 3번째 인자(=20)
+    mov     [rbp-0xb8], ecx    ; 4번째 인자(=30)
+    ; va_start: gp_offset = 8(1개 정수 레지스터는 count가 이미 소비), reg_save_area = rbp-0xd0 ...</code></pre>
+<p><code>va_arg(ap, int)</code>가 호출될 때마다 <code>gp_offset</code>이 가리키는 <code>reg_save_area + gp_offset</code> 위치에서 4바이트를 읽고 <code>gp_offset</code>을 8만큼 증가시킨다. 첫 호출은 <code>esi</code>가 저장된 <code>[rbp-0xc8]</code>(값 10)을 읽고, 두 번째 호출은 <code>edx</code>가 저장된 <code>[rbp-0xc0]</code>(값 20)을 읽는 식으로 이어진다. <code>count</code> 자신은 고정 인자이므로 <code>va_arg</code>의 순회 대상에 포함되지 않는다는 점에 주의한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0032-args-and-return-location.html">REV-0032 — 함수 인자와 반환값이 어디에 있는지</a></li><li><a href="rev-0106-sysv-amd64-calling-convention.html">REV-0106 — SysV AMD64 Calling Convention</a></li><li><a href="rev-0122-ms-x64-calling-convention.html">REV-0122 — Microsoft x64 Calling Convention</a></li><li><a href="rev-0124-shadow-space.html">REV-0124 — Shadow Space가 무엇인지</a></li><li><a href="rev-0359-register-spill-stack-impact.html">REV-0359 — 레지스터 스필(Register Spill)이 스택에 미치는 영향</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>가변 인자 함수에서 AL 레지스터로 SSE 레지스터 사용 개수를 전달하는 규칙과 <code>va_list</code>(Register Save Area, <code>gp_offset</code>/<code>fp_offset</code>/<code>overflow_arg_area</code>) 구조: System V AMD64 ABI(psABI) 공식 스펙 "Variable Argument Lists" 절 기준.</li><li>Windows x64 가변 인자와 shadow space의 관계: Microsoft Learn "x64 calling convention" 및 "Varargs" 관련 공식 문서 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

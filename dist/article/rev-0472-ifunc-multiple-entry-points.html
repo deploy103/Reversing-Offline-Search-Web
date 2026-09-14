@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>함수 하나가 여러 진입점을 가진 것처럼 보이는 이유(ifunc/dispatch) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>함수 하나가 여러 진입점을 가진 것처럼 보이는 이유(ifunc/dispatch)</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>glibc의 <code>memcpy</code>, <code>strlen</code> 같은 고성능 함수는 프로그램 실행 초기에 CPU 기능(AVX2 지원 여부 등)을 검사하는 <strong>리졸버(resolver) 함수</strong>가 한 번 실행되어 그 CPU에 가장 빠른 구현체(SSE2 버전, AVX2 버전 등)의 주소를 직접 GOT에 박아 넣는 방식(GNU indirect function, IFUNC)을 쓰기 때문에, 같은 함수 이름인데도 실행 환경에 따라 실제로 호출되는 코드가 달라진다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디버거로 <code>call memcpy@plt</code>(또는 <code>strlen</code>, <code>memset</code>, <code>memcmp</code> 등 libc의 고성능 함수)를 Step Into 했는데 예상과 다르게 <code>__memcpy_avx_unaligned</code> 같은 낯선 이름의 함수나 <code>resolve_memcpy</code> 같은 함수로 들어갈 때</li><li>같은 함수를 처음 호출했을 때와 두 번째 호출했을 때 실행되는 코드 주소가 다를 때</li><li><code>readelf -r ./binary</code>로 relocation을 확인했는데 <code>R_X86_64_IRELATIVE</code> 타입이 여러 개 보일 때</li><li>IDA/Ghidra에서 함수 하나가 <code>STT_GNU_IFUNC</code> 심볼 타입으로 표시되거나, 함수 옆에 "resolver"라는 설명이 붙어있을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>CPU 디스패치가 왜 필요한가</h3>
+<p><code>memcpy</code>(메모리 복사)나 <code>strlen</code>(문자열 길이) 같은 함수는 매우 자주 호출되므로 성능이 중요하다. 최신 CPU는 AVX2, AVX-512 같은 명령어 집합으로 한 번에 훨씬 많은 바이트를 처리할 수 있지만, 오래된 CPU는 이런 명령어를 지원하지 않는다. glibc(Linux의 C 표준 라이브러리)는 이 문제를 "<strong>여러 버전의 구현을 미리 만들어두고, 프로그램이 실행되는 실제 CPU에 맞는 것을 골라 쓴다</strong>"는 방식으로 해결한다. 이 매커니즘이 GNU IFUNC(Indirect Function)다.</p>
+<h3>동작 원리</h3>
+<ol><li>라이브러리(glibc) 안에는 <code>memcpy</code>의 여러 구현체가 있다 — 예를 들어 <code>__memcpy_sse2_unaligned</code>, <code>__memcpy_avx_unaligned</code>, <code>__memcpy_avx512_unaligned</code> 등.</li><li><code>memcpy</code> 심볼은 일반 함수가 아니라 <strong>리졸버(resolver) 함수</strong>로 등록되어 있다. 이 리졸버는 함수가 아니라 "함수를 반환하는 함수"다 — 내부적으로 CPUID를 확인해서(REV-0086 CPUID 참고) 어떤 구현체가 가장 빠른지 판단하고, 그 구현체의 <strong>주소</strong>를 리턴한다.</li><li>프로그램(또는 동적 링커 <code>ld.so</code>)이 시작될 때, 이 리졸버가 <strong>딱 한 번</strong> 실행되어 골라낸 실제 구현체 주소를 GOT(Global Offset Table)의 <code>memcpy</code> 슬롯에 직접 써넣는다.</li><li>이후 프로그램 코드에서 <code>memcpy</code>를 호출하는 모든 지점은 PLT를 거쳐 이 GOT 슬롯을 읽는데, 이미 리졸버가 실제 주소로 채워놨기 때문에 매번 CPU 검사를 반복하지 않고 바로 최적화된 구현체로 점프한다.</li></ol>
+<h3>readelf/objdump에서 보이는 흔적</h3>
+<pre><code class="language-bash">$ readelf -r ./binary | grep IRELATIVE
+0000000000403ff8  0000000000000025 R_X86_64_IRELATIVE            403a10</code></pre>
+<p><code>R_X86_64_IRELATIVE</code>는 "이 GOT 슬롯의 값은 고정 주소가 아니라, 리졸버 함수(<code>403a10</code>)를 실행한 <strong>반환값</strong>으로 채워야 한다"는 뜻의 특수한 재배치 타입이다. 일반 함수 재배치(<code>R_X86_64_JUMP_SLOT</code>)와 다르다는 점이 IFUNC의 핵심 특징이다.</p>
+<p><code>nm</code>/<code>objdump --syms</code>로 심볼 타입을 보면 <code>IFUNC</code>로 표시된다:</p>
+<pre><code class="language-bash">$ objdump -t /lib/x86_64-linux-gnu/libc.so.6 | grep 'memcpy$'
+... IFUNC  memcpy</code></pre>
+<h3>리버싱에서 왜 헷갈리는가</h3>
+<p>디버거로 <code>call memcpy@plt</code>에 Step Into(F7)를 하면:</p>
+<ul><li><strong>정적 링킹 프로그램의 첫 실행</strong>이거나 리졸버가 아직 안 돌았다면 리졸버 함수 내부로 들어가서 CPUID 체크 코드를 보게 되어 "왜 memcpy가 이런 이상한 코드를 하지?"라고 당황할 수 있다.</li><li>리졸버가 이미 실행된 이후(대부분의 경우, 동적 링커가 프로그램 시작 전에 처리)라면 곧바로 <code>__memcpy_avx2_unaligned</code> 같은 실제 최적화 구현체로 들어간다 — <code>memcpy</code>라는 이름을 보고 Step Into 했는데 전혀 다른 이름의 함수 안에 있어서 "내가 잘못 들어왔나?" 싶을 수 있다.</li></ul>
+<h3>Windows에는 동일한 메커니즘이 없다</h3>
+<p>IFUNC는 ELF(Linux) 전용 메커니즘이다. Windows PE에는 표준화된 동일 기능이 없지만, 고성능 라이브러리(Intel MKL, 일부 게임 엔진, 최적화된 코덱 등)는 유사한 아이디어를 <strong>수작업으로</strong> 구현하기도 한다 — 프로그램 시작 시 <code>CPUID</code>를 검사해서 함수 포인터 전역 변수를 적절한 구현체로 설정해두고, 이후 모든 호출을 그 함수 포인터를 통해(간접 호출로) 수행하는 패턴이다. 이런 경우 IDA에서 "함수 포인터 초기화 루틴"과 "그 포인터를 쓰는 간접 호출들"을 찾으면 사실상 같은 원리를 발견할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">; 리졸버 함수 자체 (단순화)
+resolve_memcpy:
+    call    __get_cpu_features   ; CPUID 기반 기능 검사
+    test    eax, AVX2_BIT
+    jz      use_sse2
+    lea     rax, [rip+__memcpy_avx2_unaligned]
+    ret
+use_sse2:
+    lea     rax, [rip+__memcpy_sse2_unaligned]
+    ret</code></pre>
+<pre><code class="language-bash">$ readelf -r ./binary | grep -i irelative
+... R_X86_64_IRELATIVE ... &lt;resolve_memcpy의 주소&gt;</code></pre>
+<pre><code class="language-text">(gdb) b memcpy
+(gdb) run
+Breakpoint 1, __memcpy_avx_unaligned () from /lib/x86_64-linux-gnu/libc.so.6</code></pre>
+<p>GDB에서 <code>memcpy</code>에 브레이크포인트를 걸었는데 실제로 멈춘 곳의 이름이 <code>__memcpy_avx_unaligned</code>처럼 다른 이름으로 표시되는 것이 IFUNC가 이미 리졸브된 상태에서의 정상적인 모습이다.</p>
+<h2>가장 먼저 할 것</h2>
+<ol><li>함수 이름이 <code>memcpy</code>, <code>memset</code>, <code>memcmp</code>, <code>strlen</code>, <code>strcmp</code> 등 libc의 고성능 함수이고 Step Into 결과가 이상하게 낯설다면, 먼저 "이게 IFUNC일 수 있다"고 의심한다.</li><li><code>readelf -r</code>로 <code>IRELATIVE</code> 재배치가 있는지, <code>objdump -t</code>로 해당 심볼이 <code>IFUNC</code> 타입인지 확인한다.</li><li>실제 로직(무슨 일을 하는가)은 리졸버가 아니라 <strong>선택된 구현체 함수</strong> 안에 있으므로, 리졸버 코드 자체를 분석 대상으로 삼지 말고 최종적으로 호출되는 구현체로 넘어간다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) IFUNC 여부 확인</strong></p>
+<pre><code class="language-bash">readelf -r ./binary | grep IRELATIVE
+objdump -t ./binary | grep IFUNC</code></pre>
+<p><strong>2) 어떤 구현체가 선택됐는지 확인 (동적 분석)</strong> GDB로 실제 호출되는 함수 이름을 직접 확인하는 게 가장 확실하다.</p>
+<pre><code class="language-text">(gdb) b memcpy
+(gdb) run
+(gdb) bt          ; 백트레이스에 실제 진입한 구현체 이름이 보임</code></pre>
+<p><strong>3) 정적으로 리졸버 로직 확인 (선택)</strong> 리졸버 함수 자체를 IDA/Ghidra로 열어서 어떤 CPUID 비트를 검사하는지 보면, 이 라이브러리가 지원하는 구현체 종류(SSE2/AVX/AVX2/AVX512)를 목록으로 파악할 수 있다.</p>
+<p><strong>4) 실제 로직 분석은 선택된 구현체에서 진행</strong> 리졸버가 아니라 <code>__memcpy_avx2_unaligned</code> 같은 실제 구현체를 F5로 디컴파일해서 분석을 이어간다.</p>
+<h2>명령어/단축키</h2>
+<ul><li><code>readelf -r ./binary</code>, <code>readelf -d ./binary</code>(동적 섹션에서 <code>IRELATIVE</code> 관련 카운트 확인)</li><li><code>objdump -t ./binary</code>, <code>objdump -R ./binary</code>(동적 재배치 목록)</li><li>GDB/Pwndbg: <code>b memcpy</code>, <code>run</code>, <code>bt</code>, <code>info symbol $pc</code>(현재 실행 중인 실제 함수 이름 확인)</li><li>IDA: Imports/심볼 목록에서 <code>IFUNC</code> 타입 확인, 리졸버 함수 F5로 CPUID 분기 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>GDB에서 <code>memcpy</code>에 브레이크포인트를 걸었는데 멈춘 함수 이름이 <code>__memcpy_avx_unaligned</code>처럼 표시된다면, 이는 정상이며 IFUNC 리졸버가 이미 이 CPU에 맞는 구현체를 선택해뒀다는 뜻이다.</li><li><code>readelf -r</code>에서 <code>IRELATIVE</code> 항목의 개수가 많다면, 그 바이너리가 링크한 라이브러리(주로 glibc) 안에 CPU별 최적화 함수가 다수 포함되어 있다는 뜻이다 — 바이너리 자체의 로직과는 무관한 라이브러리 초기화 흔적이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>리졸버 함수의 CPUID 검사 로직을 프로그램의 "안티디버깅"이나 "핵심 로직"으로 오인하는 것 — 이는 순수하게 성능 최적화를 위한 라이브러리 초기화 코드다.</li><li>함수 이름이 <code>memcpy</code>인데 실제 실행되는 코드가 다른 이름(<code>__memcpy_avx2_unaligned</code>)이라고 해서 "후킹당했다"거나 "바이너리가 패치됐다"고 오판하는 것 — IFUNC의 정상 동작이다.</li><li>REV-0466(함수 복제, constprop/isra/part)과 이 개념을 혼동하는 것 — 함수 복제는 <strong>컴파일 시점</strong>에 호출 상수에 따라 여러 버전을 만드는 것이고, IFUNC 디스패치는 <strong>런타임에 CPU 기능</strong>에 따라 이미 만들어진 여러 구현체 중 하나를 선택하는 것으로 완전히 다른 메커니즘이다.</li><li>Windows PE 바이너리에서 IFUNC 관련 재배치 타입을 찾으려 하는 것 — ELF 전용 개념이므로 PE에는 존재하지 않는다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>실제로 호출되는 구현체를 못 찾겠다면 → 정적 분석 대신 GDB로 브레이크포인트를 걸어 동적으로 확인하는 게 가장 빠르다.</li><li>PLT/GOT 동작 자체가 헷갈린다면 → REV-0100(PLT와 GOT 기초)을 먼저 복습한다.</li><li>CPUID 분기 로직을 더 이해하고 싶다면 → REV-0086(CPUID) 문서를 참고한다.</li><li>함수가 왜 여러 버전으로 보이는지 다른 이유가 의심되면 → REV-0466(Function Cloning)과 이 글의 차이를 다시 비교한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — GDB로 실제 구현체 확인</strong></p>
+<pre><code class="language-text">$ gdb ./a.out
+(gdb) b memcpy
+Breakpoint 1 at 0x...: memcpy
+(gdb) run
+...
+Breakpoint 1, 0x00007ffff7... in __memcpy_avx_unaligned_erms ()
+   from /lib/x86_64-linux-gnu/libc.so.6</code></pre>
+<p><code>memcpy</code>에 건 브레이크포인트가 <code>__memcpy_avx_unaligned_erms</code>에서 멈췄다 — 이 시스템의 CPU가 AVX와 ERMS(Enhanced REP MOVSB/STOSB)를 지원해서 그 구현체가 선택됐다는 뜻이다.</p>
+<p><strong>예제 2 — readelf로 IRELATIVE 재배치 확인</strong></p>
+<pre><code class="language-bash">$ readelf -r ./a.out | grep IRELATIVE | wc -l
+23</code></pre>
+<p>glibc를 정적으로 일부 포함하거나 IFUNC를 쓰는 함수가 다수 링크된 바이너리에서는 이런 재배치가 여러 개 나타날 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0100-plt-got.html">REV-0100 — PLT와 GOT 기초</a></li><li><a href="rev-0086-cpuid.html">REV-0086 — CPUID: CPU 정보와 안티VM 단서</a></li><li><a href="rev-0466-function-cloning.html">REV-0466 — 함수가 여러 번 복제된 것처럼 보이는 이유(Function Cloning)</a></li><li><a href="rev-0447-memset-simd-pattern.html">REV-0447 — memset이 SIMD 명령으로 인라인되는 패턴</a></li><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>GNU Indirect Function(IFUNC) 메커니즘과 <code>STT_GNU_IFUNC</code> 심볼 타입: glibc 공식 문서 및 <code>elf(5)</code> man page, GNU Binutils 문서(<code>R_X86_64_IRELATIVE</code>) 기준.</li><li>glibc의 CPU별 <code>memcpy</code>/<code>strlen</code> 다중 구현과 런타임 선택: glibc 소스 트리(<code>sysdeps/x86_64/multiarch/</code>) 및 공식 glibc 위키(CPU dispatch) 기준.</li><li>위 예제 출력은 일반적인 x86-64 Linux/glibc 환경의 전형적인 결과를 재구성한 예시다(2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

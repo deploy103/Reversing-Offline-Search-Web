@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>.rsrc 섹션 트리 구조 자세히 읽는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>.rsrc 섹션 트리 구조 자세히 읽는 법</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">PE-bear</span><span class="tag">Resource Hacker</span><span class="tag">HxD</span></div>
+<h2>한 줄 요약</h2>
+<p><code>.rsrc</code> 섹션은 <code>IMAGE_RESOURCE_DIRECTORY</code>와 <code>IMAGE_RESOURCE_DIRECTORY_ENTRY</code>로 이루어진 Type→Name/ID→Language 3단계 트리이며, 각 엔트리의 최상위 비트가 "이게 이름 문자열인지 숫자 ID인지", "이게 하위 디렉터리로 더 내려가는지 아니면 실제 데이터인지"를 구분하는 스위치 역할을 하기 때문에, 이 하이비트 규칙을 알아야 Resource Hacker 같은 GUI 도구 없이도 직접 리소스를 파싱하거나 도구가 못 읽는 손상된/변조된 리소스를 손으로 분석할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Resource Hacker 같은 GUI 도구가 특정 리소스를 파싱하지 못하고 깨져 보일 때, 원인을 직접 헥스로 확인하고 싶을 때</li><li>직접 <code>.rsrc</code> 파서 스크립트를 짜야 하는데 <code>IMAGE_RESOURCE_DIRECTORY_ENTRY</code>의 <code>Name</code>/<code>OffsetToData</code> 필드의 하이비트 의미를 모를 때</li><li>리소스 이름이 숫자 ID가 아니라 문자열로 되어 있는 경우(예: 커스텀 리소스 타입 이름) 그 문자열이 실제로 어디에, 어떤 형식으로 저장되는지 궁금할 때</li><li>IDA의 리소스 뷰나 PE-bear의 <code>Resources</code> 트리에서 보이는 계층이 실제 파일 바이트 구조와 어떻게 대응되는지 확인하고 싶을 때</li><li>안티 리버싱 목적으로 리소스 디렉터리 구조 자체가 변조된 파일을 만났을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>세 단계 트리: Type → Name/ID → Language</h3>
+<p><code>.rsrc</code>는 <code>OptionalHeader.DataDirectory[IMAGE_DIRECTORY_ENTRY_RESOURCE]</code>(인덱스 2)가 가리키는 위치부터 시작하는 트리 구조다. 트리는 정확히 3단계로 구성된다.</p>
+<pre><code class="language-text">Level 1 (Type)      : RT_ICON, RT_VERSION, RT_MANIFEST, RT_RCDATA 등 리소스 종류
+  Level 2 (Name/ID)  : 같은 Type 안에서 개별 리소스를 구분하는 이름 또는 숫자 ID
+    Level 3 (Language): 언어별 버전(예: 0x0409=영어(미국), 0x0412=한국어)
+      → 실제 데이터(IMAGE_RESOURCE_DATA_ENTRY)</code></pre>
+<p>각 레벨은 동일한 형식의 <code>IMAGE_RESOURCE_DIRECTORY</code> 헤더로 시작하고, 그 뒤에 여러 개의 <code>IMAGE_RESOURCE_DIRECTORY_ENTRY</code>가 이어지는 동일한 패턴이 재귀적으로 반복된다.</p>
+<h3>IMAGE_RESOURCE_DIRECTORY</h3>
+<pre><code class="language-c">typedef struct _IMAGE_RESOURCE_DIRECTORY {
+    DWORD Characteristics;       // 사용 안 함, 항상 0
+    DWORD TimeDateStamp;
+    WORD  MajorVersion;
+    WORD  MinorVersion;
+    WORD  NumberOfNamedEntries;  // 이름(문자열)으로 된 엔트리 개수
+    WORD  NumberOfIdEntries;     // 숫자 ID로 된 엔트리 개수
+    // 이어서 (NumberOfNamedEntries + NumberOfIdEntries)개의
+    // IMAGE_RESOURCE_DIRECTORY_ENTRY 배열
+} IMAGE_RESOURCE_DIRECTORY;      // 16바이트 헤더</code></pre>
+<p>이름 엔트리가 항상 ID 엔트리보다 먼저 오도록 정렬되어 있다는 점이 중요하다. 즉 배열의 앞쪽 <code>NumberOfNamedEntries</code>개는 이름 기반, 나머지 <code>NumberOfIdEntries</code>개는 숫자 ID 기반이다.</p>
+<h3>IMAGE_RESOURCE_DIRECTORY_ENTRY와 하이비트 규칙</h3>
+<pre><code class="language-c">typedef struct _IMAGE_RESOURCE_DIRECTORY_ENTRY {
+    union {
+        struct {
+            DWORD NameOffset : 31;  // 이름 문자열의 오프셋(하이비트=1일 때)
+            DWORD NameIsString : 1; // 1이면 이름, 0이면 숫자 ID
+        };
+        DWORD Id;                  // NameIsString=0일 때 그냥 숫자 ID로 사용
+        DWORD Name;                // 원시 32비트 값(하이비트 포함)
+    };
+    union {
+        DWORD OffsetToData;          // 하이비트=0: 실제 데이터(IMAGE_RESOURCE_DATA_ENTRY)로의 오프셋
+        struct {
+            DWORD OffsetToDirectory : 31; // 하이비트=1: 하위 디렉터리로의 오프셋
+            DWORD DataIsDirectory : 1;
+        };
+    };
+} IMAGE_RESOURCE_DIRECTORY_ENTRY;  // 8바이트</code></pre>
+<p>핵심은 <strong>두 필드 모두 최상위 비트(<code>0x80000000</code>)가 스위치라는 것</strong>이다.</p>
+<ul><li><code>Name</code> 필드의 최상위 비트가 1이면, 나머지 31비트는 리소스 디렉터리 시작 위치(<code>.rsrc</code>의 base RVA)로부터의 오프셋이며, 그 위치에는 <code>IMAGE_RESOURCE_DIR_STRING_U</code>(WORD 길이 + UTF-16LE 문자열, 널 종료 없음)가 있다. 최상위 비트가 0이면 나머지 값은 그냥 숫자 ID(예: <code>RT_VERSION</code>=16, <code>RT_ICON</code>=3)다.</li><li><code>OffsetToData</code> 필드의 최상위 비트가 1이면, 나머지 31비트는 <strong>하위 <code>IMAGE_RESOURCE_DIRECTORY</code></strong>(다음 레벨)로의 오프셋이다. 최상위 비트가 0이면, 나머지 값은 실제 데이터를 가리키는 <code>IMAGE_RESOURCE_DATA_ENTRY</code>로의 오프셋이며, 이는 트리의 리프(맨 아래 Language 레벨)에서만 나타난다.</li></ul>
+<p>이 두 하이비트 규칙 덕분에 파서는 별도의 "이게 몇 단계인지" 메타데이터 없이도 트리를 재귀적으로 순회할 수 있다.</p>
+<h3>IMAGE_RESOURCE_DATA_ENTRY</h3>
+<p>트리의 리프에 도달하면 최종적으로 다음 구조체를 가리킨다.</p>
+<pre><code class="language-c">typedef struct _IMAGE_RESOURCE_DATA_ENTRY {
+    DWORD OffsetToData;  // 실제 리소스 바이트의 RVA(★ 이 필드만 예외적으로 RVA, 오프셋이 아님)
+    DWORD Size;           // 실제 리소스 바이트 크기
+    DWORD CodePage;
+    DWORD Reserved;
+} IMAGE_RESOURCE_DATA_ENTRY;</code></pre>
+<p>주의할 점은 <code>IMAGE_RESOURCE_DIRECTORY_ENTRY</code>의 오프셋들은 모두 "리소스 디렉터리 시작 위치로부터의 상대 오프셋"인데, <code>IMAGE_RESOURCE_DATA_ENTRY.OffsetToData</code>만 <strong>이미지 전체 기준 RVA</strong>라는 점이다. 이걸 혼동해서 리소스 디렉터리 base를 더해버리면 완전히 엉뚱한 위치를 읽게 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA 리소스 뷰나 PE-bear <code>Resources</code> 탭에서 Type/Name/Language 3단 트리가 폴더처럼 펼쳐져 보임</li><li>Resource Hacker의 좌측 트리도 동일하게 <code>RT_ICON → 101 → 1033(영어)</code> 같은 3단 경로로 표시됨</li><li>커스텀 리소스 타입(숫자가 아니라 <code>"MYDATA"</code>처럼 문자열 타입)을 쓰는 파일은 Type 레벨 엔트리의 <code>Name</code> 필드가 하이비트=1이고, 이는 표준 <code>RT_*</code> 상수를 쓰는 대다수 리소스와 다르게 도구에서 문자열 이름으로 표시됨</li><li>헥스 에디터로 <code>.rsrc</code> 시작 부분을 보면 16바이트 헤더 뒤에 8바이트 엔트리들이 촘촘히 이어지는 규칙적인 패턴이 보임</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>.rsrc</code>를 직접 파싱해야 한다면, 먼저 <code>IMAGE_DIRECTORY_ENTRY_RESOURCE</code>의 RVA를 "리소스 디렉터리 base"로 고정해두고, 이후 모든 <code>IMAGE_RESOURCE_DIRECTORY_ENTRY</code>의 오프셋 필드는 이 base에 대한 상대값이라는 점을 코드/메모 어디에나 명시해둔다. <code>IMAGE_RESOURCE_DATA_ENTRY.OffsetToData</code>만 예외적으로 이미지 전체 RVA라는 점을 반드시 별도로 처리한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 리소스 디렉터리 base 구하기</strong> <code>OptionalHeader.DataDirectory[2].VirtualAddress</code>가 Type 레벨 <code>IMAGE_RESOURCE_DIRECTORY</code>의 시작 RVA다. 이 값을 base로 저장해둔다.</p>
+<p><strong>2) Type 레벨 순회</strong> base 위치의 16바이트 헤더에서 <code>NumberOfNamedEntries + NumberOfIdEntries</code>개의 엔트리를 읽는다. 각 엔트리의 <code>Name</code>으로 리소스 종류(예: <code>RT_VERSION</code>=16)를 판별한다.</p>
+<p><strong>3) Name/ID 레벨로 내려가기</strong> <code>OffsetToData</code>의 하이비트가 1이면 <code>base + (OffsetToData &amp; 0x7FFFFFFF)</code> 위치에 있는 다음 <code>IMAGE_RESOURCE_DIRECTORY</code>로 이동해 2단계와 같은 방식으로 순회한다.</p>
+<p><strong>4) Language 레벨로 내려가서 데이터 획득</strong> 같은 방식으로 한 번 더 내려가면 리프에 도달한다. 이번엔 <code>OffsetToData</code>의 하이비트가 0이어야 하며, <code>base + OffsetToData</code> 위치의 <code>IMAGE_RESOURCE_DATA_ENTRY</code>를 읽는다. 그 안의 <code>OffsetToData</code>(이번엔 이미지 전체 RVA)와 <code>Size</code>로 실제 리소스 바이트를 읽는다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">IDA: 리소스 뷰(Resources) — Type/Name/Language 트리 클릭하며 탐색
+PE-bear: Resources 탭 — 트리 노드를 클릭하면 우측에 오프셋/크기/헥스 표시
+Resource Hacker: 좌측 트리 탐색, 우클릭 → Save Resource As Binary File로 원시 바이트 추출</code></pre>
+<h2>출력 해석</h2>
+<ul><li>Type 레벨 엔트리의 <code>Name</code> 하이비트가 0이고 값이 익숙한 <code>RT_*</code> 상수(3=아이콘, 16=버전 정보, 24=매니페스트 등)와 일치하면 표준 리소스</li><li>Type 레벨 엔트리의 <code>Name</code> 하이비트가 1이면 커스텀(문자열) 타입 — 그 이름 문자열이 무엇인지 확인해서 개발자가 임의로 정의한 리소스일 가능성을 염두에 두어야 함</li><li><code>NumberOfNamedEntries</code>가 비정상적으로 크거나(수천 개) <code>OffsetToData</code>가 <code>.rsrc</code> 섹션 크기를 넘어서는 값이면 리소스 디렉터리 자체가 변조/손상된 것으로 의심</li><li>트리가 3단계보다 깊거나 얕게 보이는 도구 출력이 있다면, 그 도구가 편의상 재구성한 표시 방식일 뿐이며 파일 실제 구조는 항상 정확히 3단계임을 기억해야 함(Type/Name/Language 셋 중 하나가 항상 단일 값이라 생략된 것처럼 보일 수 있음)</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>IMAGE_RESOURCE_DIRECTORY_ENTRY</code>의 오프셋 필드들을 이미지 전체 기준 RVA로 착각해서 리소스 디렉터리 base를 더하지 않고 읽는 것 — <code>IMAGE_RESOURCE_DATA_ENTRY.OffsetToData</code>만 예외적으로 RVA이고 나머지는 전부 base 상대 오프셋이다.</li><li>하이비트를 마스킹하지 않고 <code>OffsetToData</code>나 <code>Name</code> 값을 그대로 오프셋/ID로 써서 엉뚱한 위치를 읽는 것 — 반드시 <code>&amp; 0x7FFFFFFF</code>로 하위 31비트만 취해야 한다.</li><li><code>NumberOfNamedEntries</code>와 <code>NumberOfIdEntries</code>의 순서(이름이 항상 먼저)를 무시하고 배열을 순서 없이 순회하다가 이름/ID 판별을 잘못하는 것.</li><li><code>IMAGE_RESOURCE_DIR_STRING_U</code>가 널 종료 문자열이 아니라 <strong>길이 접두 UTF-16LE 문자열</strong>이라는 걸 모르고 널 바이트를 찾다가 파싱이 깨지는 것.</li><li>3단계 트리 깊이를 임의로 가정하고 재귀 없이 하드코딩된 3중 for문만 짜는 것 — 실제로는 항상 정확히 3단계이므로 이 자체는 맞지만, 코드에서 "하위 디렉터리인지 데이터인지"를 매번 하이비트로 재확인하지 않고 레벨 번호만으로 판단하면 변형된 파일에서 깨질 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>리소스 안에 숨겨진 페이로드를 찾는 실전 절차와 <code>RT_RCDATA</code> 위장 기법이 궁금하면 → <a href="rev-0141-resource-section.html">Resource Section과 숨겨진 데이터 확인</a></li><li>버전 정보 리소스(<code>RT_VERSION</code>)의 내부 구조와 단서를 자세히 보고 싶으면 → <a href="rev-0549-version-info-resource.html">버전 정보(Version Info) 리소스에서 단서 찾기</a></li><li>매니페스트(<code>RT_MANIFEST</code>) 리소스에서 실행 요구사항을 읽는 법이 궁금하면 → <a href="rev-0550-manifest-execution-requirements.html">매니페스트(Manifest)에서 실행 요구사항 확인하기</a></li><li>리소스 디렉터리의 RVA를 파일 오프셋으로 바꾸는 계산이 헷갈리면 → <a href="rev-0118-rva-va-raw-offset.html">RVA VA Raw Offset 계산</a></li></ul>
+<h2>미니 예제</h2>
+<p><code>.rsrc</code>가 RVA <code>0x2A000</code>에서 시작한다고 하자(base=<code>0x2A000</code>). Type 레벨 헤더를 읽으니 <code>NumberOfIdEntries=1</code>이고 엔트리 하나가 <code>Name=16</code>(<code>RT_VERSION</code>), <code>OffsetToData=0x80000028</code>이다. 하이비트가 1이므로 <code>0x2A000 + (0x28) = 0x2A028</code>에 Name/ID 레벨 디렉터리가 있다. 그곳의 엔트리는 <code>Name=1</code>(리소스 ID 1), <code>OffsetToData=0x80000040</code>이며, 다시 하이비트가 1이므로 <code>0x2A000+0x40=0x2A040</code>이 Language 레벨이다. 거기서 <code>Name=0x0412</code>(한국어), <code>OffsetToData=0x00000058</code>(하이비트 0)을 읽어 <code>0x2A000+0x58=0x2A058</code>의 <code>IMAGE_RESOURCE_DATA_ENTRY</code>를 확인하니 <code>OffsetToData=0x2A400</code>(이번엔 이미지 전체 RVA), <code>Size=0x2C0</code>이다. 최종적으로 RVA <code>0x2A400</code>부터 <code>0x2C0</code>바이트가 이 EXE의 한국어 버전 정보 원시 데이터다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0141-resource-section.html">REV-0141 — Resource Section과 숨겨진 데이터 확인</a></li><li><a href="rev-0549-version-info-resource.html">REV-0549 — 버전 정보(Version Info) 리소스에서 단서 찾기</a></li><li><a href="rev-0550-manifest-execution-requirements.html">REV-0550 — 매니페스트(Manifest)에서 실행 요구사항 확인하기</a></li><li><a href="rev-0551-icon-cursor-hidden-data.html">REV-0551 — 아이콘/커서 리소스에서 숨겨진 데이터 찾기</a></li><li><a href="rev-0118-rva-va-raw-offset.html">REV-0118 — RVA VA Raw Offset 계산</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>IMAGE_RESOURCE_DIRECTORY</code>, <code>IMAGE_RESOURCE_DIRECTORY_ENTRY</code>, <code>IMAGE_RESOURCE_DATA_ENTRY</code>, <code>IMAGE_RESOURCE_DIR_STRING_U</code> 구조체 정의와 하이비트 규칙: Microsoft Learn "PE Format" 공식 문서의 ".rsrc Section" 항목 기준 (2026-09-08 검증).</li><li>표준 <code>RT_*</code> 리소스 타입 상수: Microsoft Win32 리소스 관련 공식 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

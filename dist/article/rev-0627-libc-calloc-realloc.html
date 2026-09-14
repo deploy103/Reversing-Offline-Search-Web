@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>libc 함수 사전: calloc realloc 계열 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>libc 함수 사전: calloc realloc 계열</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">ltrace</span><span class="tag">objdump</span></div>
+<h2>한 줄 요약</h2>
+<p><code>calloc(nmemb, size)</code>은 <code>nmemb * size</code> 바이트를 확보하면서 <strong>0으로 초기화</strong>까지 해주는 함수이고, <code>realloc(ptr, size)</code>은 기존 힙 블록의 크기를 늘리거나 줄이면서 필요하면 새 위치로 데이터를 복사해주는 함수다 — 둘 다 인자 두 개(<code>rdi</code>, <code>rsi</code>)를 받는다는 점에서 <code>malloc</code>과 호출 패턴이 확연히 다르다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>call calloc@plt</code> 직전에 <code>rdi</code>, <code>rsi</code> 두 레지스터가 세팅되는 걸 보고 어느 게 개수고 어느 게 크기인지 헷갈릴 때</li><li><code>realloc</code> 호출 후 이전 포인터를 계속 쓰는 코드가 있어서 use-after-free 버그인지 판단하고 싶을 때</li><li><code>calloc(nmemb, size)</code>에서 <code>nmemb * size</code>가 정수 오버플로우를 일으켜 힙 취약점이 되는 패턴(CTF 단골)을 찾고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<pre><code class="language-c">void *calloc(size_t nmemb, size_t size);
+void *realloc(void *ptr, size_t size);</code></pre>
+<p><strong>calloc</strong>: SysV x64에서 <code>nmemb</code>는 <code>rdi</code>, <code>size</code>는 <code>rsi</code>로 전달된다. glibc 내부적으로 <code>nmemb * size</code>를 계산하기 전에 <strong>오버플로우 검사</strong>를 수행한다(<code>__libc_calloc</code>이 곱셈 결과가 <code>size_t</code> 범위를 넘는지 확인). 오버플로우가 감지되면 malloc을 호출하지 않고 즉시 <code>NULL</code>을 반환한다 — 이 검사 덕분에 <code>calloc(0x100000000, 0x100000000)</code> 같은 극단적 값도 안전하게 실패 처리된다(단, <code>nmemb*size</code>가 오버플로우 없이 계산 가능한 값이라면 그대로 큰 할당 시도).  <code>malloc(nmemb*size)</code> 로 직접 계산해서 넘기는 코드는 이 자동 검사가 없으므로, 프로그램이 <code>calloc</code> 대신 <code>malloc(n * sz)</code>를 직접 쓴다면 정수 오버플로우로 작은 청크가 할당되고 이후 큰 크기만큼 쓰기가 일어나는 힙 오버플로우가 가능하다 — CTF에서 자주 나오는 취약 패턴이다.</p>
+<p><code>calloc</code>이 반환하는 메모리는 malloc과 달리 <strong>반드시 전부 0으로 채워져 있다.</strong> 디스어셈블리에서 <code>calloc</code> 리턴 직후 <code>memset</code>이 없어도 값이 0이라는 걸 신뢰할 수 있다는 뜻이다.</p>
+<p><strong>realloc</strong>: <code>ptr</code>은 <code>rdi</code>, <code>size</code>는 <code>rsi</code>로 전달된다. 동작 규칙(POSIX/ISO C 기준):</p>
+<ul><li><code>ptr == NULL</code>이면 <code>malloc(size)</code>와 완전히 동일하게 동작한다.</li><li><code>size == 0</code>이고 <code>ptr != NULL</code>이면 (glibc 기준) <code>free(ptr)</code>과 동등하게 동작하고 <code>NULL</code>을 반환한다(C23 이전 표준에서는 구현 정의 영역이었으나 glibc는 이렇게 동작).</li><li>새 크기가 기존 청크 크기 이하로 줄어드는 경우, 여유가 있으면 <strong>같은 주소</strong>를 그대로 반환하는 경우가 많다(항상 그런 것은 아니다).</li><li>새 크기가 커서 현재 위치에서 확장할 수 없으면 새 청크를 <code>malloc</code>으로 확보하고, <code>memcpy</code>로 기존 데이터를 복사한 뒤, 기존 청크를 <code>free</code>하고 새 주소를 반환한다.</li><li><strong>실패 시(NULL 반환) 원본 <code>ptr</code>은 해제되지 않고 그대로 유효하다.</strong> <code>ptr = realloc(ptr, n)</code>처럼 원본 포인터에 결과를 바로 덮어쓰면, 실패했을 때 원본 포인터를 잃어버려 메모리 누수가 생기는 흔한 버그 패턴이다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>mov edi, N</code> / <code>mov esi, M</code> 두 레지스터 세팅 후 <code>call calloc@plt</code> — 인자가 두 개면 malloc이 아니라 calloc/realloc일 가능성이 크다.</li><li><code>call realloc@plt</code> 직전 <code>rdi</code>에 이전에 malloc/calloc이 반환했던 포인터 변수가 로드됨.</li><li>디컴파일러(IDA/Ghidra)에서 <code>v2 = calloc(count, 4);</code>처럼 두 인자가 그대로 보임 — 곱셈이 계산되는 지점을 xref로 따라가면 정수 오버플로우 취약점 여부를 판단할 수 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>호출부의 인자 개수(1개면 malloc/free류, 2개면 calloc/realloc)부터 구분한다. 그다음 첫 인자가 이전에 malloc이 반환했던 포인터인지(realloc), 아니면 단순 개수(nmemb)인지(calloc) 확인한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>objdump -d ./chall | grep -B6 'call.*calloc@plt\|call.*realloc@plt'</code>로 인자 세팅 코드 확인.</li><li>GDB에서 <code>break calloc</code>, <code>print/x $rdi</code>(nmemb), <code>print/x $rsi</code>(size)로 실제 곱셈 전 값 확인.</li><li><code>break realloc</code>, <code>print/x $rdi</code>(원본 포인터), <code>print/x $rsi</code>(새 크기)로 확인.</li><li><code>finish</code> 후 <code>print/x $rax</code>로 반환 주소가 원본과 같은지(같은 자리에서 확장) 다른지(새 위치로 이동) 비교.</li><li>calloc 오버플로우 의심 시 <code>nmemb</code>, <code>size</code> 두 값을 곱해 <code>0xFFFFFFFFFFFFFFFF</code>(64비트 <code>size_t</code> 최대값)를 넘는지 계산기로 직접 검산.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">objdump -d ./chall | grep 'calloc@plt\|realloc@plt'
+ltrace -e calloc+realloc ./chall</code></pre>
+<p>GDB/Pwndbg: <code>break calloc</code>, <code>break realloc</code>, <code>print/x $rdi</code>, <code>print/x $rsi</code>, <code>finish</code>, <code>chunk $rax</code></p>
+<h2>출력 해석</h2>
+<ul><li>calloc이 반환한 메모리를 <code>x/16xb &lt;addr&gt;</code>로 찍었을 때 전부 <code>0x00</code>이면 정상 — malloc과 구분하는 가장 확실한 방법이다.</li><li><code>realloc</code> 반환값이 원본과 같으면 "제자리 확장/축소", 다르면 "새 청크로 이동 후 기존 청크 free"라는 뜻이므로 이전 포인터를 계속 참조하는 코드가 있다면 use-after-free 가능성을 의심한다.</li><li><code>realloc(ptr, 0)</code> 호출 직후 반환값이 <code>NULL</code>이면 정상 동작(free와 동등)이지 실패가 아니다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>calloc(a, b)</code>의 인자 순서를 <code>malloc(a*b)</code>와 동일하게 생각해 어느 게 개수고 어느 게 크기인지 신경 쓰지 않는 것 — 시그니처상 순서가 고정되어 있어 gdb에서 <code>rdi</code>/<code>rsi</code>를 각각 정확히 라벨링해야 한다.</li><li><code>realloc</code>이 실패하면 원본 포인터가 자동으로 해제된다고 착각하는 것 — 실패해도 원본은 살아있다.</li><li><code>realloc</code>이 항상 새 주소를 반환한다고 가정하고 이전 포인터를 즉시 못 쓰게 만드는 코드를 찾는 것 — 축소나 여유 공간이 있는 확장은 같은 주소를 반환할 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>malloc/free 기본 동작이 먼저 헷갈리면 → REV-0626.</li><li>힙 함수 호출 로그를 빠르게 보고 싶으면 → REV-0111(ltrace).</li><li>SysV 호출 규약에서 두 번째 인자가 어느 레지스터인지 다시 확인하려면 → REV-0106.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">int *arr = calloc(10, sizeof(int));   // rdi=10, rsi=4, 전부 0으로 초기화됨
+arr = realloc(arr, 20 * sizeof(int)); // rdi=이전 arr, rsi=80</code></pre>
+<pre><code class="language-gdb">(gdb) break calloc
+(gdb) run
+(gdb) print/x $rdi
+$1 = 0xa
+(gdb) print/x $rsi
+$2 = 0x4
+(gdb) finish
+Value returned is $3 = (void *) 0x5555555592a0
+(gdb) x/10xw 0x5555555592a0
+0x5555555592a0: 0x00000000 0x00000000 0x00000000 0x00000000
+...</code></pre>
+<p>10개 워드 전부 <code>0x00000000</code>으로 초기화되어 있는 것이 <code>malloc</code>과의 핵심 차이임을 확인할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0626-libc-malloc-free.html">REV-0626 — libc 함수 사전: malloc free 계열</a></li><li><a href="rev-0631-libc-memmove-memset-memchr.html">REV-0631 — libc 함수 사전: memmove memset memchr</a></li><li><a href="rev-0111-ltrace-basics.html">REV-0111 — ltrace로 라이브러리 호출 빠르게 보기</a></li><li><a href="rev-0106-sysv-amd64-calling-convention.html">REV-0106 — SysV AMD64 Calling Convention</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>calloc</code>/<code>realloc</code> 함수 시그니처와 표준 동작 규칙(ptr=NULL, size=0 처리): ISO C 표준(C11 7.22.3) 및 Linux man-pages <code>malloc(3)</code> 기준.</li><li>glibc calloc의 곱셈 오버플로우 자체 검사(<code>__libc_calloc</code>): glibc 소스코드(<code>malloc/malloc.c</code>)에 공개된 구현 로직 기준 서술.</li><li>realloc의 제자리 확장/이동 동작: glibc <code>malloc.c</code>의 <code>_int_realloc</code> 구현 및 다수의 공개 힙 익스플로잇 자료(how2heap) 기준 서술.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

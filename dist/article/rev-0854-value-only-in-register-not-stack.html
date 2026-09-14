@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>스택에서 원하는 값이 안 보일 때(레지스터에만 있을 때) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>스택에서 원하는 값이 안 보일 때(레지스터에만 있을 때)</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>컴파일러 최적화(<code>-O1</code> 이상, Release 빌드)는 자주 쓰이는 지역 변수를 스택에 아예 쓰지 않고 레지스터 안에서만 계속 굴리는 경우가 많다 — 이럴 땐 스택 덤프를 아무리 뒤져도 그 값이 안 보이는 게 정상이며, 레지스터 창/<code>info registers</code>를 직접 봐야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리나 소스에서 분명히 존재하는 변수인데, 스택 덤프(Hex 뷰/<code>x</code> 명령)를 아무리 찾아도 그 값이 안 보일 때</li><li>GDB <code>info locals</code>나 <code>print 변수명</code>이 <code>&lt;optimized out&gt;</code>이라고 답할 때</li><li>Release/최적화 빌드 바이너리를 분석 중인데 Debug 빌드에서 봤던 스택 레이아웃과 완전히 다르게 보일 때</li><li>루프 카운터나 임시 계산 결과가 스택 어디에도 안 쓰이고 사라진 것처럼 보일 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 변수가 스택에 없을 수 있는가</h3>
+<p>스택에 값을 쓰고 읽는 것(<code>mov [rbp-0x8], eax</code> 등)은 메모리 접근이라 레지스터 접근보다 느리다. 컴파일러는 최적화 시 레지스터가 남는 한 자주 쓰는 지역 변수를 계속 레지스터에만 두고(레지스터 할당, register allocation), 그 함수가 끝나거나 그 레지스터가 다른 용도로 필요해질 때만 스택에 "흘려보낸다"(spill). 흘려보낼 필요가 아예 없다면(변수가 함수 안에서만 쓰이고 주소를 아무도 안 가져간다면) 스택에는 끝까지 안 나타날 수 있다.</p>
+<h3><code>&amp;변수</code>(주소를 취하는 코드)가 있으면 스택에 강제로 실린다</h3>
+<p><code>scanf("%d", &amp;x)</code>처럼 변수의 주소를 다른 함수에 넘기는 코드가 있다면, 컴파일러는 그 변수가 반드시 메모리 주소를 가져야 하므로 레지스터에만 둘 수 없다. 이런 변수는 최적화가 걸려도 스택에 나타난다. 반대로 사칙연산 중간 결과나 반복문 카운터처럼 주소를 아무도 안 가져가는 값은 레지스터에만 머물기 쉽다.</p>
+<h3>GDB의 <code>&lt;optimized out&gt;</code>은 "값이 사라졌다"가 아니라 "디버그 정보가 위치를 추적 못 한다"는 뜻</h3>
+<p><code>&lt;optimized out&gt;</code>이 뜬다고 그 값이 실제로 없는 것은 아니다. 대부분 그 순간 어떤 레지스터에는 반드시 존재한다. 다만 디버그 정보(DWARF)가 "이 시점에 이 변수는 이 레지스터에 있다"는 정보를 제공하지 않거나, GDB가 그 정보를 표시 못 하는 경우 <code>&lt;optimized out&gt;</code>으로 뭉뚱그려 표시한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-gdb">(gdb) info locals
+result = &lt;optimized out&gt;
+i = &lt;optimized out&gt;</code></pre>
+<pre><code class="language-gdb">(gdb) x/4xw $rsp
+0x7fffffffe410: 0x00000000 0x00401520 0x00000001 0x7fffe4a0</code></pre>
+<p>스택 어디에도 예상한 값이 안 보이는데, 정작 그 값은 어셈블리 상 <code>eax</code>/<code>ebx</code> 같은 레지스터에서 계속 쓰이고 있는 것이 디스어셈블리로는 확인됨.</p>
+<h2>가장 먼저 할 것</h2>
+<p><code>info locals</code>가 <code>&lt;optimized out&gt;</code>을 내놓으면 스택 대신 바로 <code>info registers</code>(GDB) 또는 레지스터 창(x64dbg)을 확인한다. 그 값을 만들어내는 직전 명령어(디스어셈블리)를 보고 어떤 레지스터로 결과가 들어가는지부터 확인하는 것이 더 빠르다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 디스어셈블리로 값이 어느 레지스터에 있는지 먼저 확인</strong></p>
+<pre><code class="language-gdb">(gdb) disassemble
+=&gt; 0x0000000000401203 &lt;+10&gt;:  mov    eax, DWORD PTR [rbp-0x4]
+   0x0000000000401206 &lt;+13&gt;:  add    eax, 0x1
+   0x0000000000401209 &lt;+16&gt;:  mov    DWORD PTR [rbp-0x4], eax</code></pre>
+<p>이런 경우는 스택에도 쓰이므로 문제가 안 된다. 반대로 아래처럼 스택 접근 없이 레지스터끼리만 연산하는 구간이라면:</p>
+<pre><code class="language-gdb">0x0000000000401230 &lt;+40&gt;:  add    ebx, eax
+0x0000000000401232 &lt;+42&gt;:  cmp    ebx, 0x64</code></pre>
+<p><code>ebx</code>가 스택에 한 번도 안 실린 채 계속 누적되고 있는 것이다. 이 값을 보려면 <code>info registers ebx</code> 또는 <code>print $ebx</code>를 써야 한다.</p>
+<p><strong>2) 레지스터 직접 확인</strong></p>
+<pre><code class="language-gdb">(gdb) print $eax
+(gdb) info registers eax ebx</code></pre>
+<p><strong>3) 값의 변화를 스택 대신 레지스터로 추적</strong></p>
+<pre><code class="language-gdb">(gdb) display $ebx
+(gdb) stepi</code></pre>
+<p><code>display</code>로 등록해두면 한 스텝씩 진행할 때마다 자동으로 그 레지스터 값을 출력해준다(REV-0172 참고).</p>
+<p><strong>4) 스택에 강제로 실리게 하고 싶다면 디버그 빌드로 재현</strong> 분석 대상 소스가 있다면 <code>-O0</code>(GCC/Clang) 또는 Debug 구성(MSVC)으로 다시 빌드해 비교해보면, 최적화가 어떤 변수를 레지스터에만 뒀는지 정확히 확인할 수 있다. 소스가 없다면 이 방법은 쓸 수 없고 레지스터 추적만으로 분석을 이어간다.</p>
+<p><strong>5) x64dbg에서도 동일 — Registers 창 우선 확인</strong> CPU 창 오른쪽 Registers 패널에서 해당 레지스터 값을 직접 보고, 코드가 스택(<code>[rbp-X]</code>)을 안 건드리는 구간이면 Dump 창에서 찾을 이유가 없다는 것을 먼저 인지한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-gdb">(gdb) info locals
+(gdb) info registers [REG]
+(gdb) print $REG
+(gdb) display $REG
+(gdb) disassemble
+(gdb) stepi / si</code></pre>
+<pre><code>x64dbg: Registers 패널(우측 상단), Watch 창에 레지스터 추가, F7(Step Into)로 값 변화 관찰</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>info locals</code>의 <code>&lt;optimized out&gt;</code> → 스택이 아니라 레지스터에 있다는 신호. 절대 "값이 사라졌다"로 해석하지 말 것.</li><li>디스어셈블리에서 특정 레지스터가 여러 명령어에 걸쳐 스택 접근(<code>[rbp-...]</code>, <code>[rsp+...]</code>) 없이 계속 재사용되면, 그 값은 끝까지 레지스터에만 머무는 변수다.</li><li>함수 마지막 부분에서 갑자기 <code>mov [rbp-0x8], eax</code>처럼 스택에 쓰는 명령이 나타난다면, 그 지점에서만 잠깐 spill된 것 — 그 지점 이후에는 스택에서도 확인 가능해진다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>info locals</code>가 <code>&lt;optimized out&gt;</code>이라고 나오면 "이 변수는 이제 못 본다"고 포기하는 것 — 대부분 레지스터에서 그대로 확인 가능하다.</li><li>최적화 빌드에서 Debug 빌드와 똑같은 스택 오프셋 레이아웃을 기대하는 것 — 최적화 여부에 따라 스택 프레임 자체가 완전히 달라진다.</li><li>레지스터 값을 한 번만 확인하고 스텝마다 다시 확인 안 해서, 그 값이 다른 함수 호출로 덮어써진 것을 놓치는 것 — 함수 호출(<code>call</code>)을 지나면 caller-saved 레지스터(RAX, RCX, RDX 등)는 값이 보존된다는 보장이 없다.</li><li><code>display</code>를 등록해놓고 레지스터 폭(32비트 <code>eax</code>/64비트 <code>rax</code>)을 헷갈려서 상위 비트 값을 놓치는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>레지스터 값을 실행 중 추적하는 기본기가 필요하다면 → REV-0172 레지스터 값을 실행 중 추적하는 법.</li><li>스택 값 추적 기본기가 궁금하다면 → REV-0173 스택 값을 실행 중 추적하는 법.</li><li>전역/지역 변수가 메모리 어디에 위치하는지 개념 자체가 헷갈린다면 → REV-0353 전역 변수와 지역 변수를 메모리 위치로 구분하는 법.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-gdb">(gdb) break loop_check
+(gdb) run
+(gdb) info locals
+count = &lt;optimized out&gt;
+(gdb) disassemble
+=&gt; 0x0000000000401230 &lt;+16&gt;:  add    ebx, 0x1
+   0x0000000000401233 &lt;+19&gt;:  cmp    ebx, 0x64
+   0x0000000000401236 &lt;+22&gt;:  jne    0x401230
+(gdb) print $ebx
+$1 = 12
+(gdb) display $ebx
+(gdb) stepi
+1: $ebx = 13</code></pre>
+<p><code>info locals</code>는 <code>count</code>를 못 찾았지만, 디스어셈블리를 보니 <code>ebx</code>가 그 역할을 하고 있었고 <code>print $ebx</code>로 정상적으로 값을 확인할 수 있었다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0172-tracing-registers.html">REV-0172 — 레지스터 값을 실행 중 추적하는 법</a></li><li><a href="rev-0173-tracing-stack.html">REV-0173 — 스택 값을 실행 중 추적하는 법</a></li><li><a href="rev-0353-global-vs-local-variable-location.html">REV-0353 — 전역 변수와 지역 변수를 메모리 위치로 구분하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>컴파일러 최적화 시 레지스터 할당(register allocation)과 스택 spill 동작: GCC/LLVM 최적화 문서(레지스터 할당 일반 이론) 및 DWARF 디버깅 정보 표준의 위치 표현식(location expression) 개념 기준.</li><li>GDB <code>&lt;optimized out&gt;</code>이 변수의 메모리/레지스터 위치를 디버그 정보로 추적할 수 없을 때 표시되는 동작: GDB 공식 매뉴얼 "Variables" 챕터 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AT_RANDOM과 스택 카나리 초기화 관계 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>AT_RANDOM과 스택 카나리 초기화 관계</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>스택 카나리(<code>__stack_chk_guard</code>) 값은 프로그램이 실행될 때마다 커널이 스택에 심어주는 16바이트 난수인 <code>AT_RANDOM</code>에서 나오며, glibc가 이 중 8바이트를 잘라 최상위 바이트를 0으로 만든 뒤 스레드 제어 블록(TCB)에 저장해 매 함수 호출마다 <code>fs</code> 세그먼트를 통해 검증한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>GDB에서 <code>p/x $fs_base</code> 또는 <code>x/2gx $fs_base+0x28</code>로 카나리를 직접 읽어보고 싶을 때</li><li>같은 바이너리를 재실행할 때마다 카나리 값이 달라지는데, 그 값이 어디서 나오는지 원리가 궁금할 때</li><li>디스어셈블리에서 <code>mov rax, fs:0x28</code> 같은 코드를 보고 이게 무슨 뜻인지 모를 때</li><li>카나리 leak 익스플로잇을 짜다가 "카나리의 최하위 바이트는 항상 0x00"이라는 규칙의 근거를 확인하고 싶을 때</li><li><code>LD_SHOW_AUXV=1</code>로 실행했을 때 <code>AT_RANDOM</code> 항목을 보고 이게 카나리와 무슨 관계인지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>AT_RANDOM이란</h3>
+<p>리눅스 커널은 ELF 바이너리를 실행할 때(<code>execve</code> 처리 중, <code>fs/binfmt_elf.c</code>의 <code>create_elf_tables</code>) 스택 최상단 근처에 커널이 직접 생성한 16바이트 난수를 심어두고, 이 메모리 주소를 auxiliary vector(auxv, REV-0677 참고)의 <code>AT_RANDOM</code>(타입 번호 25) 엔트리에 담아 프로그램에 전달한다. 이 16바이트는 <code>/dev/urandom</code>과 같은 커널 난수 생성기에서 뽑히며, 프로세스마다(즉 실행할 때마다) 새로 생성된다.</p>
+<p>이 16바이트는 원래 두 가지 용도로 쓰인다.</p>
+<ol><li>glibc가 스택 카나리(<code>__stack_chk_guard</code>) 값을 만드는 재료로 쓴다.</li><li>glibc가 포인터 암호화(pointer guard, <code>PTR_MANGLE</code>/<code>PTR_DEMANGLE</code>에 쓰이는 <code>__pointer_chk_guard</code>) 값을 만드는 재료로도 쓴다.</li></ol>
+<h3>카나리 값이 만들어지는 과정</h3>
+<p>정적 실행 파일이든 동적 실행 파일이든, 프로그램이 <code>_start</code> → <code>__libc_start_main</code>(glibc 2.34 이후에는 <code>__libc_start_main</code>이 <code>_start</code>에 인라인되어 사라졌지만 역할은 동일하게 초기화 코드가 수행) 경로를 거치는 동안 <code>security_init()</code>이라는 내부 함수가 호출된다. 이 함수 안에서 다음과 같은 일이 일어난다(glibc <code>csu/libc-start.c</code>, <code>sysdeps/generic/dl-osinfo.h</code> 기준 로직).</p>
+<ol><li>동적 로더(또는 정적 바이너리의 자체 초기화 코드)가 auxv를 스캔해 <code>AT_RANDOM</code> 엔트리의 값(포인터)을 <code>_dl_random</code>이라는 전역 변수에 저장한다.</li><li><code>_dl_setup_stack_chk_guard(_dl_random)</code> 함수가 이 포인터가 가리키는 16바이트 중 앞의 8바이트(64비트 기준, <code>sizeof(uintptr_t)</code>만큼)를 <code>memcpy</code>로 복사한다.</li><li>복사한 8바이트 정수의 <strong>최상위 바이트(리틀엔디언 기준으로는 메모리상 가장 마지막 바이트)를 강제로 0x00으로 덮어쓴다.</strong></li><li>이렇게 만들어진 값을 <code>__stack_chk_guard</code>(전역 변수 위치가 아니라 TCB 내부, x86-64에서는 <code>fs:0x28</code>)에 저장한다.</li><li><code>AT_RANDOM</code>을 구하지 못하는 예외적 환경(아주 오래된 커널 등)이면, 대신 <code>{0, 랜덤하지 않은 고정 패턴, '\n', 0xff}</code> 형태의 폴백 값을 쓴다 — 이 경우는 사실상 카나리가 무력화된 것과 같으므로 최신 커널/glibc 조합에서는 거의 볼 일이 없다.</li></ol>
+<p>이 "최상위 바이트를 0으로 만든다"는 규칙이 실무에서 자주 언급되는 <strong>"카나리는 항상 널 바이트로 시작한다"</strong>는 특성의 정체다. 스택은 높은 주소에서 낮은 주소로 자라고, 버퍼 오버플로우는 낮은 주소(버퍼)에서 높은 주소(카나리, 저장된 RBP, 리턴 주소) 방향으로 덮어쓰기 때문에, 버퍼 바로 위에 위치한 카나리의 첫 바이트가 항상 0x00이라는 사실은 <code>strcpy</code>/<code>gets</code>류의 문자열 함수 오버플로우가 카나리를 "우연히" 건드리지 못하게 막는 효과를 낸다 — 널 바이트를 만나면 문자열 함수가 복사를 멈추기 때문이다. 반대로 이 성질은 카나리를 한 바이트씩 brute-force하는 공격(포크 서버 환경에서 카나리의 첫 바이트가 항상 0x00이라는 걸 알고 나머지 7바이트만 추측)에도 그대로 이용된다.</p>
+<h3>TCB와 fs:0x28</h3>
+<p>x86-64 리눅스에서 스레드별 데이터(TCB, Thread Control Block)는 <code>fs</code> 세그먼트 레지스터가 가리키는 영역에 있다(REV-0680 TLS 세그먼트 참고). glibc의 TCB 구조체(<code>tcbhead_t</code>) 안에는 <code>stack_guard</code>라는 필드가 있고, 이 필드의 오프셋이 바로 <code>0x28</code>이다. 그래서 컴파일러(gcc <code>-fstack-protector</code>)가 생성하는 함수 프롤로그/에필로그 코드는 전역 변수를 참조하는 대신 항상 <code>fs:0x28</code>을 직접 읽는다.</p>
+<pre><code class="language-asm">; 프롤로그: 카나리를 스택에 복사
+mov    rax, fs:0x28
+mov    [rbp-0x8], rax
+xor    eax, eax          ; 카나리 값 자체는 레지스터에 남기지 않음
+
+; 에필로그: 검증
+mov    rax, [rbp-0x8]
+xor    rax, fs:0x28
+je     ok
+call   __stack_chk_fail
+ok:
+leave
+ret</code></pre>
+<p><code>fs:0x28</code>을 직접 참조하기 때문에 카나리 값은 전역 심볼로 존재하지 않고, GOT 조작이나 데이터 세그먼트 덮어쓰기로는 건드릴 수 없다 — TCB 자체를 덮어써야 한다는 뜻이다. 32비트 x86 리눅스에서는 <code>fs</code> 대신 <code>gs</code> 세그먼트를 사용해 같은 역할을 한다(<code>mov eax, gs:0x14</code>가 전형적인 패턴).</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>디스어셈블리 함수 프롤로그에 <code>mov rax, fs:0x28</code>(x64) 또는 <code>mov eax, gs:0x14</code>(x86)가 보이면 스택 프로텍터가 켜진 함수다.</li><li>GDB에서 <code>info auxv</code> 실행 시 <code>AT_RANDOM  0x7fffffffe1c9</code> 같은 항목이 보인다.</li><li>같은 바이너리를 여러 번 실행했을 때 <code>p $rbp-0x8</code>(또는 카나리 저장 위치)에서 읽히는 값이 매번 다르다.</li><li>카나리 값을 16진수로 덤프하면 특정 1바이트(리틀엔디언 메모리 배치에서 버퍼에 가장 가까운 바이트)가 항상 <code>00</code>으로 고정되어 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>checksec</code>으로 <code>Canary found</code>가 뜬 바이너리를 분석할 때는, 카나리를 "그냥 랜덤 상수"로 취급하지 말고 이 값이 <code>AT_RANDOM</code> → glibc 초기화 → TCB(<code>fs:0x28</code>) 경로로 매 실행마다 새로 만들어진다는 점을 먼저 확인한다. GDB에서 <code>info auxv</code>로 <code>AT_RANDOM</code> 주소를 확인하고, 그 주소를 직접 덤프해서 카나리 값과 어떻게 연결되는지 눈으로 확인하면 이후 leak/브루트포스 전략을 세우기 훨씬 쉬워진다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) auxv에서 AT_RANDOM 주소 확인</strong></p>
+<pre><code class="language-gdb">gdb ./chall
+break main
+run
+info auxv</code></pre>
+<p>출력 예:</p>
+<pre><code>33   AT_SYSINFO_EHDR      System-supplied DSO's ELF header  0x7ffff7fc9000
+25   AT_RANDOM            Address of 16 random bytes        0x7fffffffe1c9
+...</code></pre>
+<p><strong>2) 그 16바이트를 직접 덤프</strong></p>
+<pre><code class="language-gdb">x/16bx 0x7fffffffe1c9</code></pre>
+<p><strong>3) 실제 카나리 값(TCB의 fs:0x28)과 비교</strong></p>
+<pre><code class="language-gdb">p/x $fs_base
+x/gx $fs_base+0x28</code></pre>
+<p><code>AT_RANDOM</code>이 가리키는 16바이트 중 앞 8바이트를 최상위 바이트만 0으로 바꾼 값이 <code>fs_base+0x28</code>에 그대로 들어있는 것을 확인할 수 있다.</p>
+<p><strong>4) 함수 스택 프레임에 복사된 카나리 확인</strong></p>
+<pre><code class="language-gdb">disassemble main</code></pre>
+<p>프롤로그에서 <code>mov rax,fs:0x28</code> 다음에 어느 스택 오프셋(<code>[rbp-0x8]</code> 등)에 저장하는지 확인하고, 그 위치를 <code>x/gx $rbp-8</code>로 조회하면 같은 값이 보인다.</p>
+<p><strong>5) Pwndbg로 더 빠르게 확인</strong></p>
+<pre><code class="language-gdb">canary</code></pre>
+<p>Pwndbg는 <code>canary</code> 명령 한 번으로 현재 프로세스의 카나리 값과 저장 위치를 바로 보여준다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-gdb">info auxv
+x/16bx &lt;AT_RANDOM 주소&gt;
+p/x $fs_base
+x/gx $fs_base+0x28
+canary          ; Pwndbg 전용</code></pre>
+<pre><code class="language-bash">LD_SHOW_AUXV=1 ./chall     # 실행 전 auxv를 텍스트로 덤프
+cat /proc/&lt;pid&gt;/auxv | xxd  # 실행 중인 프로세스의 auxv 원본 바이트 확인</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>info auxv</code>의 <code>AT_RANDOM</code> 줄 오른쪽 주소는 "16바이트 난수가 저장된 스택 위의 위치"이지 카나리 값 자체가 아니다. 반드시 그 주소를 다시 덤프해야 실제 바이트를 볼 수 있다.</li><li><code>x/gx $fs_base+0x28</code>로 읽은 8바이트 값이 곧 <code>__stack_chk_guard</code>이며, 스택 프레임에 저장된 카나리와 동일해야 정상이다. 값이 다르면 이미 스택 프레임이 오염되었거나 다른 스레드를 보고 있는 것이다.</li><li>카나리 값을 리틀엔디언 그대로 화면에 출력하면(<code>p/x</code>) 마지막 표시 자리(가장 낮은 주소, 즉 메모리에 저장될 때 버퍼와 인접한 바이트)가 <code>00</code>으로 끝나는 패턴을 볼 수 있다. 예를 들어 <code>0x7a3c91de00000000</code>처럼 나온다면 이는 정수로 볼 때 최상위 바이트가 0인 것이고, 메모리에는 <code>00 00 00 00 de 91 3c 7a</code> 순서로 저장되어 버퍼 쪽 첫 바이트가 널이 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>카나리를 "컴파일 시점에 고정된 상수"로 착각하는 것 — 실제로는 실행할 때마다 커널이 새로 뽑은 난수에서 파생되므로, 정적 분석만으로는 값을 알 수 없고 반드시 leak을 통해서만 알아낼 수 있다.</li><li><code>AT_RANDOM</code> 주소에 담긴 16바이트를 그대로 카나리라고 착각하는 것 — 실제 카나리는 그중 앞 8바이트를 가공(최상위 바이트를 0으로)한 값이다. 나머지 8바이트는 포인터 가드(<code>__pointer_chk_guard</code>, <code>PTR_MANGLE</code>)를 만드는 데 쓰인다.</li><li>32비트 바이너리에서 <code>fs</code> 세그먼트를 찾으려 하는 것 — x86(32비트)에서는 <code>gs</code>가 TLS/TCB 세그먼트다.</li><li>카나리와 ASLR을 혼동하는 것 — 둘 다 <code>AT_RANDOM</code>처럼 커널 난수에 의존하지만, ASLR은 매핑 베이스 주소를 무작위화하는 것이고 카나리는 스택 오버플로우로 리턴 주소를 덮기 전에 감지하기 위한 값이다. 서로 독립적인 보호 기법이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>auxv 전체 구조와 다른 <code>AT_*</code> 항목들이 궁금하다면 → REV-0677 ELF Auxiliary Vector 개요</li><li><code>fs:0x28</code>이 왜 TCB에 있는지, TLS 세그먼트 구조 자체가 궁금하다면 → REV-0680 Thread Local Storage가 ELF에서 구현되는 방식</li><li>카나리를 포함한 다른 보호 기법(NX, PIE, RELRO)까지 한 번에 정리하고 싶다면 → REV-0105 Canary NX PIE RELRO 한 번에 이해</li><li><code>_start</code>부터 <code>main</code>까지 초기화 흐름 전체가 궁금하다면 → REV-0097 ELF Entry Point에서 main까지, REV-0099 __libc_start_main이 무엇이고 main을 찾는 법</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+void vuln(void) {
+    char buf[16];
+    gets(buf);   // 카나리로 보호되는 취약한 함수
+}
+
+int main(void) {
+    vuln();
+    return 0;
+}</code></pre>
+<pre><code class="language-bash">$ gcc -fstack-protector-all -o demo demo.c
+$ gdb ./demo
+(gdb) disassemble vuln
+...
+   0x0000...11c9 &lt;+0&gt;:  push   rbp
+   0x0000...11ca &lt;+1&gt;:  mov    rbp,rsp
+   0x0000...11cd &lt;+4&gt;:  sub    rsp,0x20
+   0x0000...11d1 &lt;+8&gt;:  mov    rax,QWORD PTR fs:0x28
+   0x0000...11da &lt;+17&gt;: mov    QWORD PTR [rbp-0x8],rax
+...
+(gdb) info auxv
+25   AT_RANDOM  Address of 16 random bytes  0x7fffffffdf29
+(gdb) x/16bx 0x7fffffffdf29
+0x7fffffffdf29: 0xf3 0x0a 0x2c ... (16바이트)
+(gdb) x/gx $fs_base+0x28
+0x7ffff7fbd728: 0x00e5b1a3f30a2cf3</code></pre>
+<p><code>AT_RANDOM</code>이 가리키는 16바이트 중 앞 8바이트(<code>f3 0a 2c ... a3</code>를 리틀엔디언 정수로 읽은 값)에서 최상위 바이트만 <code>00</code>으로 바뀐 값이 그대로 카나리로 쓰이는 것을 볼 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0677-auxiliary-vector-auxv.html">REV-0677 — ELF Auxiliary Vector(auxv) 개요</a></li><li><a href="rev-0680-tls-segment.html">REV-0680 — Thread Local Storage가 ELF에서 구현되는 방식(TLS 세그먼트)</a></li><li><a href="rev-0105-binary-protections-overview.html">REV-0105 — Canary NX PIE RELRO 한 번에 이해</a></li><li><a href="rev-0099-libc-start-main.html">REV-0099 — __libc_start_main이 무엇이고 main을 찾는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>_dl_setup_stack_chk_guard</code>, <code>AT_RANDOM</code> 기반 카나리 생성 로직(최상위 바이트를 0으로 마스킹): glibc <code>sysdeps/generic/dl-osinfo.h</code> / <code>sysdeps/unix/sysv/linux/dl-osinfo.h</code> 소스 및 관련 논의(sourceware.org libc-alpha/libc-hacker 메일링 리스트, Jakub Jelinek의 stack protector 패치) 기준.</li><li><code>AT_RANDOM</code> auxv 타입 번호(25) 및 커널의 16바이트 난수 제공: Linux 커널 <code>fs/binfmt_elf.c</code>의 <code>create_elf_tables</code> 동작 및 <code>LD_SHOW_AUXV=1</code> 실측 기준.</li><li>x86-64에서 TCB <code>stack_guard</code> 필드가 <code>fs:0x28</code>에 위치하는 것: glibc <code>tcbhead_t</code> 구조체(<code>sysdeps/x86_64/nptl/tls.h</code>) 및 <code>-fstack-protector</code> 컴파일 결과물 디스어셈블리 실측 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

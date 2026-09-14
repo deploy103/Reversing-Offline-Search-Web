@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>while 루프가 어셈블리에서 보이는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / c-analysis</div>
+<article class="article-body">
+<h1>while 루프가 어셈블리에서 보이는 패턴</h1>
+<div class="article-meta"><span class="tag">c-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>while</code> 루프는 -O0에서 <code>for</code> 루프와 <strong>어셈블리 뼈대가 완전히 동일</strong>하게 컴파일된다 — "조건 검사로 먼저 점프 → 본문 → 조건 검사(맨 아래)"라는 모양은 그대로이며, 차이는 오직 증감식이 본문 안에 문법적으로 따로 안 분리되어 있다는 소스 레벨 차이일 뿐 바이너리에는 흔적이 남지 않는다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>루프를 찾았는데 REV-1051에서 배운 for 루프 모양과 구분이 안 될 때, "이게 진짜 while인지 for인지 확인할 방법이 있는지" 궁금할 때</li><li>소스 코드 없이 바이너리만 보고 리포트를 쓸 때 "for문입니다" vs "while문입니다"를 어떻게 판단해야 하는지 궁금할 때</li><li>디컴파일러가 <code>while(...)</code>로 보여줬는데 실제로는 <code>for</code>였을 수도 있다는 이야기를 듣고 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>원본 C 코드</h3>
+<pre><code class="language-c">int count_digits(int n) {
+    int count = 0;
+    while (n != 0) {
+        n = n / 10;
+        count++;
+    }
+    return count;
+}</code></pre>
+<h3>-O0 x86-64 어셈블리</h3>
+<pre><code class="language-asm">count_digits:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 0x10
+    mov     [rbp-0x14], edi   ; n
+    mov     dword [rbp-4], 0   ; count = 0
+    jmp     .L_cond            ; 조건 검사로 먼저 점프
+.L_body:
+    mov     eax, [rbp-0x14]
+    mov     ecx, 10
+    cdq
+    idiv    ecx
+    mov     [rbp-0x14], eax    ; n = n / 10
+    add     dword [rbp-4], 1   ; count++
+.L_cond:
+    cmp     dword [rbp-0x14], 0
+    jne     .L_body            ; n != 0 이면 본문으로 되돌아감
+    mov     eax, [rbp-4]
+    leave
+    ret</code></pre>
+<h3>REV-1051의 for 루프와 정면 비교</h3>
+<pre><code class="language-asm">; for 루프 뼈대 (REV-1051)
+    &lt;초기화&gt;
+    jmp   .L_cond
+.L_body:
+    &lt;본문&gt;
+    &lt;증감&gt;
+.L_cond:
+    &lt;조건 검사&gt;
+    j&lt;cc&gt; .L_body
+
+; while 루프 뼈대 (이 글)
+    &lt;초기화(있으면)&gt;
+    jmp   .L_cond
+.L_body:
+    &lt;본문(증감 로직이 본문 안에 자연스럽게 섞여 있음)&gt;
+.L_cond:
+    &lt;조건 검사&gt;
+    j&lt;cc&gt; .L_body</code></pre>
+<p>두 뼈대는 <strong>한 글자도 다르지 않다</strong>. 유일한 "차이"는 <code>for</code>의 증감식(<code>i++</code>)이 소스에서 세미콜론으로 명시적으로 분리되어 있었다는 것뿐이고, 컴파일 결과에서는 증감 코드가 그냥 본문 블록의 마지막 명령어들로 합쳐져서 <code>for</code>의 증감이었는지 <code>while</code> 본문 안에 있던 일반 대입문이었는지 구분할 표시가 전혀 남지 않는다.</p>
+<h3>디컴파일러가 복원한 pseudocode</h3>
+<pre><code class="language-c">int count_digits(int n)
+{
+  int count = 0;
+  while (n != 0) {
+    n = n / 10;
+    count++;
+  }
+  return count;
+}</code></pre>
+<p>IDA/Ghidra는 진입부 <code>jmp</code> + 맨 아래 조건부 백점프 패턴을 보고 <code>while</code>로 복원하는 경우가 많지만, 완전히 동일한 패턴을 REV-1051 예제에 적용하면 <code>for</code>로도 복원한다 — <strong>디컴파일러의 선택은 힌트일 뿐 증거가 아니다.</strong> 두 구문이 바이너리 레벨에서 구분 불가능하다는 사실 자체를 알고 있는 것이 중요하다. 실무에서는 "이게 for인지 while인지"를 굳이 구분하려 하지 말고, "초기화 몇 번, 조건 검사 위치, 증감이 있는지"라는 <strong>동작(behavior)</strong> 관점으로 리포트를 쓰는 게 정확하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>REV-1051과 똑같이 진입부에 <code>jmp .L_cond</code>, 본문 블록, 맨 아래 <code>cmp</code>+조건부 백점프.</li><li><code>for</code>처럼 카운터 변수의 초기화-조건-증감이 소스에서 한곳에 몰려 있던 형태가 아니라, 조건 검사에 쓰이는 변수가 함수 인자 자체(<code>n</code>)이거나 이전에 이미 초기화된 변수인 경우가 많다.</li><li>조건식이 단순 카운터 비교(<code>i &lt; n</code>)가 아니라 더 복잡한 연산 결과 비교(<code>n != 0</code>, 포인터 NULL 체크 등)인 경우 <code>while</code>일 가능성이 소스 스타일상 높지만, 이 역시 바이너리만으로 확정할 수는 없다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>루프의 뼈대(진입부 jmp, 본문, 맨 아래 조건검사)를 REV-1051과 같은 방식으로 먼저 식별한다. 그다음 "이게 for인지 while인지"에 매달리지 말고, 조건 변수가 무엇이고 본문에서 어떻게 갱신되는지부터 정리한다 — 리포트에는 "n이 0이 될 때까지 10으로 나누는 루프"처럼 동작으로 서술하는 것이 for/while 이름표보다 훨씬 유용하다.</p>
+<h2>단계별 절차</h2>
+<ol><li>진입부 <code>jmp</code> 유무를 확인해 for/while류(있음)인지 do-while류(없음, REV-1053)인지 1차 분류한다.</li><li>맨 아래 조건 검사 블록의 <code>cmp</code> 대상이 무엇인지 확인한다 — 단순 증가 카운터면 for로 작성됐을 가능성이 크고, 복잡한 계산 결과나 포인터면 while로 작성됐을 가능성이 크다(단, 이건 추정일 뿐 확정할 수 없다).</li><li>본문 블록에서 조건 변수를 갱신하는 코드를 찾는다(<code>n = n / 10</code> 같은 연산).</li><li>소스 복원 리포트를 쓸 때는 "for 루프" 대신 "n이 0이 될 때까지 반복" 식으로 동작 위주로 서술해 오판 리스크를 줄인다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code>(gdb) disas count_digits
+(gdb) watch *(int*)&amp;n     # n 변경 추적(실제로는 스택 오프셋 지정)
+(gdb) break .L_cond       # 조건 검사 시점마다 값 확인</code></pre>
+<p>IDA/Ghidra: 그래프 뷰에서 진입 화살표가 조건 검사 블록으로 바로 들어가는지, 본문 블록에서 위로 되돌아가는지 시각적으로 확인.</p>
+<h2>출력 해석</h2>
+<ul><li><code>cdq</code>+<code>idiv ecx</code>는 <code>n / 10</code>의 signed 나눗셈이다(<code>cdq</code>가 <code>edx:eax</code>를 부호 확장해서 나눗셈 준비). 이 나눗셈 결과가 다시 <code>n</code>에 저장되는 걸 보고 "조건 변수가 매 반복마다 줄어드는 구조"임을 알 수 있다 — 종료를 보장하는 근거다.</li><li><code>cmp dword [rbp-0x14], 0</code> / <code>jne .L_body</code>는 "n != 0이면 계속"이라는 뜻이며, <code>n</code>이 0이 되는 순간 자연스럽게 다음 명령(함수 나머지)으로 흘러간다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>디컴파일러가 <code>while</code>로 보여줬다고 원본 소스가 100% <code>while</code>이었다고 리포트에 확정적으로 쓰는 것 — for/while은 바이너리 레벨에서 구분 불가능하므로 "루프 형태(for 또는 while)" 정도로 유보적으로 서술해야 한다.</li><li><code>-O2</code> 이상에서는 나눗셈이 매직 넘버(magic number) 곱셈+시프트 조합(<code>imul</code>, <code>sar</code>, <code>add</code> 등)으로 강도 감소(strength reduction)될 수 있어 <code>idiv</code>가 안 보일 수 있다. <code>idiv</code>가 없다고 나눗셈이 없는 게 아니라 최적화된 형태로 바뀐 것일 수 있다는 점을 REV-0037과 함께 체크한다.</li><li>조건이 항상 참인 무한루프(<code>while(1)</code>)와 일반 while을 혼동하는 것 — <code>while(1){...}</code>은 조건 검사 자체가 생략되고 진입부 <code>jmp</code> 없이 바로 본문으로 진입하며 본문 끝에 <code>jmp .L_body</code>로 무조건 되돌아가는 경우가 많다. 이 경우 <code>cmp</code> 없이 <code>jmp</code>만 반복되는 게 특징이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>for와의 어셈블리 뼈대가 왜 같은지 다시 확인하려면 → REV-1051(for 루프가 어셈블리에서 보이는 패턴).</li><li>조건 검사 위치가 맨 위가 아니라 진입 직후 본문이 무조건 실행되는 모양이라면 → REV-1053(do-while 루프가 어셈블리에서 보이는 패턴).</li><li>나눗셈이 <code>idiv</code> 없이 곱셈/시프트로 바뀐 모양이 헷갈리면 → REV-0037(컴파일러 최적화가 디컴파일 결과를 이상하게 만드는 이유).</li><li>조건부 분기 명령어 종류가 헷갈리면 → REV-0068(JNE와 JNZ: ZF가 0일 때 분기).</li></ul>
+<h2>미니 예제</h2>
+<p>포인터를 따라가며 끝(NULL)을 찾는 전형적인 while 패턴도 같은 뼈대를 따른다.</p>
+<pre><code class="language-c">int list_length(Node *head) {
+    int len = 0;
+    while (head != NULL) {
+        head = head-&gt;next;
+        len++;
+    }
+    return len;
+}</code></pre>
+<pre><code class="language-asm">list_length:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 0x10
+    mov     [rbp-8], rdi     ; head
+    mov     dword [rbp-4], 0  ; len = 0
+    jmp     .L_cond
+.L_body:
+    mov     rax, [rbp-8]
+    mov     rax, [rax]        ; head-&gt;next (Node의 첫 필드로 가정)
+    mov     [rbp-8], rax       ; head = head-&gt;next
+    add     dword [rbp-4], 1   ; len++
+.L_cond:
+    cmp     qword [rbp-8], 0
+    jne     .L_body            ; head != NULL 이면 계속
+    mov     eax, [rbp-4]
+    leave
+    ret</code></pre>
+<p>포인터 NULL 체크(<code>cmp qword [rbp-8], 0</code>)가 조건식 자리에 온 것만 다르고, 진입부 <code>jmp</code>, 본문, 맨 아래 조건검사라는 뼈대는 앞의 <code>count_digits</code>와 동일하다. 구조체 포인터 역참조 세부는 REV-1062를 참고한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-1051-for-loop-asm-pattern.html">REV-1051 — for 루프가 어셈블리에서 보이는 패턴</a></li><li><a href="rev-1053-do-while-loop-asm-pattern.html">REV-1053 — do-while 루프가 어셈블리에서 보이는 패턴</a></li><li><a href="rev-1062-pointer-dereference-asm-pattern.html">REV-1062 — 포인터 역참조가 어셈블리에서 보이는 패턴</a></li><li><a href="rev-0068-jne-jnz.html">REV-0068 — JNE와 JNZ: ZF가 0일 때 분기</a></li><li><a href="rev-0037-optimization-weirdness.html">REV-0037 — 컴파일러 최적화가 디컴파일 결과를 이상하게 만드는 이유</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>gcc/clang <code>-O0</code>에서 <code>for</code>와 <code>while</code>이 동일한 제어 흐름 그래프(진입부 조건 점프, 본문, 맨 아래 백엣지)로 컴파일되는 현상은 x86-64 System V ABI 환경에서 실제 컴파일 출력으로 반복 확인된다.</li><li>나눗셈의 강도 감소(strength reduction, 매직 넘버 곱셈으로 대체) 최적화: GCC/LLVM 최적화 패스 공식 문서 기준 (2026-09-10 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

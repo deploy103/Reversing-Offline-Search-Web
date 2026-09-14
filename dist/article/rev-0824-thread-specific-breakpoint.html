@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>멀티스레드 프로그램에서 특정 스레드만 멈추는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>멀티스레드 프로그램에서 특정 스레드만 멈추는 법</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>여러 스레드가 같은 함수를 공유해서 호출할 때는 무조건 걸리는 일반 브레이크포인트 대신, GDB의 <code>break LOCATION thread N</code> / <code>condition N $_thread==2</code>나 x64dbg의 조건부 브레이크포인트에 TID 비교식을 넣어서 원하는 스레드가 그 위치를 지날 때만 멈추게 만들 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>워커 스레드 여러 개가 동일한 함수(<code>process_item</code> 등)를 병렬로 호출해서, 관심 있는 한 스레드의 흐름만 보고 싶은데 다른 스레드에서도 계속 브레이크포인트가 걸릴 때</li><li>특정 TID(예: 메인 스레드가 아니라 두 번째로 생성된 워커 스레드)에서만 일어나는 버그나 로직을 추적하고 싶을 때</li><li>브레이크포인트를 걸어놓고 F9/<code>continue</code>를 스무 번씩 눌러야 원하는 스레드 차례가 오는 게 비효율적이라고 느껴질 때</li><li>스레드마다 다른 인자를 처리하는 코드에서, 그 중 하나의 인자 값으로 실행되는 스레드만 골라서 멈추고 싶을 때(예: 두 번째 워커 스레드가 처리하는 데이터만 보고 싶음)</li></ul>
+<h2>핵심 개념</h2>
+<h3>"이 스레드일 때만" 조건을 브레이크포인트에 거는 두 가지 방법</h3>
+<ol><li><strong>디버거가 기본 제공하는 스레드 필터 문법</strong>을 쓴다. GDB는 브레이크포인트를 걸 때 <code>thread N</code>을 붙이면 그 스레드 번호에서 실행될 때만 멈춘다. <code>condition</code> 명령으로 <code>$_thread</code>라는 GDB 내장 변수(현재 실행 중인 스레드 번호)를 비교식에 넣을 수도 있다.</li><li><strong>범용 조건부 브레이크포인트에 TID/스레드 식별 표현식을 직접 넣는다.</strong> x64dbg에는 GDB의 <code>thread N</code> 같은 전용 문법은 없지만, 조건부 브레이크포인트(REV-0183)의 Break condition 란에 현재 스레드 ID를 참조하는 표현식을 넣어 같은 효과를 낼 수 있다(x64dbg는 TID를 직접 노출하는 변수가 버전에 따라 다르므로, 우선 Threads 탭에서 원하는 스레드의 TID를 확인한 뒤 스크립트/조건식으로 비교하는 방식이 안전하다).</li></ol>
+<h3>GDB 스레드 번호(Thread ID) vs 운영체제 TID</h3>
+<p>GDB가 말하는 "스레드 번호"(<code>info threads</code>에 나오는 왼쪽 숫자, 예: <code>2</code>)는 GDB 내부에서 붙인 순번이고, 실제 OS의 TID(LWP 번호, <code>info threads</code> 출력의 <code>Thread 0x7ffff... (LWP 12345)</code> 부분)와는 다른 값이다. <code>break LOCATION thread 2</code>처럼 쓸 때는 GDB 번호(2)를 써야 하며, OS TID(12345)를 넣으면 안 된다. 이 둘을 헷갈리는 것이 가장 흔한 실수다.</p>
+<h3>scheduler-locking으로 "지금 멈춘 스레드만 계속 실행"</h3>
+<p><code>set scheduler-locking on</code>을 켜면 <code>step</code>/<code>next</code> 등으로 한 스레드만 진행시키는 동안 다른 스레드는 멈춰 있는다(기본값은 <code>replay</code> 또는 <code>off</code>로, step 중에도 다른 스레드가 스케줄링될 수 있다). 특정 스레드의 흐름을 다른 스레드 개입 없이 한 줄씩 추적하고 싶을 때 필수적인 옵션이다.</p>
+<h3>왜 조건부보다 우선 스레드 필터가 나은가</h3>
+<p>조건부 브레이크포인트(REV-0183, REV-0824의 표현식 방식)는 매번 브레이크포인트가 걸릴 때마다 조건식을 평가해야 하므로 스레드가 아주 많고 호출 빈도가 높으면 느려질 수 있다. GDB의 <code>thread N</code> 필터는 디버거 레벨에서 더 저수준으로 걸러주므로 대체로 더 빠르고 명확하다. 가능하면 전용 문법을 우선 쓰고, 전용 문법이 없는 도구(x64dbg 등)에서만 조건식으로 우회한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>브레이크포인트를 하나 걸었는데 로그/Hit Count가 스레드 개수만큼 빠르게 누적됨</li><li>GDB <code>info threads</code> 결과에 여러 줄(예: <code>1</code>, <code>2</code>, <code>3</code>)이 있고, 그 중 특정 번호에서만 문제가 재현됨</li><li>x64dbg Threads 탭에서 TID별로 서로 다른 Start Address(콜백 함수)가 보여서 "이건 워커 스레드, 이건 로거 스레드"처럼 역할이 나뉘어 있음이 짐작될 때</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>GDB <code>info threads</code> 또는 x64dbg Threads 탭을 열어, 관심 있는 로직을 실행하는 스레드가 몇 번인지(GDB는 내부 번호, x64dbg는 TID) 먼저 파악한다. 이때 각 스레드의 Start Address를 IDA/Ghidra의 함수 이름과 대조하면 "이 스레드가 어떤 콜백을 실행 중인지" 바로 알 수 있다.</p>
+<h2>단계별 절차</h2>
+<h3>GDB</h3>
+<ol><li><code>info threads</code>로 전체 스레드 목록과 현재 실행 위치 확인</li><li>대상 스레드 번호(예: 2)를 확인한 뒤 <code>break validate_input thread 2</code>처럼 위치와 스레드 번호를 함께 지정</li><li>이미 걸어놓은 브레이크포인트에 나중에 조건을 추가하려면 <code>condition 1 $_thread==2</code></li><li>필요하면 <code>set scheduler-locking on</code>으로 이 스레드만 단독으로 스텝 실행되게 고정</li><li><code>continue</code> 또는 <code>run</code> 후 원하는 스레드에서만 멈추는지 확인</li></ol>
+<h3>x64dbg</h3>
+<ol><li>Threads 탭에서 대상 스레드의 TID 확인(예: <code>5200</code>)</li><li>대상 위치에 일반 브레이크포인트를 건 뒤 우클릭 → Edit breakpoint(또는 Breakpoints 탭에서 편집)</li><li>Break condition에 현재 스레드 정보를 비교하는 표현식을 넣거나, x64dbg 스크립트 탭(REV-0814, 예정)에서 <code>bp</code> 이벤트 핸들러로 <code>TID</code>를 비교하는 조건부 로직을 작성</li><li>조건이 안 맞아 멈추지 않은 히트는 로그(Log condition)로만 남기고 실제 정지는 대상 TID일 때만 발생하게 구성</li></ol>
+<h2>명령어/단축키</h2>
+<p>GDB(Linux):</p>
+<pre><code>info threads
+break validate_input thread 2
+condition 1 $_thread==2
+set scheduler-locking on
+set scheduler-locking off
+thread 2</code></pre>
+<p>x64dbg(Windows):</p>
+<pre><code>Threads 탭에서 TID 확인
+bp validate_input
+Edit breakpoint → Break condition</code></pre>
+<h2>출력 해석</h2>
+<ul><li>GDB <code>break LOCATION thread N</code>으로 건 브레이크포인트는 <code>info breakpoints</code>에서 <code>stop only in thread N</code>이라는 문구로 표시되어, 나중에 다시 확인할 때도 조건이 걸려 있음을 바로 알 수 있다.</li><li><code>set scheduler-locking on</code> 상태에서 <code>next</code>를 눌렀는데도 다른 스레드가 실행된 흔적(다른 스레드가 만든 출력 등)이 보인다면, 커널/런타임 수준에서 이미 다른 스레드가 스케줄링된 상태였을 수 있으니 <code>info threads</code>로 각 스레드 상태를 다시 확인해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>GDB의 스레드 번호(내부 순번)와 OS TID(LWP 번호)를 혼동해서 <code>thread 12345</code>처럼 잘못된 값을 조건에 넣는 것</li><li><code>scheduler-locking</code>을 켜지 않은 채 특정 스레드만 스텝 실행하려다가, 다른 스레드가 끼어들어 예상과 다른 상태가 되는 것</li><li>스레드 필터 없이 조건부 표현식만으로 스레드를 구분하려다가, x64dbg/GDB 버전에 따라 원하는 스레드 식별 변수가 없어서 결국 못 거르는 것 — 이럴 땐 REV-0823에서 설명한 스레드 목록으로 먼저 TID/Start Address를 확실히 구분해두는 사전 작업이 필요</li><li>스레드 지정 브레이크포인트를 걸어놓고, 정작 프로그램을 재시작하면 스레드 번호/TID가 매번 달라진다는 사실을 잊고 예전 번호를 그대로 재사용하는 것</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>애초에 프로세스/스레드 목록 자체가 헷갈리면 → REV-0823 여러 프로세스/스레드를 디버거로 동시에 다루는 법</li><li>일반적인 조건부 브레이크포인트 문법이 기억 안 나면 → REV-0183 x64dbg 조건부 Breakpoint 기초</li><li>GDB에서 조건부 브레이크포인트를 더 깊이 알고 싶다면 → REV-0819 GDB에서 조건부 브레이크포인트(condition) 활용하기 (예정)</li><li>pthread 생성 시점의 인자(콜백 함수 포인터)를 먼저 확인하고 싶다면 → REV-0638 libc 함수 사전: pthread_create 기초</li></ul>
+<h2>미니 예제</h2>
+<pre><code>(gdb) info threads
+  Id   Target Id                         Frame
+  1    Thread 0x7ffff7fc0740 (LWP 9001)  main () at chall.c:20
+* 2    Thread 0x7ffff6f9e700 (LWP 9002)  worker (arg=0x1) at chall.c:42
+  3    Thread 0x7ffff679d700 (LWP 9003)  worker (arg=0x2) at chall.c:42
+
+(gdb) break validate_input thread 2
+Breakpoint 1 at 0x4011a0: file chall.c, line 55, thread 2.
+(gdb) continue
+Breakpoint 1, validate_input (buf=...) at chall.c:55</code></pre>
+<p>스레드 3에서 <code>validate_input</code>이 여러 번 호출되어도 멈추지 않고, 스레드 2가 그 지점을 지날 때만 정확히 멈춘 것을 확인할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0823-multi-process-thread-debugging.html">REV-0823 — 여러 프로세스/스레드를 디버거로 동시에 다루는 법</a></li><li><a href="rev-0183-x64dbg-conditional-breakpoints.html">REV-0183 — x64dbg 조건부 Breakpoint 기초</a></li><li><a href="rev-0638-libc-pthread-create-basics.html">REV-0638 — libc 함수 사전: pthread_create 기초</a></li><li><a href="rev-0819-gdb-conditional-breakpoint-condition.html">REV-0819 — GDB에서 조건부 브레이크포인트(condition) 활용하기</a></li><li><a href="rev-0617-api-call-order-varies-multithread.html">REV-0617 — 실행마다 API 호출 순서가 달라 보일 때(멀티스레드)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>GDB <code>break LOCATION thread N</code>, <code>condition</code>, <code>$_thread</code>, <code>set scheduler-locking</code> 명령: GNU GDB 공식 매뉴얼(Debugging with GDB) 기준.</li><li>GDB 스레드 번호와 OS LWP/TID의 구분: GDB 공식 문서의 "Thread-Specific Breakpoints" 절 기준.</li><li>x64dbg의 스레드별 조건부 제어 방식은 전용 문법이 없어 조건식/스크립트로 우회한다는 점은 x64dbg 공식 GitHub Wiki 및 커뮤니티 문서 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

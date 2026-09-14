@@ -54,7 +54,7 @@ last_verified: "2026-09-10"
 
 ## 명령어/단축키
 ```text
-GDB(PIE 베이스 확인): 
+GDB(PIE 베이스 확인):
   (gdb) start
   (gdb) info proc mappings   # 베이스 주소 확인
   (gdb) break *(베이스주소+오프셋)

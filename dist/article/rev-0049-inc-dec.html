@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>INC와 DEC: 1 증가 감소와 CF 주의 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>INC와 DEC: 1 증가 감소와 CF 주의</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>INC dest</code>는 <code>dest = dest + 1</code>, <code>DEC dest</code>는 <code>dest = dest - 1</code>을 계산하는 단항(오퍼랜드 1개) 명령어이며, <strong>OF·SF·ZF·AF·PF는 갱신하지만 CF(Carry Flag)는 절대 건드리지 않는다</strong> — 이게 이 명령어의 가장 중요하고 가장 자주 헷갈리는 특징이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>inc eax</code>, <code>dec ecx</code> 같은 코드가 루프 안에서 반복적으로 나오는데 정확히 무슨 역할인지 확인하고 싶을 때</li><li><code>dec ecx</code> 다음에 <code>jnz</code>(또는 <code>loop</code>)로 반복문이 만들어지는 전형적인 for/while 루프 패턴을 해석하고 싶을 때</li><li>왜 <code>add eax, 1</code>이 아니라 <code>inc eax</code>가 쓰였는지, 혹은 반대로 최신 코드에서 <code>add reg, 1</code>만 보이고 <code>inc</code>가 안 보이는 이유가 궁금할 때</li><li>"INC/DEC가 CF를 안 바꾼다"는 게 왜 중요한지, 실제로 어떤 상황에서 문제가 되는지 알고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>INC/DEC가 실제로 하는 일</h3>
+<p><code>INC</code>와 <code>DEC</code>는 오퍼랜드를 <strong>하나만</strong> 받는다. <code>ADD</code>/<code>SUB</code>처럼 두 값을 더하거나 빼는 게 아니라, 그 오퍼랜드 자체를 1만큼 증가/감소시킨다.</p>
+<pre><code class="language-asm">inc eax           ; EAX = EAX + 1
+dec ecx           ; ECX = ECX - 1
+inc dword [rbp-4] ; 메모리 값 += 1</code></pre>
+<p>dest는 레지스터 또는 메모리이고, <code>ADD eax, 1</code> / <code>SUB ecx, 1</code>과 계산 결과 자체는 동일하다. 다른 건 딱 하나, <strong>플래그 처리 방식</strong>이다.</p>
+<h3>결정적 차이 — INC/DEC는 CF를 건드리지 않는다</h3>
+<p><code>ADD</code>(<a href="rev-0047-add.html">REV-0047</a>)와 <code>SUB</code>(<a href="rev-0048-sub.html">REV-0048</a>)는 CF를 포함한 6개 플래그를 전부 갱신한다. 하지만 <code>INC</code>/<code>DEC</code>는:</p>
+<ul><li><strong>갱신함</strong>: OF, SF, ZF, AF, PF</li><li><strong>절대 갱신 안 함</strong>: <strong>CF (Carry Flag)</strong> — 실행 전 CF 값이 실행 후에도 그대로 유지된다.</li></ul>
+<p>이건 Intel이 의도적으로 설계한 예외다. 이유를 실제 코드로 보면 이해가 빠르다.</p>
+<p><strong>왜 이렇게 설계했는가 — 다중 정밀도 연산과 루프 카운터가 공존하는 상황</strong></p>
+<pre><code class="language-asm">; 128비트(RDX:RAX) 값에 128비트(RBX:RCX) 값을 더하면서, 동시에 별도의 인덱스 레지스터 RSI로 루프를 도는 코드
+loop_top:
+    add  rax, rcx     ; 하위 64비트 덧셈 → CF 세팅됨 (자리올림 발생했다고 가정)
+    adc  rdx, rbx     ; 상위 64비트 덧셈 + 방금 CF 반영 → 정확한 128비트 덧셈 완성
+    inc  rsi           ; 루프 인덱스 증가 — 만약 INC가 CF를 건드린다면, 방금 ADC가 쓴 CF가 여기서 망가짐!
+    cmp  rsi, count
+    jl   loop_top</code></pre>
+<p>위 코드에서 <code>ADC</code>(Add with Carry)는 바로 앞의 <code>ADD</code>가 세팅한 CF를 반드시 참조해야 한다. 그런데 그 사이/뒤에 있는 "루프 카운터 증가용" <code>INC</code>가 만약 CF를 건드린다면, 다음 반복에서 <code>ADC</code>가 잘못된 CF를 읽어서 다중 정밀도 연산 전체가 틀어진다. <strong>그래서 x86은 INC/DEC를 CF에 관해서는 "투명한" 명령으로 설계했다</strong> — 루프 카운터나 배열 인덱스를 증감시키는 용도로 마음 놓고 쓸 수 있도록, 이미 계산 중인 CF 체인(ADC/SBB로 이어지는 다중 정밀도 연산)을 방해하지 않게 한 것이다.</p>
+<h3>컴파일러가 INC/DEC 대신 ADD/SUB를 쓰기도 한다</h3>
+<p>현대 x64 컴파일러(특히 최신 GCC/Clang/MSVC)는 단순 <code>i++</code>, <code>i--</code>를 <code>inc</code>/<code>dec</code>가 아니라 <code>add reg, 1</code> / <code>sub reg, 1</code>로 컴파일하는 경우가 흔하다. 이는 과거 일부 마이크로아키텍처(대표적으로 Pentium 4)에서 <code>INC</code>/<code>DEC</code>가 <strong>부분 플래그 갱신(partial flag update)</strong> 때문에 플래그 레지스터에 대한 거짓 의존성(false dependency)을 만들어 파이프라인 스톨을 유발했던 이력 때문이다. <code>ADD</code>/<code>SUB</code>는 모든 플래그를 갱신하므로 이런 거짓 의존성이 없다. 그래서 리버싱할 때는 <strong><code>inc eax</code>와 <code>add eax, 1</code>을 완전히 동일한 의미로 인식</strong>해야 한다 — 어느 쪽이 쓰였는지는 컴파일러/최적화 옵션의 선택일 뿐, 로직상 차이는 없다(단, CF 보존 여부는 다르므로 플래그 체인이 있는 코드에서는 컴파일러가 반드시 의미에 맞게 골라 쓴다).</p>
+<h3>컴파일러 패턴 — 루프 카운터</h3>
+<p>가장 흔하게 보는 패턴은 for/while 루프의 카운터 증감이다.</p>
+<p><strong>패턴 A — 감소 카운터 (<code>dec</code> + <code>jnz</code>)</strong></p>
+<pre><code class="language-asm">mov ecx, 10
+loop_top:
+    ; ... 루프 본문 ...
+    dec ecx
+    jnz loop_top      ; ECX가 0이 아니면 반복 (ZF 기반, CF와 무관)</code></pre>
+<p>C로는:</p>
+<pre><code class="language-c">for (int i = 10; i &gt; 0; i--) { /* ... */ }</code></pre>
+<p><strong>패턴 B — 증가 카운터 (<code>inc</code> + <code>cmp</code>/<code>jl</code>)</strong></p>
+<pre><code class="language-asm">xor eax, eax
+loop_top:
+    ; ... 루프 본문 ...
+    inc eax
+    cmp eax, 10
+    jl  loop_top       ; EAX &lt; 10이면 반복 (signed 비교, SF/OF 기반)</code></pre>
+<p>C로는:</p>
+<pre><code class="language-c">for (int i = 0; i &lt; 10; i++) { /* ... */ }</code></pre>
+<p>두 패턴 모두 <code>jnz</code>/<code>jl</code> 분기가 <strong>ZF나 SF/OF</strong>를 보지 CF를 보지 않기 때문에, <code>INC</code>/<code>DEC</code>가 CF를 안 건드려도 루프 제어에는 전혀 문제가 없다. 오히려 앞서 설명했듯 CF를 건드리지 않는 게 다른 연산과 섞였을 때 안전하다.</p>
+<h3>IDA/Ghidra 디컴파일 렌더링</h3>
+<ul><li><code>inc eax</code> → <code>v1++;</code> 또는 <code>++v1;</code></li><li><code>dec ecx</code> → <code>v1--;</code> 또는 <code>--v1;</code></li><li><code>dec ecx; jnz loop_top</code> → <code>for</code>/<code>while</code> 루프의 카운터 감소 부분으로 자동 정리되어 <code>while (--v1)</code> 형태로 보이는 경우가 많다.</li><li><code>inc dword [rbp-4]</code> → 메모리에 직접 있는 지역 변수의 <code>count++;</code></li></ul>
+<h3>리버싱에서의 의미</h3>
+<ul><li>루프를 찾을 때 <code>inc</code>/<code>dec</code> (또는 <code>add reg,1</code>/<code>sub reg,1</code>) + 뒤따르는 <code>jnz</code>/<code>jl</code>/<code>jle</code>/<code>jg</code> 조합을 보면 바로 "이건 반복문의 카운터 갱신부"라고 인식하는 게 가장 빠른 루프 식별 방법이다.</li><li><code>INC</code>/<code>DEC</code>가 CF를 안 건드린다는 점을 알면, 그 앞뒤에 있는 <code>jc</code>/<code>jnc</code>(CF 기반 분기)가 실제로는 <code>INC</code>/<code>DEC</code>보다 더 앞선 명령(예: 이전의 <code>ADD</code>/<code>SUB</code>/<code>ADC</code>/<code>SBB</code>)의 결과를 보고 있다는 걸 즉시 알아챌 수 있다. 이걸 모르면 "방금 <code>inc</code>를 실행했는데 왜 CF가 그대로지?"라며 혼란스러워하게 된다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>inc eax</code>, <code>inc [rbp-4]</code>, <code>dec ecx</code>, <code>dec rsi</code> — 단순 증감</li><li><code>dec reg</code> 바로 뒤에 <code>jnz</code>/<code>jne</code> — 감소 카운터 루프</li><li><code>inc reg</code> 바로 뒤에 <code>cmp reg, N</code> 그리고 <code>jl</code>/<code>jle</code>/<code>jb</code>/<code>jbe</code> — 증가 카운터 루프</li><li><code>inc</code>/<code>dec</code> 앞뒤에 <code>adc</code>/<code>sbb</code>가 있는 코드 — 다중 정밀도 연산 중간에 안전하게 끼워 넣은 인덱스 증감</li><li>최신 x64 바이너리에서 <code>inc</code>/<code>dec</code> 대신 <code>add reg, 1</code> / <code>sub reg, 1</code>이 보이는 경우 — 의미는 동일</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>오퍼랜드가 레지스터인지 메모리인지 확인</li><li>이 INC/DEC 바로 다음에 오는 분기가 어떤 플래그를 보는지 확인 (ZF 기반 <code>jnz</code>/<code>je</code>인지, SF/OF 기반 signed 비교인지 — CF 기반이면 이 INC/DEC보다 더 앞의 명령을 봐야 함을 기억)</li><li>루프 카운터/배열 인덱스 용도인지, 아니면 일반적인 값 계산인지 구분</li><li><code>add reg, 1</code> / <code>sub reg, 1</code>이 똑같은 의미로 쓰였을 수 있다는 점을 염두에 두고 패턴 인식</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 감소 루프 카운터 확인</strong></p>
+<pre><code class="language-asm">mov ecx, 5
+loop_top:
+    ; 본문
+    dec ecx
+    jnz loop_top</code></pre>
+<p>→ <code>for (i = 5; i != 0; i--)</code> 형태로 해석. <code>dec</code>가 ZF만 세팅하고 CF는 안 건드리므로, <code>jnz</code>가 정확히 "ECX가 0이 됐는가"만 본다.</p>
+<p><strong>2) 증가 루프 카운터 확인</strong></p>
+<pre><code class="language-asm">xor eax, eax
+loop_top:
+    ; 본문
+    inc eax
+    cmp eax, count
+    jl  loop_top</code></pre>
+<p>→ <code>for (i = 0; i &lt; count; i++)</code> 형태.</p>
+<p><strong>3) CF 보존이 실제로 쓰이는 코드 확인</strong></p>
+<pre><code class="language-asm">add  rax, rcx      ; CF 세팅 (자리올림 발생 가능)
+inc  rbx            ; 별개의 카운터 증가 — CF에 영향 없음!
+adc  rdx, rbp       ; 여전히 위 add의 CF를 정확히 반영</code></pre>
+<p>→ <code>inc rbx</code>가 중간에 끼어 있어도 <code>adc</code>가 올바른 CF를 참조한다는 걸 확인. 만약 <code>inc rbx</code> 자리에 <code>add rbx, 0</code>처럼 CF를 건드리는 명령이 있었다면 <code>adc</code>가 틀린 값을 낸다.</p>
+<p><strong>4) <code>add reg, 1</code>을 INC와 동일하게 인식</strong></p>
+<pre><code class="language-asm">add eax, 1
+cmp eax, 10
+jl  loop_top</code></pre>
+<p>→ 이건 <code>inc eax</code>와 로직상 완전히 동일하다(단, <code>add eax, 1</code>은 CF도 갱신한다는 차이가 있지만 이 루프는 CF를 안 쓰므로 무관).</p>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: F7/F8로 <code>inc</code>/<code>dec</code> 실행 전후 플래그 패널을 보면 C(CF) 비트만 안 바뀌고 Z/S/O 등은 바뀌는 걸 직접 확인 가능.</li><li>GDB/Pwndbg: <code>info registers eflags</code>로 실행 전후 CF 값을 비교.</li><li>IDA: 루프를 찾을 때 그래프 뷰(스페이스바로 전환)에서 뒤로 돌아가는 화살표(back edge)를 찾으면 그 근처에 <code>inc</code>/<code>dec</code> 카운터가 있을 확률이 높다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>inc</code>/<code>dec</code> 실행 직후 CF가 실행 전과 똑같다면 정상 — INC/DEC의 명세대로 동작한 것.</li><li><code>ZF=1</code>이 <code>dec</code> 직후 나오면 그 레지스터가 정확히 0이 됐다는 뜻이며, 바로 뒤 <code>jz</code>/<code>jnz</code>가 이를 이용해 루프 종료를 판단한다.</li><li>IDA 디컴파일에서 <code>while (i--)</code>나 <code>for (...; i &lt; n; i++)</code> 형태로 자동 정리된 코드는 원본이 <code>dec</code>+<code>jnz</code> 또는 <code>inc</code>+<code>cmp</code>+<code>jl</code> 조합이었을 가능성이 높다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><strong>INC/DEC가 CF도 바꾼다고 착각하는 것</strong> — 이게 이 명령어에서 가장 흔하고 가장 치명적인 오해다. <code>inc</code>/<code>dec</code> 앞에 CF를 세팅하는 연산(<code>ADD</code>, <code>SUB</code>, <code>CMP</code> 등)이 있었다면, 그 CF는 <code>inc</code>/<code>dec</code>를 거쳐도 그대로 살아있다. 나중에 나오는 <code>jc</code>/<code>jnc</code>가 <code>inc</code>/<code>dec</code>가 아니라 더 앞의 연산 결과를 본다는 걸 놓치면 분기 조건을 완전히 잘못 해석하게 된다.</li><li><code>inc</code>/<code>dec</code>와 <code>add ..., 1</code>/<code>sub ..., 1</code>을 다른 명령이라고 생각해서 패턴 매칭을 놓치는 것 — 계산 로직은 동일하다.</li><li>루프 카운터가 항상 <code>ecx</code>일 거라 가정하는 것 — x86의 문자열 반복 프리픽스(<code>REP</code>)는 관례적으로 ECX/RCX를 카운터로 쓰지만, 일반 <code>INC</code>/<code>DEC</code> 기반 루프는 컴파일러가 아무 레지스터나 자유롭게 고른다.</li><li><code>dec</code> 다음의 <code>jnz</code>를 "CF가 0이 아니면 분기"로 착각하는 것 — 실제로는 ZF(0이 됐는지)를 보는 것이지 CF와 무관하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>inc</code>/<code>dec</code> 뒤 분기가 어떤 플래그를 보는지 헷갈린다면 → <a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 Jcc 연결</a> 참고.</li><li>CF가 예상과 다르게 유지되는 것 같다면 → 바로 위의 <code>inc</code>/<code>dec</code>가 아니라 그보다 더 앞선 산술 명령(<code>ADD</code>/<code>SUB</code>/<code>ADC</code>/<code>SBB</code>/<code>CMP</code>)을 찾아봐야 한다.</li><li>루프 경계 조건이 signed인지 unsigned인지 헷갈린다면 → 카운터 변수의 실제 타입을 확인하고, 뒤따르는 비교 분기가 <code>JL</code>/<code>JG</code> 계열(signed, [REV-0069 예정])인지 <code>JB</code>/<code>JA</code> 계열(unsigned, [REV-0070 예정])인지 확인.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 감소 카운터 루프</strong></p>
+<pre><code class="language-c">for (int i = 5; i &gt; 0; i--) {
+    total += arr[i - 1];
+}</code></pre>
+<pre><code class="language-asm">mov ecx, 5
+loop_top:
+    ; ... total += arr[ecx-1] 계산 ...
+    dec ecx
+    jnz loop_top</code></pre>
+<p><strong>예제 2 — 증가 카운터 루프</strong></p>
+<pre><code class="language-c">for (int i = 0; i &lt; n; i++) {
+    sum += arr[i];
+}</code></pre>
+<pre><code class="language-asm">xor eax, eax        ; i = 0
+loop_top:
+    ; ... sum += arr[eax] 계산 ...
+    inc eax
+    cmp eax, [n]
+    jl  loop_top</code></pre>
+<p><strong>예제 3 — CF 보존이 실제로 중요한 경우 (다중 정밀도 덧셈 + 별도 카운터)</strong></p>
+<pre><code class="language-c">// 개념 예시: 128비트 누산기에 여러 번 더하면서 반복 횟수도 센다</code></pre>
+<pre><code class="language-asm">loop_top:
+    add  rax, [rsi]     ; 하위 64비트 누적, CF 세팅될 수 있음
+    adc  rdx, [rsi+8]   ; 상위 64비트 누적 + 방금 CF 반영
+    inc  rbx             ; 반복 횟수 카운터 증가 — CF에 전혀 영향 없음
+    add  rsi, 16
+    dec  rcx
+    jnz  loop_top</code></pre>
+<p>→ <code>inc rbx</code>와 <code>dec rcx</code>가 중간에 있어도 <code>adc rdx, [rsi+8]</code>은 그보다 앞선 <code>add rax, [rsi]</code>의 CF를 정확히 반영한다.</p>
+<p><strong>예제 4 — 최신 컴파일러의 <code>add</code>/<code>sub</code> 대체 표현</strong></p>
+<pre><code class="language-asm">; 아래는 inc eax와 완전히 동일한 의미
+add eax, 1
+cmp eax, 100
+jl  loop_top</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0047-add.html">REV-0047 — ADD: 덧셈과 플래그</a></li><li><a href="rev-0048-sub.html">REV-0048 — SUB: 뺄셈과 플래그</a></li><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a></li><li><a href="rev-0055-and.html">REV-0055 — AND: 마스크와 비트 제거</a></li><li><a href="rev-0066-jmp.html">REV-0066 — JMP: 무조건 분기</a></li><li><a href="rev-0069-jg-jge-jl-jle.html">REV-0069 — JG JGE JL JLE: Signed 비교 분기</a></li><li><a href="rev-0070-ja-jae-jb-jbe.html">REV-0070 — JA JAE JB JBE: Unsigned 비교 분기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>INC/DEC 명령어 동작과 플래그 영향(CF 미변경 포함): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "INC—Increment by 1" / "DEC—Decrement by 1" 섹션 기준 (2026-09-08 검증).</li><li>부분 플래그 업데이트로 인한 파이프라인 영향과 컴파일러의 ADD/SUB 대체 경향: Agner Fog, "Optimizing subroutines in assembly language" (agner.org) 및 Intel 최적화 매뉴얼 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

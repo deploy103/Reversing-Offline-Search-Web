@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>.reloc 섹션과 재배치 정보 읽는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>.reloc 섹션과 재배치 정보 읽는 법</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">PE-bear</span><span class="tag">HxD</span></div>
+<h2>한 줄 요약</h2>
+<p><code>.reloc</code> 섹션은 PE가 링커가 가정한 <code>ImageBase</code>가 아닌 다른 주소에 로드됐을 때(ASLR이 대표적인 경우), 코드/데이터 안에 하드코딩된 절대 주소들을 실제 로드 주소에 맞게 고쳐 쓸 수 있도록 "이 RVA에 있는 값을 얼마만큼 보정해야 한다"는 위치 목록을 담은 베이스 재배치(Base Relocation) 테이블이며, 이 구조를 이해하면 ASLR이 켜진 바이너리를 정적으로 분석하거나 메모리 덤프를 파일로 되돌릴 때 왜 주소가 어긋나는지, 그리고 어떻게 고쳐야 하는지를 알 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>ASLR이 켜진 x64 바이너리를 정적 분석 도구에 로드했는데, 실제 실행 중 디버거에서 본 주소와 IDA 정적 분석 주소가 계속 다르게 나올 때</li><li>언패킹 과정에서 프로세스 메모리를 덤프해서 파일로 저장했더니, 덤프 파일 내부의 절대 주소 참조들이 원래 파일 오프셋 기준으로 깨져 보일 때</li><li><code>IMAGE_FILE_RELOCS_STRIPPED</code> 플래그나 <code>.reloc</code> 섹션이 아예 없는 파일을 만났을 때 이게 무슨 의미인지 궁금할 때</li><li>PE-bear의 <code>Base Relocations</code> 탭에 나오는 <code>IMAGE_REL_BASED_DIR64</code>, <code>IMAGE_REL_BASED_HIGHLOW</code> 같은 타입 값이 헷갈릴 때</li><li>수동으로 언패킹한 이미지를 다시 로드 가능한 PE로 재구성(dump &amp; fix)할 때 재배치 테이블을 어떻게 다뤄야 하는지 알고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 재배치가 필요한가</h3>
+<p>컴파일러/링커는 <code>OptionalHeader.ImageBase</code>(예: EXE는 관례적으로 <code>0x140000000</code>, DLL은 다양)에 로드된다고 가정하고 일부 절대 주소(예: 전역 변수의 VA를 직접 레지스터에 로드하는 명령, 함수 포인터 테이블의 절대 주소 항목 등)를 코드/데이터에 그대로 박아 넣는다. 만약 실제 로드 주소가 <code>ImageBase</code>와 정확히 같다면 이 값들은 그대로 유효하다. 하지만 ASLR(주소 공간 배치 난수화)이 켜져 있거나, 이미 그 주소에 다른 모듈이 로드되어 있어 충돌이 나면, 로더는 이미지를 다른 주소에 올리고(rebase) 이 하드코딩된 절대 주소들을 "실제 로드 주소 - ImageBase" 만큼 전부 보정해야 한다. <code>.reloc</code> 섹션은 바로 이 "보정이 필요한 위치 목록"을 담고 있다.</p>
+<h3>IMAGE_BASE_RELOCATION 블록 구조</h3>
+<p>데이터 디렉터리 인덱스 5(<code>IMAGE_DIRECTORY_ENTRY_BASERELOC</code>)가 이 테이블의 시작 RVA와 전체 크기를 가리킨다. 테이블은 4KB 페이지 단위로 나뉜 여러 "블록"의 연속이다.</p>
+<pre><code class="language-c">typedef struct _IMAGE_BASE_RELOCATION {
+    DWORD VirtualAddress;  // 이 블록이 담당하는 4KB 페이지의 시작 RVA
+    DWORD SizeOfBlock;     // 이 블록 전체 크기(헤더 8바이트 포함)
+    // 이어서 (SizeOfBlock - 8) / 2 개의 WORD 엔트리
+} IMAGE_BASE_RELOCATION;</code></pre>
+<p>각 블록 뒤에는 2바이트짜리 엔트리가 여러 개 이어지며, 각 엔트리는 상위 4비트(Type)와 하위 12비트(Offset)로 나뉜다.</p>
+<pre><code class="language-text">엔트리(WORD) = (Type &lt;&lt; 12) | Offset
+Type   : 이 재배치의 종류(아래 표)
+Offset : VirtualAddress(블록 시작 RVA)로부터의 바이트 오프셋(0~4095)</code></pre>
+<p>자주 보는 <code>Type</code> 값:</p>
+<pre><code class="language-text">IMAGE_REL_BASED_ABSOLUTE  0   // 패딩용, 아무 동작 안 함(정렬 맞추기용)
+IMAGE_REL_BASED_HIGHLOW   3   // x86: 해당 위치의 32비트 값에 델타를 더함
+IMAGE_REL_BASED_DIR64     10  // x64: 해당 위치의 64비트 값에 델타를 더함</code></pre>
+<p>로더는 각 엔트리마다 "블록 시작 RVA + Offset" 위치의 값을 읽어서, <code>실제로드주소 - OptionalHeader.ImageBase</code>(이를 델타라고 부른다)를 더한 뒤 다시 그 위치에 써넣는다. <code>IMAGE_REL_BASED_ABSOLUTE</code>(타입 0)는 실제 재배치가 아니라 블록을 짝수 개(4바이트/8바이트 정렬)로 맞추기 위한 채움용이므로 무시하면 된다.</p>
+<h3>ASLR과의 관계</h3>
+<p><code>OptionalHeader.DllCharacteristics</code>에 <code>IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE</code>(<code>0x0040</code>)가 켜져 있으면 이 이미지는 ASLR 대상이며, 로더가 매번 다른 주소에 올릴 수 있다는 뜻이다. 이때 <code>.reloc</code>이 없으면(즉 <code>IMAGE_FILE_RELOCS_STRIPPED</code>가 <code>FileHeader.Characteristics</code>에 켜져 있으면, <code>0x0001</code>) 로더는 재배치를 수행할 수 없으므로 <strong>반드시 <code>ImageBase</code>에 정확히 로드해야 하며, ASLR을 사실상 적용할 수 없다</strong>(고정 베이스로만 로드됨). 과거 일부 시스템 DLL이나 특수한 목적의 실행 파일이 의도적으로 재배치 정보를 제거해 로드 주소를 고정시키는 경우가 있었는데, 이는 성능(재배치 계산 생략)을 위한 것이었지만 ASLR 시대에는 보안상 바람직하지 않은 설정으로 취급된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>PE-bear의 <code>Base Relocations</code> 탭에서 각 블록의 <code>VirtualAddress</code>, <code>SizeOfBlock</code>과 그 안의 엔트리 리스트(타입/오프셋)를 표 형태로 확인 가능</li><li>헤더 뷰에서 <code>FileHeader.Characteristics</code>에 <code>IMAGE_FILE_RELOCS_STRIPPED</code>(<code>0x0001</code>)가 켜져 있으면 <code>.reloc</code> 섹션 자체가 없거나 비어있음</li><li>IDA로 파일을 열었을 때 기본적으로 <code>ImageBase</code>(예: <code>0x140000000</code>) 기준으로 주소가 표시되는데, 실제 실행 중인 프로세스를 x64dbg로 붙였을 때 모듈 베이스가 다르면(ASLR로 다른 주소에 로드) 두 도구의 주소가 일정한 델타만큼 차이 남</li><li>덤프한 메모리 이미지를 그대로 파일로 저장해서 다시 분석하면, 코드 안의 절대 주소 참조들이 덤프 당시의 실제 로드 주소를 기준으로 이미 패치되어 있어 원래 <code>ImageBase</code> 기준 정적 분석 결과와 어긋남</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>ASLR이 관련된 주소 불일치 문제를 만나면, 먼저 IDA/도구가 사용 중인 베이스 주소(정적 분석 시 <code>ImageBase</code>)와 실제 실행 중 모듈 베이스(디버거에서 확인)를 각각 적어두고 그 차이(델타)를 계산한다. 그 다음 <code>.reloc</code>이 실제로 존재하는지, <code>IMAGE_FILE_RELOCS_STRIPPED</code>가 꺼져 있는지 확인해 이 파일이 애초에 재배치 가능한 파일인지부터 판단한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) Base Relocation Directory 위치 확인</strong> <code>OptionalHeader.DataDirectory[5].VirtualAddress</code>/<code>.Size</code>를 읽는다. <code>Size</code>가 <code>0</code>이면 재배치 정보가 없는 파일이다.</p>
+<p><strong>2) 블록 순회</strong> <code>VirtualAddress</code> 위치에서 시작해서 <code>IMAGE_BASE_RELOCATION</code> 헤더(8바이트)를 읽고, <code>SizeOfBlock</code>만큼 처리한 뒤 다음 블록으로 넘어가는 식으로 Directory 전체 크기(<code>Size</code>)를 다 소진할 때까지 반복한다.</p>
+<p><strong>3) 각 블록 안의 엔트리 처리</strong> 각 2바이트 엔트리에서 상위 4비트로 <code>Type</code>을, 하위 12비트로 <code>Offset</code>을 뽑는다. <code>Type</code>이 <code>IMAGE_REL_BASED_ABSOLUTE</code>(0)면 건너뛰고, <code>IMAGE_REL_BASED_HIGHLOW</code>(x86, 3) 또는 <code>IMAGE_REL_BASED_DIR64</code>(x64, 10)면 <code>블록의 VirtualAddress + Offset</code> 위치가 재배치 대상이다.</p>
+<p><strong>4) 델타 계산 및 적용(수동 재구성 시)</strong> 언패킹한 메모리 이미지를 파일로 정리하는 경우: <code>델타 = 덤프 당시 실제 로드 주소 - OptionalHeader.ImageBase</code>를 계산하고, 3단계에서 찾은 각 위치의 값에서 이 델타를 빼면(반대로 역보정) 원래 <code>ImageBase</code> 기준 정적 파일처럼 되돌릴 수 있다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">PE-bear: Base Relocations 탭 — 블록/엔트리 목록 확인
+IDA: Options → General → 로드 시 베이스 주소 지정 가능(Manual load 체크)
+x64dbg: 모듈 목록(Alt+E)에서 실제 로드된 모듈 베이스 확인, 정적 분석 베이스와 비교</code></pre>
+<h2>출력 해석</h2>
+<ul><li>엔트리 타입이 대부분 <code>IMAGE_REL_BASED_DIR64</code>면 x64 PE, <code>IMAGE_REL_BASED_HIGHLOW</code>면 x86 PE의 전형적인 패턴</li><li>한 블록의 <code>SizeOfBlock</code>이 <code>8</code>(헤더만 있고 엔트리가 0개)이면 사실상 빈 블록 — 정상적인 링커 출력에서는 드물지만 오류는 아님</li><li><code>IMAGE_FILE_RELOCS_STRIPPED</code>가 켜져 있는데 <code>DllCharacteristics</code>에 <code>IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE</code>도 켜져 있다면 모순된 설정 — 실제로는 재배치할 수 없으므로 로더가 고정 베이스로만 로드하며, 이런 조합은 도구가 임의로 변조했거나 비표준 빌드일 가능성을 시사</li><li>재배치 엔트리 개수가 코드/데이터 크기 대비 지나치게 적으면(예: 큰 <code>.text</code>인데 엔트리가 몇 개뿐) 위치 독립 코드(PIC) 생성 옵션이 적용됐을 가능성이 있음(주소를 절대값이 아니라 RIP 상대 참조로 만들어 재배치 자체가 덜 필요해짐)</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>.reloc</code>을 그냥 "쓰레기 섹션"으로 여기고 무시하는 것 — ASLR 관련 주소 계산 문제를 겪을 때 가장 먼저 봐야 할 섹션이다.</li><li>엔트리의 <code>Offset</code>이 블록의 <code>VirtualAddress</code>로부터의 상대 오프셋이라는 걸 잊고, 파일 전체 기준 절대 RVA로 착각하는 것.</li><li><code>IMAGE_REL_BASED_ABSOLUTE</code>(타입 0) 엔트리도 실제 재배치 대상이라고 착각해서 잘못된 위치를 패치하는 것 — 이 타입은 패딩용으로 반드시 건너뛰어야 한다.</li><li>덤프한 메모리 이미지를 재배치 보정 없이 그대로 원본 파일과 바이트 단위로 비교해서 "코드가 다르다"고 잘못 결론 내리는 것 — 실제로는 재배치로 인한 주소 값 차이일 뿐일 수 있다.</li><li>x86과 x64의 재배치 타입 상수(<code>HIGHLOW</code>=3 vs <code>DIR64</code>=10)를 혼동해서 잘못된 크기(4바이트 vs 8바이트)로 값을 읽고 쓰는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>섹션 테이블 관점에서 <code>.reloc</code>이 다른 섹션과 어떻게 배치되는지 보고 싶으면 → <a href="rev-0117-pe-section-table.html">PE Section Table 읽기</a></li><li>RVA를 실제 파일 오프셋으로 바꾸는 계산식이 필요하면 → <a href="rev-0118-rva-va-raw-offset.html">RVA VA Raw Offset 계산</a></li><li>같은 x64 전용 데이터 디렉터리인 예외 처리 테이블도 함께 보고 싶으면 → <a href="rev-0546-pdata-exception-handling.html">.pdata 섹션과 x64 예외 처리 정보 읽는 법</a></li><li>PE 헤더 전체 구조에서 Data Directory 배열의 위치가 헷갈리면 → <a href="rev-0116-pe-coff-optional-header.html">PE Header COFF Optional Header 읽기</a></li><li>PE 전체 구조를 다시 한 번 정리하고 싶으면 → <a href="rev-0114-pe-overview.html">PE 파일 구조 한 번에 보기</a></li></ul>
+<h2>미니 예제</h2>
+<p>64비트 DLL 하나의 Base Relocation Directory를 PE-bear로 열었더니 다음과 같은 블록이 보였다.</p>
+<pre><code class="language-text">Block VirtualAddress = 0x1000, SizeOfBlock = 0x20 (헤더 8 + 엔트리 12개 * 2바이트)
+엔트리 예: (Type=DIR64, Offset=0x008), (Type=DIR64, Offset=0x120), (Type=ABSOLUTE, Offset=0x000) ...</code></pre>
+<p>이 DLL의 링크 시점 <code>ImageBase</code>는 <code>0x180000000</code>이었는데, 실제 프로세스에서는 ASLR로 <code>0x7FF6A0000000</code>에 로드됐다고 하자. 델타는 <code>0x7FF6A0000000 - 0x180000000 = 0x7FF520000000</code>이다. 로더는 <code>Type=DIR64</code>인 각 엔트리 위치(<code>0x1000+0x008</code>, <code>0x1000+0x120</code> 등)의 8바이트 값에 이 델타를 더해서 코드/데이터 안의 절대 주소 참조들을 실제 로드 주소 기준으로 고쳐 쓴다. <code>Type=ABSOLUTE</code>인 세 번째 엔트리는 실제 패치 대상이 아니라 블록을 짝수로 정렬하기 위한 채움값이므로 무시한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0117-pe-section-table.html">REV-0117 — PE Section Table 읽기</a></li><li><a href="rev-0118-rva-va-raw-offset.html">REV-0118 — RVA VA Raw Offset 계산</a></li><li><a href="rev-0546-pdata-exception-handling.html">REV-0546 — .pdata 섹션과 x64 예외 처리 정보 읽는 법</a></li><li><a href="rev-0116-pe-coff-optional-header.html">REV-0116 — PE Header COFF Optional Header 읽기</a></li><li><a href="rev-0114-pe-overview.html">REV-0114 — PE 파일 구조 한 번에 보기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>IMAGE_BASE_RELOCATION</code> 구조체와 재배치 타입 상수(<code>IMAGE_REL_BASED_HIGHLOW</code>, <code>IMAGE_REL_BASED_DIR64</code> 등): Microsoft Learn "PE Format" 공식 문서의 ".reloc Section (Image Only)" 항목 기준 (2026-09-08 검증).</li><li><code>IMAGE_FILE_RELOCS_STRIPPED</code>, <code>IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE</code> 플래그 정의: Microsoft Learn "PE Format" 공식 문서 기준.</li><li>ASLR과 베이스 재배치의 관계: Microsoft Learn ASLR 관련 공식 문서 및 다수 리버싱 참고자료 공통 설명 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

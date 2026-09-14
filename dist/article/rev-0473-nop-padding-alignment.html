@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>정렬용 NOP 패딩과 실제 코드 구분하는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>정렬용 NOP 패딩과 실제 코드 구분하는 법</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>컴파일러/링커는 함수나 루프의 시작 주소를 16바이트 등 특정 경계에 맞추려고 그 사이 빈 공간을 NOP(아무 동작도 안 하는 명령) 또는 MSVC의 경우 <code>int3</code>(0xCC)로 채워 넣는데, 이건 실행되는 로직이 아니라 순수한 정렬용 채움일 뿐이므로 분석 대상에서 곧바로 제외해도 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>함수와 함수 사이, 또는 루프 시작 직전에 <code>nop</code>가 여러 개 연속으로 나오거나, 오퍼랜드가 붙은 이상하게 긴 <code>nop word ptr [rax+rax*1+0h]</code> 같은 명령이 보일 때</li><li>IDA/Ghidra에서 함수 끝난 직후 주소가 다음 함수 시작 전까지 <code>0xCC</code>(int3)로 가득 차 있을 때</li><li>디스어셈블리 중간에 의미를 알 수 없는 짧은 바이트 나열이 있는데 실제로는 아무데서도 실행(call/jmp)되지 않는 영역일 때</li><li>"이 바이트들이 숨겨진 코드인가, 그냥 채움인가"를 판단해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 정렬이 필요한가</h3>
+<p>CPU는 명령어를 캐시 라인(보통 64바이트) 단위로 가져오고, 분기 예측기/명령어 페치 유닛은 함수나 루프의 시작 주소가 16바이트(또는 32바이트) 경계에 맞춰져 있을 때 더 효율적으로 동작하는 경향이 있다. 그래서 컴파일러/링커는 함수 시작 주소, 그리고 종종 핫 루프(자주 반복 실행되는 루프)의 시작 주소를 특정 배수에 맞추기 위해 그 직전 공간에 "아무 일도 하지 않는" 채움 코드를 넣는다. GCC/Clang에서는 어셈블러 지시어 <code>.align</code>/<code>.p2align</code>이 이 역할을 하고, MSVC/링커도 유사한 정렬 규칙을 적용한다.</p>
+<h3>멀티바이트 NOP: 왜 0x90을 여러 개 쓰지 않는가</h3>
+<p>가장 단순한 NOP은 1바이트(<code>0x90</code>)다. 하지만 16바이트를 채우려고 <code>0x90</code>을 16번 반복하면 CPU가 명령어를 16번 디코딩해야 해서 오히려 비효율적이다. 그래서 최신 어셈블러/컴파일러는 <strong>한 번에 여러 바이트를 건너뛰는 "멀티바이트 NOP"</strong> 를 사용한다. 이 명령어들은 오퍼랜드가 있는 것처럼 생겼지만(예: 메모리를 읽는 것처럼 보임) 실제로는 그 오퍼랜드를 계산만 하고 아무 부작용도 일으키지 않는다.</p>
+<pre><code>90                              ; NOP                     (1바이트)
+66 90                           ; NOP (66h 프리픽스 포함)  (2바이트)
+0F 1F 00                        ; NOP dword ptr [rax]     (3바이트)
+0F 1F 40 00                     ; NOP dword ptr [rax+0]   (4바이트)
+0F 1F 44 00 00                  ; NOP dword ptr [rax+rax+0] (5바이트)
+66 0F 1F 44 00 00               ; NOP word ptr [rax+rax+0]  (6바이트)
+0F 1F 80 00 00 00 00            ; NOP dword ptr [rax+0]     (7바이트, disp32)
+66 0F 1F 84 00 00 00 00 00      ; NOP word ptr [rax+rax+0]  (9바이트, 최대)</code></pre>
+<p>어셈블러는 채워야 할 바이트 수에 맞춰 이런 멀티바이트 NOP들을 조합해서 최소 개수의 명령어로 정렬 공백을 채운다.</p>
+<h3>MSVC/링커의 int3(0xCC) 패딩</h3>
+<p>반면 Windows에서 MSVC로 빌드된 바이너리는 함수와 함수 사이의 빈 공간을 NOP 대신 <strong><code>0xCC</code>(int3, 소프트웨어 브레이크포인트 명령)</strong> 로 채우는 경우가 많다. 이는 정렬 목적도 있지만, 만약 프로그램 흐름이 어떤 버그(예: 계산된 <code>jmp</code>/<code>call</code>의 목표 주소 오류)로 이 영역에 잘못 진입하면 <strong>즉시 예외를 발생시켜 문제를 빨리 드러내려는</strong> 의도도 있다. 디버거로 이 영역을 밟으면 하드웨어 브레이크포인트를 건 것처럼 멈추는데, 이건 사용자가 건 것이 아니라 바이너리 자체에 박혀있는 채움 바이트다.</p>
+<h3>진짜 코드와 헷갈리지 않는 법</h3>
+<p>정렬 패딩은 다음 특징을 가진다:</p>
+<ul><li><strong>어디서도 그 주소로 점프/호출(xref)이 들어오지 않는다.</strong> 정상적인 코드라면 최소한 이전 명령의 자연스러운 흐름(fall-through)이나 어떤 분기가 그 주소를 가리켜야 한다.</li><li>함수의 <strong>끝(에필로그, RET 이후)과 다음 함수의 시작 사이</strong>, 또는 섹션 경계 근처에 위치한다.</li><li>반복되는 단순한 패턴(NOP 체인, <code>0xCC</code> 반복)으로 이뤄져 있다.</li></ul>
+<p>반대로, 만약 겉보기엔 NOP 패딩처럼 보이는 위치에서 실제로 그 안의 일부 바이트로 점프해 들어오는 코드가 있다면(예: <code>jmp addr+1</code>처럼 정렬 영역 중간으로 진입), 이는 정상적인 패딩이 아니라 <strong>안티디스어셈블리 트릭</strong>일 가능성이 있으므로 더 주의 깊게 봐야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">sub_401230:
+    ...
+    ret
+; 여기부터 정렬 채움 (다음 함수를 0x401250에 맞추기 위한 패딩)
+    nop     word ptr [rax+rax+0]
+    nop
+sub_401250:                     ; 16바이트 경계에 정확히 맞춰짐
+    push    rbp
+    ...</code></pre>
+<pre><code class="language-text">; MSVC/링커의 int3 패딩 (역어셈블리에서 데이터로 보일 수 있음)
+004011F0                CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC CC</code></pre>
+<pre><code class="language-asm">; 루프 정렬을 위한 패딩 (핫 루프 시작을 16바이트에 맞춤)
+    xor     eax, eax
+    nop     dword ptr [rax+rax+0]  ; 루프 헤더를 정렬하기 위한 채움
+loop_head:                          ; 16바이트 경계
+    add     eax, [rdi+rcx*4]
+    inc     rcx
+    cmp     rcx, rsi
+    jl      loop_head</code></pre>
+<h2>가장 먼저 할 것</h2>
+<ol><li>의문의 바이트 영역이 NOP(<code>90</code>, <code>0F 1F ...</code>) 또는 <code>CC</code> 반복으로만 이뤄져 있는지 확인한다.</li><li>그 영역으로 들어오는 xref(참조)가 있는지 IDA에서 확인한다(있다면 단순 패딩이 아닐 수 있다).</li><li>패딩이라고 확신되면 그냥 건너뛰고 다음 실제 함수/코드 블록으로 이동한다 — 분석 시간을 낭비하지 않는다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 패딩 후보 영역 식별</strong> IDA/Ghidra에서 함수 목록을 보고, 어떤 함수의 끝 주소와 다음 함수 시작 주소 사이에 간격이 있으면 그 사이가 패딩 후보다.</p>
+<p><strong>2) 바이트 패턴 확인</strong> Hex view(IDA의 Hex View-A 창 또는 <code>Alt+2</code>)로 실제 바이트를 확인해서 <code>90</code> 반복, <code>0F 1F</code> 계열, 또는 <code>CC</code> 반복인지 눈으로 확인한다.</p>
+<p><strong>3) Xref 확인으로 진짜 패딩인지 검증</strong> 그 영역 주소 위에서 <code>X</code>(Xrefs to)를 눌러본다. 아무 참조도 없다면(또는 이전 함수의 자연스러운 흐름조차 없다면) 순수 패딩으로 결론짓는다.</p>
+<p><strong>4) IDA가 코드로 잘못 인식했다면 데이터로 재정의</strong> IDA가 패딩 영역을 억지로 명령어로 해석해서 이상한 디스어셈블리를 만들어내는 경우, 그 영역을 선택하고 <code>U</code>(Undefine)로 정의를 해제한 뒤 <code>D</code>(데이터로 정의)나 <code>A</code>(아스키/배열)로 바꿔서 "이건 코드가 아니다"라고 명시해주면 이후 분석이 깔끔해진다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>Alt+2</code>(Hex View), <code>X</code>(Xrefs to), <code>U</code>(Undefine), <code>C</code>(코드로 강제 변환), <code>D</code>(데이터로 변환)</li><li>Ghidra: Listing에서 우클릭 → Clear Code Bytes, 이후 Data로 재정의</li><li>objdump: <code>objdump -d ./binary</code>로 전체 디스어셈블리를 보면서 <code>nop</code>/<code>(bad)</code>/<code>int3</code> 연속 구간을 눈으로 스캔</li><li>readelf/objdump: <code>.align</code>으로 생긴 패딩은 대개 섹션 덤프(<code>objdump -s</code>)에서 <code>90 90 90...</code> 또는 <code>cc cc cc...</code> 패턴으로 쉽게 확인 가능</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>nop word ptr [rax+rax+0]</code>처럼 오퍼랜드가 있는 NOP은 실제로 메모리를 읽지 않는다 — 인코딩상 메모리 오퍼랜드 형태를 빌려서 명령어 길이를 늘린 것뿐이며 부작용이 전혀 없다.</li><li>연속된 <code>CC</code> 바이트는 브레이크포인트를 사용자가 건 것처럼 보이지만, 실행 흐름이 정상적이라면 애초에 이 영역에 도달하지 않으므로 걱정할 필요가 없다.</li><li>함수 시작 주소가 <code>0x...0</code>, <code>0x...10</code>, <code>0x...20</code>처럼 16의 배수로 끝나는 경향이 있다면, 그 앞의 남는 바이트가 정렬 패딩이라는 뜻이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>정렬 패딩 영역을 "숨겨진 명령/난독화된 코드"라고 오해해서 시간을 들여 분석하는 것 — xref가 없는 순수 NOP/CC 반복 구간은 대부분 그냥 채움이다.</li><li>IDA가 패딩을 코드로 잘못 인식해서 만들어낸 의미 없는 디스어셈블리(<code>(bad)</code> 포함)를 그대로 실제 명령어라고 믿는 것 — Hex View로 원본 바이트를 직접 확인하는 습관이 필요하다.</li><li><code>CC</code> 패딩을 보고 "누군가 디버거로 브레이크포인트를 심어놨다"고 오판하는 것 — 링커/컴파일러가 원래 그렇게 채워 넣은 것일 수 있다(다만 실제 안티디버깅 목적으로 <code>INT3</code>를 명시적으로 심는 경우도 있으니 REV-0435 UD2/안티디버깅류와 함께 문맥을 살펴야 한다).</li><li>정렬 영역 중간 바이트로 실제 점프가 들어오는(오버랩 명령어) 안티디스어셈블리 가능성을 아예 배제하는 것 — xref 확인을 생략하지 않는 게 안전하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>IDA가 패딩 영역에서 이상한 디스어셈블리를 계속 만들어낸다면 → <code>U</code>로 정의를 해제하고 수동으로 데이터/정렬 표시를 해준다.</li><li>패딩처럼 보이는데 실제로 실행되는 것 같다면(디버거로 확인 시 그 주소에 실행 흐름이 도달) → 정렬 패딩이 아니라 실제 코드나 오버랩 트릭일 가능성이 크므로 REV-0476(코드/데이터 오인식) 문서를 참고한다.</li><li>함수 정렬 배수(16 vs 32)가 궁금하면 컴파일러 옵션(<code>-falign-functions</code>)이나 링커 스크립트 설정에 따라 달라질 수 있다는 점을 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 함수 사이 멀티바이트 NOP</strong></p>
+<pre><code class="language-asm">0000000000401234 &lt;foo&gt;:
+  401234: c3                    ret
+  401235: 66 0f 1f 44 00 00     nop    WORD PTR [rax+rax*1+0x0]
+  40123b: 0f 1f 44 00 00        nop    DWORD PTR [rax+rax*1+0x0]
+
+0000000000401240 &lt;bar&gt;:
+  401240: 55                    push   rbp</code></pre>
+<p><code>foo</code>가 <code>0x401234</code>에서 끝나고(<code>ret</code>), 다음 함수 <code>bar</code>가 <code>0x401240</code>(16의 배수)에서 시작하도록 그 사이 11바이트를 멀티바이트 NOP 두 개로 채웠다.</p>
+<p><strong>예제 2 — MSVC의 int3 패딩</strong></p>
+<pre><code class="language-text">00401300  E9 12 03 00 00        jmp    sub_401617
+00401305  CC CC CC CC CC CC CC  ; int3 반복 (다음 함수 시작 전 정렬 채움)
+00401320  48 89 5C 24 08        mov    [rsp+8], rbx  ; 다음 함수 시작</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0074-nop.html">REV-0074 — NOP: 아무것도 하지 않는 명령과 패치</a></li><li><a href="rev-0435-ud2.html">REV-0435 — UD2: 의도적 예외 명령과 안티디버깅 활용</a></li><li><a href="rev-0466-function-cloning.html">REV-0466 — 함수가 여러 번 복제된 것처럼 보이는 이유(Function Cloning)</a></li><li><a href="rev-0474-instruction-prefixes-rex-66-f2-f3.html">REV-0474 — 명령어 프리픽스(REX, 66h, F2h/F3h)가 붙는 이유 개요</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>멀티바이트 NOP 인코딩 목록(1~9바이트): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "NOP—No Operation" 및 Volume 2C Appendix(권장 멀티바이트 NOP 시퀀스) 기준.</li><li>함수/루프 정렬과 컴파일러 옵션(<code>-falign-functions</code>, <code>-falign-loops</code>): GCC 공식 문서(Optimize Options) 기준.</li><li>MSVC/링커의 <code>int3</code>(0xCC) 패딩 관례: Microsoft Learn 및 일반적으로 알려진 MSVC 코드 생성 관례 기준(2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

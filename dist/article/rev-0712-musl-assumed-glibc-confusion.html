@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>musl 바이너리를 glibc 전제로 분석해서 헷갈릴 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>musl 바이너리를 glibc 전제로 분석해서 헷갈릴 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">readelf</span><span class="tag">file</span></div>
+<h2>한 줄 요약</h2>
+<p>Alpine 기반 Docker 이미지 등에서 만든 바이너리는 musl로 링크되는데, 이걸 glibc라고 무의식적으로 전제한 채 pwndbg의 <code>heap</code>/<code>tcache</code>/<code>bins</code> 명령을 쓰거나 libc-database에서 오프셋을 찾으면 값이 이상하거나 아예 아무것도 안 나와서 "분석이 잘못됐나" 헷갈리게 된다 — 실제로는 애초에 glibc가 아니라서 glibc 전용 도구/지식이 적용되지 않는 것이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>pwndbg에서 <code>heap</code>, <code>bins</code>, <code>tcache</code> 명령을 쳤는데 에러가 나거나 값이 말이 안 될 때</li><li><code>libc.so.6</code>을 찾으려고 libc-database에서 심볼 오프셋으로 검색했는데 아무리 찾아도 매칭이 안 될 때</li><li>정적 링킹된 바이너리인데 파일 크기가 유난히 작고(수백 KB대), glibc FLIRT 시그니처가 하나도 안 맞을 때</li><li>분석 도중에야 <code>file</code>/<code>readelf</code> 결과에서 인터프리터가 <code>ld-musl-x86_64.so.1</code>이라는 걸 뒤늦게 알아챘을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>증상이 먼저 보이고 원인은 나중에 발견되는 패턴</h3>
+<p>REV-0647에서 musl과 glibc의 근본적인 차이(경량 구현, 다른 malloc 알고리즘 등)를 다뤘다면, 이 글은 그 사실을 모른 채 "당연히 glibc겠지"라고 전제하고 분석을 진행하다가 마주치는 <strong>구체적인 실패 증상들</strong>을 다룬다. 실무에서는 바이너리를 받자마자 musl 여부를 확인하지 않고 바로 GDB/pwndbg 명령부터 치는 경우가 많아서, 원인 파악이 한참 늦어지곤 한다.</p>
+<h3>pwndbg heap 계열 명령이 이상하게 동작하는 이유</h3>
+<p>pwndbg의 <code>heap</code>, <code>bins</code>, <code>tcache</code> 명령은 glibc의 <code>malloc_chunk</code>, <code>tcache_perthread_struct</code> 등 <strong>glibc 전용 구조체 레이아웃</strong>을 가정하고 메모리를 해석한다. musl은 자체 할당자(<code>mallocng</code>, 구버전은 다른 방식)를 쓰며 청크 헤더, 프리리스트 구조가 전혀 다르다. 그 결과 pwndbg가 glibc 구조체 오프셋으로 musl 힙 메모리를 읽으면 값이 랜덤하게 보이거나, 애초에 glibc 심볼(<code>main_arena</code> 등)을 못 찾아 명령 자체가 실패한다.</p>
+<h3>libc-database에서 안 나오는 이유</h3>
+<p>libc-database, <code>one_gadget</code> 같은 도구/데이터베이스는 배포판별 <strong>glibc</strong> 바이너리를 수집해둔 것이다. musl은 별도의 프로젝트이고 애초에 이 데이터베이스의 수집 대상이 아니므로, 심볼 오프셋으로 아무리 검색해도 매칭되는 항목이 없는 것이 정상이다.</p>
+<h3>FLIRT 시그니처가 하나도 안 맞는 이유</h3>
+<p>IDA FLIRT/Ghidra Function ID 시그니처는 특정 컴파일러+<strong>glibc</strong> 조합의 바이트 패턴을 학습한 것이다. musl로 정적 링크된 바이너리는 함수 구현 자체가 다르므로 바이트 패턴이 전혀 다르게 나오고, glibc 시그니처를 적용해도 매칭률이 0에 가깝다. "정적 링킹인데 시그니처가 하나도 안 맞는다"는 현상 자체가 musl을 의심할 강력한 단서다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code>pwndbg&gt; heap
+[!] Could not find the heap for the main arena</code></pre>
+<p>또는 libc-database 검색에서</p>
+<pre><code>$ ./find __libc_start_main 400 500 4a0
+No match found</code></pre>
+<p>이런 결과가 나오면서도 정작 원인(musl)은 아직 확인하지 않은 상태가 전형적인 증상이다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>GDB/pwndbg 명령을 붙잡고 헤매기 전에 <code>file ./chall</code>과 <code>readelf -l ./chall | grep interpreter</code>부터 확인해서 인터프리터가 <code>ld-musl-*</code>인지, 또는 정적 바이너리라면 크기와 심볼 이름 접두사(<code>__stdio_</code> 등 musl 특유의 이름)를 먼저 본다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>file ./chall</code>로 인터프리터/정적 여부 확인</li><li>동적 링킹이면 <code>readelf -l ./chall | grep interpreter</code>로 <code>ld-musl-x86_64.so.1</code> 여부 직접 확인</li><li>정적 링킹이면 <code>strings ./chall | grep -i musl</code>, 또는 <code>nm ./chall</code>에 <code>__stdio_write</code>, <code>__syscall</code> 같은 musl 특유 내부 심볼이 있는지 확인</li><li>musl로 확인되면 pwndbg의 glibc 전용 heap 명령 사용을 중단하고, 수동으로 <code>x/</code>, <code>info proc mappings</code>로 힙 영역을 직접 읽는 방식으로 전환</li><li>libc-database/one_gadget 사용을 중단하고, musl 소스 코드(공식 저장소)를 참고해 해당 버전의 malloc 구현을 직접 대조</li><li>FLIRT/Function ID는 포기하고 <code>_start</code>부터 수동으로 콜체인을 따라가며 함수 식별(REV-0646 방식) 적용</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">file ./chall
+readelf -l ./chall | grep interpreter
+strings ./chall | grep -i musl
+nm ./chall | grep -E '__stdio_|__syscall'
+info proc mappings   # gdb 안에서, 힙 영역 수동 확인용</code></pre>
+<h2>출력 해석</h2>
+<p><code>readelf -l</code> 결과의 <code>[Requesting program interpreter: /lib/ld-musl-x86_64.so.1]</code> 한 줄이 나오면 musl이 확정이다. 이 상태에서는 pwndbg heap 명령의 실패나 libc-database의 "No match found"가 버그가 아니라 애초에 대상이 아니라서 나오는 정상 결과임을 인지해야 한다.</p>
+<h2>흔한 실수</h2>
+<ul><li>pwndbg 명령이 실패하는 걸 pwndbg 자체의 버그나 설치 문제로 오해하고 재설치를 반복하는 것(REV-0690과는 다른 원인).</li><li>libc-database에 안 나온다고 오프셋을 억지로 다른 glibc 버전에서 추정해서 대입하는 것 — musl은애초에 glibc 오프셋 체계와 무관하다.</li><li>정적 링킹 + FLIRT 매칭 실패를 보고 "strip이 너무 심하게 됐나보다"라고 잘못 결론짓는 것 — 실제로는 musl이라 시그니처 자체가 대상이 아니다.</li><li>musl로 확인된 후에도 계속 glibc 문서의 구조체 오프셋을 참고하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>musl과 glibc의 근본적인 차이(malloc 구현, 심볼 버전 유무 등)를 아직 안 읽었다면 → REV-0647 musl libc와 glibc 차이가 리버싱에 미치는 영향.</li><li>pwndbg 명령 자체가 설치 문제로 안 먹는 것인지 구분이 안 되면 → REV-0690 Pwndbg가 설치는 됐는데 명령어가 안 먹을 때.</li><li>정적 링킹 바이너리에서 함수를 수동으로 찾는 절차가 기억 안 나면 → REV-0646 정적 링킹된(Statically Linked) ELF 분석 접근법.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ file ./chall
+chall: ELF 64-bit LSB executable, x86-64, ... dynamically linked, interpreter /lib/ld-musl-x86_64.so.1, ...
+$ pwndbg&gt; heap
+[!] Could not find the heap for the main arena</code></pre>
+<p><code>file</code> 결과에서 인터프리터가 <code>ld-musl-x86_64.so.1</code>로 확인된 순간, <code>heap</code> 명령 실패가 pwndbg 문제가 아니라 애초에 glibc 힙 구조가 없는 musl 바이너리였기 때문이라는 게 명확해진다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0647-musl-vs-glibc-reversing.html">REV-0647 — musl libc와 glibc 차이가 리버싱에 미치는 영향</a></li><li><a href="rev-0690-pwndbg-commands-not-working.html">REV-0690 — Pwndbg가 설치는 됐는데 명령어가 안 먹을 때</a></li><li><a href="rev-0646-statically-linked-elf-analysis.html">REV-0646 — 정적 링킹된(Statically Linked) ELF 분석 접근법</a></li><li><a href="rev-0709-pwndbg-heap-not-supported.html">REV-0709 — Pwndbg에서 heap 명령이 이 glibc 버전에서 지원 안 된다고 할 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>musl의 malloc 구현(mallocng 등)이 glibc의 malloc_chunk/tcache 구조와 근본적으로 다르다는 점: musl libc 공식 소스 저장소 및 프로젝트 문서 기준.</li><li>pwndbg heap 관련 명령이 glibc 심볼(main_arena 등)과 구조체 레이아웃에 의존한다는 점: pwndbg 공식 저장소 문서 기준.</li><li>IDA FLIRT/Ghidra Function ID가 특정 라이브러리 바이트 패턴 기반 매칭이라는 점: Hex-Rays IDA 및 Ghidra 공식 문서 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

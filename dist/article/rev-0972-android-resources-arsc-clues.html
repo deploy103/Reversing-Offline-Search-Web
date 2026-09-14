@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Android 리소스(resources.arsc)에서 단서 찾기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dotnet-android</div>
+<article class="article-body">
+<h1>Android 리소스(resources.arsc)에서 단서 찾기</h1>
+<div class="article-meta"><span class="tag">dotnet-android</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">android</span><span class="tag">APK</span><span class="tag">apktool</span></div>
+<h2>한 줄 요약</h2>
+<p><code>resources.arsc</code>는 APK 안의 모든 문자열/색상/치수/스타일 등 리소스 값을 정수 ID(<code>0x7fXXXXXX</code> 형태의 리소스 ID)와 매핑해 저장한 바이너리 테이블이며, 코드에서 <code>R.string.flag_hint</code>처럼 이름으로만 보이던 참조가 실제로 어떤 리소스 ID·값과 연결되는지 이 파일을 통해 확인할 수 있어서 <a href="rev-0248-apk-structure.html">REV-0248</a>의 파일 구조 개요보다 한 단계 더 깊이 리소스 자체를 뒤져야 할 때 필요하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>JADX/smali 코드에 <code>R.string.something</code>, <code>getString(R.string.xxx)</code>처럼 리소스 ID 참조가 나오는데 실제 값이 뭔지 바로 안 보일 때</li><li>APK를 압축 해제했더니 사람이 읽을 수 있는 <code>res/values/strings.xml</code> 원본이 아니라 <code>res/</code> 안에 이미 컴파일된 바이너리 XML(<code>res/layout/activity_main.xml</code> 등)만 있을 때</li><li><code>apktool d</code>로 디코딩했는데 리소스 오류(<code>AndrolibException</code>)가 나서 원인을 파악해야 할 때</li><li>특정 문자열 리소스가 어느 화면(레이아웃)에서 쓰이는지, 반대로 어떤 리소스 ID가 어느 XML 값에 대응하는지 추적하고 싶을 때</li><li>앱 안에 숨겨진 문자열(플래그, 서버 URL, 디버그 메시지)이 코드가 아니라 리소스 쪽에 있을 것 같다고 의심될 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 APK 안의 XML/문자열이 텍스트가 아닌가</h3>
+<p>안드로이드는 빌드 시점에 AAPT/AAPT2(Android Asset Packaging Tool)가 <code>res/</code> 폴더 아래의 모든 XML(레이아웃, 문자열, 색상, 메뉴 등)을 사람이 읽는 텍스트가 아니라 <strong>컴파일된 바이너리 XML(Binary XML, 확장자는 그대로 <code>.xml</code>)</strong> 형태로 변환해서 APK에 넣는다. 이는 난독화 목적이 아니라 파싱 속도와 파일 크기를 위한 정상적인 빌드 최적화다. 그리고 이 XML들이 참조하는 모든 리소스(문자열, 색상, 치수, 드로어블 등)의 이름과 실제 값은 <code>res/</code> 폴더 전체가 아니라 APK 루트의 <strong><code>resources.arsc</code></strong> 파일 하나에 테이블 형태로 모여 저장된다.</p>
+<h3>리소스 ID 구조</h3>
+<p>자바/코틀린 코드에서 쓰는 <code>R.string.app_name</code> 같은 이름은 컴파일되면 정수 하나(리소스 ID)로 바뀐다. 이 정수는 32비트이며 관례상 다음처럼 구성된다.</p>
+<pre><code>0x  7f        02        0001
+    패키지ID   타입ID     엔트리 인덱스</code></pre>
+<ul><li><strong>패키지 ID</strong>(최상위 바이트): 앱 자체 리소스는 보통 <code>0x7f</code>. 안드로이드 프레임워크 제공 리소스(<code>android.R....</code>)는 <code>0x01</code>.</li><li><strong>타입 ID</strong>: <code>string</code>, <code>layout</code>, <code>drawable</code>, <code>id</code>, <code>color</code> 등 리소스 종류마다 다른 번호가 배정된다(정확한 번호는 <code>resources.arsc</code>의 타입 스트링 풀에 정의되어 있고 빌드마다 조금씩 다를 수 있다).</li><li><strong>엔트리 인덱스</strong>: 같은 타입 안에서 몇 번째 리소스인지.</li></ul>
+<p><code>apktool d</code>로 디코딩하면 이 매핑이 <code>res/values/public.xml</code> 파일에 사람이 읽을 수 있는 형태로 복원되어 나온다.</p>
+<pre><code class="language-xml">&lt;public type="string" name="flag_hint" id="0x7f0f001a" /&gt;</code></pre>
+<p>즉 코드에서 본 <code>0x7f0f001a</code>라는 상수가 실제로는 <code>R.string.flag_hint</code>라는 이름의 문자열 리소스라는 것을 이 파일로 역으로 확인할 수 있다.</p>
+<h3>apktool 디코딩 후 리소스 구조</h3>
+<p><code>apktool d app.apk -o out</code>을 실행하면 <code>resources.arsc</code>의 내용이 다음처럼 원본에 가까운 텍스트/파일 구조로 복원된다.</p>
+<ul><li><code>out/res/values/strings.xml</code> — 모든 문자열 리소스의 이름과 실제 값.</li><li><code>out/res/values/public.xml</code> — 리소스 이름 ↔ 리소스 ID(정수) 매핑표.</li><li><code>out/res/layout/*.xml</code>, <code>out/res/drawable*/</code>, <code>out/res/values-*/</code>(언어/화면밀도별 자원) 등 — 나머지 리소스 원본.</li><li><code>out/AndroidManifest.xml</code> — 리소스 디코딩과 별도로 함께 복원되는 매니페스트(<a href="rev-0250-androidmanifest-clues.html">REV-0250</a> 참고).</li></ul>
+<p><code>apktool</code>이 없거나 리소스 디코딩만 별도로 빠르게 훑고 싶다면, <code>aapt2 dump resources app.apk</code> 또는 <code>aapt dump --values resources app.apk</code>로도 리소스 테이블 내용을 텍스트로 덤프할 수 있다(Android SDK build-tools에 포함).</p>
+<h3>왜 CTF에서 리소스를 뒤져볼 가치가 있는가</h3>
+<p>문제 출제자가 플래그나 힌트를 코드(smali/자바)가 아니라 <strong>문자열 리소스</strong>(<code>strings.xml</code>)나 <strong>드로어블 이미지 안</strong>, 또는 흔히 간과되는 <strong><code>res/raw/</code></strong>(원본 그대로 포함되는 임의 파일) 안에 숨겨두는 경우가 종종 있다. 코드만 보고 로직을 다 이해했는데 정답이 안 보인다면, 리소스 쪽을 아직 안 봤을 가능성을 의심해야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>코드에 <code>getResources().getString(R.string.xxx)</code>, smali에 <code>sget v0, Lcom/example/R$string;-&gt;xxx:I</code> 형태로 리소스 ID 참조가 있음.</li><li>APK를 그냥 <code>unzip</code>으로 풀어보면 <code>res/layout/activity_main.xml</code>을 텍스트 에디터로 열었을 때 사람이 읽을 수 없는 바이너리로 보임(정상 — apktool 없이 열면 이렇게 보인다).</li><li><code>resources.arsc</code> 파일 자체는 <code>file resources.arsc</code> 시 "Android binary resource file" 계열로 식별됨.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>apktool d app.apk -o out</code>으로 디코딩부터 하고(REV-0251), <code>out/res/values/strings.xml</code>을 열어 사람이 읽을 수 있는 모든 문자열 리소스를 먼저 훑어본다. 대부분의 CTF용 힌트는 이 파일 하나로 바로 드러난다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>apktool d app.apk -o out</code>으로 리소스를 포함해 전체 디코딩한다.</li><li><code>grep -i "flag\|ctf\|secret\|key" out/res/values/strings.xml</code>로 의심스러운 문자열을 우선 검색한다.</li><li>코드에서 본 리소스 ID(<code>0x7f0f001a</code> 등)가 있다면 <code>grep "0x7f0f001a" out/res/values/public.xml</code>로 그 ID가 어떤 이름(<code>R.string.xxx</code>)에 대응하는지 확인한다.</li><li>그 이름으로 다시 <code>out/res/values*/strings.xml</code>을 검색해 실제 값(그리고 언어별로 값이 다른 <code>values-ko/</code>, <code>values-en/</code> 등)을 확인한다.</li><li>문자열에서 못 찾았다면 <code>out/res/raw/</code>, <code>out/res/drawable*/</code>, <code>out/assets/</code>(<a href="rev-0248-apk-structure.html">REV-0248</a> 참고)까지 넓혀 탐색한다.</li><li>apktool 디코딩이 오류로 실패한다면, <code>aapt2 dump resources app.apk</code>로 원본 APK에서 직접 리소스 테이블만 텍스트로 덤프해 대안적으로 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash"># 리소스 포함 전체 디코딩
+apktool d app.apk -o out
+
+# 문자열 리소스에서 의심 키워드 검색
+grep -in "flag\|secret\|password\|ctf" out/res/values/strings.xml
+
+# 리소스 ID -&gt; 이름 매핑 확인
+grep "0x7f0f001a" out/res/values/public.xml
+
+# apktool 없이 aapt2로 리소스 테이블 직접 덤프(Android SDK build-tools 필요)
+aapt2 dump resources app.apk | less
+
+# aapt(구버전)로 문자열 값 위주 덤프
+aapt dump --values resources app.apk | grep -A2 "string/flag"
+
+# res/raw, assets까지 넓게 문자열 검색
+grep -rn "flag{" out/res/ out/assets/ 2&gt;/dev/null</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>public.xml</code>의 한 줄 <code>&lt;public type="string" name="flag_hint" id="0x7f0f001a" /&gt;</code>는 "리소스 ID <code>0x7f0f001a</code>는 이름이 <code>flag_hint</code>인 문자열 리소스다"라는 뜻이며, 코드에서 본 정수 상수를 사람이 읽을 수 있는 이름으로 뒤집어 확인하는 유일한 공식 경로다.</li><li><code>strings.xml</code>에 <code>&lt;string name="flag_hint"&gt;Look inside res/raw&lt;/string&gt;</code> 같은 값이 있다면, 이는 플래그 자체가 아니라 다음 탐색 위치를 알려주는 힌트일 수 있으므로 값의 내용을 그대로 정답으로 오해하지 않아야 한다.</li><li><code>values-ko/strings.xml</code>처럼 언어별 폴더가 따로 있으면, 같은 이름의 문자열이라도 언어 설정에 따라 다른 값을 반환할 수 있으니 기본(<code>values/</code>) 폴더 외의 값도 함께 확인해야 한다.</li><li><code>aapt2 dump resources</code>의 출력은 <code>apktool</code>의 <code>public.xml</code>+<code>strings.xml</code>을 합친 것과 비슷한 정보를 한 파일에 텍스트로 담고 있어서, apktool 디코딩이 실패할 때 좋은 대안이 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>리소스 ID(<code>0x7f0f001a</code>)를 코드 안의 다른 정수 상수와 혼동해서, 리소스가 아닌 값을 리소스인 것처럼 잘못 추적하는 것 — 상위 바이트가 <code>0x7f</code>(또는 프레임워크의 <code>0x01</code>)로 시작하는지부터 확인하는 습관이 필요하다.</li><li><code>strings.xml</code>만 보고 <code>res/raw/</code>나 <code>assets/</code>(<a href="rev-0248-apk-structure.html">REV-0248</a> 참고)에 숨겨진 원본 파일까지는 확인하지 않아 힌트를 놓치는 것.</li><li>언어별 리소스 폴더(<code>values-ko/</code>, <code>values-en/</code> 등)의 존재를 모르고 기본 <code>values/strings.xml</code>만 봐서 실제 실행 환경에서 쓰이는 값과 다른 값을 봤다고 착각하는 것.</li><li><code>apktool d</code> 디코딩이 리소스 오류로 실패했는데, 원인 분석 없이 포기하는 것 — 커스텀 프레임워크 리소스가 있으면 <code>apktool if</code>로 프레임워크 apk를 먼저 등록해야 하는 경우가 많다(<a href="rev-0968-jadx-apktool-options-quickref.html">REV-0968</a> 참고).</li><li><code>R$string</code>, <code>R$id</code> 같은 스마리 내부 클래스 이름을 보고 이것이 실제 리소스 값 자체라고 착각하는 것 — 이 클래스들은 이름과 ID의 매핑만 갖고 있을 뿐, 실제 값은 항상 <code>resources.arsc</code>(디코딩 후 <code>strings.xml</code> 등)에 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>APK 전체 파일 구조에서 리소스가 어디 위치하는지 큰 그림이 헷갈리면 → <a href="rev-0248-apk-structure.html">REV-0248 APK 파일 구조 기초</a></li><li>apktool 자체의 옵션(리소스만 디코딩, 강제 덮어쓰기 등)이 궁금하면 → <a href="rev-0968-jadx-apktool-options-quickref.html">REV-0968 JADX/apktool 옵션 빠른 참조</a>, <a href="rev-0251-apktool-basics.html">REV-0251 apktool 기본 사용법</a></li><li><code>AndroidManifest.xml</code>에서도 단서를 찾고 싶다면 → <a href="rev-0250-androidmanifest-clues.html">REV-0250 AndroidManifest.xml에서 단서 찾기</a></li><li>리소스가 아니라 코드(smali) 안의 문자열 상수를 찾고 싶다면 → <a href="rev-0252-smali-basics.html">REV-0252 smali 기초 문법</a></li></ul>
+<h2>미니 예제</h2>
+<p>JADX로 디컴파일한 자바 코드에 다음 줄이 있다고 하자.</p>
+<pre><code class="language-java">String hint = getString(R.string.flag_hint);
+Toast.makeText(this, hint, Toast.LENGTH_LONG).show();</code></pre>
+<p>smali로 보면 <code>R.string.flag_hint</code>가 리소스 ID 상수로 컴파일되어 있다.</p>
+<pre><code class="language-smali">const v0, 0x7f0f001a
+invoke-virtual {p0, v0}, Lcom/example/ctf/MainActivity;-&gt;getString(I)Ljava/lang/String;</code></pre>
+<p><code>apktool d app.apk -o out</code> 후 <code>out/res/values/public.xml</code>에서 해당 ID를 검색한다.</p>
+<pre><code class="language-bash">$ grep "0x7f0f001a" out/res/values/public.xml
+    &lt;public type="string" name="flag_hint" id="0x7f0f001a" /&gt;</code></pre>
+<p>이제 이름이 <code>flag_hint</code>임을 알았으니 <code>strings.xml</code>에서 실제 값을 확인한다.</p>
+<pre><code class="language-bash">$ grep -A1 "flag_hint" out/res/values/strings.xml
+&lt;string name="flag_hint"&gt;Check res/raw/secret.txt&lt;/string&gt;</code></pre>
+<p>이 결과로 실제 플래그가 문자열 자체가 아니라 <code>res/raw/secret.txt</code>라는 별도 파일 안에 있다는 힌트를 얻었다. <code>cat out/res/raw/secret.txt</code>로 이어서 확인하면 된다. 이렇게 "코드의 리소스 ID → <code>public.xml</code>의 이름 → <code>strings.xml</code>의 값" 세 단계를 거치는 것이 리소스 기반 힌트를 추적하는 표준 경로다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0248-apk-structure.html">REV-0248 — APK 파일 구조 기초</a></li><li><a href="rev-0250-androidmanifest-clues.html">REV-0250 — AndroidManifest.xml에서 단서 찾기</a></li><li><a href="rev-0251-apktool-basics.html">REV-0251 — apktool 기본 사용법</a></li><li><a href="rev-0968-jadx-apktool-options-quickref.html">REV-0968 — JADX/apktool 옵션 빠른 참조</a></li><li><a href="rev-0252-smali-basics.html">REV-0252 — smali 기초 문법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>resources.arsc</code>의 구조(문자열 풀, 타입/키 스트링 풀, 리소스 ID 구성 <code>패키지/타입/엔트리</code>)는 Android 오픈소스 프로젝트(AOSP) <code>ResourceTypes.h</code> 및 공식 개발자 문서(developer.android.com, "App resources overview")를 기준으로 정리했다.</li><li><code>apktool</code>의 리소스 디코딩 결과물(<code>public.xml</code>, <code>res/values/*.xml</code> 등) 형식은 apktool 공식 문서(apktool.org) 기준으로 확인했다.</li><li><code>aapt2 dump resources</code> 명령 및 출력 형식은 Android SDK 공식 문서(developer.android.com, "aapt2") 기준으로 확인했다 (2026-09-09 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

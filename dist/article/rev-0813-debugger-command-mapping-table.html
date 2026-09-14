@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>디버거별 명령어 대응표(GDB vs x64dbg vs WinDbg) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>디버거별 명령어 대응표(GDB vs x64dbg vs WinDbg)</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">x64dbg</span><span class="tag">WinDbg</span></div>
+<h2>한 줄 요약</h2>
+<p>GDB, x64dbg, WinDbg는 브레이크포인트 걸기/스텝 실행/메모리 보기 같은 핵심 동작을 모두 지원하지만 명령 이름과 문법이 셋 다 다르며, 이 표 하나로 "내가 늘 쓰던 도구의 그 명령이 다른 도구에서는 무엇인지" 바로 찾을 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Linux ELF는 GDB로, Windows PE는 x64dbg나 WinDbg로 분석하다가 명령어가 헷갈릴 때</li><li>라이트업/문서가 자신이 안 쓰는 디버거 기준으로 적혀 있어서 자신의 도구 명령으로 바꿔야 할 때</li><li>WinDbg를 처음 쓰는데 GDB의 <code>break</code>/<code>step</code>/<code>continue</code>에 대응하는 명령이 뭔지 급하게 찾을 때</li><li>x64dbg의 F7/F8/F9 단축키가 다른 도구의 어떤 명령과 같은 동작인지 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>아래 표는 실전에서 가장 자주 쓰는 동작을 기준으로 세 도구의 명령을 나란히 정리한 것이다. x64dbg는 GUI 단축키가 기본이므로 단축키를 먼저, 괄호 안에 명령줄(커맨드 바) 입력용 명령을 함께 적었다.</p>
+<table><thead><tr><th>동작</th><th>GDB</th><th>x64dbg</th><th>WinDbg</th></tr></thead><tbody><tr><td>주소/함수에 브레이크포인트</td><td><code>break *ADDR</code> / <code>break FUNC</code></td><td><code>F2</code>(커서 위치) / (<code>bp ADDR</code>)</td><td><code>bp ADDR</code></td></tr><tr><td>브레이크포인트 목록</td><td><code>info breakpoints</code></td><td>Breakpoints 탭</td><td><code>bl</code></td></tr><tr><td>브레이크포인트 삭제</td><td><code>delete N</code></td><td>우클릭 삭제 / (<code>bpc ADDR</code>)</td><td><code>bc N</code></td></tr><tr><td>브레이크포인트 활성화/비활성화</td><td><code>enable N</code> / <code>disable N</code></td><td>(<code>bpe ADDR</code>) / (<code>bpd ADDR</code>)</td><td><code>be N</code> / <code>bd N</code></td></tr><tr><td>조건부 브레이크포인트</td><td><code>condition N EXPR</code></td><td>Edit breakpoint → Break condition</td><td><code>bp ADDR "조건 스크립트"</code></td></tr><tr><td>프로그램 실행 시작</td><td><code>run</code> / <code>start</code></td><td><code>F9</code>(첫 진입점까지, 설정에 따라 다름) / (<code>run</code>)</td><td><code>g</code></td></tr><tr><td>실행 재개(계속)</td><td><code>continue</code> (<code>c</code>)</td><td><code>F9</code></td><td><code>g</code></td></tr><tr><td>한 줄 소스 단위로 진입(step into)</td><td><code>step</code> (<code>s</code>)</td><td><code>F7</code></td><td><code>t</code></td></tr><tr><td>한 줄 소스 단위로 넘기기(step over)</td><td><code>next</code> (<code>n</code>)</td><td><code>F8</code></td><td><code>p</code></td></tr><tr><td>명령어 단위로 진입</td><td><code>stepi</code> (<code>si</code>)</td><td><code>F7</code></td><td><code>t</code></td></tr><tr><td>명령어 단위로 넘기기</td><td><code>nexti</code> (<code>ni</code>)</td><td><code>F8</code></td><td><code>p</code></td></tr><tr><td>현재 함수 끝까지 실행(step out)</td><td><code>finish</code></td><td><code>Ctrl+F9</code>(Execute till return, <code>rtr</code>)</td><td><code>gu</code></td></tr><tr><td>특정 위치까지 한 번에 실행</td><td><code>until *ADDR</code> / <code>advance FUNC</code></td><td>우클릭 → Run to Selection(<code>F4</code>)</td><td><code>bp ADDR</code> 후 <code>g</code>, 또는 <code>pa ADDR</code></td></tr><tr><td>메모리 보기</td><td><code>x/NFU ADDR</code></td><td>Dump 패널 / (<code>db</code>,<code>dw</code>,<code>dd</code>,<code>dq ADDR</code>)</td><td><code>db</code>/<code>dw</code>/<code>dd</code>/<code>dq ADDR</code></td></tr><tr><td>레지스터 보기</td><td><code>info registers</code> / <code>p $rax</code></td><td>Registers 패널 / (<code>r rax</code>로 설정)</td><td><code>r</code> / <code>r rax</code></td></tr><tr><td>역참조 조건 워치포인트</td><td><code>watch EXPR</code></td><td>메모리 우클릭 → Breakpoint → Hardware, Access/Write</td><td><code>ba w SIZE ADDR</code></td></tr><tr><td>디스어셈블</td><td><code>disassemble</code></td><td>CPU/Disassembly 패널</td><td><code>u ADDR</code></td></tr><tr><td>콜스택(백트레이스)</td><td><code>bt</code></td><td>Call Stack 패널</td><td><code>k</code></td></tr><tr><td>지역 변수 보기</td><td><code>info locals</code></td><td>(심볼 있을 때) Locals 패널</td><td><code>dv</code></td></tr><tr><td>프로세스 attach</td><td><code>attach PID</code></td><td>File → Attach</td><td><code>.attach PID</code></td></tr><tr><td>프로세스 detach</td><td><code>detach</code></td><td>Debug → Detach</td><td><code>.detach</code></td></tr><tr><td>디버깅 세션 재시작</td><td><code>run</code>(재실행)</td><td>Debug → Restart(<code>Ctrl+F2</code>)</td><td><code>.restart</code></td></tr><tr><td>심볼/함수 검색</td><td><code>info functions REGEX</code></td><td>Symbols 패널 / 검색창</td><td><code>x MODULE!PATTERN</code></td></tr><tr><td>메모리 값 검색</td><td><code>find</code></td><td>Search for → 패턴 지정</td><td><code>s -a</code>/<code>s -b</code></td></tr></tbody></table>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>Linux 바이너리(ELF) 분석 라이트업에는 <code>(gdb)</code> 프롬프트가, Windows PE 분석 문서에는 x64dbg 스크린샷이나 WinDbg의 <code>0:000&gt;</code> 프롬프트가 등장한다. 어느 쪽 문서를 보고 있는지에 따라 위 표의 어느 열을 참고할지가 정해진다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>지금 실행하려는 동작(브레이크/스텝/메모리 확인 등)을 먼저 정하고, 위 표에서 그 행을 찾아 자신이 실제로 쓰는 디버거 열의 명령을 그대로 입력한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 원래 익숙한 디버거의 명령을 확인한다</strong> 예: GDB에서 늘 쓰던 <code>break main; run; next; next</code>.</p>
+<p><strong>2) 표에서 각 명령의 행을 찾는다</strong> <code>break</code> → "주소/함수에 브레이크포인트" 행, <code>run</code> → "프로그램 실행 시작" 행, <code>next</code> → "한 줄 소스 단위로 넘기기" 행.</p>
+<p><strong>3) 대상 디버거 열의 명령/단축키로 치환한다</strong> WinDbg라면 <code>bp main</code>, <code>g</code>, <code>p</code>, <code>p</code> 순서가 된다.</p>
+<p><strong>4) GUI 도구는 단축키 위치를 화면에서 직접 확인한다</strong> x64dbg는 F7/F8/F9가 상단 툴바 아이콘으로도 노출되어 있으므로, 단축키가 헷갈리면 툴바 아이콘에 마우스를 올려 툴팁으로 확인한다.</p>
+<p><strong>5) 조건부 브레이크포인트처럼 문법 차이가 큰 항목은 별도 참조</strong> GDB <code>condition</code>/x64dbg Break condition/WinDbg <code>bp</code> 조건 스크립트는 문법 자체가 서로 다르므로, 각 도구 전용 문서(REV-0806, REV-0808)를 함께 확인한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-gdb">break / delete / condition / run / continue / step / next / stepi / nexti / finish / watch / bt / info registers / disassemble</code></pre>
+<pre><code class="language-text">x64dbg: F2(브레이크포인트) F7(step into) F8(step over) F9(run/continue) Ctrl+F9(execute till return) F4(run to selection) Ctrl+F2(restart)</code></pre>
+<pre><code class="language-text">WinDbg: bp / bc / bl / be / bd / g / t / p / gu / k / r / u / dv / .attach / .detach / .restart</code></pre>
+<h2>출력 해석</h2>
+<p>세 도구 모두 "지금 실행이 멈춘 위치"를 알려주는 방식이 다르다. GDB는 멈추면 소스 줄과 함수명을 텍스트로 출력하고, x64dbg는 CPU 패널의 현재 명령어 줄에 화살표를 표시하며, WinDbg는 <code>Breakpoint N hit</code>류의 메시지 뒤에 현재 명령어 주소와 디스어셈블리 한 줄을 보여준다. 어느 도구든 "방금 멈췄다"는 신호 자체는 화면이 다시 그려지고 새 프롬프트가 뜨는 것으로 확인할 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li>WinDbg의 <code>t</code>(trace, step into)를 GDB의 <code>t</code>(존재하지 않음, GDB의 step into는 <code>s</code>)와 같은 글자라고 착각하는 것 — 같은 알파벳이라도 도구마다 의미가 다르다.</li><li>x64dbg의 <code>F7</code>/<code>F8</code>을 WinDbg의 <code>t</code>/<code>p</code>와 정확히 반대로 기억하는 것 — 표를 만들어 한 번 정리해두지 않으면 도구를 오갈 때마다 헷갈리기 쉽다.</li><li>WinDbg <code>g</code>(go)가 GDB의 <code>run</code>과 <code>continue</code> 둘 다에 대응한다는 것을 모르고 "처음 실행"과 "재개"를 구분하는 별도 명령을 찾으려 하는 것 — WinDbg는 최초 실행도, 이후 재개도 모두 <code>g</code>다.</li><li>x64dbg GUI 단축키만 알고 스크립트/커맨드 바에서 같은 동작을 어떻게 텍스트 명령으로 치는지 몰라 자동화(스크립트) 작성에서 막히는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>x64dbg 조건부 브레이크포인트 문법 자체가 궁금하면 → REV-0808 x64dbg 조건부 브레이크포인트 문법 참조.</li><li>GDB의 watch/catch/tbreak 등 심화 명령이 궁금하면 → REV-0642 GDB 명령어 심화 치트시트(watch/catch/tbreak).</li><li>레지스터/플래그 표시 명칭 차이가 궁금하면 → REV-0812 디버거별 레지스터/플래그 표시 명칭 대조표.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">목표: main 함수에 브레이크포인트를 걸고 실행한 뒤, 한 줄씩(호출은 넘기며) 세 번 진행하기
+
+GDB    : break main → run → next → next → next
+x64dbg : main에 F2 → F9 → F8 → F8 → F8
+WinDbg : bp main → g → p → p → p</code></pre>
+<p>세 시퀀스 모두 동일한 디버깅 동작을 각자의 문법으로 표현한 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0812-debugger-register-flag-naming-table.html">REV-0812 — 디버거별 레지스터/플래그 표시 명칭 대조표</a></li><li><a href="rev-0808-x64dbg-conditional-breakpoint-syntax-quickref.html">REV-0808 — x64dbg 조건부 브레이크포인트 문법 참조</a></li><li><a href="rev-0642-gdb-advanced-cheatsheet.html">REV-0642 — GDB 명령어 심화 치트시트(watch/catch/tbreak)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>GDB 명령(<code>break</code>/<code>delete</code>/<code>condition</code>/<code>run</code>/<code>continue</code>/<code>step</code>/<code>next</code>/<code>stepi</code>/<code>nexti</code>/<code>finish</code>/<code>until</code>/<code>advance</code>/<code>watch</code>/<code>x</code>/<code>info registers</code>/<code>disassemble</code>/<code>bt</code>/<code>info locals</code>/<code>attach</code>/<code>detach</code>/<code>find</code>): GDB 공식 온라인 매뉴얼("Debugging with GDB") 기준.</li><li>x64dbg 명령/단축키(<code>bp</code>/<code>bpc</code>/<code>bpe</code>/<code>bpd</code>/<code>run</code>/<code>StepInto</code>(<code>sti</code>)/<code>StepOver</code>(<code>sto</code>)/<code>StepOut</code>(<code>rtr</code>)/F2·F7·F8·F9·Ctrl+F9 단축키): x64dbg 공식 문서(help.x64dbg.com) Breakpoint Control, Debug Control, GUI 메뉴 페이지 기준.</li><li>WinDbg 명령(<code>bp</code>/<code>bc</code>/<code>bl</code>/<code>be</code>/<code>bd</code>/<code>g</code>/<code>t</code>/<code>p</code>/<code>gu</code>/<code>u</code>/<code>k</code>/<code>r</code>/<code>dv</code>/<code>.attach</code>/<code>.detach</code>/<code>.restart</code>/<code>s</code>): Microsoft 공식 WinDbg 명령 레퍼런스 문서 기준 (2026-09-09 조사).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

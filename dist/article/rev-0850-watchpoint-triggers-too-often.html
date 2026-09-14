@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>워치포인트가 너무 자주 걸려서 못 쓸 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>워치포인트가 너무 자주 걸려서 못 쓸 때</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>루프나 자주 호출되는 함수 안의 변수/메모리에 <code>watch</code>를 걸면 매 반복마다 멈추게 되는데, 이럴 때는 워치포인트 자체를 포기하지 말고 <strong>조건을 붙이거나(condition)</strong>, <strong>일정 횟수는 무시하거나(ignore)</strong>, <strong>감시 범위를 더 좁히거나</strong>, <strong>스크립트로 자동 continue</strong>시키는 방식으로 "원하는 순간에만" 멈추도록 좁혀야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>watch</code> 하나를 걸었는데 루프를 돌 때마다(수십~수만 번) 멈춰서 <code>continue</code>를 계속 눌러야 할 때</li><li>배열/구조체 전체를 감시했더니 관련 없는 필드 변경까지 다 걸려서 정작 찾는 값의 변화를 못 찾을 때</li><li>워치포인트가 걸릴 때마다 매번 같은 정보(콜스택, 특정 값)만 확인하고 그냥 넘기고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>감시 범위가 너무 넓다</h3>
+<p><code>watch g_counter</code> 하나만 걸어도 그 변수가 루프마다 증가한다면 매번 멈추는 게 정상이다. 이건 "너무 자주 걸리는 워치포인트"가 아니라 애초에 "그 변수 자체가 자주 바뀌는 변수"를 감시한 것이므로, 진짜 필요한 건 "특정 조건에서의 변화"인 경우가 많다.</p>
+<h3>condition으로 걸러내기</h3>
+<p>워치포인트도 일반 브레이크포인트처럼 <code>condition</code> 명령을 붙일 수 있다. "값이 바뀌었을 때"가 아니라 "값이 특정 값으로 바뀌었을 때"만 멈추도록 좁힐 수 있다.</p>
+<h3>ignore로 초반 N번 건너뛰기</h3>
+<p>루프의 앞쪽 반복은 관심 없고 100번째 반복부터 보고 싶다면, <code>ignore</code>로 처음 몇 번의 히트를 자동으로 무시하게 만들 수 있다.</p>
+<h3>commands + continue로 자동 필터링</h3>
+<p>워치포인트가 걸릴 때마다 특정 조건이 아니면 자동으로 <code>continue</code>하도록 <code>commands</code> 블록을 짜면, 사실상 조건부 워치포인트처럼 동작하면서 더 복잡한 로직(여러 조건 조합, 카운터 누적)도 넣을 수 있다.</p>
+<h3>하드웨어 워치포인트 슬롯은 감시 "주소 범위"가 고정 크기다</h3>
+<p><code>watch</code> 대상이 배열 전체처럼 넓은 범위면, 하드웨어 워치포인트가 감당 못 하는 크기라서 GDB가 여러 개로 쪼개거나 소프트웨어 워치포인트로 전환해 훨씬 느려지고, 그 범위 안 아무 바이트나 바뀌어도 걸려서 "너무 자주 걸린다"고 느끼게 된다. 감시 폭을 필요한 만큼(예: 4바이트 정수 하나)으로 좁혀야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-gdb">(gdb) watch loop_index
+(gdb) continue
+Hardware watchpoint 2: loop_index
+Old value = 41
+New value = 42
+...
+(gdb) continue
+Hardware watchpoint 2: loop_index
+Old value = 42
+New value = 43</code></pre>
+<p><code>continue</code>를 아무리 눌러도 매번 같은 워치포인트가 다시 걸리며 진행이 안 되는 상태.</p>
+<h2>가장 먼저 할 것</h2>
+<p>지금 감시 중인 값이 "원래 자주 바뀌는 값"인지, 아니면 "가끔 바뀌어야 하는데 감시 범위를 너무 넓게 잡아서" 자주 걸리는 것인지부터 구분한다. <code>info watchpoints</code>로 현재 걸린 워치포인트의 대상 표현식과 크기를 다시 확인한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 현재 워치포인트 확인</strong></p>
+<pre><code class="language-gdb">(gdb) info watchpoints
+Num     Type           Disp Enb Address            What
+2       hw watchpoint  keep y                      loop_index</code></pre>
+<p><strong>2) 조건 추가로 좁히기</strong></p>
+<pre><code class="language-gdb">(gdb) condition 2 loop_index == 100</code></pre>
+<p>이제부터는 <code>loop_index</code>가 100이 되는 순간에만 멈춘다.</p>
+<p><strong>3) 초반 히트는 무시하기</strong></p>
+<pre><code class="language-gdb">(gdb) ignore 2 99</code></pre>
+<p>99번째까지는 자동으로 넘기고 100번째 히트에서 멈춘다. <code>condition</code>과 달리 "몇 번째"만 알고 정확한 값 조건이 없을 때 편하다.</p>
+<p><strong>4) 자동 필터 + 로그만 남기기</strong></p>
+<pre><code class="language-gdb">(gdb) commands 2
+&gt; silent
+&gt; if loop_index % 1000 != 0
+&gt;   continue
+&gt; end
+&gt; printf "loop_index=%d\n", loop_index
+&gt; continue
+&gt; end</code></pre>
+<p>1000번째 반복마다 한 번씩만 로그를 찍고 자동으로 계속 진행한다.</p>
+<p><strong>5) 감시 범위 좁히기</strong> 구조체/배열 전체 대신 실제로 필요한 필드/원소 하나만 감시한다.</p>
+<pre><code class="language-gdb">(gdb) watch my_struct.status_flag</code></pre>
+<p><code>watch my_struct</code>(구조체 전체)보다 훨씬 적게 걸린다.</p>
+<p><strong>6) 그래도 너무 잦으면 소프트웨어 접근으로 전환</strong> 루프 자체를 건너뛰고 싶다면 <code>until</code>로 현재 루프를 통째로 빠져나오게 한 뒤, 루프 밖에서 다시 조건을 판단한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-gdb">(gdb) info watchpoints
+(gdb) condition N EXPR
+(gdb) ignore N COUNT
+(gdb) commands N ... end
+(gdb) delete N
+(gdb) until</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>Old value</code> / <code>New value</code>가 매번 1씩 증가하는 패턴이라면 루프 카운터류다 — 값이 특정 임계치에 도달하는 순간이 진짜 관심사인 경우가 많으니 <code>condition</code>으로 그 값을 지정한다.</li><li><code>ignore 2 99</code> 이후 <code>Will ignore next 99 crossings of breakpoint 2.</code> 메시지가 뜨면 정상 설정된 것.</li><li><code>commands</code> 블록 안에서 <code>silent</code>를 빼먹으면 매 히트마다 "Hardware watchpoint 2: ..." 헤더 메시지가 계속 출력되어 로그가 지저분해진다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>조건 없이 자주 바뀌는 변수에 <code>watch</code>만 걸고 "왜 이렇게 자주 걸리지"라며 워치포인트 자체를 포기하는 것 — 대부분 <code>condition</code>/<code>ignore</code>로 해결된다.</li><li><code>commands</code> 블록에서 <code>continue</code>를 안 넣어서 조건이 안 맞을 때도 매번 사람이 직접 <code>continue</code>를 눌러야 하는 것.</li><li>배열/구조체 전체를 감시해서 관심 없는 필드 변경까지 다 걸리게 만드는 것.</li><li><code>ignore</code>로 넘긴 횟수와 실제 필요한 반복 횟수를 헷갈려서 한 번 차이로 원하는 지점을 지나쳐 버리는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>반대로 워치포인트가 걸려야 하는데 전혀 안 걸린다면 → REV-0851 워치포인트가 걸려야 하는데 한 번도 안 걸릴 때.</li><li>워치포인트/조건부 브레이크포인트 기본 문법이 헷갈린다면 → REV-0191 GDB watchpoint 기초.</li><li><code>watch</code>/<code>catch</code>/<code>tbreak</code> 등 관련 심화 명령을 더 보고 싶다면 → REV-0642 GDB 명령어 심화 치트시트(watch/catch/tbreak).</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-gdb">(gdb) break main
+(gdb) run
+(gdb) watch attempt_count
+Hardware watchpoint 2: attempt_count
+(gdb) continue
+Hardware watchpoint 2: attempt_count
+Old value = 0
+New value = 1
+(gdb) continue
+Hardware watchpoint 2: attempt_count
+Old value = 1
+New value = 2
+# ... 계속 반복돼서 지침
+
+(gdb) condition 2 attempt_count == 50
+(gdb) continue
+Hardware watchpoint 2: attempt_count
+
+Old value = 49
+New value = 50
+check_attempts (n=50) at chall.c:30</code></pre>
+<p>조건 없이는 반복마다 멈췄지만, <code>condition 2 attempt_count == 50</code>을 걸자 50번째 순간에 딱 한 번만 멈췄다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0851-watchpoint-never-triggers.html">REV-0851 — 워치포인트가 걸려야 하는데 한 번도 안 걸릴 때</a></li><li><a href="rev-0191-gdb-watchpoint.html">REV-0191 — GDB watchpoint 기초</a></li><li><a href="rev-0642-gdb-advanced-cheatsheet.html">REV-0642 — GDB 명령어 심화 치트시트(watch/catch/tbreak)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>watch</code>/<code>condition</code>/<code>ignore</code>/<code>commands</code> 명령 구문과 동작: GDB 공식 매뉴얼("Debugging with GDB") "Breakpoints, Watchpoints, and Catchpoints" 챕터 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

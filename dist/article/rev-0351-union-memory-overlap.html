@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Union이 메모리에서 어떻게 겹치는지 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>Union이 메모리에서 어떻게 겹치는지</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>union</code>은 구조체(<code>struct</code>)와 문법이 비슷해 보이지만, 각 필드가 <strong>서로 다른 오프셋을 갖는 대신 전부 오프셋 0을 공유</strong>하며 전체 크기도 필드 합이 아니라 <strong>가장 큰 필드의 크기 하나뿐</strong>이므로, 어셈블리에서는 서로 다른 필드에 접근하는 코드가 전부 <code>[base]</code>, <code>[base+0]</code>처럼 동일한(또는 그 안에 포함되는) 주소를 가리키는 것으로 나타난다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>C 코드에 <code>union</code>이 등장하는데 구조체와 뭐가 다른지, 메모리를 실제로 어떻게 쓰는지 궁금할 때</li><li>어셈블리에서 같은 베이스 주소(<code>[rdi]</code>, <code>[rdi+0]</code>)를 두고 어떤 곳에서는 4바이트로, 어떤 곳에서는 1바이트씩 읽는 등 서로 다른 크기/방식으로 반복 접근하는 코드를 만났을 때</li><li><code>sizeof(구조체)</code>가 예상(필드 크기의 합)보다 훨씬 작게 나와서 이게 구조체가 아니라 union이 아닐까 의심될 때</li><li>네트워크 패킷 파싱, 타입 펀닝(type punning, 예: <code>float</code>를 그 비트 그대로 <code>int</code>로 재해석)처럼 "같은 메모리를 다른 타입으로 보는" 코드를 분석할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>struct는 "그리고(and)", union은 "또는(or)"</h3>
+<p><code>struct</code>의 필드들은 동시에 전부 존재하며 각자 다른 메모리 위치(오프셋)를 차지한다(REV-0035). <code>union</code>의 필드들은 <strong>동시에 존재하지 않는다</strong> — 정확히는, 메모리 공간을 공유하기 때문에 한 시점에는 그 중 하나의 해석만 "의미가 있다"고 프로그래머가 약속하는 것이다. <code>union</code>의 모든 필드는 오프셋 0부터 시작하며, <code>union</code>의 전체 크기는 필드들의 크기 합이 아니라 <strong>가장 큰 필드 하나의 크기</strong>(정렬 요건 포함)로 결정된다.</p>
+<pre><code class="language-c">union Value {
+    int    i;      // offset 0, 4바이트
+    float  f;      // offset 0, 4바이트
+    char   b[4];   // offset 0, 4바이트
+};
+// sizeof(union Value) == 4  (가장 큰 필드가 4바이트이므로)</code></pre>
+<pre><code class="language-c">struct SameFields {
+    int    i;      // offset 0
+    float  f;      // offset 4
+    char   b[4];   // offset 8
+};
+// sizeof(struct SameFields) == 12  (필드마다 별도 공간)</code></pre>
+<p>구조체 버전은 <code>i</code>, <code>f</code>, <code>b</code>가 서로 다른 주소(<code>[rdi]</code>, <code>[rdi+4]</code>, <code>[rdi+8]</code>)를 갖지만, union 버전은 셋 다 <strong>똑같이 <code>[rdi]</code>(오프셋 0)</strong> 를 가리킨다. 어셈블리만 봐서는 "이 함수가 union의 <code>i</code>를 쓰는지 <code>f</code>를 쓰는지 <code>b</code>를 쓰는지" 구분할 수 없고, 오직 <strong>몇 바이트를 어떤 명령어(정수 <code>mov</code> vs <code>movss</code>)로 읽는지</strong>를 보고 그 시점에 어떤 필드로 "취급"하고 있는지만 추측할 수 있다.</p>
+<h3>타입 펀닝(Type Punning) — union의 가장 흔한 실전 용도</h3>
+<p>union은 "같은 비트 패턴을 다른 타입으로 재해석"하는 용도로 자주 쓰인다. 대표적으로 부동소수점 값의 비트 패턴을 정수로 직접 들여다보는 경우다.</p>
+<pre><code class="language-c">union FloatBits {
+    float f;
+    unsigned int u;
+};
+
+unsigned int float_to_bits(float val) {
+    union FloatBits fb;
+    fb.f = val;
+    return fb.u;      // val의 비트 패턴을 정수로 재해석해서 반환
+}</code></pre>
+<pre><code class="language-asm">float_to_bits:
+    movss   [rbp-4], xmm0    ; fb.f = val   (오프셋 0에 float로 씀, xmm 레지스터 이용)
+    mov     eax, [rbp-4]      ; fb.u 읽기    (같은 오프셋 0을 정수로 씀)
+    ret</code></pre>
+<p><code>movss</code>로 쓴 자리를 바로 <code>mov eax, [...]</code>(정수 읽기)로 다시 읽는 패턴이 보이면, "부동소수점 값을 정수 비트 패턴으로 재해석하고 있구나"(REV-0346 IEEE 754 비트 구조 참고)라고 확신할 수 있다. C 표준에서는 이런 식의 타입 펀닝이 엄밀히는 구현 정의(implementation-defined) 동작이지만, 실전 리버싱 대상 바이너리에서는 매우 흔하게 나타난다.</p>
+<h3>네트워크 패킷/바이트 단위 접근 — 배열과 정수를 겹쳐 보기</h3>
+<pre><code class="language-c">union Packet {
+    unsigned int raw;
+    unsigned char bytes[4];
+};</code></pre>
+<p>이 패턴은 4바이트 정수를 한 번에 다루고 싶을 때는 <code>raw</code>로, 바이트 단위로 하나씩 조작(엔디안 변환, 체크섬 계산 등)하고 싶을 때는 <code>bytes[0]</code>~<code>bytes[3]</code>로 접근하는 용도로 쓰인다. 어셈블리에서는 오프셋 0에 대한 4바이트 읽기(<code>mov eax, [rdi]</code>)와 오프셋 0/1/2/3에 대한 1바이트 읽기(<code>mov al, [rdi]</code>, <code>mov al, [rdi+1]</code> ...)가 같은 함수 안에 섞여서 나타나면 이 패턴을 의심한다.</p>
+<h3>union 안에 구조체가 들어있는 경우 — 태그드 유니온(Tagged Union)</h3>
+<p>실전 코드에서는 union 자체만 단독으로 쓰기보다, "지금 이 union이 어떤 필드로 쓰이고 있는지"를 나타내는 별도의 정수 필드(태그, tag)와 묶어서 구조체 안에 함께 두는 패턴이 흔하다.</p>
+<pre><code class="language-c">struct TaggedValue {
+    int type;        // offset 0: 0=int, 1=float, 2=string
+    union {
+        int    i;    // offset 4
+        float  f;    // offset 4
+        char  *s;    // offset 4 (또는 8, 정렬에 따라 다름)
+    } value;
+};</code></pre>
+<p>어셈블리에서는 <code>type</code> 필드(오프셋 0)를 먼저 읽어 <code>cmp</code>/<code>switch</code>로 분기한 뒤, 각 분기마다 같은 오프셋(예: 4)을 서로 다른 크기/명령어로 접근하는 코드가 나타난다. 이런 "분기 후 같은 오프셋을 다르게 해석"하는 패턴을 보면 태그드 유니온 구조를 의심하고, 분기 조건에 쓰인 태그 값들을 모아 <code>enum</code>을 역으로 복원할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>같은 베이스 레지스터/오프셋(<code>[rdi]</code>, <code>[rdi+0]</code>)을 서로 다른 위치에서 서로 다른 명령어(정수 <code>mov</code> vs <code>movss</code>/<code>movsd</code>)나 다른 크기(1/2/4/8바이트)로 반복 접근한다.</li><li>구조체처럼 보이는데 필드별 오프셋이 전부 0으로 겹치거나, 오프셋 목록을 모아보니 "겹치는 구간"이 있다.</li><li><code>sizeof</code>로 추정한 전체 크기가 필드 개수에 비해 훨씬 작다(필드 합이 아니라 최대값과 일치).</li><li>정수 값을 계산한 직후 그 값을 바로 <code>float</code>/<code>double</code> 관점으로 재해석하는(또는 그 반대) 코드가 붙어 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>같은 오프셋을 서로 다른 방식으로 접근하는 코드를 발견하면, 먼저 그 시점에 어떤 명령어(정수용 <code>mov</code>인지 SSE용 <code>movss</code>/<code>movsd</code>인지)가 쓰였는지로 "지금 이 순간에는 어떤 타입으로 취급 중인지"를 판단한다. 그 다음 함수 전체에서 그 오프셋에 대한 접근이 몇 가지 다른 방식으로 나타나는지 모아보면 union의 필드 목록을 역으로 복원할 수 있다.</p>
+<h2>단계별 절차</h2>
+<ol><li>동일 오프셋에 대한 서로 다른 접근 패턴(명령어 종류, 읽는 크기)을 전부 수집한다.</li><li>각 접근 방식이 어떤 C 타입에 대응하는지 추정한다(정수 <code>mov</code> + 4바이트 → <code>int</code>/<code>float</code>처럼 크기만으로는 구분 안 되는 경우 앞뒤 문맥으로 판단, SSE 명령어 사용 시 확실히 <code>float</code>/<code>double</code>).</li><li>접근 방식이 조건 분기(태그 값)에 따라 달라지는지 확인해 태그드 유니온 여부를 판단한다.</li><li>IDA에서 해당 변수/필드를 union 타입으로 직접 정의(Structures 창에서 union 추가)해 디컴파일 결과를 정리한다.</li><li>디버거로 실제 값을 여러 타입으로 동시에 재해석해 보며 의도한 사용 방식을 검증한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code>(gdb) print val.i          # union 변수를 int 필드로 해석해서 출력 (디버그 정보 있을 때)
+(gdb) print val.f           # 같은 메모리를 float 필드로 해석해서 출력
+(gdb) x/4xb &amp;val             # union의 raw 바이트 4개를 헥스로 직접 확인
+(gdb) print/x *(int*)&amp;val   # 디버그 정보 없이도 강제로 int로 재해석해서 확인
+(gdb) print *(float*)&amp;val   # 같은 자리를 float로 재해석</code></pre>
+<p>IDA: Structures 창(<code>Shift+F9</code>)에서 <code>Insert</code> 후 union 타입(멤버들의 오프셋을 전부 0으로) 정의 가능.</p>
+<h2>출력 해석</h2>
+<ul><li>같은 메모리 주소를 <code>int</code>로 출력했을 때와 <code>float</code>로 출력했을 때 전혀 다른 숫자가 나오는 것은 정상이다 — 같은 비트 패턴을 다른 규칙(2의 보수 vs IEEE 754)으로 해석했기 때문이다(REV-0346 참고).</li><li>오프셋 목록을 모았을 때 서로 "겹치는" 구간이 있다면 구조체가 아니라 union(또는 struct 안에 중첩된 union)이라는 강한 증거다.</li><li>태그 값에 따라 분기하는 코드에서, 각 분기 안의 접근 방식이 서로 다르면 그 분기 조건이 곧 union의 "현재 활성 필드"를 나타낸다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>union의 필드들이 서로 다른 오프셋을 가진다고 착각해서(구조체처럼) 오프셋 계산을 잘못 복원하는 것.</li><li>타입 펀닝 코드를 보고 "버그"라고 오해하는 것 — <code>union</code>을 이용한 의도적인 비트 재해석은 임베디드/네트워크/게임 코드에서 흔히 쓰이는 정상적인 기법이다.</li><li>태그드 유니온에서 태그 필드를 확인하지 않고 무조건 특정 필드로만 해석해서, 실제로는 다른 타입으로 쓰이고 있는 값을 잘못 판독하는 것.</li><li><code>union</code> 크기를 필드 합으로 계산해서 스택 프레임 크기나 구조체 전체 크기 추정을 틀리는 것 — 반드시 "가장 큰 필드 하나"만큼만 차지한다는 점을 기억해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>구조체 필드 오프셋의 기본 개념과 패딩이 헷갈리면 → REV-0035 구조체 접근이 어셈블리로 변하는 방식</li><li>부동소수점 비트 구조 자체가 헷갈려서 타입 펀닝 결과를 이해하기 어렵다면 → REV-0346 부동소수점 표현 IEEE 754 기초</li><li>XMM 레지스터로 float/double이 어떻게 로드/저장되는지 헷갈리면 → REV-0347 부동소수점이 어셈블리(XMM)로 보일 때 읽는 법</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">union FloatBits {
+    float f;
+    unsigned int u;
+};
+
+unsigned int get_sign_bit(float val) {
+    union FloatBits fb;
+    fb.f = val;
+    return (fb.u &gt;&gt; 31) &amp; 1;   // 부호 비트만 추출
+}</code></pre>
+<p>x64 SysV 어셈블리(개념 설명용):</p>
+<pre><code class="language-asm">get_sign_bit:
+    movss   [rbp-4], xmm0     ; fb.f = val   (오프셋 0에 float로 저장, xmm0에서 옮김)
+    mov     eax, [rbp-4]       ; fb.u 읽기    (같은 오프셋 0을 정수로 재해석)
+    shr     eax, 31             ; 31비트 오른쪽으로 밀어서 부호 비트만 남김
+    and     eax, 1              ; 혹시 모를 상위 비트 제거
+    ret</code></pre>
+<p>IDA/Ghidra는 union 타입을 인식했다면 다음과 같이 복원한다.</p>
+<pre><code class="language-c">unsigned int get_sign_bit(float val)
+{
+  union FloatBits fb;
+
+  fb.f = val;
+  return (fb.u &gt;&gt; 31) &amp; 1;
+}</code></pre>
+<p><code>movss</code>로 오프셋 0에 float를 쓰고, 바로 다음 줄에서 같은 오프셋 0을 정수 <code>mov</code>로 읽는 이 조합이 union 타입 펀닝의 전형적인 시그니처다. 구조체였다면 <code>f</code>와 <code>u</code>가 서로 다른 오프셋(예: 0과 4)을 가졌겠지만, union이므로 완전히 같은 주소를 공유한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0035-struct-access-in-asm.html">REV-0035 — 구조체 접근이 어셈블리로 변하는 방식</a></li><li><a href="rev-0346-ieee754-float-basics.html">REV-0346 — 부동소수점 표현 IEEE 754 기초</a></li><li><a href="rev-0347-xmm-float-asm-reading.html">REV-0347 — 부동소수점이 어셈블리(XMM)로 보일 때 읽는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>union</code>의 오프셋 공유 및 크기 결정 규칙(가장 큰 멤버 기준): ISO C 표준(C11) 6.7.2.1 Structure and union specifiers 섹션 기준.</li><li>타입 펀닝(비트 패턴 재해석)의 구현 정의 동작 및 실전 사용 패턴: ISO C 표준(C11) 6.5.2.3 Structure and union members 및 실제 GCC/Clang 컴파일 결과 기준 (2026-09-09 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

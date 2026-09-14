@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinAPI 암호 관련 함수 사전: CryptAcquireContext CryptHashData · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>WinAPI 암호 관련 함수 사전: CryptAcquireContext CryptHashData</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>CryptAcquireContextW</code> → <code>CryptCreateHash</code> → <code>CryptHashData</code>(여러 번 가능) → <code>CryptGetHashParam</code>은 레거시 Windows CryptoAPI(CAPI)로 해시(MD5/SHA1 등)를 계산하는 정형화된 4단계 호출 순서이므로, 이 순서 자체를 패턴으로 외워두면 어떤 데이터가 해시되어 어떤 비교에 쓰이는지(주로 flag 검증 로직) 빠르게 짚어낼 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>임포트 목록에서 <code>CryptAcquireContextW</code>, <code>CryptCreateHash</code>, <code>CryptHashData</code>, <code>CryptGetHashParam</code>을 발견했을 때</li><li>프로그램이 사용자 입력을 어떤 알고리즘(MD5/SHA1/SHA256)으로 해시해서 미리 저장된 값과 비교하는 flag 검증 로직을 찾을 때</li><li><code>advapi32.dll</code>(CryptoAPI가 속한 DLL)의 임포트가 있는데 정확히 뭘 하는지 감이 안 잡힐 때</li><li>더 최신 API인 BCrypt(CNG)와 이 레거시 CAPI 계열을 구분해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<pre><code class="language-c">BOOL CryptAcquireContextW(
+    HCRYPTPROV *phProv,   // 1. 얻은 CSP(암호 서비스 제공자) 핸들이 저장될 주소
+    LPCWSTR    pszContainer, // 2. 키 컨테이너 이름(NULL이면 기본)
+    LPCWSTR    pszProvider,  // 3. CSP 이름(NULL이면 기본 RSA CSP)
+    DWORD      dwProvType,   // 4. PROV_RSA_FULL 등 제공자 유형
+    DWORD      dwFlags       // 5. CRYPT_VERIFYCONTEXT 등(단순 해시용이면 이 플래그가 흔함)
+);
+
+BOOL CryptCreateHash(
+    HCRYPTPROV hProv,     // 1. CryptAcquireContext로 얻은 핸들
+    ALG_ID     Algid,     // 2. CALG_MD5, CALG_SHA1, CALG_SHA_256 등
+    HCRYPTKEY  hKey,      // 3. HMAC 등이 아니면 0
+    DWORD      dwFlags,   // 4. 보통 0
+    HCRYPTHASH *phHash    // 5. 생성된 해시 객체 핸들이 저장될 주소
+);
+
+BOOL CryptHashData(
+    HCRYPTHASH hHash,     // 1. CryptCreateHash로 얻은 핸들
+    const BYTE *pbData,   // 2. 해시할 데이터 버퍼
+    DWORD      dwDataLen, // 3. 데이터 길이(바이트)
+    DWORD      dwFlags    // 4. 보통 0
+);
+
+BOOL CryptGetHashParam(
+    HCRYPTHASH hHash,    // 1. 해시 객체 핸들
+    DWORD      dwParam,  // 2. HP_HASHVAL(결과 값) 또는 HP_HASHSIZE(결과 길이)
+    BYTE       *pbData,  // 3. 결과가 채워질 버퍼
+    DWORD      *pdwDataLen, // 4. 버퍼 크기/실제 길이
+    DWORD      dwFlags   // 5. 보통 0
+);</code></pre>
+<p>CryptoAPI로 해시를 계산하는 흐름은 항상 다음 4단계를 거친다.</p>
+<ol><li><code>CryptAcquireContextW</code>로 CSP(Cryptographic Service Provider) 컨텍스트를 얻는다. 단순 해시 계산만 할 때는 키 컨테이너가 필요 없으므로 <code>dwFlags</code>에 <code>CRYPT_VERIFYCONTEXT</code>(0xF0000000)를 주는 경우가 매우 흔하다.</li><li><code>CryptCreateHash</code>로 해시 객체를 만든다. <code>Algid</code>가 어떤 알고리즘인지 알려주는 핵심 인자다 — <code>CALG_MD5</code>(0x8003), <code>CALG_SHA1</code>(0x8004), <code>CALG_SHA_256</code>(0x800C) 등.</li><li><code>CryptHashData</code>를 (필요하면 여러 번) 호출해서 실제 데이터를 해시 객체에 먹인다. 여러 조각의 데이터를 순차적으로 넣을 수 있다(스트리밍 해시).</li><li><code>CryptGetHashParam</code>을 <code>HP_HASHVAL</code>(2)로 호출해 최종 해시 결과(바이트 배열)를 꺼낸다.</li></ol>
+<p>사용이 끝나면 <code>CryptDestroyHash</code>, <code>CryptReleaseContext</code>로 정리하는 것이 정석이지만, 리버싱 시 가장 중요한 것은 2단계(알고리즘 식별)와 3단계(무엇을 해시하는지)다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>advapi32.dll</code> 임포트에 <code>CryptAcquireContextW</code>, <code>CryptCreateHash</code>, <code>CryptHashData</code>, <code>CryptGetHashParam</code>이 순서대로 나열</li><li><code>CryptCreateHash</code> 호출의 두 번째 인자로 <code>0x8003</code>, <code>0x8004</code>, <code>0x800C</code> 같은 16진 상수가 바로 들어가는 코드(알고리즘 식별의 지름길)</li><li><code>CryptHashData</code>의 두 번째 인자(버퍼)가 사용자 입력(예: <code>scanf</code>나 <code>GetWindowTextW</code>로 받은 문자열)을 가리키는 패턴</li><li><code>CryptGetHashParam</code>으로 얻은 바이트 배열을 이후 <code>memcmp</code>나 직접 바이트 비교로 하드코딩된 값과 비교하는 코드(flag 검증의 최종 단계)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>CryptCreateHash</code>의 두 번째 인자(<code>Algid</code>)를 확인해 어떤 해시 알고리즘인지부터 특정한다(<code>0x8004</code>=SHA1이 CTF에서 특히 흔함).</li><li><code>CryptHashData</code>에 들어가는 데이터가 사용자 입력 원문인지, 아니면 이미 한 번 가공(인코딩/치환)된 데이터인지 확인한다.</li><li><code>CryptGetHashParam</code>의 결과가 어디와 비교되는지(하드코딩된 바이트 배열, 파일에서 읽은 값 등) 추적해서 정답 해시값을 확보한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 정적 분석(IDA)</strong></p>
+<ul><li>임포트 목록에서 <code>CryptCreateHash</code>를 찾아 <code>X</code>로 교차 참조하고, 두 번째 인자 상수로 알고리즘을 특정한다.</li><li><code>CryptGetHashParam</code> 호출 이후 결과 버퍼가 어디로 쓰이는지(비교 로직) <code>F5</code> 디컴파일로 추적한다.</li></ul>
+<p><strong>2) 동적 분석(x64dbg)</strong></p>
+<ul><li><code>bp CryptHashData</code>로 브레이크포인트를 걸고 실행한다.</li><li>x64에서 <code>RDX</code>(pbData)를 Follow in Dump 해서 실제로 해시되는 원본 데이터(사용자 입력 등)를 확인한다. <code>R8</code>(dwDataLen)로 길이도 함께 확인한다.</li><li><code>bp CryptGetHashParam</code> 후, 이 함수가 리턴한 뒤(F8) <code>pbData</code>(세 번째 인자, 함수 진입 시점 기준 <code>R8</code>)가 가리키는 버퍼를 확인하면 최종 해시값(예: MD5면 16바이트, SHA1이면 20바이트)을 읽을 수 있다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp CryptAcquireContextW</code>, <code>bp CryptCreateHash</code>, <code>bp CryptHashData</code>, <code>bp CryptGetHashParam</code></li><li>x64dbg: 브레이크포인트 후 F8(스텝오버)로 결과 버퍼 채워진 뒤 상태 확인</li><li>IDA: <code>X</code>(교차 참조), <code>F5</code>(디컴파일), 상수 자동 주석(WinAPI 상수는 IDA가 <code>CALG_MD5</code> 등으로 자동 표시해주는 경우가 많음)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>반환값이 <code>FALSE</code>(0)이면 각 단계 실패다. <code>CryptAcquireContextW</code> 실패의 흔한 원인은 잘못된 <code>dwProvType</code>/<code>pszProvider</code> 조합.</li><li>해시 알고리즘 상수와 결과 길이가 일치하는지 확인한다: MD5=16바이트, SHA1=20바이트, SHA256=32바이트. <code>HP_HASHSIZE</code>(4)로 미리 크기를 조회할 수도 있다.</li><li>최종 해시값(바이트 배열)은 보통 16진수 문자열로 변환되어 비교되므로, 바이트 순서 그대로 16진수로 이어붙이면 비교 대상 문자열과 맞는지 확인할 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>Algid</code> 상수(<code>0x8004</code> 등)를 못 알아보고 무시한 채 "그냥 해시 함수인가보다"로 넘어가는 것 — 알고리즘을 특정해야 정답 해시를 직접 재현하거나 크래킹할 수 있다.</li><li><code>CryptHashData</code>가 한 번만 호출된다고 가정하는 것 — 긴 데이터나 여러 필드를 합쳐 해시할 때는 여러 번 호출되며, 순서가 결과에 영향을 준다.</li><li>CAPI(<code>Crypt*</code>)와 최신 CNG(<code>BCrypt*</code>)를 같은 함수로 착각하는 것. 이름이 비슷해 보여도 별개의 API 계열이며, <code>advapi32.dll</code>(CAPI) vs <code>bcrypt.dll</code>(CNG)로 구분된다.</li><li><code>CryptGetHashParam</code>을 <code>HP_HASHVAL</code> 대신 다른 <code>dwParam</code>(예: <code>HP_ALGID</code>)으로 호출한 경우를 결과값으로 착각하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>해시가 아니라 암호화/복호화(<code>CryptEncrypt</code>/<code>CryptDecrypt</code>)나 더 현대적인 BCrypt API가 궁금하면 → REV-0140(Crypt API BCrypt API 흔적 찾기)을 본다.</li><li>해시할 데이터가 사용자 입력에서 오는 경로가 궁금하면 → REV-0523(MessageBox GetWindowText)의 <code>GetWindowText</code> 부분을 본다.</li><li>해시된 데이터의 원본이 문자열인지 확인하려면 → REV-0128(Windows 문자열 ASCII와 UTF-16 찾기)을 본다.</li></ul>
+<h2>미니 예제</h2>
+<p>x64dbg에서 <code>bp CryptCreateHash</code> 후 실행하니 다음처럼 멈췄다.</p>
+<pre><code class="language-text">RDX = 0x0000000000008004   (Algid = CALG_SHA1)</code></pre>
+<p>이어서 <code>bp CryptHashData</code>에서 <code>RDX</code>(pbData)를 Follow in Dump 하니 사용자가 입력한 문자열 <code>"password123"</code>이 그대로 보였다. 마지막으로 <code>CryptGetHashParam</code> 리턴 후 결과 버퍼(20바이트)를 16진수로 이어붙이면 <code>cbfdac6008f9cab4083784cbd1874f76618d2a97</code> 같은 SHA1 해시값이 나오며, 이 값이 바이너리 내부에 하드코딩된 정답 해시와 <code>memcmp</code>로 비교될 가능성이 높다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0140-crypt-bcrypt-api.html">REV-0140 — Crypt API BCrypt API 흔적 찾기</a></li><li><a href="rev-0523-messagebox-getwindowtext.html">REV-0523 — WinAPI 클립보드/UI 함수 사전: MessageBox GetWindowText</a></li><li><a href="rev-0128-windows-string-encoding.html">REV-0128 — Windows 문자열 ASCII와 UTF-16 찾기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>CryptAcquireContextW</code>/<code>CryptCreateHash</code>/<code>CryptHashData</code>/<code>CryptGetHashParam</code>의 함수 시그니처와 4단계 호출 순서, 알고리즘 상수(<code>CALG_MD5</code>=0x8003, <code>CALG_SHA1</code>=0x8004, <code>CALG_SHA_256</code>=0x800C)는 Microsoft CryptoAPI(CAPI) 공식 문서 기준이다.</li><li>MD5(16바이트)/SHA1(20바이트)/SHA256(32바이트) 출력 길이는 각 알고리즘의 공개 표준 정의 기준이다.</li><li>위 미니 예제의 값과 해시 결과는 설명을 위해 구성한 예시이며 실제 특정 문제의 데이터가 아니다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

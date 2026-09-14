@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>여러 겹으로 패킹된(Multi-layer) 바이너리를 만났을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / packing</div>
+<article class="article-body">
+<h1>여러 겹으로 패킹된(Multi-layer) 바이너리를 만났을 때</h1>
+<div class="article-meta"><span class="tag">packing</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">x64dbg</span><span class="tag">Detect It Easy</span><span class="tag">UPX</span></div>
+<h2>한 줄 요약</h2>
+<p>UPX 같은 패커를 한 번 벗겨냈는데도 여전히 Detect It Easy에서 다른 패커 시그니처가 나오거나, 코드가 여전히 정상적으로 보이지 않는다면 <strong>패커가 두 겹 이상 겹쳐 있는(multi-layer) 상태</strong>일 가능성이 높으며, 이 경우 각 레이어를 한 번에 하나씩, 순서대로 벗겨내야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>upx -d</code>로 첫 번째 언패킹에 성공했는데, 결과 파일을 다시 Detect It Easy로 스캔했더니 또 다른 패커(예: ASPack, Themida, 커스텀 패커) 시그니처가 나올 때</li><li>OEP를 찾아 메모리 덤프를 떴는데, 덤프 파일이 정상적인 원본 코드가 아니라 또 다른 스텁 코드처럼 보일 때</li><li>CTF 문제 설명이나 다른 사람의 풀이에서 "이중 패킹", "레이어를 두 번 벗겼다" 같은 표현을 봤을 때</li><li>하나의 언패킹 도구/절차로는 끝나지 않고 계속 비슷한 스텁 패턴이 반복될 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>멀티레이어 패킹이란</h3>
+<p>멀티레이어 패킹은 이미 한 번 패킹된 실행 파일을 <strong>다시 다른 패커(또는 같은 패커를 한 번 더)로 패킹</strong>한 것이다. 예를 들어 원본 프로그램을 UPX로 한 번 압축한 뒤, 그 결과물을 다시 커스텀 패커나 상용 프로텍터로 한 번 더 감싸는 식이다. 이렇게 하면 리버서 입장에서는 겉껍질(바깥 레이어)을 벗겨내도 안쪽에 또 다른 껍질(안쪽 레이어)이 남아 있어, 분석 난이도와 시간이 크게 늘어난다.</p>
+<p>CTF 챌린지에서는 두 가지 목적으로 이 기법을 쓴다.</p>
+<ol><li><strong>난이도를 의도적으로 높이기 위해</strong> — 문제 출제자가 여러 패커를 순서대로 적용한 경우.</li><li><strong>자동 언패킹 도구를 무력화하기 위해</strong> — UPX 같은 잘 알려진 도구로 바깥 레이어는 쉽게 벗겨지지만, 그 즉시 다른 레이어가 나타나서 "언패킹 끝났다"고 착각하게 만드는 경우.</li></ol>
+<h3>레이어를 구분하는 방법</h3>
+<p>각 레이어는 보통 서로 다른 스텁 코드 패턴, 서로 다른 섹션 이름, 서로 다른 엔트로피 분포를 갖는다. 한 레이어를 벗겨낸 직후에는 반드시 처음부터 다시 판별 절차(REV-0225, REV-0959에서 다룬 엔트로피/시그니처 확인)를 거쳐야, "진짜로 다 벗겨졌는지" 아니면 "아직 한 겹 더 남았는지"를 알 수 있다.</p>
+<h3>순서의 중요성</h3>
+<p>멀티레이어 패킹은 반드시 <strong>바깥 레이어부터 안쪽 순서로</strong> 벗겨야 한다. 안쪽 레이어를 먼저 알아내려고 시도하는 것은 불가능한데, 안쪽 레이어의 스텁 코드 자체가 바깥 레이어에 의해 압축/암호화되어 있어서 바깥 레이어를 풀기 전에는 안쪽 레이어의 존재조차 코드 형태로 보이지 않기 때문이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>첫 번째 언패킹 도구 실행 후 파일 크기가 커졌지만, Detect It Easy로 다시 스캔하면 여전히 "Packer" 항목에 무언가 표시된다.</li><li>첫 번째 레이어의 OEP라고 생각했던 지점에 도달했는데, 정상적인 컴파일러 코드가 아니라 또 다른 반복적인 압축 해제 루프가 이어진다(REV-0956에서 다룬 "가짜 OEP"와 증상이 비슷하지만, 이 경우는 실제로 완전히 별개의 패커가 한 번 더 있는 것).</li><li>섹션 이름이 UPX 특유의 <code>UPX0</code>/<code>UPX1</code>에서 다시 다른 패커 특유의 이름(예: 임의 문자열, 또 다른 커스텀 이름)으로 바뀌어 있다.</li><li>첫 번째 언패킹 후 Strings 창에 여전히 의미 있는 문자열이 거의 안 보인다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>언패킹 도구를 한 번 실행해서 성공 메시지를 봤다고 끝났다고 생각하지 말고, <strong>매번 결과 파일을 처음 파일 판별하듯 Detect It Easy로 다시 스캔</strong>하는 것을 습관으로 만든다. 이 한 단계만 빼먹지 않아도 멀티레이어를 훨씬 빨리 알아챌 수 있다.</p>
+<h2>단계별 절차</h2>
+<ol><li>Detect It Easy로 원본 파일을 스캔해서 바깥 레이어의 패커를 확인한다.</li><li>바깥 레이어가 UPX 등 자동 도구가 있는 패커라면 도구로 벗기고(<code>upx -d</code>), 그렇지 않다면 REV-0227의 수동 절차(OEP 탐색 → 덤프 → IAT 복구)로 벗긴다.</li><li>결과 파일을 다시 Detect It Easy로 스캔한다. 여기서 또 다른 패커/프로텍터 이름이 나오면 두 번째 레이어가 있는 것이므로, 2번 단계로 돌아가 같은 절차를 반복한다.</li><li>더 이상 패커 시그니처가 안 잡히고, 엔트로피도 정상 범위(REV-0959 기준)이며, Import Table과 Strings 창이 풍부해질 때까지 이 과정을 반복한다.</li><li>각 레이어를 벗길 때마다 결과 파일을 별도 이름(<code>layer1_unpacked.exe</code>, <code>layer2_unpacked.exe</code> 등)으로 저장해서, 어느 단계에서 문제가 생기면 그 직전 상태로 되돌아갈 수 있게 한다.</li><li>레이어가 3개 이상으로 늘어나거나 각 레이어가 전부 수동 절차가 필요한 상용 프로텍터라면, 완전한 언패킹을 목표로 하기보다 필요한 최소 정보만 동적으로 뽑아내는 방식(REV-0241)으로 전환하는 것도 고려한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">upx -d -o layer1_unpacked.exe original.exe   # 1차 언패킹</code></pre>
+<ul><li>각 단계마다 Detect It Easy로 재스캔(파일 드래그 앤 드롭)</li><li>x64dbg: 두 번째 레이어가 UPX가 아니라면 다시 ESP 트릭/메모리 쓰기 브레이크포인트로 OEP 탐색 반복</li><li>각 레이어 결과 파일은 서로 다른 이름으로 저장해 비교 가능하게 유지</li></ul>
+<h2>출력 해석</h2>
+<ul><li>재스캔 결과에 패커 이름이 계속 바뀌어 나온다면(예: 1차 스캔 "UPX", 2차 스캔 "ASPack") 명확한 멀티레이어 증거다.</li><li>재스캔 결과가 "Unknown" 또는 컴파일러 이름만 나오고 패커 항목이 비어 있다면, 벗겨야 할 레이어가 더 이상 없다는 뜻이다.</li><li>같은 패커 이름이 반복해서 나온다면(예: 1차, 2차 모두 "UPX") 같은 패커를 두 번 적용한 경우이므로, 같은 도구로 한 번 더 벗기면 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>첫 번째 언패킹 성공 메시지만 보고 바로 정적 분석에 들어가서, 여전히 이상한 디컴파일 결과를 붙잡고 몇 시간을 헤매는 것 — 재스캔 습관이 있었다면 몇 초 만에 알아챌 수 있었던 문제다.</li><li>두 번째 레이어를 발견하고도 첫 번째 레이어와 같은 패커라고 무조건 가정해서, 실제로는 다른 패커인데 같은 도구(<code>upx -d</code>)만 반복 시도하는 것.</li><li>레이어마다 결과 파일을 구분하지 않고 계속 같은 이름으로 덮어써서, 문제가 생겼을 때 어느 단계였는지 추적할 수 없게 만드는 것.</li><li>레이어가 많다는 이유로 처음부터 포기하고 정적 분석을 시도조차 안 해보는 것 — 실제로는 바깥 1~2개 레이어만 흔한 자동 도구로 쉽게 벗겨지는 경우도 많다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>벗겨낸 레이어의 OEP가 진짜인지 헷갈린다면 → REV-0956(OEP를 찾았는데 실행이 이상하게 될 때)을 참고해서 가짜 OEP와 별개 레이어를 구분한다.</li><li>특정 레이어의 자동 도구가 실패한다면 → REV-0961(패커 시그니처는 잡히는데 도구가 자동 언패킹을 실패할 때)을 참고한다.</li><li>엔트로피만으로 레이어가 남았는지 판단이 애매하다면 → REV-0959(Entropy는 높은데 패킹이 아닌 것으로 판명될 때)와 REV-0964를 함께 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">1) Detect It Easy로 chall.exe 스캔 -&gt; "UPX 3.96"
+2) upx -d -o layer1.exe chall.exe -&gt; 성공
+3) Detect It Easy로 layer1.exe 재스캔 -&gt; "ASPack 2.12" (!)
+4) ASPack은 자동 언패킹 도구가 마땅치 않아 x64dbg로 수동 OEP 탐색 진행
+5) OEP 도달 후 Scylla로 덤프 -&gt; layer2.exe 저장
+6) Detect It Easy로 layer2.exe 재스캔 -&gt; "Microsoft Visual C++ 2019" (패커 없음)
+7) Strings 확인 -&gt; "Enter password:" 등 정상 문자열 다수 확인
+   =&gt; 두 겹 모두 벗겨낸 것으로 확인, 이제부터 정적 분석 진행</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0227-manual-unpacking-oep.html">REV-0227 — 수동 언패킹 개념 OEP와 Dump</a></li><li><a href="rev-0956-oep-found-runs-wrong.html">REV-0956 — OEP를 찾았는데 실행이 이상하게 될 때</a></li><li><a href="rev-0959-high-entropy-not-packed.html">REV-0959 — Entropy는 높은데 패킹이 아닌 것으로 판명될 때</a></li><li><a href="rev-0961-signature-detected-but-autounpack-fails.html">REV-0961 — 패커 시그니처는 잡히는데 도구가 자동 언패킹을 실패할 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>멀티레이어(이중/다중) 패킹 개념과 레이어별 순차 언패킹 절차는 다수의 공개 CTF 리버싱 문제 풀이 및 리버싱 교육 자료에서 공통적으로 다루는 절차를 일반화한 것이다(2026-09-09 검증).</li><li>Detect It Easy를 이용한 반복 재스캔 방식은 DIE 공식 문서에서 권장하는 표준적인 패커 확인 절차를 따른 것이다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

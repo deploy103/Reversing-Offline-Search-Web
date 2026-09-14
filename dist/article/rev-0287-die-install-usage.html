@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Detect It Easy 설치와 사용법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / tools</div>
+<article class="article-body">
+<h1>Detect It Easy 설치와 사용법</h1>
+<div class="article-meta"><span class="tag">tools</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">DIE</span></div>
+<h2>한 줄 요약</h2>
+<p>Detect It Easy(DIE)는 실행 파일을 열자마자 컴파일러, 언어, 링커, 패커(UPX 등), 프로텍터를 시그니처 기반으로 즉시 알려주는 무료 오프라인 도구로, "이 바이너리부터 뭘 해야 하나"를 결정하는 리버싱의 첫 단추 역할을 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>처음 보는 바이너리를 받았는데 IDA/Ghidra를 열기 전에 "이게 C인지 C++인지 .NET인지 Go인지"부터 알고 싶을 때</li><li>문자열이 거의 안 보이고 섹션 이름이 이상해서 패킹(UPX 등)됐는지 의심될 때</li><li>정적 분석 도구에서 함수가 거의 안 잡히는 이유가 프로텍터/난독화 때문인지 확인하고 싶을 때</li><li>대회 PC에 인터넷 없이 DIE를 설치해서 쓰고 싶을 때</li><li>DIE 스캔 결과에 나온 용어(예: "Compiler: Microsoft Visual C/C++", "Packer: UPX")를 해석하지 못할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>DIE는 무엇을 위한 도구인가</h3>
+<p>DIE는 파일의 바이트 패턴(시그니처)과 구조적 특징을 분석해서 "이 파일이 어떤 컴파일러/링커로 만들어졌는지", "패킹/난독화가 적용됐는지"를 자동으로 판별해주는 파일 식별 도구다. <code>file</code> 명령어의 훨씬 정교한 버전이라고 생각하면 된다. Windows/Linux/macOS 실행 파일(PE, ELF, Mach-O)을 모두 지원하며, CTF에서는 보통 IDA나 Ghidra로 정적 분석을 시작하기 <strong>직전</strong>에 가장 먼저 실행해서 "언팩이 필요한지, 어떤 언어 런타임의 관용구를 예상해야 하는지"를 결정하는 데 쓴다.</p>
+<h3>시그니처 기반 탐지의 한계도 알아야 한다</h3>
+<p>DIE는 알려진 패턴(시그니처) 데이터베이스와 대조해서 판정하므로, 아주 최신 컴파일러 버전이나 커스텀 패커는 "Unknown"으로 나올 수 있다. 이때는 결과를 100% 믿기보다 "패킹 의심 신호(엔트로피 높음, 섹션 이름 이상, import 개수 적음)"를 참고 정보로 활용한다. DIE 안에는 자체적으로 시그니처를 확장할 수 있는 스크립팅 기능(DIE-JS)도 있어서, 필요하면 직접 탐지 규칙을 추가할 수도 있다.</p>
+<h3>공식 배포 구조: 소스 저장소와 릴리스 저장소가 분리되어 있다</h3>
+<p>DIE 프로젝트는 개발자 <code>horsicq</code>가 관리하며, 소스 코드는 <code>horsicq/Detect-It-Easy</code> 저장소에 있지만 실제 컴파일된 배포 파일(Windows 설치 파일, Linux AppImage, <code>.deb</code> 등)은 <code>horsicq/DIE-engine</code> 저장소의 Releases 페이지에서 받는다. 이 구조를 모르면 "소스 저장소에는 왜 다운로드할 게 없지"라고 헷갈릴 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>패킹된 바이너리를 IDA/Ghidra로 열었는데 함수가 거의 안 잡히고 진입점 근처 코드가 알 수 없는 루프(압축 해제 루틴)로 보일 때</li><li><code>strings</code> 결과에 정상적인 텍스트가 거의 없고 의미 없는 바이트 나열만 보일 때</li><li>PE의 섹션 이름이 <code>.text</code>, <code>.data</code>처럼 표준이 아니라 <code>UPX0</code>, <code>UPX1</code>처럼 낯선 이름일 때 (UPX 패킹의 전형적 흔적)</li><li>ELF인데 심볼이 거의 없고 <code>readelf -d</code>로 본 동적 섹션이 이상하게 짧을 때</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>바이너리를 받으면 IDA/Ghidra를 열기 전에 DIE부터 실행해서 파일을 드래그&amp;드롭한다. 상단의 결과 한 줄(예: <code>PE64 / Microsoft Visual C/C++(...)</code> 또는 <code>Packer: UPX(3.96)[...]</code>)을 가장 먼저 확인한다. 패커가 감지되면 언팩(UPX는 <code>upx -d</code>로 대부분 해결)부터 하고 그다음 정적 분석 도구를 연다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 공식 다운로드 (인터넷 되는 곳에서, 한 번만)</strong></p>
+<ul><li>배포 파일은 <code>https://github.com/horsicq/DIE-engine/releases</code>에서 받는다</li><li>Windows: 압축 파일(zip) 형태의 포터블 배포판, 설치 없이 압축만 풀면 실행 가능</li><li>Linux: <code>Detect_It_Easy-&lt;버전&gt;-x86_64.AppImage</code>(포터블) 또는 Debian/Ubuntu/Kali용 <code>.deb</code> 패키지 중 자신의 배포판에 맞는 것 선택</li></ul>
+<p><strong>2) 오프라인 반입</strong></p>
+<ul><li>Windows 포터블 zip 또는 Linux AppImage/<code>.deb</code>를 USB에 담아 대회 PC로 옮긴다</li><li>AppImage는 실행 권한만 주면 별도 설치 없이 바로 실행된다: <code>chmod +x Detect_It_Easy-*.AppImage &amp;&amp; ./Detect_It_Easy-*.AppImage</code></li><li><code>.deb</code>는 <code>sudo dpkg -i die_*.deb</code>로 오프라인 설치</li></ul>
+<p><strong>3) 첫 실행</strong></p>
+<ul><li>실행 파일(Windows: <code>die.exe</code>, Linux: AppImage 또는 <code>die</code> 바이너리)을 더블클릭하면 GUI가 뜬다</li><li>상단에 "..." 버튼 또는 파일 열기 아이콘으로 대상 바이너리를 선택하거나, 창에 파일을 그대로 드래그&amp;드롭한다</li></ul>
+<p><strong>4) 스캔 결과 확인</strong></p>
+<ul><li>상단 텍스트 박스에 판정 결과 한 줄이 표시된다 (예: <code>PE32 / GUI / Microsoft Visual C/C++(19.29.30146)[-]</code>)</li><li>하단 탭에서 더 상세한 정보(Import, Export, 섹션, 리소스, 해시)를 확인할 수 있다</li></ul>
+<p><strong>5) 딥 스캔 (필요할 때)</strong></p>
+<ul><li>기본 스캔에서 결과가 애매하면 "Deep scan" 옵션을 켜서 더 오래 걸리더라도 정밀 탐지를 시도한다</li></ul>
+<h2>명령어/단축키</h2>
+<table><thead><tr><th>목적</th><th>조작</th></tr></thead><tbody><tr><td>파일 열기</td><td>상단 툴바 "..." 버튼 또는 드래그&amp;드롭</td></tr><tr><td>딥 스캔</td><td>옵션에서 "Deep scan" 체크</td></tr><tr><td>해시 확인</td><td>하단 탭 중 Hash 탭 (MD5/SHA1/SHA256)</td></tr><tr><td>엔트로피 확인</td><td>하단 탭 중 Entropy 또는 우클릭 메뉴</td></tr><tr><td>익스포트 결과</td><td>결과를 텍스트로 복사(Ctrl+C 가능한 영역)</td></tr><tr><td>콘솔(CLI) 버전</td><td>GUI 대신 커맨드라인 <code>diec</code>(엔진 콘솔 버전) 실행 가능</td></tr></tbody></table>
+<h2>출력 해석</h2>
+<ul><li><code>PE32</code> / <code>PE64</code>: 32비트/64비트 Windows 실행 파일이라는 뜻</li><li><code>Microsoft Visual C/C++(19.29...)</code>: 컴파일러와 버전 — MSVC로 빌드된 네이티브 바이너리</li><li><code>.NET(...)</code>이 보이면 네이티브 코드가 아니라 C#/VB.NET 어셈블리이므로 IDA보다 dnSpyEx/ILSpy가 우선</li><li><code>Packer: UPX(3.96)[NRV,brute]</code>: UPX로 패킹됐다는 뜻이며 괄호 안은 UPX 버전/압축 방식 — <code>upx -d 파일</code> 로 대부분 복원 가능</li><li><code>Protector:</code>로 시작하면 단순 압축이 아니라 안티디버깅/난독화가 포함된 상용 프로텍터일 수 있어 언팩이 훨씬 어려움</li><li>결과가 <code>Unknown</code>이면 시그니처 DB에 없는 케이스 — 엔트로피와 섹션 구조를 직접 눈으로 확인해야 함</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>DIE 결과의 "Unknown"을 "패킹 안 됨"으로 오해하는 경우 — Unknown은 판정 실패일 뿐 패킹 여부와 무관</li><li>컴파일러 판정 결과만 보고 언어까지 확정 짓는 경우 (<code>Microsoft Visual C/C++</code>가 나와도 C인지 C++인지는 별도로 문자열/심볼로 확인 필요)</li><li>UPX로 감지됐는데 그냥 IDA에서 억지로 분석하려는 경우 — 먼저 <code>upx -d</code>로 언팩해야 함수가 정상적으로 보임</li><li>Deep scan을 켜지 않고 애매한 결과를 그대로 신뢰하는 경우</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ol><li>Deep scan 옵션을 켜서 재스캔</li><li>하단 Hex/Entropy 탭에서 실제 바이트 분포를 눈으로 확인(엔트로피가 7.5 이상이면 압축/암호화 의심)</li><li><code>file</code>, <code>readelf -h</code>(ELF) 또는 PE-bear(REV-0288)로 헤더를 교차 확인</li><li>패커가 감지됐다면 해당 패커 전용 언패커(UPX는 <code>upx -d</code>)부터 시도</li><li>그래도 판정이 안 되면 섹션 이름과 import 개수를 직접 눈으로 보고 수동 판단</li></ol>
+<h2>미니 예제</h2>
+<pre><code class="language-text">파일: chall.exe (드래그&amp;드롭)
+결과: PE32(+) / GUI / Microsoft Visual C/C++(19.38.33135)[LTCG]
+→ 패킹 없음, 최신 MSVC로 빌드된 64비트 GUI 프로그램
+→ 바로 IDA/Ghidra로 정적 분석 시작 가능</code></pre>
+<pre><code class="language-text">파일: packed.exe (드래그&amp;드롭)
+결과: PE32 / GUI / UPX(3.96)[NRV,brute]
+→ UPX 패킹 확인
+→ upx -d packed.exe 로 언팩 후 다시 분석</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0288-pe-bear-install-usage.html">REV-0288 — PE-bear 설치와 사용법</a></li><li><a href="rev-0289-imhex-install-usage.html">REV-0289 — ImHex 설치와 기본 사용법</a></li><li><a href="rev-0126-die-basics.html">REV-0126 — Detect It Easy로 컴파일러 패커 확인</a></li><li><a href="rev-0297-upx-install-commands.html">REV-0297 — UPX 설치와 명령어</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>공식 저장소 <code>horsicq/Detect-It-Easy</code>(소스)와 <code>horsicq/DIE-engine</code>(릴리스) GitHub 페이지를 기준으로 배포 구조와 기능을 확인했다.</li><li>최종 확인일: 2026-09-08</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

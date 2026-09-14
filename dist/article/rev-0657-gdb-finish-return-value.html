@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GDB에서 함수 반환값을 finish로 확인하는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>GDB에서 함수 반환값을 finish로 확인하는 법</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>GDB에서 어떤 함수 안에 들어가 있는 상태(브레이크포인트에 걸렸거나 <code>step</code>으로 진입한 상태)에서 <code>finish</code>를 치면, 그 함수가 끝날 때까지 자동으로 실행한 뒤 "Value returned is $1 = ..." 형태로 <strong>리턴값을 바로 보여준다</strong> — <code>strcmp</code>, <code>malloc</code>, 사용자 정의 함수 할 것 없이 "이 함수가 뭘 돌려주는지"를 한 번의 명령으로 확인하는 가장 빠른 방법이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>strcmp</code>나 <code>malloc</code> 같은 함수에 브레이크포인트를 걸어놓고, 이 함수가 이번 호출에서 정확히 어떤 값을 리턴하는지 바로 확인하고 싶을 때</li><li><code>finish</code>를 쳤는데 "finish not meaningful in the outermost frame" 같은 에러가 나서 원인을 알고 싶을 때</li><li>리턴값 타입이 안 나오고 "Value returned has type: &lt;unknown return type&gt;"라고 나올 때 실제 값을 어떻게 읽어야 하는지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>finish가 하는 일 — 현재 프레임의 return까지 실행</h3>
+<p><code>finish</code>는 <strong>현재 선택된 스택 프레임이 <code>ret</code>으로 리턴할 때까지</strong> 프로그램을 계속 실행시키는 명령이다. 내부적으로는 그 프레임의 리턴 주소에 임시 브레이크포인트를 걸고 <code>continue</code>하는 것과 비슷하게 동작하지만, GDB가 자동으로 계산해서 걸어주기 때문에 사람이 직접 리턴 주소를 찾을 필요가 없다. 함수 안에서 <code>stepi</code>/<code>nexti</code>를 한 줄씩 눌러가며 리턴 지점까지 가는 대신, <code>finish</code> 한 번으로 "이 함수 끝까지 실행해서 나가라"를 표현할 수 있다.</p>
+<h3>x86-64 SysV ABI에서 리턴값은 어디에 있는가</h3>
+<p>SysV AMD64 calling convention(REV-0106)에 따르면 정수/포인터 리턴값은 <strong>RAX</strong>(32비트 함수면 EAX)에 담긴다. 64비트를 초과하는 구조체는 RAX:RDX 페어나 숨겨진 포인터(hidden pointer, 첫 인자로 전달된 반환 버퍼 주소)를 쓰는 경우도 있고, 부동소수점 리턴값은 <strong>XMM0</strong>에 담긴다. <code>finish</code>가 "Value returned is ..."로 보여주는 값은 결국 이 규약에 따라 RAX(또는 XMM0)에서 읽어온 것을, 디버그 정보에 있는 함수 원형(prototype)을 참고해서 적절한 타입으로 해석한 것이다.</p>
+<h3>디버그 정보 유무에 따른 차이</h3>
+<ul><li><strong>디버그 정보(<code>-g</code>로 컴파일)가 있는 함수</strong>: GDB가 함수의 실제 리턴 타입(<code>int</code>, <code>char *</code> 등)을 알고 있어서 <code>Value returned is $1 = 0</code>처럼 타입에 맞게 깔끔하게 보여준다.</li><li><strong>디버그 정보가 없는 라이브러리 함수(<code>strcmp</code> 등, strip된 바이너리 포함)</strong>: GDB가 원형을 모르면 기본적으로 <code>int</code>로 가정해서 RAX의 하위 32비트만 보여주거나, 아예 <code>Value returned has type: &lt;unknown return type&gt;. Cannot determine contents</code>라고 나올 수 있다. 이럴 때는 <code>finish</code> 직후 수동으로 <code>print $rax</code> 또는 <code>p/x $rax</code>를 쳐서 전체 64비트 값을 직접 읽어야 한다.</li></ul>
+<h3>"outermost frame" 에러의 의미</h3>
+<p><code>finish</code>는 <strong>현재 프레임을 호출한 상위 프레임(caller)이 있어야</strong> 동작한다. <code>main</code>처럼 GDB가 더 이상 호출자를 추적할 수 없는 최상위 프레임(또는 <code>__libc_start_main</code> 이전, 콜스택이 끊긴 지점)에서 <code>finish</code>를 치면 <code>"finish" not meaningful in the outermost frame.</code> 에러가 난다. 이건 GDB가 어디로 리턴해야 할지 모른다는 뜻이므로, <code>finish</code> 전에 자신이 정말 호출된 함수 안에 있는지, <code>backtrace</code>(<code>bt</code>)로 콜스택이 정상적으로 잡히는지 먼저 확인해야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>소스에서 찾는 게 아니라 GDB 세션 중에 나타나는 상황이다. 어떤 함수(<code>strcmp</code>, <code>check_password</code> 등) 안에 브레이크포인트가 걸려서 멈춰 있고, 그 함수가 무엇을 리턴하는지에 따라 이후 분기(<code>test eax, eax</code> / <code>jz</code>/<code>jnz</code>)가 결정되는 코드가 보인다면 <code>finish</code>를 쓸 타이밍이다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>먼저 관심 있는 함수에 브레이크포인트를 걸고 <code>run</code>으로 그 지점까지 도달한다:</p>
+<pre><code class="language-bash">(gdb) break check_password
+(gdb) run</code></pre>
+<p>브레이크포인트에 걸려서 함수 진입부에 멈추면, 그 상태에서 바로 <code>finish</code>를 친다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 함수 진입점에 브레이크포인트</strong></p>
+<pre><code>(gdb) break strcmp
+(gdb) run</code></pre>
+<p><strong>2) finish 실행</strong></p>
+<pre><code>(gdb) finish
+Run till exit from #0  0x00007ffff7c9d160 in strcmp () from /lib/x86_64-linux-gnu/libc.so.6
+0x0000000000401235 in check_password ()
+Value returned is $1 = 0</code></pre>
+<p><strong>3) 리턴값 타입이 안 잡힐 때 수동으로 RAX 읽기</strong></p>
+<pre><code>(gdb) finish
+Run till exit from #0  0x... in strcmp ()
+Value returned has type: &lt;unknown return type&gt;. Cannot determine contents
+(gdb) print $rax
+$2 = 0
+(gdb) print/x $rax
+$3 = 0x0</code></pre>
+<p><strong>4) 여러 번 반복 호출을 자동으로 보고 싶을 때</strong> <code>finish</code>는 한 번의 프레임 탈출만 처리하므로, 루프 안에서 여러 번 호출되는 함수라면 REV-0656의 <code>gdb.FinishBreakpoint</code>를 스크립트로 걸어 자동화하는 것이 더 편하다.</p>
+<p><strong>5) 리턴 직후 값을 조건에 따라 이어서 관찰</strong></p>
+<pre><code>(gdb) finish
+Value returned is $1 = 0
+(gdb) if $1 == 0
+ &gt; print "동일한 문자열입니다"
+ &gt; end</code></pre>
+<h2>명령어/단축키</h2>
+<pre><code>(gdb) break strcmp
+(gdb) run
+(gdb) finish
+(gdb) print $rax
+(gdb) print/x $rax
+(gdb) bt                 # 콜스택 확인 (finish 전에 caller가 있는지 점검)
+(gdb) info frame         # 현재 프레임 정보 상세</code></pre>
+<h2>출력 해석</h2>
+<pre><code>(gdb) finish
+Run till exit from #0  0x0000000000401146 in check_password (input=0x7fffffffe420 "test123") at chall.c:15
+0x0000000000401278 in main () at chall.c:25
+25          if (check_password(buf)) {
+Value returned is $1 = 0</code></pre>
+<ul><li><code>Run till exit from #0 ...</code>: 지금 있는 프레임(<code>#0</code>, <code>check_password</code>)에서 리턴할 때까지 실행한다는 안내.</li><li><code>0x0000000000401278 in main () at chall.c:25</code>: 리턴 직후 도착한 위치 — 호출자(<code>main</code>)의 <code>call</code> 다음 명령 주소다.</li><li><code>Value returned is $1 = 0</code>: <code>check_password</code>가 <code>int</code>를 리턴했고 값이 <code>0</code>이라는 뜻. <code>$1</code>은 GDB의 값 히스토리 번호로, 이후 <code>print $1</code>로 다시 참조할 수 있다.</li><li>다음 줄 <code>if (check_password(buf)) {</code>과 리턴값 <code>0</code>(= false)을 연결해서, 이번 실행에서는 이 조건이 거짓이 되어 실패 분기로 갈 것임을 코드 한 줄 안 읽고도 예측할 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>finish</code>를 <code>main</code> 같은 최상위 프레임에서 치고 "왜 에러가 나지"라며 당황하는 것 — <code>bt</code>로 호출자가 있는지 먼저 확인한다.</li><li>리턴 타입이 <code>void</code>인 함수에 <code>finish</code>를 쓰고 값이 없다고 이상하게 여기는 것 — <code>void</code> 함수는 애초에 "Value returned"가 출력되지 않는 게 정상이다.</li><li>strip된 바이너리에서 <code>Value returned</code> 줄 자체가 안 나오는데 리턴값이 없다고 착각하는 것 — 디버그 정보가 없으면 GDB가 타입을 몰라서 안 보여줄 뿐이니 <code>print $rax</code>로 직접 읽어야 한다.</li><li><code>finish</code> 도중에 그 함수 내부에 또 다른 브레이크포인트가 걸려 있으면 리턴까지 안 가고 그 브레이크포인트에서 먼저 멈춘다 — 이걸 "finish가 안 먹힌다"고 오해하지 말고, 어느 브레이크포인트에서 멈췄는지 <code>(gdb)</code> 프롬프트 위 메시지를 확인한다.</li><li>32비트 바이너리인데 <code>$rax</code> 대신 <code>$eax</code>를 안 쓰는 것 — 32비트 프로세스를 디버깅 중이면 리턴값은 <code>$eax</code>에 있다(REV-0022 레지스터 폭 차이 참고).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>같은 함수가 루프에서 여러 번 불려서 매번 수동으로 <code>finish</code>+<code>continue</code>를 반복하기 귀찮다면 → REV-0656 GDB Python 스크립팅 기초(gdb.FinishBreakpoint)</li><li>함수 진입 전에 인자부터 먼저 확인하고 싶다면 → REV-0175 CALL 직전 함수 인자 확인하는 법</li><li>리턴값과 레지스터의 관계, calling convention 자체가 헷갈린다면 → REV-0106 SysV AMD64 Calling Convention</li><li>원격 디버깅 세션에서도 finish가 똑같이 동작하는지 궁금하다면 → REV-0658 GDB 원격 디버깅(gdbserver) 기초</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ gdb -q ./chall
+(gdb) break check_password
+Breakpoint 1 at 0x401146
+(gdb) run
+Starting program: /home/user/chall
+Enter password: test123
+
+Breakpoint 1, 0x0000000000401146 in check_password (input=0x7fffffffe420 "test123") at chall.c:15
+15      int check_password(char *input) {
+(gdb) finish
+Run till exit from #0  check_password (input=0x7fffffffe420 "test123") at chall.c:15
+0x0000000000401278 in main () at chall.c:25
+25          if (check_password(buf)) {
+Value returned is $1 = 0
+(gdb) print $1
+$2 = 0</code></pre>
+<p>리턴값 <code>0</code>을 확인한 순간, 이 입력으로는 검증에 실패한다는 것을 소스나 어셈블리를 더 파고들지 않고도 알 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0656-gdb-python-scripting-basics.html">REV-0656 — GDB Python 스크립팅 기초(gdb.Breakpoint 등)</a></li><li><a href="rev-0175-args-before-call.html">REV-0175 — CALL 직전 함수 인자 확인하는 법</a></li><li><a href="rev-0176-return-value-after-call.html">REV-0176 — CALL 직후 반환값 확인하는 법</a></li><li><a href="rev-0106-sysv-amd64-calling-convention.html">REV-0106 — SysV AMD64 Calling Convention</a></li><li><a href="rev-0186-gdb-break.html">REV-0186 — GDB break와 address breakpoint</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>finish</code> 명령의 동작(현재 프레임 종료까지 실행, "Value returned" 출력): GDB 공식 매뉴얼 "Continuing and Stepping" 챕터 기준.</li><li>x86-64 정수/포인터 리턴값이 RAX, 부동소수점 리턴값이 XMM0에 담기는 규약: System V AMD64 ABI 문서 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

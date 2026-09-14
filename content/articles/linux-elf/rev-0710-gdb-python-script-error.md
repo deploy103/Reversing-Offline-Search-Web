@@ -151,7 +151,7 @@ pi                                    # python-interactive, REPL 진입
 - 에러가 나면 무조건 스크립트를 처음부터 다시 쓰는 것 — Traceback의 마지막 줄(예외 타입과 메시지)과 줄 번호만 봐도 원인의 8할은 바로 드러난다.
 
 ## 막혔을 때 다음 체크
-- GDB Python API로 무엇부터 시작해야 할지 개요가 필요하다면 → REV-0656(GDB Python 스크립팅 기초, CONTENT_PLAN 예정 항목)
+- GDB Python API로 무엇부터 시작해야 할지 개요가 필요하다면 → REV-0656(GDB Python 스크립팅 기초)
 - Pwndbg 명령 자체가 이상하게 동작한다면 → REV-0709(Pwndbg에서 heap 명령이 이 glibc 버전에서 지원 안 된다고 할 때)
 - 심볼 자체가 안 보여서 스크립트가 실패하는 것 같다면 → REV-0093(nm으로 심볼 찾기)
 

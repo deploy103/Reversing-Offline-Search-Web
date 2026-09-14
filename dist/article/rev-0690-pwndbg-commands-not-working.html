@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pwndbg가 설치는 됐는데 명령어가 안 먹을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>Pwndbg가 설치는 됐는데 명령어가 안 먹을 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>Pwndbg를 설치했는데도 <code>vmmap</code>, <code>context</code>, <code>telescope</code> 같은 명령어를 치면 GDB가 <code>Undefined command: "vmmap".  Try "help".</code>처럼 순정 GDB 오류를 낸다면, 이는 <strong>지금 실행된 GDB 세션에 Pwndbg가 실제로 로드되지 않았다</strong>는 뜻이며, 원인은 대부분 <code>~/.gdbinit</code>에 Pwndbg가 안 걸려있거나, <code>setup.sh</code>를 가상환경(venv/conda) 안에서 돌려서 GDB가 쓰는 Python과 다른 곳에 설치됐거나, <code>sudo gdb</code>처럼 다른 <code>HOME</code>으로 실행해서 <code>.gdbinit</code>을 못 찾는 경우다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>./setup.sh</code>를 분명히 실행했는데 <code>gdb</code>를 켜고 <code>vmmap</code>을 치면 <code>Undefined command: "vmmap".  Try "help".</code>가 뜰 때</li><li>GDB 시작 배너에 Pwndbg 관련 문구가 전혀 안 뜨고 그냥 순정 GDB처럼 보일 때</li><li><code>sudo gdb -p PID</code>로는 명령어가 안 먹는데 <code>gdb ./chall</code>로는 될 때(또는 그 반대)</li><li>파이썬 가상환경(virtualenv, conda)을 쓰는 프로젝트 폴더에서 GDB를 켰을 때만 유독 Pwndbg가 안 먹을 때</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>GDB를 켜자마자(아무 것도 안 치고) 화면에 Python 트레이스백이나 에러 메시지가 스크롤되어 지나가지 않았는지부터 다시 확인한다. <code>gdb -q -ex 'python import pwndbg' -ex quit</code>을 실행해서 import 자체가 성공하는지 직접 테스트하는 것이 가장 빠른 진단이다.</p>
+<h2>핵심 개념</h2>
+<h3>Pwndbg는 "GDB의 Python 확장"이며, <code>.gdbinit</code>을 통해 매번 새로 로드된다</h3>
+<p>Pwndbg는 별도 프로그램이 아니라 GDB의 내장 Python 인터프리터 위에서 동작하는 스크립트 모음이다. <code>./setup.sh</code>를 실행하면 보통 <code>~/.gdbinit</code>에 <code>source /경로/pwndbg/gdbinit.py</code> 같은 줄을 추가해서, <strong>GDB가 켜질 때마다 이 줄을 읽어 Pwndbg를 import</strong>하도록 설정한다. 즉 "설치"란 사실 이 한 줄이 <code>~/.gdbinit</code>에 잘 들어가 있고, 그 경로의 Python 코드가 정상적으로 import되는 것 전부다. 이 사슬의 어느 한 곳이 끊기면 GDB는 아무 오류 표시 없이(또는 스크롤되어 지나가는 트레이스백만 남기고) 그냥 순정 GDB로 켜진다.</p>
+<h3>원인 ① — 가상환경(virtualenv/conda) 충돌</h3>
+<p>GDB는 시스템에 설치된 <code>libpython</code>에 동적 링킹되어 있어서, <strong>GDB의 Python 인터프리터는 항상 시스템 기본 Python(그리고 그 <code>site-packages</code>)을 본다</strong> — 셸에서 <code>conda activate</code>나 <code>source venv/bin/activate</code>로 가상환경을 켠 상태에서 <code>./setup.sh</code>를 돌리면, Pwndbg가 필요로 하는 의존성 패키지들이 가상환경의 <code>site-packages</code>에 설치된다. 하지만 정작 GDB를 실행하면 GDB의 Python은 그 가상환경을 전혀 모르기 때문에 <code>import pwndbg</code>가 조용히 실패하고, 결과적으로 Pwndbg의 명령어가 하나도 등록되지 않는다.</p>
+<h3>원인 ② — 여러 개의 GDB, 또는 sudo로 인한 HOME 변경</h3>
+<p>시스템에 GDB가 여러 버전 설치돼 있을 수 있다(apt로 설치된 것, 소스 빌드한 것, <code>gdb-multiarch</code> 등). <code>setup.sh</code>는 실행 당시 <code>PATH</code>에서 찾은 특정 <code>gdb</code>를 기준으로 연결되므로, 이후 다른 <code>gdb</code> 바이너리를 실행하면 Pwndbg가 안 걸려있을 수 있다. 또한 <code>sudo gdb -p PID</code>처럼 attach에 root 권한이 필요해 <code>sudo</code>를 쓰면, 기본적으로 <code>HOME</code>이 <code>/root</code>로 바뀌어 GDB가 <code>/root/.gdbinit</code>을 찾는데 거기엔 Pwndbg 설정이 없을 수 있다.</p>
+<h3>원인 ③ — GDB/Pwndbg 버전 요구사항 불일치</h3>
+<p>Pwndbg는 특정 GDB/Python 최소 버전을 요구한다(예: Python 3.8+, GDB 9.2 이상 계열). 오래된 배포판의 구버전 GDB에서는 아예 로드가 안 되거나 로드는 되어도 일부 명령이 깨질 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-gdb">$ gdb ./chall
+GNU gdb (Ubuntu 12.1-0ubuntu1~22.04) 12.1
+(gdb) vmmap
+Undefined command: "vmmap".  Try "help".
+(gdb) context
+Undefined command: "context".  Try "help".</code></pre>
+<h2>단계별 절차</h2>
+<p><strong>1) Pwndbg의 Python import가 실제로 되는지 직접 테스트</strong></p>
+<pre><code class="language-bash">gdb -q -ex 'python import pwndbg' -ex quit</code></pre>
+<p>아무 출력 없이 종료되면 정상, <code>ModuleNotFoundError</code> 등 트레이스백이 뜨면 import 자체가 실패하는 것이다.</p>
+<p><strong>2) <code>.gdbinit</code>에 Pwndbg가 실제로 걸려있는지 확인</strong></p>
+<pre><code class="language-bash">cat ~/.gdbinit</code></pre>
+<p><code>source /home/user/pwndbg/gdbinit.py</code> 같은 줄이 있는지 확인한다. 없다면 Pwndbg 클론 디렉터리에서 <code>./setup.sh</code>를 다시 실행한다.</p>
+<p><strong>3) 가상환경을 비활성화하고 재설치</strong></p>
+<pre><code class="language-bash">conda deactivate      # 또는 deactivate (virtualenv)
+cd ~/pwndbg
+./setup.sh</code></pre>
+<p>이렇게 하면 의존성이 시스템 Python <code>site-packages</code>에 설치되어 GDB가 실제로 참조하는 경로와 일치하게 된다.</p>
+<p><strong>4) sudo로 attach해야 한다면 환경 변수 보존</strong></p>
+<pre><code class="language-bash">sudo -E gdb -p 1234</code></pre>
+<p><code>-E</code>는 현재 사용자의 환경 변수(<code>HOME</code> 포함)를 그대로 유지시켜 <code>~/.gdbinit</code>을 계속 찾게 해준다. 또는 root 계정용으로 별도로 <code>sudo ./setup.sh</code>를 한 번 더 실행해 <code>/root/.gdbinit</code>에도 등록해둔다.</p>
+<p><strong>5) GDB/Python 버전 확인</strong></p>
+<pre><code class="language-bash">gdb --version
+python3 --version</code></pre>
+<p>Pwndbg GitHub 저장소의 README에 명시된 최소 버전과 비교한다. 너무 오래된 배포판이면 GDB를 업그레이드하거나, 그 배포판을 지원하는 과거 릴리스 태그의 Pwndbg를 체크아웃한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">gdb -q -ex 'python import pwndbg' -ex quit
+cat ~/.gdbinit
+conda deactivate
+deactivate
+cd ~/pwndbg &amp;&amp; ./setup.sh
+sudo -E gdb -p PID
+gdb --version</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>python import pwndbg</code>가 조용히 성공하면 Pwndbg 모듈 자체는 정상 설치된 것 — 문제는 <code>.gdbinit</code>이 그 import를 실제로 트리거하지 않는 데 있다.</li><li><code>ModuleNotFoundError: No module named 'xxx'</code>가 뜨면 Pwndbg의 의존성 패키지가 GDB의 Python이 보는 <code>site-packages</code>에 없다는 뜻 — 가상환경 충돌을 의심한다.</li><li><code>cat ~/.gdbinit</code>에 아무 내용도 없거나 Pwndbg 관련 줄이 없으면 애초에 <code>setup.sh</code>가 이 계정의 <code>HOME</code>에 대해 실행된 적이 없다는 뜻이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>./setup.sh</code>를 conda/venv가 활성화된 상태에서 실행해놓고 이후 매번 헷갈려하는 것 — 반드시 비활성화 상태에서 재실행한다.</li><li><code>sudo gdb</code>로 attach할 때마다 Pwndbg가 없어서 당황하는 것 — <code>HOME</code>이 바뀌는 게 원인이라는 걸 모르면 매번 재설치를 시도하게 된다.</li><li>GDB를 여러 개 설치해두고 어느 것에 <code>setup.sh</code>가 연결됐는지 확인 안 하는 것 — <code>which gdb</code>로 지금 쓰는 GDB 경로부터 확인한다.</li><li>오류 메시지(<code>Undefined command</code>)를 "Pwndbg가 이 명령어를 지원하지 않는다"로 오해하는 것 — 이건 순정 GDB가 "그런 명령어 자체를 모른다"는 뜻이지, Pwndbg가 로드는 됐는데 이 기능만 없다는 뜻이 아니다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>import는 되는데 <code>context</code> 화면이 깨져 보인다면(로드는 됨) → REV-0691 Pwndbg 버전 문제로 context가 깨져 보일 때</li><li>Pwndbg 없이 순정 GDB로 메모리를 봐야 한다면 → REV-0189 GDB x 명령으로 메모리 보기</li><li>attach 자체가 권한 문제로 막힌다면 → REV-0692 GDB attach가 permission denied로 실패할 때(ptrace_scope)</li><li>GDB 자체 설치/설정이 궁금하면 → REV-0283 GDB 설치와 기본 설정</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ conda activate myenv
+(myenv) $ cd ~/pwndbg &amp;&amp; ./setup.sh   # 의존성이 myenv 안에 설치됨
+(myenv) $ conda deactivate
+$ gdb ./chall
+(gdb) vmmap
+Undefined command: "vmmap".  Try "help".
+$ conda deactivate   # 이미 비활성화됨을 재확인
+$ cd ~/pwndbg &amp;&amp; ./setup.sh   # 시스템 Python 기준으로 재설치
+$ gdb ./chall
+(gdb) vmmap
+LEGEND: STACK | HEAP | CODE | DATA | RWX | RODATA
+0x555555554000     0x555555555000 r--p     1000 0      /home/user/chall</code></pre>
+<p>가상환경이 켜진 채로 설치했던 첫 시도는 실패했지만, 비활성화 후 재설치하자 <code>vmmap</code>이 정상 동작했다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0691-pwndbg-context-broken-version.html">REV-0691 — Pwndbg 버전 문제로 context가 깨져 보일 때</a></li><li><a href="rev-0692-gdb-attach-permission-denied-ptrace-scope.html">REV-0692 — GDB attach가 permission denied로 실패할 때(ptrace_scope)</a></li><li><a href="rev-0283-gdb-install.html">REV-0283 — GDB 설치와 기본 설정</a></li><li><a href="rev-0284-gdb-commands-cheatsheet.html">REV-0284 — GDB 명령어 치트시트</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Pwndbg 설치 절차(<code>setup.sh</code>, <code>~/.gdbinit</code> 등록)와 GDB 버전 요구사항: Pwndbg 공식 저장소(pwndbg/pwndbg) README 및 공식 문서(pwndbg.re) 기준.</li><li>GDB가 시스템 <code>libpython</code>에 동적 링킹되어 가상환경의 Python을 인식하지 못하는 동작: GDB 공식 문서 "Python API" 섹션 및 일반적인 GDB Python 확장 개발 문서에서 공통적으로 설명하는 제약 사항 기준 (2026-09-08 검증).</li><li><code>sudo -E</code>로 환경 변수(<code>HOME</code>)를 보존하는 동작: <code>sudo(8)</code> man page 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

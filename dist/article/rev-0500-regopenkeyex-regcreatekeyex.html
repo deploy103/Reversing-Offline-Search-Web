@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinAPI 레지스트리 함수 사전: RegOpenKeyEx RegCreateKeyEx · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>WinAPI 레지스트리 함수 사전: RegOpenKeyEx RegCreateKeyEx</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>RegOpenKeyExW</code>는 이미 존재하는 레지스트리 키를 열어 <code>HKEY</code> 핸들을 얻고, <code>RegCreateKeyExW</code>는 없으면 새로 만들면서 여는 함수로, 두 API 모두 반환값이 다른 Win32 함수처럼 <code>BOOL</code>이 아니라 <code>LSTATUS</code>(<code>ERROR_SUCCESS</code>=0이 성공)라는 점이 리버싱에서 가장 헷갈리기 쉬운 포인트다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>임포트 목록에서 <code>RegOpenKeyExW</code>/<code>RegCreateKeyExW</code>(또는 <code>advapi32.dll</code> 계열)를 발견해 이 프로그램이 어떤 레지스트리 키를 다루는지 알아내야 할 때</li><li><code>HKEY_LOCAL_MACHINE</code>, <code>HKEY_CURRENT_USER</code> 같은 루트 키 상수값이 코드에 어떻게 나타나는지 확인하고 싶을 때</li><li>반환값이 <code>0</code>인데 왜 성공인지 헷갈릴 때(다른 API들의 <code>TRUE</code>=성공 관례와 반대)</li><li>악성코드/CTF에서 흔한 "레지스트리에 자동실행 키 등록" 패턴을 분석할 때</li></ul>
+<h2>핵심 개념</h2>
+<p><strong><code>RegOpenKeyExW</code></strong> — 기존 키를 연다.</p>
+<pre><code class="language-c">LSTATUS RegOpenKeyExW(
+    HKEY    hKey,
+    LPCWSTR lpSubKey,
+    DWORD   ulOptions,
+    REGSAM  samDesired,
+    PHKEY   phkResult
+);</code></pre>
+<ol><li><code>hKey</code> — 시작 지점이 되는 루트/부모 키 핸들. 실제 값은 특별한 미리 정의된 상수다.</li></ol>
+<table><thead><tr><th>상수</th><th>값</th><th>의미</th></tr></thead><tbody><tr><td><code>HKEY_CLASSES_ROOT</code></td><td>0x80000000</td><td>파일 연결/COM 등록 정보</td></tr><tr><td><code>HKEY_CURRENT_USER</code></td><td>0x80000001</td><td>현재 로그인한 사용자 설정</td></tr><tr><td><code>HKEY_LOCAL_MACHINE</code></td><td>0x80000002</td><td>시스템 전역 설정(관리자 권한 필요할 수 있음)</td></tr><tr><td><code>HKEY_USERS</code></td><td>0x80000003</td><td>모든 사용자 프로필</td></tr><tr><td><code>HKEY_CURRENT_CONFIG</code></td><td>0x80000005</td><td>현재 하드웨어 구성</td></tr></tbody></table>
+<ol><li><code>lpSubKey</code> — 열고 싶은 하위 키 경로 문자열(예: <code>L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run"</code>).</li><li><code>ulOptions</code> — 대개 <code>0</code>.</li><li><code>samDesired</code> — 원하는 접근 권한. <code>KEY_READ</code>(0x20019), <code>KEY_WRITE</code>(0x20006), <code>KEY_ALL_ACCESS</code>(0xF003F)가 가장 흔하다.</li><li><code>phkResult</code> — 성공 시 새로 얻은 <code>HKEY</code> 핸들이 저장될 포인터.</li></ol>
+<p><strong><code>RegCreateKeyExW</code></strong> — 키가 없으면 새로 만들고, 있으면 그냥 연다.</p>
+<pre><code class="language-c">LSTATUS RegCreateKeyExW(
+    HKEY                  hKey,
+    LPCWSTR                lpSubKey,
+    DWORD                  Reserved,          // 항상 0
+    LPWSTR                 lpClass,           // 대개 NULL
+    DWORD                  dwOptions,         // 대개 REG_OPTION_NON_VOLATILE(0)
+    REGSAM                 samDesired,
+    LPSECURITY_ATTRIBUTES  lpSecurityAttributes, // 대개 NULL
+    PHKEY                  phkResult,
+    LPDWORD                lpdwDisposition    // REG_CREATED_NEW_KEY(1) 또는 REG_OPENED_EXISTING_KEY(2)
+);</code></pre>
+<p><code>RegOpenKeyExW</code>보다 인자가 4개 더 많지만, 앞의 <code>hKey</code>/<code>lpSubKey</code>와 뒤쪽의 <code>samDesired</code>/<code>phkResult</code>는 의미가 같다. 마지막 인자 <code>lpdwDisposition</code>으로 "새로 만들어졌는지, 원래 있던 걸 열었는지"까지 구분할 수 있다는 점이 <code>RegOpenKeyExW</code>와의 핵심 차이다.</p>
+<p><strong>반환값 규칙 — 가장 중요한 함정</strong> 두 함수 모두 반환 타입이 <code>LSTATUS</code>(사실상 <code>LONG</code>)이며, <strong><code>ERROR_SUCCESS</code>(0)가 성공</strong>이다. 다른 값(대개 <code>ERROR_FILE_NOT_FOUND</code>=2 등)이 에러 코드다. <code>CreateFile</code>류가 실패값 <code>-1</code>, 대부분의 <code>BOOL</code> 반환 API가 <code>0</code>=실패인 것과 정반대이므로, 디스어셈블리에서 <code>test eax, eax</code> 뒤 <code>jnz</code>(0이 아니면 점프)가 나오면 이것이 "에러 처리 분기"라는 것을 헷갈리지 않아야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>push 80000002h</code>(x86) 또는 <code>mov ecx, 80000002h</code>(x64)처럼 <code>HKEY_LOCAL_MACHINE</code> 상수가 그대로 인자로 들어감.</li><li><code>call RegOpenKeyExW</code> 직후 <code>test eax, eax</code> / <code>jnz fail_branch</code>(0이 아니면 실패로 분기) 패턴.</li><li><code>RegCreateKeyExW</code> 호출 뒤 <code>lpdwDisposition</code>이 가리키는 값을 <code>cmp</code>로 <code>1</code>(새로 생성)과 비교하는 코드.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>hKey</code>(루트) + <code>lpSubKey</code>(경로 문자열) 두 값만 먼저 확인해서 "이 프로그램이 어떤 레지스트리 경로를 건드리는가"부터 파악한다. <code>Run</code>/<code>RunOnce</code> 키가 보이면 자동 실행 등록을 의심한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>IDA에서 <code>RegOpenKeyExW</code>/<code>RegCreateKeyExW</code> 호출을 <code>X</code>(xref)로 나열한다.</li><li><code>F5</code>로 디컴파일해 <code>hKey</code> 상수(<code>0x80000002</code> 등)와 <code>lpSubKey</code> 문자열을 확인한다. IDA는 이 상수를 자동으로 <code>HKEY_LOCAL_MACHINE</code> 심볼로 표시해주는 경우가 많다(안 되어 있으면 우클릭 → <code>Use standard symbolic constant</code>).</li><li>x64dbg에서 <code>bp RegOpenKeyExW</code> 후 <code>RCX</code>(hKey), <code>RDX</code>(lpSubKey 주소, Follow in Dump로 문자열 확인)를 본다.</li><li><code>Ctrl+F9</code>로 리턴까지 실행해 <code>EAX</code>가 <code>0</code>인지 확인하고, <code>0</code>이면 5번째(RegOpenKeyEx) 또는 8번째(RegCreateKeyEx) 인자로 넘긴 주소에서 <code>HKEY</code> 값을 확인한다 — 이 핸들이 이후 <code>RegQueryValueEx</code>/<code>RegSetValueEx</code>(REV-0501)의 첫 인자로 이어진다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp RegOpenKeyExW</code>, <code>bp RegCreateKeyExW</code>, <code>Ctrl+F9</code>(리턴까지 실행)</li><li>IDA: <code>X</code>(xref), <code>F5</code>(디컴파일), 숫자 우클릭 → <code>Use standard symbolic constant</code></li></ul>
+<h2>출력 해석</h2>
+<ul><li>반환값 <code>0</code>(<code>ERROR_SUCCESS</code>) = 성공. <code>2</code>(<code>ERROR_FILE_NOT_FOUND</code>) = 키가 없음. 그 외 값은 <code>WinError.h</code> 기준 에러 코드.</li><li><code>RegCreateKeyExW</code>의 <code>lpdwDisposition</code> = <code>1</code>(<code>REG_CREATED_NEW_KEY</code>)이면 이전에 없던 키를 새로 만든 것 — 최초 설치/드롭 시점을 특정하는 단서가 될 수 있다.</li><li>열린 <code>HKEY</code> 핸들 값 자체는 의미 있는 숫자가 아니라 내부 관리용 값이므로, 어떤 키를 열었는지는 반드시 호출 시점의 <code>lpSubKey</code> 문자열로 판단해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>반환값을 <code>BOOL</code>처럼 취급해서 <code>0</code>을 실패로 착각하는 것 — 레지스트리 API는 <code>0</code>이 성공이다.</li><li><code>HKEY_LOCAL_MACHINE</code>(0x80000002)과 <code>HKEY_CURRENT_USER</code>(0x80000001)를 혼동해서 "시스템 전역 설정"과 "현재 사용자만의 설정"을 반대로 해석하는 것.</li><li><code>RegCreateKeyExW</code>가 항상 새로 만든다고 오해하는 것 — 이미 있으면 그냥 열기만 하며, 이 구분은 <code>lpdwDisposition</code>으로만 알 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>열린 키에서 실제 값을 읽고 쓰는 흐름이 궁금하면 → REV-0501 확인.</li><li>다 쓴 키 핸들을 닫거나 키를 삭제하는 API가 궁금하면 → REV-0502 확인.</li><li>함수 이름 자체가 낯설다면 → REV-0138(Windows API 이름으로 기능 추측하는 법)을 참고.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">HKEY hKey;
+LSTATUS st = RegOpenKeyExW(HKEY_CURRENT_USER,
+    L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+    0, KEY_READ, &amp;hKey);
+if (st == ERROR_SUCCESS) {
+    // hKey를 RegQueryValueEx에 넘겨 자동실행 항목을 읽음
+}</code></pre>
+<p>디스어셈블리에서는 <code>HKEY_CURRENT_USER</code>가 <code>0x80000001</code> 상수로, <code>KEY_READ</code>가 <code>0x20019</code>로 그대로 보이며, 반환값 검사는 <code>test eax, eax</code> / <code>jnz fail</code>(0이 아니면 실패) 형태로 나타난다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0501-regqueryvalueex-regsetvalueex.html">REV-0501 — WinAPI 레지스트리 함수 사전: RegQueryValueEx RegSetValueEx</a></li><li><a href="rev-0502-regclosekey-regdeletekey.html">REV-0502 — WinAPI 레지스트리 함수 사전: RegCloseKey RegDeleteKey</a></li><li><a href="rev-0138-guess-function-from-api-name.html">REV-0138 — Windows API 이름으로 기능 추측하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>RegOpenKeyExW</code>/<code>RegCreateKeyExW</code> 시그니처, <code>HKEY_*</code> 루트 키 상수값, <code>LSTATUS</code>/<code>ERROR_SUCCESS</code> 반환 규칙은 Microsoft Win32 API 공식 문서(learn.microsoft.com, Windows Registry 관련 문서) 기준(2026-09-08 확인 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

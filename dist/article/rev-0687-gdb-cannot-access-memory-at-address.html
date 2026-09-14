@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GDB에서 Cannot access memory at address 오류가 뜰 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>GDB에서 Cannot access memory at address 오류가 뜰 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>Cannot access memory at address 0x...</code>는 GDB가 <strong>그 주소에 아무 것도 매핑되어 있지 않다</strong>고 커널로부터 통보받았다는 뜻이며, 원인은 대부분 (1) 포인터 값 자체가 NULL/쓰레기값인 진짜 버그, (2) PIE 베이스를 안 더하고 정적 오프셋을 그대로 쓴 계산 실수, (3) 프로세스가 아직 실행 전이거나 이미 종료된 상태에서 메모리를 조회한 경우 중 하나이므로, <code>info registers</code>로 포인터 값을 먼저 확인하고 <code>vmmap</code>/<code>info proc mappings</code>로 실제 매핑된 범위와 비교하는 것이 가장 빠른 진단 순서다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>x/s $rax</code>나 <code>print *ptr</code>을 쳤는데 <code>Cannot access memory at address 0x0</code> 또는 <code>0x41414141</code>처럼 낯선 값이 뜰 때</li><li>PIE 바이너리에서 IDA로 확인한 오프셋을 그대로 <code>x/4xg 0x1349</code>처럼 썼는데 이 오류가 뜰 때</li><li>스택 버퍼 오버플로우 익스플로잇을 테스트하다가 <code>bt</code>나 <code>print $rbp</code> 근처에서 이 오류가 뜨는데, 이게 버그인지 익스플로잇이 실제로 먹힌 증거인지 헷갈릴 때</li><li>프로그램이 이미 끝났는데 이전에 봐뒀던 주소를 다시 조회하려다 이 오류를 만났을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>세 갈래 원인 구분이 핵심</h3>
+<ol><li><strong>포인터 값 자체가 잘못됨(진짜 버그/취약점의 증거)</strong>: <code>x/s $rdi</code>처럼 레지스터를 역참조했는데 그 레지스터 값이 <code>0x0</code>이거나 <code>0x4141414141414141</code>(<code>AAAAAAAA</code>) 같은 패턴이면, 이건 GDB 문제가 아니라 <strong>NULL 포인터 역참조</strong>이거나 <strong>버퍼 오버플로우로 저장된 포인터/리턴 주소가 사용자 입력으로 덮인 것</strong>이다. pwn 문제를 풀 때는 오히려 이 오류가 "내가 스택을 컨트롤하고 있다"는 긍정적 신호일 수 있다.</li><li><strong>PIE 베이스 계산 누락</strong>: PIE 바이너리는 실행할 때마다 로드 베이스가 바뀐다(REV-0103, REV-0104). IDA에서 본 오프셋(예: <code>0x1349</code>)을 실행 후 베이스를 더하지 않고 그대로 <code>x</code> 명령에 넣으면, 그 작은 숫자는 현재 프로세스 주소 공간에 아예 매핑되어 있지 않은 위치라서 이 오류가 뜬다. → REV-0693 참고.</li><li><strong>타이밍 문제</strong>: 프로세스가 아직 시작되지 않았거나(<code>run</code>/<code>start</code> 전) 이미 종료된 뒤에는 메모리 자체가 매핑되어 있지 않다. <code>info proc mappings</code>가 비어 있거나 오류를 내면 지금 조회할 살아있는 프로세스가 없다는 뜻이다.</li></ol>
+<h3>"매핑 여부"와 "값이 옳은지"는 다른 질문</h3>
+<p>GDB가 이 오류를 낸다는 것은 <strong>커널이 해당 페이지에 대해 프로세스에게 어떤 권한도 부여하지 않았다</strong>(페이지 폴트가 나며 유효하지 않은 접근)는 뜻일 뿐, 주소 계산이 "거의 맞았는데 조금 틀렸다"는 것과 "완전히 엉뚱한 값"이라는 것을 구분해주지는 않는다. 그래서 이 오류를 만나면 항상 "그 주소가 어디 근처인지"를 <code>vmmap</code>으로 먼저 눈으로 확인하는 습관이 중요하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-gdb">(gdb) x/s $rax
+0x0:    Cannot access memory at address 0x0
+(gdb) print *(int*)0x1349
+Cannot access memory at address 0x1349
+(gdb) bt
+#0  0x0000000000000000 in ?? ()
+Cannot access memory at address 0x0</code></pre>
+<h2>가장 먼저 할 것</h2>
+<p><code>info registers</code>로 문제가 된 포인터/주소 값을 먼저 눈으로 확인하고, <code>vmmap</code>(Pwndbg) 또는 <code>info proc mappings</code>(순정 GDB)로 지금 프로세스에 실제로 매핑되어 있는 주소 범위와 비교한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 문제의 주소가 어디서 왔는지 확인</strong></p>
+<pre><code class="language-gdb">(gdb) info registers
+(gdb) print $rdi
+(gdb) print/x $rax</code></pre>
+<p>값이 <code>0x0</code>이거나 <code>0x41414141</code>류의 반복 패턴이면 진짜 버그/오버플로우일 가능성이 높다 — REV-0694, REV-0113(core dump)로 이어서 분석한다.</p>
+<p><strong>2) 실제 매핑된 범위 확인</strong></p>
+<pre><code class="language-gdb">(gdb) info proc mappings</code></pre>
+<p>Pwndbg가 있다면:</p>
+<pre><code>pwndbg&gt; vmmap</code></pre>
+<p><strong>3) PIE 오프셋 계산 실수인지 확인</strong></p>
+<pre><code class="language-bash">checksec --file=./chall</code></pre>
+<p><code>PIE enabled</code>인데 조회한 주소가 <code>vmmap</code>의 어느 범위와도 안 겹친다면, 십중팔구 베이스를 안 더한 정적 오프셋 그대로다. → <code>베이스 + 오프셋</code>으로 다시 계산(REV-0693).</p>
+<p><strong>4) 프로세스가 살아있는지 확인</strong></p>
+<pre><code class="language-gdb">(gdb) info program</code></pre>
+<p><code>The program being debugged is not being run.</code>이 나오면 프로세스가 아직 시작 전이거나 이미 종료된 상태이므로, <code>start</code>나 <code>run</code> 이후에 다시 조회한다.</p>
+<p><strong>5) 근처를 넓게 살펴보며 감을 잡기</strong></p>
+<pre><code class="language-gdb">(gdb) x/20gx $rsp-0x50</code></pre>
+<p>Pwndbg의 <code>telescope</code>를 쓰면 포인터 체인까지 자동으로 따라가며 보여준다:</p>
+<pre><code>pwndbg&gt; telescope $rsp -l 20</code></pre>
+<h2>명령어/단축키</h2>
+<pre><code class="language-gdb">info registers
+info proc mappings
+info program
+x/20gx $rsp</code></pre>
+<pre><code>pwndbg&gt; vmmap
+pwndbg&gt; telescope $rsp -l 20</code></pre>
+<pre><code class="language-bash">checksec --file=./chall</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>vmmap</code>/<code>info proc mappings</code>에 나온 범위 중 어느 것과도 겹치지 않는 주소를 읽으려 했다면 그 주소는 애초에 존재하지 않는 페이지다.</li><li>조회 주소가 <code>vmmap</code>의 실행 파일 자신의 베이스보다 훨씬 작은 값(예: <code>0x1349</code>처럼 4~5자리)이라면 PIE 오프셋을 그대로 쓴 전형적인 실수다.</li><li><code>0x4141414141414141</code>, <code>0x6161616161616161</code>(<code>aaaaaaaa</code>)처럼 사람이 입력한 패턴이 그대로 레지스터/스택에 보인다면 버퍼 오버플로우로 그 값이 덮였다는 뜻이며, pwntools의 <code>cyclic</code>/<code>cyclic_find</code>로 정확한 오프셋을 역산할 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>PIE 베이스를 더하지 않고 IDA 오프셋을 그대로 <code>x</code>/<code>print</code>에 넣는 것 — 반드시 <code>start</code>나 <code>run</code> 이후 <code>vmmap</code>으로 베이스를 구해서 더한다.</li><li>프로세스가 이미 종료됐는데 이전 세션에서 봐둔 주소를 그대로 다시 조회하는 것 — <code>run</code>을 다시 실행하고 나서 조회해야 한다.</li><li>이 오류를 무조건 "GDB가 고장났다"고 오해하는 것 — 대부분 정상적인 커널의 페이지 폴트 보고이며, pwn 문제에서는 오히려 취약점이 동작하고 있다는 증거일 때가 많다.</li><li><code>print</code>의 결과 타입을 잘못 캐스팅해서(<code>(char*)</code> 대신 <code>(int*)</code> 등) 실제로는 유효한 주소인데 크기를 잘못 읽어 인접 페이지까지 넘어가 버리는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>PIE 베이스 계산 자체가 헷갈리면 → REV-0693 PIE 바이너리에서 GDB 브레이크포인트 주소가 계속 안 맞을 때</li><li>스택 프레임이 깨진 것 같으면 → REV-0694 GDB에서 스택 프레임이 corrupted stack frame이라고 나올 때</li><li>크래시 이후 사후 분석이 필요하면 → REV-0113 Core dump와 크래시 지점 분석 기초</li><li>PIE/ASLR 원리 자체가 궁금하면 → REV-0103 PIE와 주소 계산, REV-0104 ASLR 때문에 실행할 때 주소가 바뀌는 이유</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-gdb">(gdb) run
+Starting program: /home/user/chall
+Breakpoint 1, main () at chall.c:12
+(gdb) x/s 0x1349
+Cannot access memory at address 0x1349
+(gdb) info proc mappings
+0x555555554000     0x555555555000 ... r--p   /home/user/chall
+0x555555555000     0x555555556000 ... r-xp   /home/user/chall
+(gdb) x/s (0x555555554000 + 0x1349)
+0x555555555349 &lt;banner&gt;:       "Welcome!"</code></pre>
+<p>정적 오프셋 <code>0x1349</code>만으로는 매핑되지 않은 주소라 실패했지만, 이번 실행의 베이스(<code>0x555555554000</code>)를 더한 절대 주소로는 정상적으로 문자열을 읽었다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0693-pie-breakpoint-address-mismatch.html">REV-0693 — PIE 바이너리에서 GDB 브레이크포인트 주소가 계속 안 맞을 때</a></li><li><a href="rev-0694-gdb-corrupted-stack-frame.html">REV-0694 — GDB에서 스택 프레임이 corrupted stack frame이라고 나올 때</a></li><li><a href="rev-0113-core-dump-basics.html">REV-0113 — Core dump와 크래시 지점 분석 기초</a></li><li><a href="rev-0103-pie.html">REV-0103 — PIE와 주소 계산</a></li><li><a href="rev-0104-aslr.html">REV-0104 — ASLR 때문에 실행할 때 주소가 바뀌는 이유</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>Cannot access memory at address</code> 메시지의 의미(매핑되지 않은 페이지 접근): GDB 공식 문서 "Examining Memory" 섹션 기준.</li><li><code>info proc mappings</code>, <code>vmmap</code>을 통한 매핑 확인 절차: GDB 공식 문서 및 Pwndbg 공식 문서(pwndbg.re) 기준.</li><li>버퍼 오버플로우로 인한 포인터/리턴주소 오염 패턴(<code>0x41414141</code> 등)과 <code>cyclic</code>/<code>cyclic_find</code>: pwntools 공식 문서의 <code>cyclic</code> 유틸리티 설명 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

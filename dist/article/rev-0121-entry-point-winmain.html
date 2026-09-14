@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Entry Point와 WinMain 찾기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>Entry Point와 WinMain 찾기</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">PE-bear</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>OptionalHeader.AddressOfEntryPoint</code>가 가리키는 코드는 우리가 작성한 <code>main</code>/<code>WinMain</code>이 아니라 컴파일러가 자동으로 붙이는 <strong>CRT(C Runtime) 시작 함수</strong>(<code>mainCRTStartup</code> 또는 <code>WinMainCRTStartup</code>)이며, 이 함수가 힙·표준입출력·전역 객체 등을 초기화한 뒤에야 실제 사용자 코드인 <code>main</code>/<code>WinMain</code>을 호출한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA가 <code>start</code> 함수로 자동 이동시켰는데, 그 안의 코드가 우리가 작성한 로직과 전혀 다른 낯선 초기화 코드로 가득할 때</li><li><code>WinMainCRTStartup</code>, <code>mainCRTStartup</code>, <code>__scrt_common_main_seh</code> 같은 함수 이름이 콜스택이나 디스어셈블리에 보여서 이게 뭔지 궁금할 때</li><li><code>WinMain</code>의 정확한 매개변수(<code>HINSTANCE</code>, <code>HINSTANCE</code>, <code>LPSTR</code>, <code>int</code>) 각각이 어디서 오는지 궁금할 때</li><li>콘솔 프로그램(<code>main</code>)과 GUI 프로그램(<code>WinMain</code>)이 진입점부터 어떻게 다른 경로를 타는지 궁금할 때</li><li>stripped 바이너리라서 함수 이름이 다 지워졌을 때, 진입점에서부터 실제 사용자 로직 함수까지 어떻게 따라가야 할지 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>AddressOfEntryPoint가 가리키는 곳은 사용자 코드가 아니다</h3>
+<p>REV-0116에서 다뤘듯 <code>OptionalHeader.AddressOfEntryPoint</code>는 실행이 시작되는 지점을 RVA로 담고 있다. 하지만 이 지점은 <strong>C/C++ 런타임 초기화 코드</strong>의 시작점이지, 우리가 IDE에서 작성한 <code>int main()</code>이나 <code>int WinMain(...)</code>이 아니다. Windows 로더가 프로세스를 만들고 이 진입점으로 제어를 넘기면, 그 코드는 다음과 같은 준비 작업을 순서대로 처리한다.</p>
+<ul><li>힙, 스택 가드(<code>/GS</code>), 예외 처리(SEH) 인프라 초기화</li><li>C 표준 라이브러리 전역 상태(예: <code>stdio</code> 버퍼) 초기화</li><li>C++ 전역/정적 객체의 생성자 호출(C++ 프로그램인 경우)</li><li>명령줄 인자 파싱, 환경 변수 준비</li><li>마지막으로 사용자 <code>main</code>(또는 <code>WinMain</code>)을 호출하고, 그 반환값을 <code>ExitProcess</code>에 넘겨서 프로세스를 종료</li></ul>
+<p>이 전체 과정을 담당하는 코드를 통틀어 <strong>CRT startup</strong>이라 부른다.</p>
+<h3>Subsystem에 따라 갈리는 두 경로</h3>
+<p>REV-0116에서 다룬 <code>OptionalHeader.Subsystem</code> 값에 따라 링커가 최종적으로 어떤 CRT startup 함수를 진입점으로 지정하는지가 갈린다.</p>
+<pre><code class="language-text">Subsystem == IMAGE_SUBSYSTEM_WINDOWS_CUI (3, 콘솔 프로그램)
+   AddressOfEntryPoint → mainCRTStartup (또는 유니코드 진입인 wmainCRTStartup)
+       └─ 내부에서 사용자 정의 main(int argc, char** argv, char** envp) 호출
+
+Subsystem == IMAGE_SUBSYSTEM_WINDOWS_GUI (2, GUI 프로그램)
+   AddressOfEntryPoint → WinMainCRTStartup (또는 wWinMainCRTStartup)
+       └─ 내부에서 사용자 정의 WinMain(HINSTANCE, HINSTANCE, LPSTR, int) 호출</code></pre>
+<p>MSVC(Visual Studio)로 빌드한 실행 파일이라면 이 CRT startup 함수들은 최신 버전에서 내부적으로 <code>__scrt_common_main_seh</code>라는 공통 함수를 거쳐 사용자 진입 함수(<code>main</code>/<code>WinMain</code>)를 호출하는 구조로 되어 있다. 함수 이름이 디버그 심볼 없이도 보이는 경우가 있는데, 이는 Visual Studio가 배포하는 공개 PDB/심볼 서버 정보를 IDA/WinDbg가 자동으로 매칭해주기 때문이다(인터넷 연결이 있는 환경 기준. 이 위키를 쓰는 오프라인 환경에서는 이런 자동 심볼 매칭이 동작하지 않을 수 있으므로, 함수 이름이 안 보인다면 아래 "단계별 절차"의 패턴 인식 방법을 쓴다).</p>
+<h3>WinMain의 네 매개변수</h3>
+<p>GUI 프로그램의 사용자 진입점 시그니처는 다음과 같다.</p>
+<pre><code class="language-c">int WINAPI WinMain(
+    HINSTANCE hInstance,      // 이 프로세스(모듈)의 인스턴스 핸들, 보통 ImageBase와 같은 값
+    HINSTANCE hPrevInstance,  // 항상 NULL (16비트 Windows의 유물, 현재는 의미 없음)
+    LPSTR     lpCmdLine,      // 명령줄 인자 문자열 (프로그램 이름 제외)
+    int       nCmdShow        // 창을 어떻게 보여줄지 힌트 (SW_SHOW 등)
+);</code></pre>
+<p><code>hInstance</code>는 실무적으로 매우 중요한데, 이 값이 대개 이 실행 파일의 <code>ImageBase</code>와 동일하다 — 즉 <code>LoadLibrary</code>나 리소스 API 호출에 이 핸들이 그대로 쓰인다. <code>hPrevInstance</code>는 사실상 죽은 매개변수로 항상 <code>NULL</code>이 전달된다(과거 16비트 Windows에서 같은 프로그램이 이미 실행 중인지 확인하는 용도였으나 32비트 이후로는 무의미해졌다).</p>
+<h3>콘솔 프로그램의 main</h3>
+<pre><code class="language-c">int main(int argc, char** argv, char** envp);</code></pre>
+<p>Linux ELF의 <code>main</code>과 시그니처는 비슷하지만, 이 인자들이 실제로 준비되는 경로는 완전히 다르다. Linux는 <code>_start</code> → <code>__libc_start_main</code>이 커널이 스택에 이미 얹어둔 <code>argc</code>/<code>argv</code>/<code>envp</code>를 그대로 전달하는 구조인 반면(ELF 쪽은 이 위키의 대응 글에서 다룬다), Windows는 CRT startup 코드가 <code>GetCommandLineA/W()</code>로 전체 명령줄 문자열을 가져온 뒤, 자체 파싱 로직으로 공백/따옴표를 처리해 <code>argv</code> 배열을 직접 만들어낸다. 그래서 Windows에서는 커맨드라인 인자 파싱 버그(따옴표 처리 등)가 프로그램마다 미묘하게 다르게 나타날 수 있다.</p>
+<h3>stripped 바이너리에서 진입점→main을 찾는 실전 패턴</h3>
+<p>디버그 정보가 없어서 함수 이름이 자동으로 안 붙는 경우, 다음 패턴을 기억해두면 빠르게 찾을 수 있다.</p>
+<ol><li><code>AddressOfEntryPoint</code>로 이동하면 처음 보이는 함수가 CRT startup이다. 이 함수는 대개 상당히 길고, <code>GetStartupInfo</code>, <code>HeapCreate</code> 계열 API를 호출하는 게 특징이다.</li><li>이 함수 끝부분(또는 중간의 특정 분기) 근처에서, <strong>인자를 거의 받지 않거나 표준 시그니처(<code>argc, argv, envp</code> 또는 <code>HINSTANCE, HINSTANCE, LPSTR, int</code>)에 맞는 개수의 인자로 호출되는 CALL</strong>을 찾는다. 이게 바로 사용자 <code>main</code>/<code>WinMain</code>으로 가는 호출이다.</li><li>Subsystem이 GUI(2)인데 그 함수 안에서 곧바로 <code>CreateWindow</code>, <code>RegisterClass</code>, 메시지 루프(<code>GetMessage</code>/<code>DispatchMessage</code>)가 나온다면 <code>WinMain</code>을 제대로 찾은 것이다. 콘솔 프로그램이라면 표준입출력 관련 호출(<code>printf</code>, <code>scanf</code> 등)이나 실제 문제 로직이 여기서부터 시작된다.</li><li>IDA는 이 CRT startup 패턴을 FLIRT 시그니처로 자동 인식해서 <code>main</code>/<code>WinMain</code>에 자동으로 이름을 붙여주는 경우가 많다 — 이름이 이미 보인다면 이 수동 추적 과정을 생략해도 된다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA가 파일을 열자마자 자동으로 이동시키는 <code>start</code> 함수 안에 <code>GetStartupInfoW</code>, <code>HeapSetInformation</code>, <code>__security_init_cookie</code> 같은 낯선 함수 호출들이 보임</li><li>x64dbg에서 프로그램을 실행(F9) 없이 처음 멈춘 위치가 <code>mainCRTStartup</code> 또는 <code>WinMainCRTStartup</code> 근처 코드</li><li>IDA Functions 창에 <code>main</code>이라는 이름이 아예 없고, <code>entry</code>, <code>start</code>, <code>sub_140001000</code> 같은 이름만 보임(stripped 바이너리)</li><li><code>WinMain</code>을 찾았다면 그 함수 안에서 <code>RegisterClassEx</code>, <code>CreateWindowEx</code>, <code>ShowWindow</code>, <code>GetMessage</code> 순서의 전형적인 Win32 GUI 초기화 패턴이 보임</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>IDA에서 파일을 열면 자동으로 이동하는 위치가 곧 <code>AddressOfEntryPoint</code>다. 이 함수를 CRT startup으로 인식하고, 이름이 이미 <code>main</code>/<code>WinMain</code>으로 자동 붙어 있는지 Functions 창(<code>Ctrl+F</code> 또는 좌측 함수 목록 검색)에서 먼저 확인한다. 이름이 붙어 있다면 바로 더블클릭해서 이동하면 되고, 안 붙어 있다면 진입점 함수 내부를 훑으며 "인자 개수가 4개(WinMain) 또는 3개(main) 정도이고, 그 이후로 실제 프로그램 로직처럼 보이는 코드로 이어지는 CALL"을 찾는다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) Subsystem 먼저 확인 (REV-0116 참고)</strong> <code>OptionalHeader.Subsystem</code>이 <code>2</code>(GUI)인지 <code>3</code>(CUI/콘솔)인지에 따라 <code>WinMain</code>을 찾을지 <code>main</code>을 찾을지 미리 방향을 정한다.</p>
+<p><strong>2) IDA로 AddressOfEntryPoint 코드 확인</strong> 파일을 열면 자동으로 이 위치로 이동한다. 함수 이름이 <code>mainCRTStartup</code>/<code>WinMainCRTStartup</code>처럼 자동 인식되어 있는지 확인한다.</p>
+<p><strong>3) CRT startup 내부에서 사용자 진입 함수로의 CALL 찾기</strong> 함수 본문을 따라 내려가며, 표준 시그니처에 맞는 인자 개수로 호출되는 지점을 찾는다. 최신 MSVC 빌드에서는 <code>__scrt_common_main_seh</code> 같은 중간 함수를 한 단계 더 거칠 수 있다.</p>
+<p><strong>4) x64dbg로 실제 실행하며 확인(동적 검증)</strong></p>
+<pre><code class="language-text">x64dbg로 실행 → 진입점에서 자동 정지
+F8(Step Over)로 CRT 초기화 코드를 건너뛰며 진행
+main/WinMain으로 보이는 CALL에서 F7(Step Into)로 들어가서 확인</code></pre>
+<p><strong>5) WinMain을 찾았다면 인자 확인</strong></p>
+<pre><code class="language-text">64비트: RCX=hInstance, RDX=hPrevInstance(항상 0), R8=lpCmdLine, R9=nCmdShow</code></pre>
+<p>(레지스터 인자 전달 규칙 자체는 REV-0122에서 자세히 다룬다.)</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">IDA: 파일 열면 자동으로 entry point로 이동. Functions 창(단축키: Functions list)에서 "main" 검색
+IDA: Edit → Function → Rename(단축키 N)으로 수동으로 이름 붙이기
+x64dbg: F9(Run to entry, 기본 설정에 따라 다름), F8(Step Over), F7(Step Into)</code></pre>
+<h2>출력 해석</h2>
+<ul><li>CRT startup 함수 안에서 <code>HeapCreate</code>, <code>GetStartupInfo</code>, <code>SetUnhandledExceptionFilter</code> 같은 호출이 여러 번 보이면 아직 CRT 초기화 단계이고, 사용자 코드는 더 아래쪽에 있다.</li><li>함수 인자가 정확히 4개이고 그중 두 번째 인자가 상수 <code>0</code>으로 고정되어 있으면(<code>hPrevInstance</code>는 항상 <code>NULL</code>) <code>WinMain</code> 호출일 가능성이 매우 높다.</li><li>그 함수 진입 직후 <code>RegisterClassEx</code>/<code>CreateWindowEx</code>가 보이면 GUI 애플리케이션의 진짜 <code>WinMain</code>을 찾은 것이 확실하다.</li><li>콘솔 프로그램에서 <code>main</code>으로 추정되는 함수에 들어갔는데 파일 입출력이나 특정 알고리즘 로직이 바로 보이면 CTF/wargame 문제에서 찾던 "진짜 로직"에 도달한 것이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>AddressOfEntryPoint</code>가 가리키는 함수를 <code>main</code>이라고 착각하고 그 안의 CRT 초기화 코드를 애써 분석하는 것 — 이 코드는 거의 항상 컴파일러가 자동 생성한 정형화된 코드이므로, CTF 문제의 답은 대개 여기 없다.</li><li>GUI 프로그램인데 <code>main</code>을 찾으려고 헤매는 것 — <code>Subsystem == 2</code>(GUI)라면 사용자 진입점은 <code>WinMain</code>이지 <code>main</code>이 아니다(단, 최신 MSVC는 <code>Subsystem</code>과 무관하게 소스에서 <code>main</code>을 쓰는 것도 허용하므로 100% 규칙은 아니지만, 링커가 생성하는 CRT startup 이름 자체는 Subsystem 값을 따른다).</li><li><code>hPrevInstance</code>가 항상 <code>NULL</code>이라는 걸 모르고 이 값을 실제로 의미 있는 값으로 취급해 분석 시간을 쓰는 것.</li><li>Windows의 <code>argv</code> 파싱이 Linux의 커널 제공 방식과 동일하다고 착각하는 것 — Windows는 CRT가 <code>GetCommandLineA/W</code>로 가져온 전체 문자열을 자체 규칙(따옴표, 이스케이프)으로 직접 파싱해서 <code>argv</code>를 만든다.</li><li>오프라인 환경에서 Microsoft 심볼 서버에 연결되지 않아 <code>mainCRTStartup</code> 등의 이름이 자동으로 안 붙는데, 이걸 "분석이 잘못됐다"고 오해하는 것 — 이럴 때는 이름이 안 보여도 이 글의 패턴 인식 방법으로 수동으로 찾으면 된다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>AddressOfEntryPoint</code>, <code>Subsystem</code> 필드 자체가 정의된 위치가 헷갈리면 → <a href="rev-0116-pe-coff-optional-header.html">REV-0116 PE Header COFF Optional Header 읽기</a></li><li><code>main</code>/<code>WinMain</code>으로 들어가는 CALL의 인자가 레지스터 어디에 있는지 정확히 알고 싶으면 → <a href="rev-0122-ms-x64-calling-convention.html">REV-0122 Microsoft x64 Calling Convention</a></li><li>함수를 아예 못 찾겠고 이름이 하나도 없는 극단적인 stripped 상황이면 → <a href="rev-0009-finding-main.html">main 함수가 안 보일 때 찾는 방법</a></li><li>Import Table을 먼저 훑어서 이 프로그램이 GUI인지 콘솔인지 함수 목록으로 짐작하고 싶으면 → <a href="rev-0119-import-table.html">REV-0119 Import Table에서 중요한 API 찾기</a></li><li>Linux ELF의 대응 개념(<code>_start</code>, <code>__libc_start_main</code>)과 비교하고 싶으면 → <a href="rev-0089-elf-header.html">ELF 헤더 읽는 법</a></li></ul>
+<h2>미니 예제</h2>
+<p>콘솔 프로그램 하나를 IDA로 열었더니 진입점 함수가 자동으로 <code>mainCRTStartup</code>이라는 이름으로 인식됐다고 하자.</p>
+<pre><code class="language-asm">mainCRTStartup:
+    sub  rsp, 0x28
+    call __security_init_cookie
+    call GetStartupInfoW    ; 콘솔 표준 핸들 정보 등 준비
+    ...
+    lea  rcx, [환경변수 포인터]      ; envp
+    lea  rdx, [argv 배열 포인터]     ; argv
+    mov  ecx, [argc 값]              ; 실제로는 순서가 최적화에 따라 달라질 수 있음
+    call main                        ; ★ 여기서 사용자 main으로 진입
+    mov  ecx, eax                    ; main의 반환값을 받아
+    call exit                        ; ExitProcess 경로로 프로세스 종료</code></pre>
+<p><code>call main</code> 지점에서 <code>F7</code>(Step Into)로 들어가면 비로소 우리가 소스코드에서 작성한(또는 CTF 문제가 숨겨둔) 실제 로직이 시작된다. 여기까지 오는 동안의 <code>__security_init_cookie</code>, <code>GetStartupInfoW</code> 같은 호출들은 전부 CRT가 자동으로 붙인 정형화된 초기화 코드이므로 분석 우선순위에서 낮게 둬도 된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0116-pe-coff-optional-header.html">REV-0116 — PE Header COFF Optional Header 읽기</a></li><li><a href="rev-0119-import-table.html">REV-0119 — Import Table에서 중요한 API 찾기</a></li><li><a href="rev-0122-ms-x64-calling-convention.html">REV-0122 — Microsoft x64 Calling Convention</a></li><li><a href="rev-0114-pe-overview.html">REV-0114 — PE 파일 구조 한 번에 보기</a></li><li><a href="rev-0009-finding-main.html">REV-0009 — main 함수가 안 보일 때 찾는 방법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>AddressOfEntryPoint</code>와 <code>Subsystem</code>에 따른 CRT startup 함수 선택(<code>mainCRTStartup</code>/<code>WinMainCRTStartup</code>): Microsoft Learn "PE Format" 문서 및 Microsoft C Runtime(CRT) 소스/문서 기준 (2026-09-08 검증).</li><li><code>WinMain</code> 함수 시그니처 및 매개변수 의미: Microsoft Learn Win32 API <code>WinMain</code> 함수 공식 문서 기준.</li><li>Windows 커맨드라인 인자 파싱이 CRT 자체 로직으로 이뤄진다는 설명: Microsoft Learn "Parsing C Command-Line Arguments" 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

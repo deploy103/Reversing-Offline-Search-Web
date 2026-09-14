@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinAPI 모듈 함수 사전: LoadLibraryEx FreeLibrary GetModuleHandle · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>WinAPI 모듈 함수 사전: LoadLibraryEx FreeLibrary GetModuleHandle</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>LoadLibraryExW</code>는 실행 중에 DLL을 프로세스 주소 공간에 새로 로드하고, <code>GetModuleHandleW</code>는 이미 로드된 모듈의 베이스 주소를 이름으로 조회하며, <code>FreeLibrary</code>는 로드된 DLL의 참조 카운트를 줄여 필요 없으면 언로드하는 함수로, 이 세 함수는 임포트 테이블에 없는 DLL/함수를 런타임에 동적으로 가져오는 "수동 임포트" 패턴을 분석할 때 반드시 확인해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>임포트 테이블에는 몇 개 함수만 보이는데 실제로는 훨씬 많은 기능이 있어서, 런타임에 DLL을 동적으로 로드하는 것으로 의심될 때</li><li>패킹/난독화된 바이너리가 <code>kernel32.dll</code>, <code>advapi32.dll</code> 등을 문자열로 만들어 <code>LoadLibraryExW</code>로 로드하는 패턴을 찾을 때</li><li>특정 DLL이 이미 프로세스에 로드되어 있는지(가상 머신 탐지, 특정 보안 툴 탐지 등) <code>GetModuleHandleW</code>로 검사하는 코드를 분석할 때</li><li>플러그인/애드온 구조처럼 실행 중 필요한 시점에만 모듈을 붙였다 떼는 로직을 볼 때</li></ul>
+<h2>핵심 개념</h2>
+<pre><code class="language-c">HMODULE LoadLibraryExW(
+    LPCWSTR lpLibFileName, // 1. 로드할 DLL 경로 또는 이름
+    HANDLE  hFile,         // 2. 예약, 항상 NULL
+    DWORD   dwFlags        // 3. LOAD_LIBRARY_AS_DATAFILE 등 로드 방식 플래그
+);
+
+HMODULE GetModuleHandleW(LPCWSTR lpModuleName); // NULL이면 현재 실행 파일(EXE) 자신의 핸들 반환
+
+BOOL FreeLibrary(HMODULE hLibModule);</code></pre>
+<p><code>LoadLibraryExW</code>(기본형 <code>LoadLibraryW</code>도 동일 계열)는 DLL을 디스크에서 찾아 프로세스 주소 공간에 매핑하고, 아직 로드되지 않았다면 그 DLL의 <code>DllMain</code>을 <code>DLL_PROCESS_ATTACH</code>로 호출한 뒤 모듈 베이스 주소(<code>HMODULE</code>)를 반환한다. 이미 로드되어 있다면 다시 매핑하지 않고 참조 카운트만 증가시켜 같은 핸들을 반환한다. <code>dwFlags</code>에 <code>LOAD_LIBRARY_AS_DATAFILE</code>(0x2)을 주면 코드를 실행하지 않고 리소스만 읽을 목적으로 매핑할 수 있다(안전하게 문자열/아이콘만 추출할 때 사용).</p>
+<p><code>GetModuleHandleW</code>는 새로 로드하지 않고 "이미 로드되어 있는가"만 확인한다. 인자로 <code>NULL</code>을 넘기면 현재 프로세스의 EXE 자신의 베이스 주소를 반환하는데, 이는 셸코드나 자가 수정 코드에서 자기 자신의 이미지 베이스를 얻는 전형적인 방법이다.</p>
+<p><code>FreeLibrary</code>는 <code>LoadLibraryExW</code>로 늘어난 참조 카운트를 하나 줄이며, 카운트가 0이 되면 실제로 언로드되고 <code>DllMain</code>이 <code>DLL_PROCESS_DETACH</code>로 호출된다. <code>GetModuleHandleW</code>로 얻은 핸들은 참조 카운트를 늘리지 않았으므로 <code>FreeLibrary</code>로 짝을 맞추면 안 된다.</p>
+<p><code>LoadLibraryExW</code>로 로드한 뒤 그 안의 함수 포인터를 얻으려면 REV-0129에서 다룬 <code>GetProcAddress</code>가 바로 이어서 등장하는 것이 정석 패턴이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>문자열 참조 목록에서 <code>"kernel32.dll"</code>, <code>"user32.dll"</code>, <code>"advapi32.dll"</code> 같은 DLL 이름 문자열이 있고, 바로 아래에서 <code>LoadLibraryExW</code> 또는 <code>LoadLibraryW</code>로 이어지는 코드</li><li><code>LoadLibraryExW</code> 반환값(<code>EAX</code>/<code>RAX</code>)이 곧이어 <code>GetProcAddress</code>의 첫 번째 인자로 들어가는 패턴(수동 API 해석)</li><li><code>GetModuleHandleW(NULL)</code> 호출 뒤 반환값을 이용해 자기 자신의 PE 헤더(DOS 헤더, <code>MZ</code> 시그니처)를 파싱하는 코드</li><li>함수 종료 직전 <code>FreeLibrary</code> 호출이 <code>LoadLibraryExW</code>와 짝을 이루는 패턴</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>LoadLibraryExW</code>의 첫 번째 인자(DLL 이름/경로 문자열)부터 확인해 어떤 모듈을 로드하는지 파악한다.</li><li>반환값이 바로 이어서 <code>GetProcAddress</code>에 쓰이는지 확인해서, 수동으로 어떤 API를 가져오는지 추적한다(REV-0129와 연계).</li><li><code>GetModuleHandleW(NULL)</code>이면 자기 자신의 베이스를 얻는 것이므로, 이후 PE 헤더 파싱이나 셸코드/인젝션 관련 코드가 이어질 가능성을 염두에 둔다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 정적 분석(IDA)</strong></p>
+<ul><li>임포트 목록에서 <code>LoadLibraryExW</code>/<code>GetModuleHandleW</code>를 찾아 <code>X</code>로 교차 참조한다.</li><li>첫 번째 인자로 들어가는 문자열이 직접 리터럴이 아니라 런타임에 조합(XOR 디코딩 등)되는 경우, 문자열이 만들어지는 지점까지 거슬러 올라가야 한다(패킹/난독화 바이너리에서 흔함).</li></ul>
+<p><strong>2) 동적 분석(x64dbg)</strong></p>
+<ul><li><code>bp LoadLibraryExW</code>로 브레이크포인트를 걸고 실행한다.</li><li>x64에서 <code>RCX</code>=lpLibFileName. Follow in Dump, UTF-16으로 전환해 로드하려는 DLL 이름을 확인한다.</li><li>함수 리턴 후(F8) <code>RAX</code>가 로드된 모듈의 베이스 주소다. Memory Map 창(<code>Alt+M</code>)에서 이 주소가 새로운 모듈로 나타나는지 확인한다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp LoadLibraryExW</code>, <code>bp LoadLibraryW</code>, <code>bp GetModuleHandleW</code>, <code>bp FreeLibrary</code>, <code>bp GetProcAddress</code></li><li>x64dbg: <code>Alt+M</code>(Memory Map, 로드된 모듈 목록 확인)</li><li>IDA: <code>X</code>(교차 참조), <code>F5</code>(디컴파일)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>LoadLibraryExW</code> 반환값이 <code>NULL</code>이면 로드 실패(파일 없음, 권한 부족, 잘못된 형식 등). <code>GetLastError()</code>로 원인 확인 가능.</li><li><code>GetModuleHandleW</code>가 <code>NULL</code>을 반환하면 해당 이름의 모듈이 현재 로드되어 있지 않다는 뜻 — 이 값을 조건으로 특정 보안 툴/후킹 DLL의 존재 여부를 검사하는 안티분석 코드가 흔하다.</li><li><code>FreeLibrary</code> 반환값이 0이면 실패(잘못된 핸들 등), 0이 아니면 성공(단, 실제 언로드는 참조 카운트가 0이 될 때만 일어남).</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>GetModuleHandleW</code>로 얻은 핸들을 <code>FreeLibrary</code>로 해제하는 것 — 참조 카운트를 증가시키지 않았으므로 짝이 맞지 않아 다른 코드가 기대하는 모듈이 예기치 않게 언로드될 수 있다.</li><li><code>LoadLibraryExW</code>의 <code>dwFlags</code>를 무시하고 항상 코드가 실행된다고 가정하는 것 — <code>LOAD_LIBRARY_AS_DATAFILE</code> 플래그가 있으면 <code>DllMain</code>이 실행되지 않는다.</li><li>DLL 이름 문자열이 하드코딩되어 있다고만 생각하고, 런타임에 문자열이 디코딩/조합되는 안티분석 패턴을 놓치는 것.</li><li>x86/x64에서 서로 다른 이름의 DLL(<code>SysWOW64</code> vs <code>System32</code>)이 로드될 수 있다는 점을 간과하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>로드된 모듈에서 함수 주소를 얻는 방법이 궁금하면 → REV-0129(GetProcAddress LoadLibrary 동적 API 해석)를 본다.</li><li>로드된 모듈 목록을 프로세스 관점에서 열거하는 방법이 궁금하면 → REV-0521(EnumProcessModules GetModuleFileName)을 본다.</li><li>문자열 자체가 암호화/난독화되어 안 보인다면 → REV-0128(Windows 문자열 ASCII와 UTF-16 찾기)을 함께 본다.</li></ul>
+<h2>미니 예제</h2>
+<p>x64dbg에서 <code>bp LoadLibraryExW</code> 후 실행하니 다음처럼 멈췄다.</p>
+<pre><code class="language-text">RCX = 0x00000221A3B02000   (lpLibFileName)
+RDX = 0x0000000000000000   (hFile = NULL)
+R8  = 0x0000000000000000   (dwFlags = 0)</code></pre>
+<p><code>RCX</code>를 Follow in Dump, UTF-16으로 보면 <code>L"advapi32.dll"</code>이 보인다. 함수 리턴 후 <code>RAX = 0x00007FFA12340000</code> 같은 값이 나오면, 이것이 <code>advapi32.dll</code>이 매핑된 베이스 주소다. 바로 다음 줄에서 <code>GetProcAddress(0x00007FFA12340000, "CryptAcquireContextW")</code>처럼 호출된다면, 이 프로그램이 암호화 관련 API를 임포트 테이블 없이 수동으로 가져와 사용한다는 뜻이다.</p>
+<p>참고로 <code>LoadLibraryExW</code>의 <code>lpLibFileName</code>에 전체 경로가 아니라 파일명만 주어지면(예: <code>L"advapi32.dll"</code>), Windows는 정해진 검색 순서(애플리케이션 디렉터리 → 시스템 디렉터리 → 현재 디렉터리 → PATH 환경 변수 등)를 따라 DLL을 찾는다. 이 검색 순서를 악용해 정상 시스템 DLL과 같은 이름의 악성 DLL을 프로그램 실행 파일과 같은 폴더에 놓아 먼저 로드되게 만드는 기법을 "DLL 사이드로딩(DLL side-loading)" 또는 "DLL 하이재킹"이라 부르며, 멀웨어 분석과 CTF의 지속성(persistence) 문제에서 종종 등장하는 주제다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0129-getprocaddress-loadlibrary.html">REV-0129 — GetProcAddress LoadLibrary 동적 API 해석</a></li><li><a href="rev-0521-enumprocessmodules-getmodulefilename.html">REV-0521 — WinAPI 모듈 함수 사전: EnumProcessModules GetModuleFileName</a></li><li><a href="rev-0128-windows-string-encoding.html">REV-0128 — Windows 문자열 ASCII와 UTF-16 찾기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>LoadLibraryExW</code>/<code>GetModuleHandleW</code>/<code>FreeLibrary</code>의 함수 시그니처, 참조 카운트 동작, <code>LOAD_LIBRARY_AS_DATAFILE</code> 플래그는 Microsoft Win32 API(동적 연결 라이브러리) 공식 문서 기준이다.</li><li>위 미니 예제의 주소와 DLL 이름은 설명을 위해 구성한 예시이며 실제 특정 문제의 데이터가 아니다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

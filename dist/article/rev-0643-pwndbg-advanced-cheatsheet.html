@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pwndbg 명령어 심화 치트시트(heap/got/plt) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>Pwndbg 명령어 심화 치트시트(heap/got/plt)</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">Pwndbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>Pwndbg는 순정 GDB 위에 힙/GOT/보호기법 상태를 사람이 읽기 좋은 색상과 표로 즉시 보여주는 확장 명령들(<code>heap</code>, <code>bins</code>, <code>got</code>, <code>vis_heap_chunks</code>, <code>telescope</code>, <code>checksec</code> 등)을 추가한 GDB 플러그인으로, CTF 힙/pwn 문제뿐 아니라 순수 리버싱에서도 메모리 상태를 빠르게 파악하는 데 필수적이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>malloc</code>/<code>free</code>로 만들어진 힙 청크들의 실제 구조(크기, <code>fd</code>/<code>bk</code> 포인터)를 순정 GDB의 <code>x</code> 명령으로 일일이 계산하기 귀찮을 때</li><li>GOT 엔트리들이 현재 실제 함수 주소로 해석됐는지(resolved) 아직 안 됐는지(lazy) 한눈에 보고 싶을 때</li><li>스택/힙의 특정 주소부터 연속된 메모리를 포인터 체인처럼 따라가며 보고 싶을 때</li><li>PIE 베이스, 카나리 값, RELRO/NX/PIE 상태를 매번 <code>readelf</code>로 따로 찾지 않고 GDB 세션 안에서 바로 보고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>설치와 기본 정보</h3>
+<p>Pwndbg는 GDB의 <code>.gdbinit</code>에 로드되는 파이썬 확장으로, 설치 후 GDB를 실행하면 프롬프트가 <code>pwndbg&gt;</code>로 바뀌고 브레이크포인트가 걸릴 때마다 레지스터/디스어셈블리/스택을 한 화면(<code>context</code>)에 자동으로 보여준다.</p>
+<h3>힙 상태 조회 명령</h3>
+<pre><code class="language-gdb">heap                 # 현재 arena의 모든 청크를 순서대로 요약 나열
+bins                 # fastbin/unsortedbin/smallbin/largbin/tcache 전부 요약
+fastbins             # fastbin만
+tcachebins           # tcache만 (glibc 2.26+)
+unsortedbin
+smallbins
+largebins
+arena                # 현재(main) arena 구조체 상세
+arenas               # 멀티스레드 환경의 모든 arena 목록
+top_chunk            # 현재 top chunk(힙의 미할당 끝부분) 주소/크기
+malloc_chunk &lt;addr&gt;  # 특정 주소를 malloc_chunk 구조체로 해석해서 필드별로 출력
+mp                    # malloc_par(전역 malloc 파라미터) 구조체 출력</code></pre>
+<p><code>bins</code> 계열 명령은 각 빈(bin)에 현재 몇 개의 청크가 체인으로 연결되어 있는지, 그 청크들의 주소와 크기를 fd 포인터를 따라가며 보여준다 — 이걸 손으로 하려면 <code>x/gx</code>를 수십 번 쳐야 한다.</p>
+<h3>힙 시각화</h3>
+<pre><code class="language-gdb">vis_heap_chunks    # 별칭: vis</code></pre>
+<p>힙 전체를 청크 단위로 줄바꿈해서 시각적으로(각 청크의 <code>size</code>/<code>prev_size</code>/<code>fd</code>/<code>bk</code> 필드에 색을 입혀) 보여준다. 어떤 청크가 <code>free</code> 상태인지, 어떤 청크가 <code>top chunk</code>인지 등을 색으로 구분해준다.</p>
+<h3>GOT / 보호기법 확인</h3>
+<pre><code class="language-gdb">got                # 모든 GOT 엔트리와 resolved 여부를 나열
+checksec           # 현재 로드된 바이너리의 Canary/NX/PIE/RELRO/RUNPATH 상태 요약
+piebase            # PIE 베이스 주소(로드된 실제 시작 주소) 출력
+canary             # 스택 카나리 현재 값 출력</code></pre>
+<p><code>got</code> 명령은 각 함수의 GOT 슬롯 값이 아직 PLT resolver를 가리키면 노란색/lazy로, 실제 libc 주소로 이미 채워졌으면 초록색/resolved로 구분해 보여준다(REV-0100 참고).</p>
+<h3>메모리 탐색</h3>
+<pre><code class="language-gdb">telescope &lt;addr&gt; [count]   # addr부터 count개의 워드를 연속으로 보여주며, 각 값이 포인터면 그 대상까지 재귀적으로 따라가 보여줌
+stack &lt;n&gt;                  # 현재 스택 상위 n개 워드
+search -t string "찾을문자열"
+search -p "0xdeadbeef"     # 패턴 검색
+xinfo &lt;addr&gt;                # 그 주소가 어느 세그먼트/구조체에 속하는지 상세 정보</code></pre>
+<p><code>telescope</code>는 순정 GDB의 <code>x/10gx $rsp</code>보다 훨씬 읽기 좋다 — 각 워드가 스택 주소인지, 힙 주소인지, 코드 주소인지, 문자열인지 자동으로 라벨을 붙여준다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>Pwndbg가 로드된 GDB 세션에서 브레이크포인트가 걸릴 때마다 자동으로 <code>LEGEND: STACK | HEAP | CODE | DATA | ...</code> 색상 범례와 함께 레지스터/디스어셈블리/스택 컨텍스트가 출력된다. 명령을 안 쳐도 이 컨텍스트 화면만으로도 순정 GDB보다 훨씬 많은 정보가 보인다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>힙 문제를 처음 마주치면 <code>heap</code> → <code>bins</code> 순서로 쳐서 전체 그림을 먼저 파악하고, GOT/PLT가 관련된 문제라면 <code>got</code>부터, 보호기법 확인이 필요하면 <code>checksec</code>부터 친다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 바이너리 보호기법 먼저 확인</strong></p>
+<pre><code class="language-gdb">pwndbg&gt; checksec</code></pre>
+<p><strong>2) 힙 전체 구조 훑기</strong></p>
+<pre><code class="language-gdb">pwndbg&gt; heap
+pwndbg&gt; bins</code></pre>
+<p><strong>3) 의심되는 청크 상세 확인</strong></p>
+<pre><code class="language-gdb">pwndbg&gt; malloc_chunk 0x5555555592a0</code></pre>
+<p><strong>4) 힙을 그림으로 보기</strong></p>
+<pre><code class="language-gdb">pwndbg&gt; vis</code></pre>
+<p><strong>5) GOT 상태 확인 (동적 링킹 함수 후킹/변조 여부 확인 시)</strong></p>
+<pre><code class="language-gdb">pwndbg&gt; got</code></pre>
+<p><strong>6) 임의 주소 이후 메모리를 포인터 체인으로 훑기</strong></p>
+<pre><code class="language-gdb">pwndbg&gt; telescope $rsp 20</code></pre>
+<h2>명령어/단축키</h2>
+<pre><code class="language-gdb">heap / bins / fastbins / tcachebins / unsortedbin / smallbins / largebins
+arena / arenas / top_chunk / malloc_chunk &lt;addr&gt; / mp
+vis (=vis_heap_chunks)
+got / checksec / piebase / canary
+telescope &lt;addr&gt; [n] / stack &lt;n&gt; / search -t string "..." / xinfo &lt;addr&gt;
+context   # 현재 컨텍스트 화면 강제로 다시 출력</code></pre>
+<h2>출력 해석</h2>
+<p><code>bins</code> 출력 예(축약):</p>
+<pre><code>tcachebins
+0x20 [  1]: 0x5555555592a0 ◂— 0x0
+fastbins
+0x20: 0x0
+unsortedbin
+empty</code></pre>
+<p><code>tcachebins</code>의 <code>0x20 [ 1]</code>은 크기 <code>0x20</code>짜리 tcache 빈에 청크 1개가 연결되어 있고, 그 청크 주소가 <code>0x5555555592a0</code>이며 다음 <code>fd</code>가 <code>0x0</code>(리스트 끝)이라는 뜻이다. <code>fastbins</code>가 전부 <code>0x0</code>이면 현재 fastbin은 비어있는 상태다.</p>
+<p><code>got</code> 출력 예(축약):</p>
+<pre><code>State   Symbol          GOT Address       Value
+Lazy    puts@plt         0x404018          0x401030 (puts@plt+6)
+Resolved  printf@plt      0x404020          0x7ffff7c5a760 (printf)</code></pre>
+<p><code>Lazy</code>는 아직 실제 <code>printf</code>/<code>puts</code> 주소로 안 채워진 상태, <code>Resolved</code>는 이미 실제 libc 주소로 채워진 상태다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>bins</code>/<code>heap</code> 명령이 힙이 아직 한 번도 안 쓰인(=<code>malloc</code> 호출 전) 시점에는 의미 있는 정보를 못 준다는 것을 모르고 프로그램 시작 직후에 바로 쳐서 "아무것도 없다"고 당황하는 것 — 최소한 한 번 <code>malloc</code>이 호출된 뒤에 확인해야 한다.</li><li>glibc 버전에 따라 <code>tcachebins</code> 자체가 없을 수 있다는 것(2.26 미만)을 모르고 결과가 안 나온다고 도구가 고장났다고 오해하는 것 — REV-0644 참고.</li><li><code>telescope</code> 결과에 나온 주소를 곧이곧대로 "항상 이 값"이라고 기억하는 것 — ASLR이 켜져 있으면 실행할 때마다 스택/힙/라이브러리 베이스가 달라진다.</li><li><code>got</code> 명령이 정적 링킹 바이너리에서는 보여줄 GOT 엔트리 자체가 거의 없다는 점을 놓치는 것(REV-0100 정적 링킹 관련 설명 참고).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>힙 청크 구조체 필드 자체(<code>prev_size</code>, <code>size</code>, <code>fd</code>, <code>bk</code>)의 의미가 궁금하면 → REV-0644 glibc 버전별 malloc 구조 요약표.</li><li>GOT/PLT의 기본 개념이 궁금하면 → REV-0100 PLT와 GOT 기초.</li><li>순정 GDB의 <code>watch</code>/<code>catch</code> 등 기본기가 필요하면 → REV-0642 GDB 명령어 심화 치트시트.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-gdb">pwndbg&gt; heap
+Allocated chunk | PREV_INUSE
+Addr: 0x555555559290
+Size: 0x21
+
+Free chunk (tcachebins[0x20][0/1]) | PREV_INUSE
+Addr: 0x5555555592b0
+Size: 0x21
+fd: 0x0
+pwndbg&gt; bins
+tcachebins
+0x20 [  1]: 0x5555555592b0 ◂— 0x0</code></pre>
+<p><code>heap</code> 결과에서 두 번째 청크가 "Free chunk"이고 tcache의 <code>0x20</code> 크기 빈에 이미 연결되어 있다고 나오며, <code>bins</code> 결과가 이를 다시 확인시켜준다 — <code>free()</code> 이후 해당 청크가 tcache로 들어갔음을 두 명령으로 교차 확인한 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0644-glibc-malloc-struct-by-version.html">REV-0644 — glibc 버전별 malloc 구조 요약표</a></li><li><a href="rev-0100-plt-got.html">REV-0100 — PLT와 GOT 기초</a></li><li><a href="rev-0642-gdb-advanced-cheatsheet.html">REV-0642 — GDB 명령어 심화 치트시트(watch/catch/tbreak)</a></li><li><a href="rev-0096-checksec.html">REV-0096 — checksec 결과 읽는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>heap</code>/<code>bins</code>/<code>fastbins</code>/<code>tcachebins</code>/<code>vis_heap_chunks</code>/<code>got</code>/<code>telescope</code>/<code>checksec</code>/<code>piebase</code>/<code>canary</code> 명령 존재 및 기능: Pwndbg 공식 GitHub 저장소 문서 및 명령어 목록(<code>pwndbg/commands/</code>) 기준 (2026-09-08 검증).</li><li>tcache 관련 빈 구조는 glibc 2.26 이상에서만 존재: glibc 2.26 릴리스 NEWS 및 malloc 구현 변경 사항 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

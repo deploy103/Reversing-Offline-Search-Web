@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>정적 분석 결과를 Python 의사코드로 옮기기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>정적 분석 결과를 Python 의사코드로 옮기기</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Ghidra</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>정적 분석으로 검증 로직을 완전히 읽어냈다면, 그 pseudo C 로직을 <strong>한 줄씩 그대로 Python으로 옮겨 실제로 실행 가능한 풀이 스크립트</strong>를 만드는 것이 마지막 단계이며, 이때 C와 Python의 정수 오버플로우/부호 처리 차이를 정확히 흉내 내지 않으면 겉보기엔 비슷한데 결과가 미묘하게 틀린 스크립트가 만들어진다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>REV-0163~0167로 검증 로직 함수를 완전히 찾아 읽었고, 이제 그 로직을 거꾸로 계산해서(또는 브루트포스로) 정답을 구하고 싶을 때</li><li>디컴파일된 C 코드를 Python으로 그대로 옮겼는데 실행 결과가 원본 바이너리와 다르게 나올 때</li><li><code>int</code>, <code>unsigned int</code>, <code>char</code>, <code>byte</code> 같은 C 타입을 Python에서 어떻게 다뤄야 할지 모를 때</li><li>정수 연산에서 오버플로우/언더플로우가 일어나는 로직(해시, 체크섬, 커스텀 암호화)을 정확히 재현해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Ghidra Decompile 창이나 IDA F5 결과로 나온 pseudo C는 사실상 "실행 가능한 알고리즘 설명서"다. 이걸 손으로 계산하기보다는 Python으로 그대로 옮겨서 컴퓨터가 계산하게 하는 것이 CTF 풀이의 표준적인 마무리 단계다. 이 변환에서 가장 많이 틀리는 지점은 <strong>C와 Python의 정수 모델이 근본적으로 다르다</strong>는 것이다.</p>
+<ul><li><strong>고정 폭 정수 vs 임의 정밀도 정수</strong>: C의 <code>int</code>(보통 32비트), <code>unsigned int</code>, <code>long long</code>(64비트) 등은 정해진 비트 폭을 넘으면 값이 <strong>랩어라운드(wraparound)</strong>된다. 예를 들어 32비트 <code>unsigned int</code>에서 <code>0xFFFFFFFF + 1</code>은 <code>0</code>이 된다. 반면 Python의 <code>int</code>는 폭 제한이 없어서 <code>0xFFFFFFFF + 1</code>은 그냥 <code>0x100000000</code>이 되어버린다. 그래서 C의 정수 연산을 Python으로 옮길 때는 <strong>연산 결과를 매번 원하는 비트 폭으로 마스킹</strong>해야 한다.</li></ul>
+<pre><code class="language-python">  MASK32 = 0xFFFFFFFF
+  result = (a + b) &amp; MASK32   # 32비트 unsigned 덧셈 흉내</code></pre>
+<ul><li><strong>부호 있는 정수(signed) 표현</strong>: C의 <code>int</code>는 최상위 비트가 1이면 음수(2의 보수)로 해석된다. Python에서 이를 흉내 내려면 마스킹 후 부호를 직접 보정해야 한다.</li></ul>
+<pre><code class="language-python">  def to_int32(x):
+      x &amp;= 0xFFFFFFFF
+      if x &gt;= 0x80000000:
+          x -= 0x100000000
+      return x</code></pre>
+<ul><li><strong>시프트 연산의 부호 문제</strong>: C에서 <code>&gt;&gt;</code>는 피연산자가 <code>unsigned</code>면 논리 시프트(빈 자리에 0 채움), <code>signed</code>면 산술 시프트(빈 자리에 부호 비트 채움)로 동작이 갈린다. Python의 <code>&gt;&gt;</code>는 정수가 임의 정밀도이므로 항상 산술 시프트처럼 동작하는 셈이라, unsigned 논리 시프트를 흉내 내려면 먼저 마스킹한 값에 <code>&gt;&gt;</code>를 적용해야 의도한 결과가 나온다.</li><li><strong>char 배열 vs Python 문자열/바이트</strong>: C의 <code>char *</code>나 <code>char[]</code>는 바이트 배열이다. Python에서는 <code>str</code>(유니코드 텍스트)이 아니라 <strong><code>bytes</code></strong>로 다루는 것이 훨씬 안전하다. <code>b"ABCD"</code>, <code>bytes([0x41, 0x42])</code>처럼 바이트 단위로 다루면 인코딩 문제 없이 C의 동작과 1:1로 대응된다.</li><li><strong>엔디안과 다중 바이트 정수 변환</strong>: 4바이트를 하나의 32비트 정수로 합치거나 반대로 쪼개야 할 때는 Python의 <code>struct</code> 모듈을 쓴다. 리틀 엔디안 x86/x64라면:</li></ul>
+<pre><code class="language-python">  import struct
+  value = struct.unpack("&lt;I", data[0:4])[0]   # 4바이트 -&gt; 부호 없는 32비트 정수(리틀 엔디안)
+  data4 = struct.pack("&lt;I", value)              # 정수 -&gt; 4바이트(리틀 엔디안)</code></pre>
+<ul><li><strong>곱셈 오버플로우</strong>: 해시 알고리즘(FNV 등)처럼 매 반복마다 곱셈을 하는 경우, Python은 오버플로우가 없으므로 반드시 매 스텝마다 마스킹해야 원본과 같은 결과가 나온다. 마스킹을 마지막에 한 번만 하면 중간 결과가 이미 달라져서 최종값도 달라진다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Python으로 옮긴 스크립트를 실행했더니 원본 바이너리가 "Correct"라고 판정하는 입력값을 넣었는데도 스크립트 계산 결과가 다르게 나온다.</li><li>계산 결과가 C에서는 작은 양수인데 Python에서는 갑자기 매우 큰 수(또는 음수)로 나온다.</li><li>반복문을 여러 번 도는 알고리즘일수록 오차가 누적되어 결과가 완전히 딴판이 된다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>디컴파일된 함수를 처음부터 끝까지 한 줄씩 Python 함수로 그대로 옮기되, 모든 산술 연산 뒤에 습관적으로 <code>&amp; 0xFFFFFFFF</code>(또는 대상 타입에 맞는 마스크)를 붙인다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 함수 시그니처 확정</strong></p>
+<p>REV-0158/0161에서 정리한 함수의 파라미터 개수, 타입, 리턴 타입을 다시 확인한다. Python 함수의 인자/리턴 구조를 이에 맞춰 설계한다.</p>
+<p><strong>2) 상수/데이터 값 확정</strong></p>
+<p>REV-0162(Hex View 검증)에서 확인한 실제 바이트 값(키, 테이블, 목표 해시값 등)을 Python 코드에 리터럴로 옮긴다.</p>
+<p><strong>3) 타입별 비트 폭 마스크 정의</strong></p>
+<p>로직에서 쓰이는 정수 폭에 맞춰 마스크 상수를 미리 정의해 둔다.</p>
+<pre><code class="language-python">MASK8  = 0xFF
+MASK16 = 0xFFFF
+MASK32 = 0xFFFFFFFF
+MASK64 = 0xFFFFFFFFFFFFFFFF</code></pre>
+<p><strong>4) 한 줄씩 그대로 번역</strong></p>
+<p>디컴파일된 C 코드의 각 줄을 최대한 그대로 대응시킨다. <code>for</code>/<code>while</code>/<code>if</code>는 Python 문법으로 직접 옮기고, 산술 연산 결과는 매번 해당 타입의 마스크로 잘라낸다.</p>
+<p><strong>5) 부호 있는 비교/연산이 있으면 보정 함수 적용</strong></p>
+<p>원본 코드에서 <code>int</code>(부호 있는) 비교나 연산이 있다면, 위에서 정의한 <code>to_int32</code> 같은 보정 함수를 그 지점에만 적용한다. 마스킹만 하고 부호 보정을 빼먹으면 음수 비교 로직이 틀어진다.</p>
+<p><strong>6) 중간값 검증</strong></p>
+<p>가능하다면 원본 프로그램을 실제로 한 번 실행해 보고(동적 분석), 알려진 입력에 대한 중간 계산값을 Python 스크립트에 <code>print</code>로 찍어 서로 비교한다. 값이 일치하면 이후 계산도 신뢰할 수 있다.</p>
+<p><strong>7) 목표에 따라 브루트포스 또는 역산</strong></p>
+<ul><li>목표 해시/체크섬이 정해져 있고 원본 알고리즘이 가역적(reversible)이면, 수식을 역으로 풀어 직접 답을 계산한다.</li><li>가역적이지 않거나 입력 공간이 충분히 작으면 브루트포스(전수조사)로 조건을 만족하는 입력을 찾는다.</li><li>조건이 복잡한 제약 문제(여러 방정식이 얽힌 경우)라면 Z3 같은 SMT 솔버에 조건식 자체를 넘겨 풀 수도 있다(오프라인 환경에서는 로컬에 설치된 Z3 필요).</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>이 단계는 도구 단축키보다 Python 코드 작성이 중심이다. 참고할 모듈: <code>struct</code>(바이트 ↔ 정수 변환), <code>hashlib</code>/<code>zlib</code>(표준 해시/CRC 재현, REV-0165에서 알고리즘이 표준으로 확정된 경우), <code>itertools</code>(브루트포스 조합 생성)</li><li>원본과 대조하려면 REV-0162(Hex View)로 확인한 값, REV-0158(Decompile 창)로 재확인한 로직을 다시 참고</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Python 스크립트가 계산한 값과, 원본 바이너리를 실제로 실행했을 때(동적 분석 또는 디버거에서 값 관찰) 나온 값이 정확히 일치하면 포팅이 정확하다는 뜻이다.</li><li>값이 매 반복마다 조금씩 벌어진다면 마스킹 위치가 잘못된 것이다 — 보통 곱셈/시프트 연산 직후에 마스킹을 빠뜨린 경우가 많다.</li><li>최종 결과의 부호만 반대로 나온다면 부호 있는/없는 비교를 혼동한 것이다 — 원본 C 코드에서 그 변수가 <code>int</code>였는지 <code>unsigned int</code>였는지(REV-0161에서 확인한 타입)를 다시 확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Python <code>int</code>가 무한 정밀도라는 사실을 잊고 마스킹 없이 그대로 포팅하는 것 — 가장 흔하고 가장 발견하기 어려운 실수다. 특히 반복문 안의 누적 연산(해시 계산 등)에서는 반드시 매 스텝마다 마스킹해야 한다.</li><li><code>char</code> 배열을 Python <code>str</code>로 다루다가 인코딩 문제(UTF-8 멀티바이트 등)로 바이트 단위 계산이 어긋나는 것 — 바이트를 다루는 로직은 처음부터 끝까지 <code>bytes</code>/<code>bytearray</code>로 일관되게 다뤄야 한다.</li><li>엔디안을 무시하고 4바이트를 그냥 이어붙이는 것 — <code>struct.pack</code>/<code>unpack</code>의 포맷 문자열(<code>&lt;</code>=리틀 엔디안, <code>&gt;</code>=빅 엔디안)을 명확히 지정해야 한다.</li><li>브루트포스 범위를 원본 로직에서 확인한 입력 길이/문자 집합 제약과 다르게 설정해서 답을 못 찾는 것 — REV-0158에서 확인한 버퍼 크기나 조건 분기(예: 입력 길이가 정확히 8자여야 함)를 브루트포스 범위 설정에도 그대로 반영해야 한다.</li><li>검증되지 않은 상태로 스크립트를 완성이라고 믿는 것 — 6단계(중간값 검증)를 생략하면, 스크립트가 그럴듯하게 동작해도 미묘하게 틀린 답을 낼 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>함수 로직 자체를 다시 확인해야 한다면 → REV-0158(Ghidra Decompiler 창 읽기).</li><li>상수/데이터 값을 다시 확인해야 한다면 → REV-0162(Hex View로 디컴파일 결과 검증하기).</li><li>알고리즘이 표준 해시/체크섬으로 확정된 경우라면 → REV-0165(상수 검색으로 알고리즘 찾기)에서 확인한 알고리즘명으로 Python <code>hashlib</code>/<code>zlib</code> 표준 구현을 그대로 쓸 수 있는지 먼저 확인(직접 재구현보다 안전하고 빠르다).</li><li>정적 분석만으로 확신이 안 서서 실제 실행 중 값을 봐야 한다면 → 동적 분석 도구(x64dbg, GDB/Pwndbg)로 전환해 중간값을 직접 관찰하는 것을 고려.</li></ul>
+<h2>미니 예제</h2>
+<p>REV-0165 예제에서 FNV-1a로 확정된 함수를 Python으로 옮겨보자.</p>
+<pre><code class="language-c">undefined4 FUN_00401700(char *param_1, int param_2) {
+  uint hash;
+  int i;
+  hash = 2166136261;
+  for (i = 0; i &lt; param_2; i = i + 1) {
+    hash = hash ^ (byte)param_1[i];
+    hash = hash * 16777619;
+  }
+  return hash;
+}</code></pre>
+<p>Python 포팅:</p>
+<pre><code class="language-python">MASK32 = 0xFFFFFFFF
+
+def fnv1a(data: bytes) -&gt; int:
+    h = 2166136261          # FNV offset basis
+    for b in data:
+        h ^= b
+        h = (h * 16777619) &amp; MASK32   # 매 반복마다 32비트로 마스킹
+    return h
+
+# 검증: 목표 해시값과 비교하며 브루트포스
+target_hash = 0xDEADBEEF   # REV-0162로 확인한 실제 목표값으로 교체
+import itertools, string
+charset = string.ascii_letters + string.digits
+for length in range(1, 9):
+    for guess in itertools.product(charset, repeat=length):
+        candidate = "".join(guess).encode()
+        if fnv1a(candidate) == target_hash:
+            print("FOUND:", candidate)
+            raise SystemExit</code></pre>
+<p>이처럼 마스킹(<code>&amp; MASK32</code>)을 반복문 안에 정확히 넣었기 때문에, Python으로 계산한 해시값이 원본 바이너리가 32비트 <code>unsigned int</code>로 계산한 값과 정확히 일치한다. 이 마스킹을 빠뜨렸다면, 몇 바이트만 지나도 두 값은 완전히 다른 수로 갈라졌을 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0158-ghidra-decompiler-window.html">REV-0158 — Ghidra Decompiler 창 읽기</a></li><li><a href="rev-0162-hex-view-verification.html">REV-0162 — Hex View로 디컴파일 결과 검증하기</a></li><li><a href="rev-0165-constant-search.html">REV-0165 — 상수 검색으로 알고리즘 찾기</a></li><li>../algorithms/rev-0208-fnv-16777619.md — FNV 해시 알고리즘 상세와 표준 구현</li><li>rev-0151-positive-sp-value.md — 애초에 정적 분석 결과를 100% 믿으면 안 되는 이유(검증 습관과 연결)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>C 정수형의 고정 비트 폭과 2의 보수 표현, 부호 있는/없는 시프트 동작 차이는 C 언어 표준(정수 오버플로우/오버플로우 동작에 대한 일반적으로 통용되는 컴파일러 구현 관례)에 근거했다.</li><li>Python <code>int</code>의 임의 정밀도 특성과 <code>struct</code> 모듈의 엔디안 포맷 문자(<code>&lt;</code>, <code>&gt;</code>, <code>I</code> 등): Python 공식 문서(<code>struct</code> 모듈 레퍼런스) 기준.</li><li>FNV-1a 알고리즘 구현 예시의 상수(offset basis <code>2166136261</code>, prime <code>16777619</code>)는 REV-0165/../algorithms/rev-0208-fnv-16777619.md와 동일한 FNV 공개 명세를 따랐다.</li><li>이 문서는 특정 CTF 문제의 실제 풀이가 아니라 일반화된 방법론과 예시 코드로 구성되었으며, 예시의 목표 해시값(<code>0xDEADBEEF</code>)은 설명용 임의값이다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -245,4 +245,4 @@ libc가 전용 래퍼를 제공하지 않는 syscall을 직접 호출하고 싶�
 ## 출처/검증
 - SYSCALL 동작(RCX/R11 저장, MSR 기반 진입, FMASK): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "SYSCALL—Fast System Call" 섹션 기준 (2026-09-08 검증).
 - 리눅스 x86-64 syscall 호출 규약(RAX/RDI/RSI/RDX/R10/R8/R9, 반환값 -errno): Linux 커널 소스 `arch/x86/entry/syscalls/syscall_64.tbl` 및 `man 2 syscall` 관례 기준.
-- `strace` 사용법: 프로젝트 툴킷(AGENTS.md) 기준.
+- `strace` 사용법: strace 공식 매뉴얼과 이 지식베이스의 도구 안내 기준.

@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>radare2 명령어 치트시트 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / tools</div>
+<article class="article-body">
+<h1>radare2 명령어 치트시트</h1>
+<div class="article-meta"><span class="tag">tools</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">radare2</span></div>
+<h2>한 줄 요약</h2>
+<p>radare2 명령어는 접두 문자(<code>a</code>=analysis, <code>p</code>=print, <code>i</code>=info, <code>s</code>=seek 등)로 계열이 나뉘므로, 실전에서 가장 자주 쓰는 조합만 표로 외워두면 매번 문서를 찾아볼 필요가 없어진다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>radare2 세션 중 특정 명령어의 정확한 철자나 옵션이 기억 안 날 때</li><li>새 바이너리를 열 때마다 매번 같은 순서(분석 → 함수 목록 → 디스어셈블 → 문자열)로 반복하는 절차를 표로 빠르게 확인하고 싶을 때</li></ul>
+<p>이 문서는 각 명령의 상세 동작 원리를 다시 설명하지 않는다. 설치와 첫 세션 흐름은 <a href="rev-0291-radare2-install-first-command.html">REV-0291 radare2 설치와 첫 명령</a>을 먼저 참고할 것.</p>
+<h2>핵심 개념</h2>
+<p>radare2 명령은 접두 문자 하나로 계열이 정해진다 — 첫 글자만 봐도 "분석인지 출력인지 검색인지"를 구분할 수 있다.</p>
+<h2>가장 먼저 할 것 / 단계별 절차</h2>
+<p>새 바이너리를 열면 항상 같은 순서: <code>r2 -A ./chall</code>(또는 열고 나서 <code>aaa</code>) → <code>afl</code>로 함수 목록 확인 → <code>pdf @ main</code>으로 main 디스어셈블 → 필요하면 <code>iz</code>로 문자열. 아래 표는 이 순서에 필요한 명령들을 계열별로 정리한 것이다.</p>
+<h2>명령어/단축키</h2>
+<p>아래 계열별 표 전체가 명령어/단축키 목록이다.</p>
+<h2>분석(Analysis, <code>a</code> 계열)</h2>
+<table><thead><tr><th>명령</th><th>의미</th></tr></thead><tbody><tr><td><code>aaa</code></td><td>전체 자동 분석(함수, xref, 타입 추정). 세션 시작 시 가장 먼저 실행</td></tr><tr><td><code>aa</code></td><td>기본 분석만(더 빠르지만 얕음)</td></tr><tr><td><code>aaaa</code></td><td>심화 분석(느림, 큰 바이너리에서는 비추천)</td></tr><tr><td><code>af</code></td><td>커서 위치를 함수로 인식시키기(분석이 놓친 함수를 수동 지정할 때)</td></tr><tr><td><code>afl</code></td><td>찾은 함수 목록 전체 출력</td></tr><tr><td><code>afi</code></td><td>현재 함수의 상세 정보(인자 개수 추정, 크기 등)</td></tr><tr><td><code>axt</code></td><td>현재 주소를 참조하는(xref to) 위치 목록</td></tr><tr><td><code>axf</code></td><td>현재 주소가 참조하는(xref from) 위치 목록</td></tr></tbody></table>
+<h2>출력(Print, <code>p</code> 계열)</h2>
+<table><thead><tr><th>명령</th><th>의미</th></tr></thead><tbody><tr><td><code>pdf</code></td><td>현재 함수 전체 디스어셈블리(Print Disassemble Function)</td></tr><tr><td><code>pd 20</code></td><td>현재 위치부터 20개 명령어 디스어셈블리</td></tr><tr><td><code>px 64</code></td><td>현재 위치부터 64바이트 hex 덤프</td></tr><tr><td><code>pxw</code></td><td>4바이트(word) 단위로 hex 덤프</td></tr><tr><td><code>ps</code></td><td>현재 위치의 문자열 출력</td></tr><tr><td><code>pc</code></td><td>현재 바이트를 C 배열 리터럴 형태로 출력(패치/쉘코드 재사용 시 유용)</td></tr></tbody></table>
+<h2>파일/정보(Info, <code>i</code> 계열)</h2>
+<table><thead><tr><th>명령</th><th>의미</th></tr></thead><tbody><tr><td><code>i</code></td><td>파일 요약 정보(포맷, 아키텍처, 엔트리 등)</td></tr><tr><td><code>ii</code></td><td>임포트 함수 목록 (<code>readelf -d</code>/<code>objdump -T</code>에 대응)</td></tr><tr><td><code>iz</code></td><td><code>.rodata</code> 등 데이터 섹션에서 문자열 추출 (<code>strings</code>에 대응)</td></tr><tr><td><code>izz</code></td><td>파일 전체에서 문자열 추출(섹션 구분 없이, 더 넓게)</td></tr><tr><td><code>is</code></td><td>심볼 테이블 (<code>nm</code>/<code>readelf -s</code>에 대응)</td></tr><tr><td><code>ie</code></td><td>엔트리포인트 주소</td></tr></tbody></table>
+<h2>이동(Seek, <code>s</code> 계열)</h2>
+<table><thead><tr><th>명령</th><th>의미</th></tr></thead><tbody><tr><td><code>s main</code></td><td><code>main</code> 심볼 주소로 이동</td></tr><tr><td><code>s 0x1149</code></td><td>특정 주소로 이동</td></tr><tr><td><code>s+8</code> / <code>s-8</code></td><td>현재 위치에서 상대 이동</td></tr><tr><td><code>s sym.imp.puts</code></td><td>임포트 함수 스텁 주소로 이동</td></tr></tbody></table>
+<h2>플래그/이름표(Flags, <code>f</code> 계열)</h2>
+<table><thead><tr><th>명령</th><th>의미</th></tr></thead><tbody><tr><td><code>f</code></td><td>현재까지 등록된 플래그(이름표) 목록</td></tr><tr><td><code>f myname @ 0x1149</code></td><td>특정 주소에 이름표(IDA의 rename과 유사) 붙이기</td></tr><tr><td><code>fs</code></td><td>플래그 스페이스(카테고리) 목록 전환</td></tr></tbody></table>
+<h2>검색(Search, <code>/</code> 계열)</h2>
+<table><thead><tr><th>명령</th><th>의미</th></tr></thead><tbody><tr><td><code>/ password</code></td><td>문자열 "password" 검색</td></tr><tr><td><code>/x 4142</code></td><td>hex 바이트 패턴 검색</td></tr><tr><td><code>/c</code></td><td>특정 opcode/명령어 패턴 검색</td></tr></tbody></table>
+<h2>Visual mode — 커맨드라인 안의 반쪽 GUI</h2>
+<pre><code>V</code></pre>
+<p>로 진입하면 마우스 없이 방향키만으로 화면을 스크롤할 수 있는 반쪽짜리 GUI 모드로 들어간다. 실전에서 가장 많이 쓰는 것은 그 안에서 다시 <code>V</code>(대문자, 총 두 번)를 눌러 들어가는 <strong>그래프 모드(VV)</strong>다.</p>
+<table><thead><tr><th>키</th><th>의미(Visual/그래프 모드 안에서)</th></tr></thead><tbody><tr><td><code>V</code></td><td>Visual mode 진입</td></tr><tr><td><code>VV</code> (Visual 모드 안에서 <code>V</code> 한 번 더)</td><td>그래프 모드(함수 제어 흐름 그래프, IDA 그래프 뷰와 유사)</td></tr><tr><td><code>p</code></td><td>화면 표시 모드 순환(hex ↔ 디스어셈블리 ↔ 디버그 등)</td></tr><tr><td>방향키 / <code>hjkl</code></td><td>이동</td></tr><tr><td>Space</td><td>그래프 모드에서 큰 블록/작은 블록 토글</td></tr><tr><td><code>q</code></td><td>현재 모드 나가기(여러 번 누르면 결국 프롬프트로 복귀)</td></tr></tbody></table>
+<p>그래프 모드는 IDA의 함수 그래프 뷰와 거의 같은 정보(분기 블록, 조건 분기 화살표)를 커맨드라인 위에서 보여주므로, 조건문이 많은 함수의 흐름을 한눈에 보고 싶을 때 <code>pdf</code>보다 <code>VV</code>가 더 직관적이다.</p>
+<h2>미니 예제</h2>
+<pre><code>$ r2 -A ./chall
+[0x00001149]&gt; afl
+0x00001149    1 42   main
+[0x00001149]&gt; pdf @ main</code></pre>
+<p>세 줄이면 자동 분석 → 함수 목록 확인 → main 디스어셈블까지 끝난다.</p>
+<h2>흔한 실수</h2>
+<ul><li>대소문자 혼동: <code>pdf</code>(함수 전체)와 <code>pDF</code>류는 다르며, radare2 명령어는 대소문자를 엄격히 구분한다.</li><li><code>aaa</code>를 생략하고 <code>afl</code>/<code>pdf</code>를 쳐서 빈 결과를 얻는 것 — 분석은 항상 명시적으로 먼저 실행해야 한다.</li><li>Visual/그래프 모드에서 나가는 법을 몰라 <code>Ctrl+C</code>로 강제 종료하는 것 — <code>q</code>를 여러 번 누르면 단계적으로 빠져나온다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>설치와 기본 흐름이 처음이면 → <a href="rev-0291-radare2-install-first-command.html">REV-0291 radare2 설치와 첫 명령</a></li><li>마우스 기반 GUI가 더 편하면 → <a href="rev-0293-cutter-install-usage.html">REV-0293 Cutter 설치와 기본 사용법</a></li><li>ELF 자체의 임포트/심볼 구조가 궁금하면 → <a href="rev-0093-nm-basics.html">REV-0093 nm으로 심볼 찾기</a></li></ul>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0291-radare2-install-first-command.html">REV-0291 — radare2 설치와 첫 명령</a></li><li><a href="rev-0293-cutter-install-usage.html">REV-0293 — Cutter 설치와 기본 사용법</a></li><li><a href="rev-0093-nm-basics.html">REV-0093 — nm으로 심볼 찾기</a></li><li><a href="rev-0094-strings-basics.html">REV-0094 — strings로 빠르게 단서 찾기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>명령어 표는 radare2 공식 문서 "The Radare2 Book"(https://book.rada.re)의 명령어 참조(command reference) 및 <code>r2 -h</code>/<code>? </code> 내부 도움말 체계 기준.</li><li>Visual/그래프 모드 키 바인딩은 버전에 따라 일부 달라질 수 있어(특히 오래된 버전과 최신 버전 사이), 실제 사용 전 세션 안에서 <code>?</code>를 눌러 현재 버전의 도움말을 다시 확인할 것을 권장한다. 이 문서 자체는 실기 재현 없이 공식 문서 기준으로 작성되었다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA 추가 단축키 참조(고급 네비게이션) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA 추가 단축키 참조(고급 네비게이션)</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>REV-0275에서 다룬 12개 핵심 단축키(F5/F2/F7/F8/F9/X/N/G/Shift+F12/Ctrl+P/Y/Tab) 외에도, IDA에는 "방금 보던 위치로 돌아가기"(<code>Esc</code>/<code>Ctrl+Enter</code>), "중요한 위치를 표시해두기"(<code>Alt+M</code>/<code>Ctrl+M</code>), "그래프/텍스트 뷰 전환"(<code>Space</code>), "값/바이트 패턴 검색"(<code>Alt+T</code>/<code>Alt+B</code>/<code>Alt+I</code>) 같은 이동 전용 단축키가 따로 있어, 큰 바이너리를 여러 함수 오가며 분석할 때 시간을 크게 줄여준다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>여러 함수를 오가며 분석하다가 "방금 보던 곳"으로 빠르게 되돌아가고 싶을 때</li><li>나중에 다시 봐야 할 중요한 주소 여러 개를 표시(북마크)해두고 싶을 때</li><li>Graph view와 Text(flat) view를 마우스 없이 키보드만으로 전환하고 싶을 때</li><li>특정 문자열/바이트 시퀀스/상수 값을 코드 전체에서 검색하고 싶은데 어떤 단축키를 써야 할지 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>이동 히스토리 — Esc / Ctrl+Enter</h3>
+<p>IDA는 브라우저처럼 "이동 히스토리"를 기록한다. 어떤 함수를 보다가 xref(<code>X</code>)를 따라 다른 함수로 이동했다면, <code>Esc</code>를 눌러 바로 직전 위치로 되돌아갈 수 있고, 되돌아간 뒤 <code>Ctrl+Enter</code>를 누르면 다시 앞으로(되돌아가기 전 위치로) 이동한다.</p>
+<h3>위치 마킹 — Alt+M / Ctrl+M</h3>
+<p>분석 중 "여기는 나중에 다시 봐야겠다" 싶은 주소에서 <code>Alt+M</code>을 누르면 번호를 붙여 위치를 저장할 수 있다. <code>Ctrl+M</code>을 누르면 지금까지 마킹해둔 위치 목록이 뜨고, 목록에서 선택하면 바로 그 자리로 이동한다. 여러 개의 흥미로운 지점(암호 검증 함수, 파일 파싱 시작점 등)을 오가며 분석할 때 유용하다.</p>
+<h3>Graph/Text 뷰 전환 — Space</h3>
+<p>디스어셈블리에서 <code>Space</code>를 누르면 현재 함수를 Graph view(분기 박스와 화살표)와 Text(flat) view(줄 단위 나열) 사이로 즉시 전환할 수 있다. 복잡한 분기 구조는 Graph로, 순차적으로 쭉 읽어야 할 때는 Text로 바꾸는 식으로 상황에 맞게 오간다.</p>
+<h3>검색 계열 — Alt+T / Alt+B / Alt+I</h3>
+<ul><li><code>Alt+T</code> — 텍스트 검색(주석, 이름, pseudocode 텍스트 등에서 문자열 찾기)</li><li><code>Alt+B</code> — 바이너리(바이트 시퀀스) 검색. 특정 바이트 패턴(예: 시그니처, opcode 나열)을 찾을 때</li><li><code>Alt+I</code> — 즉시값(immediate value) 검색. 코드에 쓰인 특정 상수 값을 찾을 때</li></ul>
+<h3>함수/세그먼트 경계 이동 — Home / End</h3>
+<p><code>Home</code>/<code>End</code>는 현재 보고 있는 뷰(줄 목록)의 맨 처음/맨 끝으로 이동한다. <code>Ctrl+Home</code>/<code>Ctrl+End</code>는 더 큰 범위(세그먼트 또는 전체 주소 공간)의 시작/끝으로 이동하는 데 쓰인다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>이 단축키들은 특정 코드 패턴이 아니라 "분석 흐름 자체"에서 필요해진다. 여러 함수를 오가다 길을 잃었거나, 나중에 다시 볼 위치가 늘어나고 있거나, 검색창을 매번 마우스로 여는 게 번거로워졌다면 이 표를 다시 훑어본다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>지금 열려 있는 IDA에서 아무 함수나 열고 <code>Esc</code>와 <code>Ctrl+Enter</code>를 눌러 이동 히스토리가 어떻게 동작하는지 먼저 손으로 확인해본다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 이동 히스토리 연습</strong></p>
+<p>함수 A에서 <code>X</code>로 다른 함수 B로 이동 → <code>Esc</code>로 A로 복귀 → <code>Ctrl+Enter</code>로 다시 B로 이동.</p>
+<p><strong>2) 마킹 연습</strong></p>
+<p>중요 지점에서 <code>Alt+M</code> → 번호(0~9 등) 입력 → 다른 곳으로 이동 → <code>Ctrl+M</code> → 목록에서 방금 마킹한 위치 선택.</p>
+<p><strong>3) 뷰 전환 연습</strong></p>
+<p>Graph view 상태에서 <code>Space</code> → Text view로 바뀌는지 확인 → 다시 <code>Space</code>로 복귀.</p>
+<p><strong>4) 검색 연습</strong></p>
+<p><code>Alt+B</code>로 특정 바이트 시퀀스(예: 알려진 매직 넘버 바이트열)를 검색해보고, <code>Alt+I</code>로 특정 상수값을 검색해 결과가 여러 xref 위치로 뜨는지 확인.</p>
+<p><strong>5) 실전 조합</strong></p>
+<p>큰 바이너리에서 여러 흥미 지점을 <code>Alt+M</code>으로 표시해두고, <code>Ctrl+M</code>으로 목록을 오가며 각 지점을 순서대로 정리하는 방식으로 실제 분석에 적용한다.</p>
+<h2>명령어/단축키</h2>
+<table><thead><tr><th>단축키</th><th>동작</th></tr></thead><tbody><tr><td><code>Esc</code></td><td>이전 위치로 이동(뒤로 가기)</td></tr><tr><td><code>Ctrl+Enter</code></td><td>다음 위치로 이동(앞으로 가기)</td></tr><tr><td><code>Space</code></td><td>Graph view ↔ Text view 전환</td></tr><tr><td><code>Alt+M</code></td><td>현재 위치 마킹(번호 지정)</td></tr><tr><td><code>Ctrl+M</code></td><td>마킹된 위치 목록 열기</td></tr><tr><td><code>Alt+T</code></td><td>텍스트 검색</td></tr><tr><td><code>Alt+B</code></td><td>바이너리(바이트 패턴) 검색</td></tr><tr><td><code>Alt+I</code></td><td>즉시값(상수) 검색</td></tr><tr><td><code>Home</code> / <code>End</code></td><td>현재 뷰의 처음/끝으로 이동</td></tr><tr><td><code>Ctrl+Home</code> / <code>Ctrl+End</code></td><td>세그먼트/전체 주소 공간의 처음/끝으로 이동</td></tr></tbody></table>
+<h2>출력 해석</h2>
+<ul><li><code>Ctrl+M</code>으로 연 마킹 목록에는 번호, 주소, 마킹 당시 붙인 설명(있다면)이 함께 표시된다 — 설명 없이 번호만 있으면 나중에 헷갈리므로 마킹 시 짧은 설명을 붙이는 습관이 좋다.</li><li><code>Alt+B</code>/<code>Alt+I</code> 검색 결과가 여러 건이면, 검색 결과 창(또는 상태 표시줄)에서 다음/이전 결과로 넘어가는 방법(대개 검색을 다시 실행하거나 결과 목록을 이용)을 확인해야 한다.</li><li><code>Esc</code>를 눌렀는데 아무 반응이 없다면 이동 히스토리가 비어 있는(아직 다른 곳으로 이동한 적이 없는) 상태라는 뜻이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>Esc</code>가 "창 닫기"만 한다고 착각하고 안 써보는 것 — 디스어셈블리/Pseudocode 위에서는 이동 히스토리 뒤로가기로 동작한다.</li><li><code>Alt+M</code>으로 마킹만 해두고 설명을 안 붙여서, 나중에 <code>Ctrl+M</code> 목록을 봐도 무슨 의미였는지 기억을 못 하는 것.</li><li><code>Alt+T</code>(텍스트)와 <code>Alt+B</code>(바이트)를 헷갈려서 문자열을 바이트 검색창에 그대로 입력했다가 결과가 안 나오는 것.</li><li>Graph view에서 <code>Space</code>를 눌렀는데 반응이 없어서 "키가 안 먹는다"고 착각하는 경우 — 포커스가 다른 창(Functions 등)에 가 있으면 안 먹힐 수 있으니 디스어셈블리 창을 한 번 클릭해 포커스를 준다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>핵심 12개 단축키(F5/X/N/Y/Tab 등) 자체가 헷갈리면 → REV-0275 IDA 핵심 단축키 치트시트.</li><li>Graph view 자체를 더 자세히 읽는 법이 궁금하면 → REV-0150 IDA Graph View에서 분기 읽기.</li><li>숫자 표현/enum 검색과 연계하고 싶다면 → REV-0149 IDA 숫자 표현 Signed Unsigned Hex 바꾸기.</li><li>xref로 참조 위치를 추적하는 기본기가 필요하면 → REV-0145 IDA Xrefs와 X 키 사용법.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">1. Functions 창(Ctrl+P)에서 main 진입
+2. X로 check_password 호출부로 이동
+3. check_password 내부에서 Alt+M → "1" 지정 (암호 검증 지점 마킹)
+4. Esc로 main으로 복귀
+5. 다른 함수 parse_input으로 이동해 Alt+M → "2" 지정
+6. Ctrl+M → 목록에서 "1"번 선택 → check_password로 즉시 복귀</code></pre>
+<p>여러 흥미 지점을 오가며 분석할 때 마킹과 이동 히스토리를 조합하면 함수 이름을 매번 검색하지 않고도 빠르게 왕복할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0275-ida-shortcuts-cheatsheet.html">REV-0275 — IDA 핵심 단축키 치트시트</a></li><li><a href="rev-0150-ida-graph-view.html">REV-0150 — IDA Graph View에서 분기 읽기</a></li><li><a href="rev-0149-ida-number-representation.html">REV-0149 — IDA 숫자 표현 Signed Unsigned Hex 바꾸기</a></li><li><a href="rev-0145-ida-xrefs.html">REV-0145 — IDA Xrefs와 X 키 사용법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>이동 히스토리(<code>Esc</code>/<code>Ctrl+Enter</code>), Graph/Text 뷰 전환(<code>Space</code>), 위치 마킹(<code>Alt+M</code>/<code>Ctrl+M</code>), 검색 계열(<code>Alt+T</code>/<code>Alt+B</code>/<code>Alt+I</code>), 뷰 경계 이동(<code>Home</code>/<code>End</code>/<code>Ctrl+Home</code>/<code>Ctrl+End</code>) 단축키는 Hex-Rays 공식 단축키 문서(docs.hex-rays.com/user-guide/configuration/shortcuts) 및 다수의 공개 IDA 단축키 정리 자료에서 공통적으로 보고되는 기본값 기준으로 정리했다(2026-09-09 검증).</li><li>IDA는 <code>Options → Keyboard</code>에서 모든 단축키를 사용자가 재지정할 수 있으므로, 실제 설치본에서 이 표와 다르게 동작하면 해당 메뉴에서 실제 바인딩을 확인해야 한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

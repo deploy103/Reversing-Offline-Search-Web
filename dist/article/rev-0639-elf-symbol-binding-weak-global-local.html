@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ELF 심볼 바인딩(WEAK/GLOBAL/LOCAL) 빠른 참조 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>ELF 심볼 바인딩(WEAK/GLOBAL/LOCAL) 빠른 참조</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">readelf</span><span class="tag">nm</span><span class="tag">objdump</span></div>
+<h2>한 줄 요약</h2>
+<p>ELF 심볼 테이블의 각 항목은 <code>st_info</code> 필드 하나에 <strong>바인딩(누가 볼 수 있고 링크 시 어떻게 취급되는지)</strong>과 <strong>타입(함수인지 데이터인지)</strong>을 함께 담고 있으며, 바인딩은 <code>LOCAL</code>(파일 내부 전용) / <code>GLOBAL</code>(외부에 노출, 유일해야 함) / <code>WEAK</code>(외부에 노출되지만 같은 이름의 GLOBAL 심볼에 밀려도 됨) 세 가지가 핵심이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>readelf -s</code>나 <code>nm</code> 출력의 <code>Bind</code> 열(<code>LOCAL</code>/<code>GLOBAL</code>/<code>WEAK</code>)이 무슨 의미인지 헷갈릴 때</li><li><code>nm</code> 결과에서 같은 함수 이름이 대문자(<code>T</code>)와 소문자(<code>t</code>)로 다르게 표시되는 이유가 궁금할 때</li><li><code>LD_PRELOAD</code>로 <code>malloc</code> 같은 함수를 후킹하는 원리(왜 덮어쓰기가 가능한지)를 이해하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>st_info 필드 구조</h3>
+<p>ELF 심볼 테이블(<code>Elf64_Sym</code>/<code>Elf32_Sym</code>)의 <code>st_info</code>는 1바이트 필드로, 상위 4비트가 바인딩, 하위 4비트가 타입이다.</p>
+<pre><code class="language-c">#define ELF32_ST_BIND(info)   ((info) &gt;&gt; 4)
+#define ELF32_ST_TYPE(info)   ((info) &amp; 0xf)
+#define ELF32_ST_INFO(b, t)   (((b) &lt;&lt; 4) + ((t) &amp; 0xf))
+// ELF64도 매크로 이름만 ELF64_ST_BIND/TYPE로 동일한 구조</code></pre>
+<h3>바인딩(Binding) 값</h3>
+<table><thead><tr><th>값</th><th>이름</th><th>의미</th></tr></thead><tbody><tr><td>0</td><td><code>STB_LOCAL</code></td><td>그 오브젝트 파일 안에서만 보임. 다른 파일의 같은 이름 심볼과 충돌하지 않음(예: <code>static</code> 함수/전역변수, 컴파일러가 만든 내부 라벨)</td></tr><tr><td>1</td><td><code>STB_GLOBAL</code></td><td>링크 단위 전체에서 보임. <strong>같은 이름의 GLOBAL 심볼이 여러 오브젝트에 있으면 링커 에러</strong>(multiple definition)</td></tr><tr><td>2</td><td><code>STB_WEAK</code></td><td>GLOBAL과 비슷하게 외부에 보이지만, 같은 이름의 STB_GLOBAL 심볼이 있으면 그쪽이 우선하고 충돌 에러도 안 남. GLOBAL이 없으면 WEAK 심볼 자체가 쓰임</td></tr><tr><td>10~12</td><td><code>STB_LOOS</code>~<code>STB_HIOS</code></td><td>OS별 확장 범위</td></tr><tr><td>13~15</td><td><code>STB_LOPROC</code>~<code>STB_HIPROC</code></td><td>프로세서별 확장 범위</td></tr></tbody></table>
+<h3>타입(Type) 값 — 참고로 함께 알아두면 좋음</h3>
+<p><code>STT_NOTYPE</code>(0), <code>STT_OBJECT</code>(1, 데이터), <code>STT_FUNC</code>(2, 함수), <code>STT_SECTION</code>(3), <code>STT_FILE</code>(4), <code>STT_COMMON</code>(5), <code>STT_TLS</code>(6, <code>__thread</code> 변수), <code>STT_GNU_IFUNC</code>(10, GNU 확장 — ifunc resolver).</p>
+<h3>왜 WEAK가 필요한가 — 심볼 인터포지션(Interposition)의 핵심</h3>
+<p>동적 링커가 여러 공유 라이브러리에서 같은 이름의 심볼을 찾을 때, 로드 순서상 먼저 만난 <strong>STB_GLOBAL</strong> 심볼이 최종 승자가 된다. <code>LD_PRELOAD=./my_malloc.so ./chall</code>로 <code>malloc</code>을 후킹하는 것이 가능한 이유가 바로 이것 — 프리로드된 라이브러리의 <code>malloc</code>(GLOBAL)이 libc의 <code>malloc</code>보다 먼저 심볼 검색 순서에 들어와 우선권을 갖는다. glibc 내부에서도 <code>__malloc_hook</code> 같은 확장 지점이나, <code>pthread_*</code> 함수들이 libpthread가 없을 때 동작하도록 libc 안에 WEAK 버전의 스텁을 두는 패턴에 이 바인딩 규칙이 쓰인다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>readelf -s ./chall</code> 출력에서 <code>Bind</code> 열에 <code>LOCAL</code>, <code>GLOBAL</code>, <code>WEAK</code> 문자열이 그대로 보임</li><li><code>nm ./chall</code> 출력에서 타입 문자가 <strong>소문자면 LOCAL, 대문자면 GLOBAL</strong>, <code>W</code>/<code>w</code>는 WEAK(대문자 <code>W</code>는 기본값이 지정된 weak, 소문자 <code>w</code>는 값이 없는 weak)</li><li>정적 분석 중 같은 이름의 심볼이 여러 오브젝트/라이브러리에 걸쳐 나타나는데 링크 에러가 안 나는 경우 → WEAK일 가능성</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>readelf -s ./chall | less</code>로 심볼 테이블을 열고, 관심 있는 함수 이름을 검색해 <code>Bind</code> 열을 확인한다. 함수 후킹/오버라이드 문제라면 WEAK 여부부터 본다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) readelf로 심볼과 바인딩 함께 보기</strong></p>
+<pre><code class="language-bash">readelf -s ./chall | grep -i printf</code></pre>
+<p>출력 예:</p>
+<pre><code>    45: 0000000000401136    21 FUNC    GLOBAL DEFAULT   14 printf</code></pre>
+<p>열 순서는 <code>Num: Value Size Type Bind Vis Ndx Name</code>이다.</p>
+<p><strong>2) nm으로 빠르게 대소문자만 보기</strong></p>
+<pre><code class="language-bash">nm ./chall | grep printf</code></pre>
+<pre><code>                 U printf@GLIBC_2.2.5   # U = undefined (외부에서 채워짐)</code></pre>
+<p>정의된 GLOBAL 함수라면 <code>T</code>(text 섹션의 함수), LOCAL이면 <code>t</code>가 보인다.</p>
+<p><strong>3) WEAK 심볼만 골라보기</strong></p>
+<pre><code class="language-bash">readelf -s ./chall | awk '$5=="WEAK"'
+nm -D ./libtarget.so | grep ' W \| w '</code></pre>
+<p><strong>4) 동적 심볼 테이블에서 확인 (동적 링킹된 라이브러리 함수)</strong></p>
+<pre><code class="language-bash">readelf --dyn-syms ./chall</code></pre>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">readelf -s ./chall
+readelf --dyn-syms ./chall
+nm ./chall
+nm -D ./lib.so   # 동적 심볼만</code></pre>
+<h2>출력 해석</h2>
+<p><code>nm</code> 타입 문자 요약: <code>T</code>/<code>t</code> = text(코드, 대문자 GLOBAL/소문자 LOCAL), <code>D</code>/<code>d</code> = 초기화된 데이터, <code>B</code>/<code>b</code> = BSS, <code>U</code> = undefined(다른 오브젝트에서 정의됨, 링크 시 채워짐), <code>W</code>/<code>w</code> = weak. 대문자/소문자 규칙은 GLOBAL/LOCAL을 가리키고, <code>W</code> 계열만 별도 카테고리다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>nm</code> 결과의 대문자를 "중요한 함수", 소문자를 "안 중요한 함수"로 오해하는 것 — 실제로는 단지 바인딩(가시성) 차이일 뿐 중요도와 무관하다.</li><li>WEAK 심볼이 항상 "약해서 무시된다"고 오해하는 것 — GLOBAL 정의가 <strong>없으면</strong> WEAK 정의가 그대로 사용된다. WEAK는 "있으면 쓰이지만 다른 GLOBAL한테는 양보한다"는 뜻이다.</li><li><code>STB_LOCAL</code> 심볼을 다른 컴파일 유닛/공유 라이브러리에서 참조하려 하는 것 — LOCAL은 애초에 그 오브젝트 파일 밖에서는 안 보이므로 링크 자체가 안 된다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>PLT/GOT를 통한 실제 심볼 해석 흐름이 궁금하면 → REV-0100 PLT와 GOT 기초.</li><li>동적 링킹 자체의 큰 그림이 궁금하면 → REV-0101 Dynamic Linking과 Import 함수 추적.</li><li>심볼 해석에 쓰이는 <code>.dynamic</code> 섹션의 각 태그가 궁금하면 → REV-0641 ELF Dynamic Section 태그(DT_*) 빠른 참조.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">// a.c
+int shared_val = 1;          // GLOBAL
+static int local_val = 2;    // LOCAL
+__attribute__((weak)) void hook(void) { /* 기본 구현 */ }  // WEAK</code></pre>
+<pre><code class="language-bash">$ gcc -c a.c &amp;&amp; nm a.o
+0000000000000000 D shared_val
+0000000000000004 d local_val
+0000000000000000 W hook</code></pre>
+<p><code>shared_val</code>은 대문자 <code>D</code>(GLOBAL 데이터), <code>local_val</code>은 소문자 <code>d</code>(LOCAL 데이터), <code>hook</code>은 <code>W</code>(WEAK 함수)로 정확히 구분되어 나온다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0100-plt-got.html">REV-0100 — PLT와 GOT 기초</a></li><li><a href="rev-0101-dynamic-linking.html">REV-0101 — Dynamic Linking과 Import 함수 추적</a></li><li><a href="rev-0641-elf-dynamic-section-tags.html">REV-0641 — ELF Dynamic Section 태그(DT_*) 빠른 참조</a></li><li><a href="rev-0093-nm-basics.html">REV-0093 — nm으로 심볼 찾기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>st_info</code>/<code>ELF32_ST_BIND</code>/<code>ELF32_ST_TYPE</code> 매크로 및 <code>STB_*</code>/<code>STT_*</code> 상수 값: System V Application Binary Interface(generic ABI) "Symbol Table" 챕터 기준.</li><li><code>nm</code> 타입 문자(<code>T</code>/<code>t</code>/<code>U</code>/<code>W</code>/<code>w</code> 등) 의미: <code>nm(1)</code> man page 기준 (2026-09-08 검증).</li><li>WEAK 심볼과 동적 링커 인터포지션 동작: glibc 동적 로더 심볼 해석 순서 및 <code>LD_PRELOAD</code> 관련 표준 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

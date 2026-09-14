@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PE Optional Header 필드 전체 사전 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>PE Optional Header 필드 전체 사전</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">PE-bear</span></div>
+<h2>한 줄 요약</h2>
+<p><code>IMAGE_OPTIONAL_HEADER</code>(PE32는 32비트, PE32+는 64비트 변형)는 이름과 달리 실제로는 로더가 이미지를 메모리에 올리는 데 필요한 필수 정보(진입점, 이미지 베이스, 섹션/파일 정렬, 서브시스템, 16개 데이터 디렉터리)를 담은 핵심 구조체이며, PE-bear나 IDA의 헤더 뷰에서 이 필드들의 이름과 의미를 바로 찾을 수 있어야 정적 분석 초반 단계를 빠르게 지나갈 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>PE-bear나 IDA에서 옵셔널 헤더 필드를 하나씩 보다가 이름은 아는데 정확히 무슨 뜻인지 헷갈릴 때</li><li><code>AddressOfEntryPoint</code>, <code>ImageBase</code>, <code>SectionAlignment</code>, <code>FileAlignment</code> 등 특정 필드 하나의 의미와 계산법이 궁금할 때</li><li><code>DataDirectory</code> 배열의 16개 항목이 각각 무엇을 가리키는지(Export, Import, Resource, TLS 등) 확인해야 할 때</li><li>PE32(32비트)와 PE32+(64비트) 옵셔널 헤더의 필드 차이(어떤 필드가 4바이트에서 8바이트로 바뀌는지)를 확인해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<p><code>IMAGE_OPTIONAL_HEADER</code>는 COFF 파일 헤더(<code>IMAGE_FILE_HEADER</code>) 바로 뒤, 섹션 테이블(REV-0117) 바로 앞에 위치한다. <code>Magic</code> 필드 값(<code>0x10B</code>=PE32, <code>0x20B</code>=PE32+)으로 32/64비트 여부를 판별하며(REV-0116에서 이미 다룬 COFF/옵셔널 헤더 기본 개념 참고), 이 문서는 그 필드들을 표로 정리한다.</p>
+<p><strong>표준 필드(Standard Fields, COFF 계열)</strong></p>
+<table><thead><tr><th>필드</th><th>크기</th><th>의미</th></tr></thead><tbody><tr><td><code>Magic</code></td><td>2</td><td><code>0x10B</code>=PE32, <code>0x20B</code>=PE32+, <code>0x107</code>=ROM</td></tr><tr><td><code>MajorLinkerVersion</code>/<code>MinorLinkerVersion</code></td><td>1+1</td><td>링커 버전</td></tr><tr><td><code>SizeOfCode</code></td><td>4</td><td>코드 섹션 총 크기(파일 정렬 기준 합)</td></tr><tr><td><code>SizeOfInitializedData</code></td><td>4</td><td>초기화된 데이터 섹션 총 크기</td></tr><tr><td><code>SizeOfUninitializedData</code></td><td>4</td><td><code>.bss</code> 등 초기화 안 된 데이터 총 크기</td></tr><tr><td><code>AddressOfEntryPoint</code></td><td>4</td><td>진입점의 RVA(REV-0121에서 다룬 EP) — EXE는 CRT 시작 함수, DLL은 <code>DllMain</code></td></tr><tr><td><code>BaseOfCode</code></td><td>4</td><td>코드 섹션 시작 RVA</td></tr><tr><td><code>BaseOfData</code></td><td>4(PE32만)</td><td>데이터 섹션 시작 RVA — PE32+에는 이 필드가 없음(제거됨)</td></tr></tbody></table>
+<p><strong>Windows 전용 필드(Windows-Specific Fields)</strong></p>
+<table><thead><tr><th>필드</th><th>크기(PE32/PE32+)</th><th>의미</th></tr></thead><tbody><tr><td><code>ImageBase</code></td><td>4/8</td><td>로더가 선호하는 이미지 로드 시작 VA(EXE 기본값 <code>0x00400000</code>, DLL 기본값 <code>0x10000000</code>)</td></tr><tr><td><code>SectionAlignment</code></td><td>4</td><td>메모리에 로드될 때 섹션의 정렬 단위(기본 <code>0x1000</code>, 페이지 크기)</td></tr><tr><td><code>FileAlignment</code></td><td>4</td><td>디스크 파일에서 섹션 raw 데이터의 정렬 단위(기본 <code>0x200</code>) — <code>SectionAlignment</code>보다 항상 작거나 같다</td></tr><tr><td><code>MajorOperatingSystemVersion</code>/<code>Minor...</code></td><td>2+2</td><td>요구 OS 버전</td></tr><tr><td><code>MajorImageVersion</code>/<code>Minor...</code></td><td>2+2</td><td>이미지 자체 버전(개발자 지정)</td></tr><tr><td><code>MajorSubsystemVersion</code>/<code>Minor...</code></td><td>2+2</td><td>요구 서브시스템 버전</td></tr><tr><td><code>Win32VersionValue</code></td><td>4</td><td>예약, 반드시 0</td></tr><tr><td><code>SizeOfImage</code></td><td>4</td><td>메모리에 로드된 전체 이미지 크기(<code>SectionAlignment</code> 배수)</td></tr><tr><td><code>SizeOfHeaders</code></td><td>4</td><td>DOS/PE/섹션 헤더 전체 크기(<code>FileAlignment</code> 배수로 올림)</td></tr><tr><td><code>CheckSum</code></td><td>4</td><td>이미지 체크섬(드라이버/일부 시스템 DLL만 검증, 보통 EXE는 0이어도 무방)</td></tr><tr><td><code>Subsystem</code></td><td>2</td><td><code>2</code>=GUI, <code>3</code>=CUI(콘솔), <code>1</code>=네이티브 드라이버 등</td></tr><tr><td><code>DllCharacteristics</code></td><td>2</td><td>ASLR/DEP/CFG 등 보안 플래그 조합(REV-0526에서 상세)</td></tr><tr><td><code>SizeOfStackReserve</code>/<code>Commit</code></td><td>4/8, 4/8</td><td>스레드 스택 예약/커밋 크기(기본 1MB/4KB)</td></tr><tr><td><code>SizeOfHeapReserve</code>/<code>Commit</code></td><td>4/8, 4/8</td><td>프로세스 기본 힙 예약/커밋 크기</td></tr><tr><td><code>LoaderFlags</code></td><td>4</td><td>예약, 반드시 0</td></tr><tr><td><code>NumberOfRvaAndSizes</code></td><td>4</td><td>뒤에 오는 <code>DataDirectory</code> 배열의 원소 개수(보통 16)</td></tr></tbody></table>
+<p><strong>DataDirectory 배열(16개, 각 원소는 <code>{VirtualAddress, Size}</code> 8바이트)</strong></p>
+<table><thead><tr><th>인덱스</th><th>이름</th><th>의미</th></tr></thead><tbody><tr><td>0</td><td>Export Table</td><td><code>.edata</code>, REV-0120 참고</td></tr><tr><td>1</td><td>Import Table</td><td><code>.idata</code>, REV-0119 참고</td></tr><tr><td>2</td><td>Resource Table</td><td><code>.rsrc</code>, REV-0141 참고</td></tr><tr><td>3</td><td>Exception Table</td><td>x64 SEH/함수 테이블(<code>.pdata</code>)</td></tr><tr><td>4</td><td>Certificate Table</td><td>디지털 서명(파일 오프셋 기준, RVA 아님에 주의)</td></tr><tr><td>5</td><td>Base Relocation Table</td><td><code>.reloc</code>, ASLR용 재배치 정보</td></tr><tr><td>6</td><td>Debug</td><td>디버그 정보(PDB 경로 등)</td></tr><tr><td>7</td><td>Architecture</td><td>예약, 사용 안 함</td></tr><tr><td>8</td><td>Global Ptr</td><td>IA64 전역 포인터(x86/x64에서 사용 안 함)</td></tr><tr><td>9</td><td>TLS Table</td><td><code>.tls</code>, REV-0133(TLS 콜백) 참고</td></tr><tr><td>10</td><td>Load Config Table</td><td>보안 쿠키, CFG 관련 정보</td></tr><tr><td>11</td><td>Bound Import</td><td>바인드된 임포트(고정 주소 최적화, 요즘 거의 안 씀)</td></tr><tr><td>12</td><td>IAT</td><td>Import Address Table 위치(임포트 테이블과 별개 항목)</td></tr><tr><td>13</td><td>Delay Import Descriptor</td><td>지연 로드 임포트</td></tr><tr><td>14</td><td>CLR Runtime Header</td><td>.NET 이미지 여부 판별(REV-0136 참고) — 여기 값이 있으면 .NET 어셈블리</td></tr><tr><td>15</td><td>Reserved</td><td>항상 0</td></tr></tbody></table>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>PE-bear의 "Optional Header" 탭에 위 필드들이 그대로 나열되고, 각 값 옆에 16진수로 표시됨</li><li>IDA의 헤더 뷰(<code>View &gt; Open subviews &gt; Segments</code> 또는 초기 로드 로그)에서 <code>AddressOfEntryPoint</code>, <code>ImageBase</code> 값이 표시됨</li><li><code>DataDirectory[14]</code>(CLR Runtime Header)의 <code>VirtualAddress</code>가 0이 아니면 .NET 바이너리라는 뜻(REV-0136)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>Magic</code> 값으로 PE32/PE32+ 여부를 먼저 확인한다(필드 크기가 달라지므로).</li><li><code>AddressOfEntryPoint</code>와 <code>ImageBase</code>를 더해 실제 진입점 VA(<code>ImageBase + AddressOfEntryPoint</code>)를 계산해서 IDA/x64dbg에서 시작 지점을 바로 찾는다.</li><li><code>DataDirectory[1]</code>(Import), <code>DataDirectory[14]</code>(CLR)를 먼저 확인해 이 파일이 일반 네이티브 PE인지 .NET 어셈블리인지부터 구분한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) PE-bear로 확인</strong></p>
+<ul><li>파일을 열고 "Optional Header" 탭을 클릭하면 위 표의 필드가 값과 함께 그대로 나열된다.</li><li>"Data Directories" 탭에서 16개 항목의 RVA/Size를 개별적으로 확인할 수 있다.</li></ul>
+<p><strong>2) IDA로 확인</strong></p>
+<ul><li>파일 로드 시 상단 로그(Output window)에 <code>ImageBase</code>, <code>AddressOfEntryPoint</code> 값이 출력된다.</li><li><code>Ctrl+S</code>(세그먼트 뷰)에서 각 섹션의 시작 주소가 <code>ImageBase + VirtualAddress</code> 기준으로 표시된다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>PE-bear: 파일 열기 → "Optional Header" / "Data Directories" 탭 클릭</li><li>IDA: <code>Ctrl+S</code>(세그먼트 목록), 로드 시 Output window 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>SectionAlignment</code>(메모리 정렬)와 <code>FileAlignment</code>(디스크 정렬)가 다르기 때문에, 파일에서의 오프셋(raw offset)과 메모리에서의 RVA는 섹션마다 서로 다른 배수로 정렬되어 계산이 필요하다(자세한 변환은 REV-0118 RVA VA Raw Offset 참고).</li><li><code>DataDirectory</code> 배열 원소의 <code>VirtualAddress</code>가 <code>0</code>이면 해당 디렉터리가 존재하지 않는다는 뜻(예: Export Table이 0이면 이 PE는 아무 함수도 export하지 않음).</li><li><code>Subsystem</code> 값이 <code>2</code>(GUI)인데 콘솔 창이 안 뜨는 이유, <code>3</code>(CUI)인데 콘솔이 뜨는 이유가 바로 이 필드 하나로 설명된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>AddressOfEntryPoint</code>를 VA로 착각해서 그대로 IDA에 입력하는 것 — 이 값은 RVA이므로 반드시 <code>ImageBase</code>를 더해야 실제 가상 주소가 된다.</li><li>PE32와 PE32+에서 <code>BaseOfData</code> 필드가 있다 없다를 헷갈려 구조체 크기를 잘못 계산하는 것(PE32+는 <code>BaseOfData</code>가 없고 대신 <code>ImageBase</code>가 8바이트로 확장됨).</li><li><code>DataDirectory</code>의 인덱스 순서를 외우지 못해 Import(1번)와 IAT(12번)를 혼동하는 것 — 이 둘은 서로 다른 목적의 별개 항목이다.</li><li><code>SizeOfImage</code>가 파일 크기라고 착각하는 것 — 이는 메모리에 로드됐을 때의 크기이며 디스크 파일 크기와는 다르다(패딩/정렬 차이).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>COFF 헤더와 옵셔널 헤더의 기본 구조 자체가 헷갈리면 → REV-0116(PE Header COFF Optional Header 읽기)을 먼저 본다.</li><li>RVA/VA/Raw Offset 변환 계산이 필요하면 → REV-0118(RVA VA Raw Offset)을 본다.</li><li>섹션 이름과 그 안의 데이터 구조가 궁금하면 → REV-0525(PE Section 이름 관례 사전)를 본다.</li><li>Export/Import/Resource/TLS 등 개별 디렉터리를 실제로 파싱하는 방법이 궁금하면 → REV-0119(Import Table), REV-0120(Export Table), REV-0141(Resource Section)을 본다.</li></ul>
+<h2>미니 예제</h2>
+<p>PE-bear로 <code>notepad.exe</code>(x64)를 열어 Optional Header 탭을 보면 대략 다음과 같은 값이 나온다(실제 값은 Windows 버전마다 다를 수 있음).</p>
+<pre><code class="language-text">Magic                 : 0x20B  (PE32+)
+AddressOfEntryPoint    : 0x00012340
+ImageBase              : 0x0000000140000000
+SectionAlignment       : 0x1000
+FileAlignment          : 0x200
+Subsystem              : 0x0002 (IMAGE_SUBSYSTEM_WINDOWS_GUI)
+NumberOfRvaAndSizes    : 16</code></pre>
+<p>실제 진입점 VA는 <code>0x0000000140000000 + 0x00012340 = 0x0000000140012340</code>이며, 이 주소를 IDA에서 <code>G</code>(Go to address) 단축키로 바로 이동해 시작 코드를 확인할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0116-pe-coff-optional-header.html">REV-0116 — PE Header COFF Optional Header 읽기</a></li><li><a href="rev-0118-rva-va-raw-offset.html">REV-0118 — RVA VA Raw Offset 계산</a></li><li><a href="rev-0525-pe-section-naming-conventions.html">REV-0525 — PE Section 이름 관례 사전(.text .rdata .data .rsrc 등)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>IMAGE_OPTIONAL_HEADER32</code>/<code>IMAGE_OPTIONAL_HEADER64</code> 구조체의 필드명, 크기, 기본값, <code>DataDirectory</code> 16개 인덱스의 의미는 Microsoft PE/COFF 파일 형식 공식 사양(PE Format 문서) 기준이다.</li><li>위 미니 예제의 수치는 설명을 위해 구성한 근사값이며 실제 특정 Windows 버전의 <code>notepad.exe</code> 바이너리를 직접 덤프한 값이 아니다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

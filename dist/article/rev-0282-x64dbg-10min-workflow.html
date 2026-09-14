@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>x64dbg 10분 실전 워크플로 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / tools</div>
+<article class="article-body">
+<h1>x64dbg 10분 실전 워크플로</h1>
+<div class="article-meta"><span class="tag">tools</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>간단한 크랙미라면 x64dbg에서 <strong>바이너리 로드 → Strings 탭에서 힌트 문자열 찾기 → 그 문자열의 참조(References)로 검사 코드 위치 찾기 → 그 지점에 브레이크포인트 걸고 F9로 실행 → 레지스터/Dump에서 실제 비교값 확인</strong> 순서를 따르면 실행한 지 10분 안에 플래그를 손에 넣을 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>시간 제한이 있는 CTF에서 x64dbg로 빠르게 플래그 검사 로직과 실제 비교값을 찾고 싶을 때</li><li>정적 분석(IDA/Ghidra)으로 로직은 파악했는데 실제 런타임 값을 확인하고 싶을 때</li><li>x64dbg 개별 기능(브레이크포인트, 단축키)은 알지만 전체 흐름이 궁금할 때</li><li>정적으로 봐도 확신이 안 서는 값을 직접 실행해서 눈으로 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>x64dbg는 IDA/Ghidra 같은 정적 분석 도구와 근본적으로 다른 강점이 있다. <strong>코드를 읽는 것이 아니라 실제로 실행시켜서 그 순간의 진짜 값(레지스터, 메모리)을 눈으로 확인</strong>할 수 있다는 점이다. 그래서 x64dbg만으로 처음부터 끝까지 코드를 분석하기보다는, 다음 두 상황에서 특히 빠르다.</p>
+<ol><li>정적 분석 없이도 문자열 힌트만으로 검사 지점을 빠르게 찾고 그 자리에서 실제 비교값을 훔쳐보는 경우.</li><li>정적 분석으로 "여기서 뭔가 비교한다"까지는 알았지만 비교 대상 값 자체는 계산되거나 난독화되어 있어서 실행 중에만 확인 가능한 경우.</li></ol>
+<p>이 문서의 10분 루틴은 1번 상황, 즉 x64dbg 단독으로 빠르게 끝내는 흐름을 다룬다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>x64dbg 하단 탭 중 <strong>Strings</strong>(또는 우클릭 → Search for → String references)에서 <code>"Correct"</code>, <code>"Wrong"</code>, <code>"flag{"</code> 같은 문자열을 찾을 수 있다.</li><li>Strings 목록에서 항목을 더블클릭하면 CPU 창이 그 문자열을 참조하는 코드 위치로 이동한다.</li><li>브레이크포인트에 걸려 실행이 멈추면 CPU 창 상단이 빨갛게 강조되고, 오른쪽 레지스터 창의 값이 그 시점 기준으로 갱신된다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>대상 exe를 x64dbg로 로드한다(<code>File → Open</code> 또는 드래그&amp;드롭). 기본적으로 진입점(Entry Point)에서 자동으로 멈춘 상태로 시작된다. 여기서 바로 <code>F9</code>를 눌러 프로그램이 정상 흐름대로 한 번 더 진행되게 한다(초기 로더 스텁을 지나치는 용도).</p>
+<h2>단계별 절차</h2>
+<p><strong>[0:00~1:00] 로드 및 초기 진행</strong></p>
+<p>x64dbg 실행 → 대상 exe 로드 → 진입점에서 멈춤 확인 → <code>F9</code> 한 번 눌러 메인 코드로 진입시킨다(콘솔 프로그램이면 별도 콘솔 창이 뜨는 게 보통 정상이다).</p>
+<p><strong>[1:00~2:00] Strings에서 힌트 찾기</strong></p>
+<p>CPU 창을 우클릭 → <code>Search for → Current Module → String references</code>(또는 하단 Strings 탭)를 열어 <code>"Correct"</code>, <code>"Wrong"</code>, <code>"password"</code>, <code>"flag"</code> 같은 문자열을 찾는다. 목록 내 검색창에 키워드를 입력해 빠르게 좁힌다.</p>
+<p><strong>[2:00~3:00] 문자열 참조 위치로 이동</strong></p>
+<p>찾은 문자열을 더블클릭하면 CPU 창이 그 문자열을 사용하는 코드(대개 <code>push</code>/<code>lea</code>로 문자열 주소를 준비하고 <code>call printf</code> 류로 이어지는 지점) 근처로 이동한다.</p>
+<p><strong>[3:00~4:00] 검사 로직 지점까지 위로 스크롤</strong></p>
+<p>문자열을 출력하는 코드 바로 위(더 이른 주소)를 보면, 그 출력을 결정하는 조건 분기(<code>cmp</code>/<code>test</code> + <code>jz</code>/<code>jnz</code> 등)가 있을 것이다. 이 분기 직전이 바로 "검사가 실제로 일어나는 지점"이다.</p>
+<p><strong>[4:00~5:00] 브레이크포인트 설정</strong></p>
+<p>그 조건 분기 직전 명령어(또는 그 조건을 만드는 <code>call</code>, 예: <code>strcmp</code>/<code>memcmp</code> 호출 지점)에 커서를 두고 <code>F2</code>로 브레이크포인트를 건다. 함수 이름을 알면 커맨드 바에 <code>bp strcmp</code> 같은 방식도 가능하다.</p>
+<p><strong>[5:00~6:00] 실행해서 정지시키기</strong></p>
+<p><code>F9</code>로 실행한다. 프로그램의 콘솔 창(있다면)에 아무 값이나 입력해서 프로그램이 검사 지점까지 도달하게 만든다. 브레이크포인트에 정확히 멈추는지 확인한다.</p>
+<p><strong>[6:00~8:00] 레지스터/스택에서 실제 값 확인</strong></p>
+<p>멈춘 시점에서 비교 대상 값들이 어디 있는지 확인한다. Windows x64 호출 규약이면 처음 몇 개 인자는 <code>RCX</code>, <code>RDX</code>, <code>R8</code>, <code>R9</code>에 담겨 있다(이 규약이 익숙하지 않으면 <code>../assembly/rev-0071-call.md</code>의 호출 규약 설명 참고). 레지스터 값이 포인터라면 그 값을 우클릭 → <code>Follow in Dump</code>로 Dump 창에서 실제 문자열/바이트 내용을 확인한다.</p>
+<p><strong>[8:00~9:00] 정답 조립</strong></p>
+<p>확인한 값(비교 대상 문자열, 바이트 배열 등)을 조합해서 입력 후보(플래그)를 만든다. 필요하면 <code>F8</code>/<code>F7</code>로 몇 줄 더 진행하며 다른 관련 변수도 함께 확인한다.</p>
+<p><strong>[9:00~10:00] 최종 확인</strong></p>
+<p><code>F9</code>로 나머지 실행을 마저 진행시키거나 프로그램을 재시작(<code>Ctrl+F2</code>)해서, 조립한 값을 실제로 입력했을 때 성공 메시지가 뜨는지 확인한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li><code>F9</code> : 실행/계속</li><li><code>F2</code> : 브레이크포인트 토글</li><li><code>F8</code> / <code>F7</code> : Step Over / Step Into</li><li><code>Ctrl+F2</code> : 재시작</li><li><code>Ctrl+G</code> : 주소로 이동</li><li>우클릭 → <code>Follow in Dump</code> : 레지스터의 포인터 값이 가리키는 메모리 내용 확인</li><li>커맨드 바 <code>bp &lt;이름/주소&gt;</code> : 이름/주소로 브레이크포인트 설정</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Strings 목록에 힌트가 없으면 → 문자열이 암호화/난독화되어 있거나, 메시지 자체가 리소스(다이얼로그, .rsrc 섹션)에 있어 x64dbg의 기본 문자열 스캔에 안 잡힐 수 있다. 이런 경우 정적 분석 도구(IDA/Ghidra)의 리소스 뷰를 먼저 확인하는 편이 낫다.</li><li>브레이크포인트에 안 걸리고 프로그램이 끝나버리면 → 그 코드 경로가 실제로 실행되지 않았거나(예: 다른 입력 검증에서 먼저 걸림), 브레이크포인트 위치가 실제 검사 지점이 아니었을 수 있다.</li><li><code>Follow in Dump</code>로 이동했는데 읽을 수 없는 바이트가 보이면 → 그 레지스터 값이 포인터가 아니라 정수 값이었을 가능성이 있다 — 레지스터의 의미를 다시 확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>진입점에서 멈춘 직후 아무 생각 없이 <code>F9</code>를 여러 번 눌러서 프로그램이 그냥 끝나버리는 경우 — 브레이크포인트를 걸기 전에는 신중하게 실행해야 한다.</li><li><code>RCX</code>/<code>RDX</code> 같은 레지스터가 인자를 담고 있다는 호출 규약을 모르고 아무 레지스터나 살펴보며 시간을 낭비하는 경우.</li><li>콘솔 입력이 필요한 프로그램인데 입력을 안 하고 계속 기다리기만 하는 경우 — 콘솔 창에 값을 입력해야 프로그램이 검사 로직까지 진행한다.</li><li>32비트/64비트 실행 파일을 반대 아키텍처의 x64dbg(<code>x32dbg.exe</code>/<code>x64dbg.exe</code>)로 열어서 애초에 실행이 안 되는 경우.</li><li>정적 분석 없이 x64dbg만으로 복잡한 알고리즘 전체를 눈으로 따라가려다 시간을 낭비하는 경우 — 로직이 복잡하면 IDA/Ghidra로 먼저 구조를 파악한 뒤 x64dbg는 "값 확인용"으로만 쓰는 것이 더 빠르다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>브레이크포인트 개념 자체가 헷갈리면 → REV-0169(브레이크포인트란 무엇인가)를 참고한다.</li><li>단축키/명령어를 더 자세히 보고 싶으면 → REV-0281(x64dbg 핵심 단축키와 명령 치트시트)을 참고한다.</li><li>호출 규약(어느 레지스터에 인자가 오는지)이 헷갈리면 → <code>../assembly/rev-0071-call.md</code>를 참고한다.</li><li>정적 분석과 병행하고 싶으면 → REV-0276(IDA 10분 실전 워크플로) 또는 REV-0279(Ghidra 10분 실전 워크플로)로 먼저 구조를 파악한 뒤, 이 문서의 흐름으로 실제 값만 x64dbg로 확인한다.</li><li>값이 암호화/인코딩되어 있어 단순 비교가 아니면 → <code>../algorithms/</code> 카테고리의 관련 패턴 문서를 참고해서 역산 방법을 찾는다.</li></ul>
+<h2>미니 예제</h2>
+<p>가상의 32비트 Windows 크랙미 <code>crackme32.exe</code>를 x64dbg로 여는 순간부터 답을 찾기까지의 타임라인 예시:</p>
+<pre><code class="language-text">0:00  x32dbg.exe 로 crackme32.exe 로드, 진입점에서 정지
+0:20  F9 로 메인 코드 진입 (콘솔 창 뜸)
+1:10  우클릭 → Search for → Current Module → String references
+1:50  "Wrong password!" 문자열 발견, 더블클릭으로 이동
+2:40  바로 위쪽에서 call strcmp 발견
+3:20  strcmp 호출 지점에 F2 로 브레이크포인트 설정
+4:10  F9 로 실행 → 콘솔에 아무 값 입력(예: test123) → 브레이크포인트에서 정지
+5:00  레지스터 창에서 두 번째 인자(정답 문자열 포인터) 확인 → 우클릭 Follow in Dump
+6:30  Dump 창에서 "R3v3rse_2026" 문자열 확인
+8:00  프로그램 재시작(Ctrl+F2) 후 R3v3rse_2026 입력 → "Correct password!" 확인</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0280-x64dbg-install.html">REV-0280 — x64dbg 설치와 오프라인 준비</a></li><li><a href="rev-0281-x64dbg-shortcuts-cheatsheet.html">REV-0281 — x64dbg 핵심 단축키와 명령 치트시트</a></li><li><a href="rev-0169-what-is-a-breakpoint.html">REV-0169 — Breakpoint가 무엇이고 어디에 걸어야 하는가</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Strings/String references 탐색, 브레이크포인트 설정, Follow in Dump, Windows x64 호출 규약(RCX/RDX/R8/R9)에 근거한 인자 확인 흐름은 x64dbg 공식 문서(help.x64dbg.com) 및 다수의 공개 x64dbg 입문 튜토리얼/CTF 라이트업에서 공통적으로 쓰이는 실전 순서를 기준으로 정리했다(2026-09-08 검증).</li><li>실제 걸리는 시간은 바이너리 크기, 입력 검증 단계 수, 콘솔 I/O 유무에 따라 달라질 수 있으므로 "10분"은 단순 strcmp형 크랙미를 기준으로 한 목표 시간이다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

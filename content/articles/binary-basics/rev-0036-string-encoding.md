@@ -115,7 +115,7 @@ IDA: Strings 창(`Shift+F12`)에서 인코딩별 필터링 및 검색 가능. �
 ## 막혔을 때 다음 체크
 - 문자열이 저장된 위치(코드/데이터/스택/힙)가 궁금하면 → REV-0030(Code Data BSS Stack Heap 기초)으로 이동.
 - 문자열 포인터를 함수 인자로 넘기는 코드의 형태가 궁금하면 → REV-0032(함수 인자와 반환값이 어디에 있는지), REV-0033(포인터와 역참조)으로 이동.
-- 문자열 비교/복사 명령어(`REP MOVSB`, `SCASB`)의 구체적 동작이 궁금하면 AGENTS.md에 정의된 Assembly Dictionary의 `MOVS`, `SCAS`, `REP` 관련 항목을 검색해서 이동.
+- 문자열 비교/복사 명령어(`REP MOVSB`, `SCASB`)의 구체적 동작이 궁금하면 Assembly Dictionary에서 `MOVS`, `SCAS`, `REP`를 검색해서 이동.
 
 ## 미니 예제
 다음 C 코드가 두 가지 인코딩을 어떻게 메모리에 저장하는지 비교해보자.

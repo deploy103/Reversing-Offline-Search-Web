@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>공유 라이브러리를 못 찾아서 error while loading shared libraries가 뜰 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>공유 라이브러리를 못 찾아서 error while loading shared libraries가 뜰 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">readelf</span><span class="tag">ldd</span></div>
+<h2>한 줄 요약</h2>
+<p><code>error while loading shared libraries: libXXX.so.N: cannot open shared object file: No such file or directory</code>는 동적 링커(<code>ld-linux.so</code>)가 프로그램 실행 전에 <code>DT_NEEDED</code>에 적힌 공유 라이브러리를 못 찾았다는 뜻이며, 대부분 <code>LD_LIBRARY_PATH=&lt;라이브러리가_있는_디렉터리&gt; ./프로그램</code> 한 줄로 즉시 해결되고, CTF에서는 문제에서 제공한 전용 <code>libc.so.6</code>을 지정해서 실행해야 하는 경우가 많다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>바이너리를 그냥 <code>./chall</code>로 실행했더니 바로 <code>error while loading shared libraries: ...</code>가 뜨고 종료될 때</li><li><code>ldd ./chall</code>을 돌렸는데 특정 <code>.so</code> 옆에 <code>not found</code>라고 나올 때</li><li>CTF pwn 문제에서 배포된 <code>libc.so.6</code>, <code>ld-2.31.so</code> 같은 파일을 받았는데 그냥 실행하면 시스템 libc를 써서 오프셋이 안 맞을 때</li><li>GDB로 <code>run</code>을 눌렀는데 같은 메시지가 뜨면서 프로그램이 아예 시작도 못 할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>동적 링커가 하는 일 (REV-0101, REV-0649 참고)</h3>
+<p>ELF 실행 파일이 동적 링킹되어 있으면, 커널이 프로그램을 실행하기 전에 ELF 헤더의 <code>e_type</code>/Program Header <code>PT_INTERP</code> 세그먼트에 적힌 인터프리터(보통 <code>/lib64/ld-linux-x86-64.so.2</code>)를 먼저 실행한다. 이 인터프리터(동적 링커)가 <code>.dynamic</code> 섹션의 <code>DT_NEEDED</code> 엔트리 목록을 읽어서 필요한 모든 <code>.so</code> 파일을 순서대로 찾아 메모리에 매핑하고, 심볼을 연결(relocation)한 뒤 비로소 프로그램의 <code>main</code>을 실행한다.</p>
+<p>이 과정에서 <code>.so</code> 파일 하나라도 못 찾으면, 프로그램이 시작조차 못 하고 다음과 같은 메시지를 표준 에러로 출력하며 즉시 종료한다.</p>
+<pre><code>./chall: error while loading shared libraries: libc.so.6: cannot open shared object file: No such file or directory</code></pre>
+<h3>동적 링커의 검색 순서</h3>
+<p>동적 링커가 <code>.so</code>를 찾는 순서는 대략 다음과 같다(자세한 우선순위는 <code>man ld.so</code> 참고).</p>
+<ol><li><code>DT_RPATH</code>/<code>DT_RUNPATH</code> (바이너리에 내장된 검색 경로, REV-0641 DT_* 참고)</li><li><code>LD_LIBRARY_PATH</code> 환경 변수 (콜론으로 구분된 디렉터리 목록)</li><li><code>/etc/ld.so.cache</code> (<code>ldconfig</code>가 미리 만들어 둔 캐시)</li><li>기본 경로(<code>/lib</code>, <code>/usr/lib</code> 등)</li></ol>
+<p>CTF pwn 문제처럼 특정 디렉터리에 놓인 <code>libc.so.6</code>를 강제로 쓰고 싶다면 <code>LD_LIBRARY_PATH</code>나 <code>PT_INTERP</code>/<code>RPATH</code> 조작이 필요하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>./chall</code> 실행 시 바로 <code>error while loading shared libraries: &lt;이름&gt;: cannot open shared object file: No such file or directory</code> 출력 후 종료 코드 127</li><li><code>ldd ./chall</code> 출력에서 특정 줄이 <code>libc.so.6 =&gt; not found</code>처럼 나옴</li><li>GDB에서 <code>run</code> 실행 시 <code>[Inferior 1 (process 1234) exited with code 01]</code>과 함께 같은 에러 메시지가 stderr로 찍힘</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>ldd ./chall</code>을 실행해서 정확히 어떤 라이브러리가 <code>not found</code>인지 먼저 확인한다.</li><li>그 라이브러리 파일이 어디에 있는지(문제 배포 디렉터리 안, 또는 시스템에 설치되어 있는지) <code>find</code> / <code>locate</code>로 찾는다.</li><li>있는 위치를 찾았다면 <code>LD_LIBRARY_PATH</code>로 그 디렉터리를 지정해서 다시 실행해본다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) ldd로 정확한 원인 파악</strong></p>
+<pre><code class="language-bash">$ ldd ./chall
+        linux-vdso.so.1 (0x00007ffee6bfd000)
+        libc.so.6 =&gt; not found
+        /lib64/ld-linux-x86-64.so.2 (0x00007f2a3c001000)</code></pre>
+<p><code>not found</code>가 뜬 줄이 원인이다. 이름과 버전(<code>libc.so.6</code>)을 정확히 메모한다.</p>
+<p><strong>2) 필요한 파일이 어디 있는지 확인</strong></p>
+<pre><code class="language-bash">$ find . -maxdepth 1 -iname "libc*"
+./libc.so.6
+$ find . -maxdepth 1 -iname "ld-*"
+./ld-2.31.so</code></pre>
+<p>CTF에서는 문제 압축파일 안에 <code>libc.so.6</code>, 때로는 <code>ld-linux-x86-64.so.2</code>(또는 <code>ld-2.31.so</code>)까지 같이 배포하는 경우가 많다. 서버가 사용하는 실제 libc와 로컬 시스템 libc가 다르면 익스플로잇 오프셋이 안 맞기 때문에, 반드시 배포된 libc를 강제로 쓰도록 해야 한다.</p>
+<p><strong>3) LD_LIBRARY_PATH로 임시 실행 (가장 빠른 방법)</strong></p>
+<pre><code class="language-bash">$ LD_LIBRARY_PATH=. ./chall</code></pre>
+<p>현재 디렉터리(<code>.</code>)에 있는 <code>libc.so.6</code>을 우선 사용하게 만든다. 세션 한정으로만 적용되고 원본 파일은 건드리지 않아 가장 안전하다.</p>
+<p><strong>4) 인터프리터까지 다른 버전을 강제하고 싶다면 (glibc 버전 자체가 다를 때)</strong></p>
+<pre><code class="language-bash">$ ./ld-2.31.so --library-path . ./chall</code></pre>
+<p>동적 링커 자체를 직접 실행하며 <code>--library-path</code>로 검색 경로를 지정하는 방법이다. 배포된 <code>libc</code>와 <code>ld</code>의 버전이 시스템 것과 크게 다를 때(REV-0705, REV-0711 참고) 이 방법이 더 확실하다.</p>
+<p><strong>5) GDB/Pwndbg에서 디버깅할 때도 동일하게 적용</strong></p>
+<pre><code class="language-bash">$ LD_LIBRARY_PATH=. gdb ./chall</code></pre>
+<p>또는 GDB 안에서:</p>
+<pre><code class="language-gdb">(gdb) set environment LD_LIBRARY_PATH=.
+(gdb) run</code></pre>
+<p>pwntools를 쓴다면 <code>process(['./ld-2.31.so', '--library-path', '.', './chall'])</code>처럼 실행 커맨드 자체를 인터프리터 경유로 바꾸거나, <code>pwninit</code> 같은 도구로 자동으로 rpath를 패치해서 쓰는 경우가 많다.</p>
+<p><strong>6) 영구적으로 바이너리 자체를 패치하고 싶다면 (선택)</strong></p>
+<pre><code class="language-bash">$ patchelf --set-interpreter ./ld-2.31.so ./chall
+$ patchelf --set-rpath . ./chall</code></pre>
+<p><code>patchelf</code>로 <code>PT_INTERP</code>와 <code>RPATH</code>를 바이너리에 직접 새겨 넣으면 이후에는 환경 변수 없이 <code>./chall</code>만으로 항상 지정한 libc를 쓴다. 원본을 보존하고 싶다면 복사본에 적용한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">ldd ./chall                              # 어떤 .so가 not found인지 확인
+LD_LIBRARY_PATH=. ./chall                # 현재 디렉터리 라이브러리 우선 사용
+./ld-2.31.so --library-path . ./chall    # 인터프리터까지 직접 지정
+patchelf --set-interpreter &lt;ld경로&gt; &lt;바이너리&gt;
+patchelf --set-rpath &lt;디렉터리&gt; &lt;바이너리&gt;
+readelf -d ./chall | grep NEEDED         # 바이너리가 요구하는 라이브러리 목록</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>ldd</code>에서 <code>libc.so.6 =&gt; not found</code>처럼 화살표 뒤가 없으면 검색 경로 어디에서도 못 찾은 것이고, <code>libc.so.6 =&gt; /lib/x86_64-linux-gnu/libc.so.6 (0x...)</code>처럼 경로가 붙어 있으면 정상적으로 찾은 것이다.</li><li><code>readelf -d ./chall | grep NEEDED</code>로 나오는 <code>(NEEDED) Shared library: [libc.so.6]</code> 목록이 실제로 링커가 찾아야 하는 이름 목록이다. 버전 번호(예: <code>libc.so.6</code>)까지 정확히 일치해야 하며, <code>libc.so.6.1</code>처럼 임의로 이름을 바꾼 파일은 인식되지 않는다(심볼릭 링크나 <code>patchelf</code>로 정확한 이름을 맞춰야 한다).</li><li>CTF에서 서버 원격 익스플로잇을 만들 때, 로컬에서 <code>LD_LIBRARY_PATH</code>로 지정한 libc와 실제 서버가 쓰는 libc 버전이 정확히 같아야 오프셋 계산이 맞는다. 다르면 <code>one_gadget</code>, <code>system</code> 등 함수 오프셋이 전부 어긋난다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>ldd</code>가 <code>not found</code>라고 나온 라이브러리를 시스템에 새로 설치(<code>apt install</code>)해버리는 것 — CTF 문제는 대부분 특정 glibc 버전에 의존하는 익스플로잇이므로, 시스템 libc를 덮어쓰면 서버와 버전이 달라져서 오히려 익스플로잇이 안 맞게 된다. <code>LD_LIBRARY_PATH</code>로 로컬 지정만 하고 시스템은 건드리지 않는 게 안전하다.</li><li><code>sudo ldconfig</code>로 시스템 캐시에 문제 libc를 등록해버리는 것 — 시스템 전역에 영향을 주므로 다른 프로그램이 깨질 수 있다. 반드시 필요할 때만, 그리고 되돌릴 수 있게 진행한다.</li><li><code>chmod +x libc.so.6</code>만 해두고 실제로 <code>LD_LIBRARY_PATH</code>나 <code>--library-path</code>로 지정하지 않아서 여전히 시스템 libc가 로드되는 것을 눈치채지 못하는 것 — <code>ldd</code> 결과에서 어떤 경로의 libc가 실제로 매핑됐는지 반드시 재확인해야 한다.</li><li>32비트(x86) 바이너리인데 64비트 시스템에서 그냥 실행해서 나는 에러(REV-0675 multilib 참고)를 이 문제와 혼동하는 것 — 이 경우는 <code>error while loading shared libraries</code>가 아니라 <code>cannot execute binary file: Exec format error</code>가 뜬다는 점으로 구분한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>glibc 버전이 시스템과 아예 안 맞아서 실행 자체가 안 되는 근본 원인을 더 깊이 알고 싶다면 → REV-0705(glibc 버전이 안 맞아서 바이너리가 실행이 안 될 때)</li><li>서버 환경과 로컬 glibc가 달라서 분석 결과가 안 맞는 상황이라면 → REV-0711(서버 환경 glibc와 로컬 glibc가 달라 분석이 안 맞을 때)</li><li><code>LD_PRELOAD</code>를 같이 쓰는데 적용이 안 되는 것처럼 보인다면 → REV-0707(LD_PRELOAD가 적용이 안 되는 것처럼 보일 때)</li><li>동적 링커/PLT/GOT 구조 자체를 더 이해하고 싶다면 → REV-0100(PLT와 GOT 기초), REV-0101(Dynamic Linking과 Import 함수 추적)</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ ./chall
+./chall: error while loading shared libraries: libc.so.6: cannot open shared object file: No such file or directory
+
+$ ldd ./chall
+        linux-vdso.so.1 (0x00007ffd1b3fe000)
+        libc.so.6 =&gt; not found
+        /lib64/ld-linux-x86-64.so.2 (0x00007f1234001000)
+
+$ LD_LIBRARY_PATH=. ./chall
+Welcome to the challenge!
+&gt;</code></pre>
+<p><code>LD_LIBRARY_PATH=.</code> 한 번으로 현재 디렉터리의 <code>libc.so.6</code>를 우선 사용해 정상적으로 실행됐다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0705-glibc-version-not-found-execution.html">REV-0705 — glibc 버전이 안 맞아서 바이너리가 실행이 안 될 때</a></li><li><a href="rev-0711-server-vs-local-glibc-mismatch.html">REV-0711 — 서버 환경 glibc와 로컬 glibc가 달라 분석이 안 맞을 때</a></li><li><a href="rev-0707-ld-preload-not-applied.html">REV-0707 — LD_PRELOAD가 적용이 안 되는 것처럼 보일 때</a></li><li><a href="rev-0100-plt-got.html">REV-0100 — PLT와 GOT 기초</a></li><li><a href="rev-0101-dynamic-linking.html">REV-0101 — Dynamic Linking과 Import 함수 추적</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>동적 링커 검색 순서(<code>RPATH</code>/<code>RUNPATH</code>/<code>LD_LIBRARY_PATH</code>/<code>ld.so.cache</code>): <code>man ld.so</code> (glibc 공식 man page) 기준.</li><li><code>error while loading shared libraries</code> 메시지와 원인: glibc 동적 링커(<code>ld-linux.so</code>) 동작 및 다수 리눅스 실전 문서 기준 (2026-09-08 확인).</li><li><code>patchelf</code>를 이용한 <code>PT_INTERP</code>/<code>RPATH</code> 패치: patchelf 공식 저장소(NixOS/patchelf) 사용법 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,184 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XOR 반복 변환 역산 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>XOR 반복 변환 역산</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p><code>for</code> 루프 안에서 <code>xor al, key</code>가 반복되고 그 결과를 정답 배열과 비교하는 코드를 만나면, <strong>XOR는 자기 자신의 역함수</strong>이므로(<code>a ^ b = c</code>이면 <code>c ^ b = a</code>) 같은 키로 정답 배열을 다시 XOR하기만 하면 원래 입력(flag)이 그대로 나온다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>루프 안에 <code>xor al, imm8</code> 또는 <code>xor al, byte ptr [key+ecx]</code>처럼 즉시값 또는 배열 원소로 XOR하는 코드가 있을 때</li><li>디컴파일 결과에 <code>input[i] ^ key</code>, <code>input[i] ^ key[i % keylen]</code> 형태의 수식이 보일 때</li><li>"암호화된 것 같은데 복호화 함수가 안 보인다"는 상황 — 애초에 XOR은 암호화/복호화 함수가 동일하므로 별도 복호화 루틴 없이 같은 루프가 재사용되는 경우가 많다</li><li>전형적인 검색 질의 예시: <code>xor 반복문</code></li></ul>
+<h2>핵심 개념</h2>
+<p>XOR(배타적 논리합)의 수학적 성질 중 리버싱에서 가장 중요한 것은 <strong>자기 역원(self-inverse)</strong> 이라는 점이다.</p>
+<pre><code>a ^ b = c   이면   c ^ b = a   (항상 성립)</code></pre>
+<p>즉 "입력을 키로 XOR해서 정답과 같아야 한다"는 검증 로직이 있다면, <strong>정답을 같은 키로 다시 XOR하면 입력(=flag)이 그대로 복원</strong>된다. 덧셈/뺄셈이나 회전과 달리 방향을 뒤집을 필요조차 없다 — 연산 자체가 자기 자신의 역연산이다. 이 성질 때문에 XOR 변환은 리버싱 관점에서 "가장 빠르게 역산 가능한 패턴"이다.</p>
+<p>키의 형태에 따라 세 가지 변형이 흔하다.</p>
+<ol><li><strong>단일 바이트 키(고정 XOR)</strong>: 모든 바이트에 같은 값(예: <code>0x13</code>)을 XOR. 가장 단순.</li><li><strong>반복 키(rolling/repeating key XOR)</strong>: <code>key[i % keylen]</code>처럼 짧은 키 배열을 순환시키며 XOR. 고전적인 "Vigenère 스타일" XOR.</li><li><strong>체인 XOR(누적형)</strong>: 이전 평문 바이트 또는 이전 암호문 바이트를 다음 바이트의 키로 사용. CBC와 비슷한 발상으로, 역산 시 앞에서부터 순서대로 풀어야 한다(뒤 바이트를 풀려면 앞 바이트 값이 필요).</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<p><strong>단일 바이트 키:</strong></p>
+<pre><code class="language-asm">loop1:
+movzx   eax, byte ptr [rdi+rcx]
+xor     al, 0x5A
+cmp     al, byte ptr [rsi+rcx]
+jne     fail
+inc     ecx
+cmp     ecx, len
+jl      loop1</code></pre>
+<p>디컴파일: <code>if ((input[i] ^ 0x5A) != expected[i]) return 0;</code></p>
+<p><strong>반복 키:</strong></p>
+<pre><code class="language-c">for ( i = 0; i &lt; len; ++i )
+{
+    if ( (input[i] ^ key[i % 4]) != expected[i] )
+        return 0;
+}</code></pre>
+<p><strong>체인 XOR:</strong></p>
+<pre><code class="language-c">prev = 0;
+for ( i = 0; i &lt; len; ++i )
+{
+    enc = input[i] ^ prev;
+    if ( enc != expected[i] )
+        return 0;
+    prev = input[i];   // 또는 prev = enc (구현에 따라 다름)
+}</code></pre>
+<p>이 형태는 <code>prev</code>라는 변수가 루프 밖에서 초기화되고 매 반복 갱신되는 것이 특징이다.</p>
+<h2>가장 먼저 할 것</h2>
+<p><code>xor</code> 명령의 오퍼랜드가 <strong>즉시값(고정 키)</strong>인지, <strong>배열 인덱싱(반복 키)</strong>인지, <strong>이전 반복의 변수(체인)</strong>인지부터 구분한다. 그다음 <code>expected</code> 배열과 키를 정적으로 덤프해서 파이썬으로 역산한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 키 종류 판별</strong></p>
+<ul><li><code>xor al, 0x5A</code>처럼 명령어에 상수가 박혀 있으면 → 단일 바이트 키.</li><li><code>xor al, byte ptr [rbx+rdx]</code>이고 <code>rdx</code>가 <code>rcx % keylen</code>으로 계산되면 → 반복 키. <code>keylen</code>은 보통 <code>and edx, 3</code>(4로 나눈 나머지, 즉 keylen=4) 같은 마스크 연산으로 드러난다.</li><li><code>xor</code>의 두 번째 피연산자가 직전 반복에서 저장해둔 변수라면 → 체인 XOR.</li></ul>
+<p><strong>2) 필요한 값 모두 덤프</strong></p>
+<p>IDA Hex View 또는 x64dbg 메모리 덤프로 <code>expected</code>(및 있다면 <code>key</code>) 배열을 파이썬 bytes로 옮긴다.</p>
+<p><strong>3) 케이스별 역산</strong></p>
+<p>단일 바이트 키:</p>
+<pre><code class="language-python">expected = bytes.fromhex("2f0a1a4a1a5a4a1a")
+KEY = 0x5A
+flag = bytes(b ^ KEY for b in expected)
+print(flag)</code></pre>
+<p>반복 키:</p>
+<pre><code class="language-python">from itertools import cycle
+
+expected = bytes.fromhex("...")
+key = bytes.fromhex("deadbeef")   # 4바이트 키
+flag = bytes(e ^ k for e, k in zip(expected, cycle(key)))
+print(flag)</code></pre>
+<p>체인 XOR (앞에서부터 순서대로 복원해야 함):</p>
+<pre><code class="language-python">expected = bytes.fromhex("...")
+flag = bytearray(len(expected))
+prev = 0
+for i, e in enumerate(expected):
+    flag[i] = e ^ prev
+    prev = flag[i]   # 원본 로직이 prev = input[i]였던 경우
+print(bytes(flag))</code></pre>
+<p><strong>4) 결과 검증</strong></p>
+<p>역산해서 나온 바이트가 전부 출력 가능한 아스키(0x20~0x7E)인지 확인한다. 아니라면 키 방향이나 XOR 대상을 잘못 짚은 것이니 2단계로 돌아가 재확인한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>xor</code> 명령 위에서 <code>H</code>로 헥스/십진 토글, 오퍼랜드가 메모리면 더블클릭해서 배열 시작 위치 확인</li><li>x64dbg: <code>bp</code> 걸고 루프 한 바퀴 돌 때마다 <code>al</code>, <code>[rsi+rcx]</code> 값을 Watch 창에 등록해 관찰</li><li>Python: <code>itertools.cycle</code>, <code>bytes.fromhex</code>, <code>bytes([...])</code></li></ul>
+<h2>출력 해석</h2>
+<ul><li>역산 결과가 <code>flag{</code>, <code>CTF{</code>, <code>FLAG{</code> 같은 접두어로 시작하면 성공 가능성이 매우 높다.</li><li>일부만 정상 아스키이고 나머지가 깨진다면, 반복 키의 길이(<code>keylen</code>)를 잘못 추정했을 가능성이 크다 — <code>and</code>/<code>cmp</code> 명령으로 나오는 나머지 연산의 실제 모듈러스 값을 다시 확인한다.</li><li>전체가 다 깨진다면 XOR 앞에 다른 변환(ADD/ROL 등)이 섞여 있을 수 있다 — REV-0198로 돌아가 <code>xor</code> 앞뒤에 다른 연산이 있는지 재확인.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>반복 키의 방향(<code>key[i % keylen]</code>인지 <code>key[keylen - 1 - (i % keylen)]</code>처럼 역순인지)을 확인하지 않고 무조건 정방향으로 가정하는 것.</li><li>체인 XOR에서 <code>prev</code>가 "원본 평문"인지 "암호문(expected)"인지 헷갈리는 것 — 둘 중 어느 것을 이전 값으로 쓰는지에 따라 역산 코드가 완전히 달라지므로 디컴파일 코드를 한 줄씩 다시 확인해야 한다.</li><li>8비트가 아니라 32비트 단위로 XOR하는 경우(<code>xor eax, key_dword</code>)를 1바이트 XOR로 착각해서 하위 1바이트만 역산하고 나머지 3바이트를 놓치는 것.</li><li>XOR 키가 <code>0x00</code>인 특수 케이스(사실상 변환 없음)를 눈치채지 못하고 계속 "뭔가 이상한 값"이라고 헤매는 것 — 키 상수를 눈으로 직접 다시 확인한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>XOR 앞뒤로 ADD/SUB가 섞여 있다면 → REV-0200과 함께 순서대로 역산(마지막에 적용된 연산부터 거꾸로 풀어야 함).</li><li>키가 32비트 이상이고 곱셈까지 함께 있다면 → REV-0207/REV-0208(FNV) 패턴일 수 있음.</li><li>XOR 후 값이 <code>0xFF</code>로 마스킹되는 이유가 궁금하면 → REV-0203(AND 0xFF 마스크).</li><li>이 XOR 변환이 애초에 순수 비교인지 궁금하면 → REV-0198로 돌아가 전체 루프 구조 재확인.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 단일 바이트 키</strong> 바이너리에서 <code>expected = 2F 0A 1A 4A 1A 5A 4A 1A</code>, <code>xor al, 0x5A</code>를 확인했다면:</p>
+<pre><code class="language-python">expected = bytes.fromhex("2f0a1a4a1a5a4a1a")
+flag = bytes(b ^ 0x5A for b in expected)
+print(flag)  # b'uP@\x10@\x00\x10@' 같은 값이 나오면 키 추정이 틀린 것 -&gt; 재확인 필요한 예시</code></pre>
+<p>(실전에서는 아스키로 깔끔하게 나오는 키를 찾을 때까지 값을 재검증한다. 위 예시는 계산 과정을 보여주기 위한 것으로, 실제 문제에서는 <code>expected</code>와 키가 서로 맞아떨어지는 실제 바이트를 사용한다.)</p>
+<p><strong>예제 2 — 4바이트 반복 키</strong></p>
+<pre><code class="language-python">from itertools import cycle
+expected = bytes.fromhex("1d0b1c56424e0413050b164e")
+key = b"CTF!"
+flag = bytes(e ^ k for e, k in zip(expected, cycle(key)))
+print(flag)  # 정확한 키를 알고 있다면 사람이 읽을 수 있는 문자열이 나옴</code></pre>
+<p><strong>예제 3 — asm에서 keylen 유추</strong></p>
+<pre><code class="language-asm">mov     eax, ecx
+xor     edx, edx
+mov     ebx, 4
+div     ebx           ; eax = i/4, edx = i%4  (여기서 4가 keylen)
+movzx   esi, byte ptr [key+edx]
+xor     al, sil</code></pre>
+<p><code>div ebx</code>(ebx=4)로 나머지를 구하는 부분이 곧 <code>key[i % 4]</code>에 해당하는 코드.</p>
+<p><strong>예제 4 — Ghidra에서 32비트 단위 XOR</strong></p>
+<pre><code class="language-c">for (i = 0; i &lt; 8; i += 4)
+{
+    v = *(uint*)(input + i) ^ 0xDEADBEEF;
+    if (v != *(uint*)(expected + i)) return 0;
+}</code></pre>
+<pre><code class="language-python">import struct
+expected = bytes.fromhex("...")
+KEY = 0xDEADBEEF
+out = b""
+for i in range(0, len(expected), 4):
+    v = struct.unpack_from("&lt;I", expected, i)[0]
+    out += struct.pack("&lt;I", v ^ KEY)
+print(out)</code></pre>
+<p><strong>예제 5 — 처음부터 끝까지 실행되는 전체 스크립트 (단일 바이트 키 + 반복 키, 두 케이스 모두 검증)</strong></p>
+<p>아래는 실제로 계산해서 값이 정확히 맞아떨어지는 것을 확인한 완결된 스크립트다. 두 가지 흔한 케이스(단일 바이트 키, 4바이트 반복 키)를 각각 역산하고, 결과가 <code>CTF{...}</code> 형태인지까지 자동으로 검사한다.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0199 실전 스크립트: 단일 바이트 XOR와 반복 키 XOR를 실제로 검증된 값으로 역산한다.
+
+from itertools import cycle
+
+# ===== 케이스 1: 단일 바이트 키 =====
+# 어셈블리에서 xor al, 0x5A 를 확인했고, expected(정답) 12바이트를 Hex View에서 복사했다.
+expected1 = bytes.fromhex("190e1c2122352805313f2327")
+KEY1 = 0x5A
+
+# XOR의 자기 역원 성질(a^b=c 이면 c^b=a)을 그대로 이용해서 같은 키로 다시 XOR한다.
+flag1 = bytes(b ^ KEY1 for b in expected1)
+print("케이스1 복원 flag:", flag1.decode())
+# 실행 결과: 케이스1 복원 flag: CTF{xor_key}
+
+# ===== 케이스 2: 4바이트 반복 키 =====
+# 어셈블리에서 xor al, byte ptr [key+edx] 를 확인했고, div ebx(ebx=4)로 keylen=4임을 알아냈다.
+expected2 = bytes.fromhex("08673f5a395c154d144b165314581c5836")
+key2 = b"K3y!"   # 4바이트 키를 Hex View에서 그대로 복사
+
+# itertools.cycle로 key2를 반복시키면서 expected2와 자리마다 XOR한다.
+flag2 = bytes(e ^ k for e, k in zip(expected2, cycle(key2)))
+print("케이스2 복원 flag:", flag2.decode())
+# 실행 결과: 케이스2 복원 flag: CTF{roll_xor_key}
+
+# 두 케이스 모두 "CTF{ 로 시작하고 } 로 끝나는지"를 자동으로 검사해서 성공 여부를 판정한다.
+for name, result in [("케이스1", flag1), ("케이스2", flag2)]:
+    ok = result.startswith(b"CTF{") and result.endswith(b"}")
+    print(name, "형식 검사:", "통과" if ok else "실패")
+# 실행 결과: 케이스1 형식 검사: 통과
+# 실행 결과: 케이스2 형식 검사: 통과</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0198-char-by-char-loop-pattern.html">REV-0198 — 문자별 for 루프 검증 패턴</a></li><li><a href="rev-0200-add-sub-constant-transform.html">REV-0200 — ADD SUB 상수 기반 문자 변환</a></li><li><a href="rev-0201-rotate-transform.html">REV-0201 — Rotate ROL ROR 기반 변환</a></li><li><a href="rev-0207-fnv1-fnv1a.html">REV-0207 — FNV-1과 FNV-1a 해시 패턴</a></li><li>../assembly/rev-0057-xor.md — XOR 명령어</li></ul>
+<h2>출처/검증</h2>
+<ul><li>XOR의 자기 역원 성질(<code>a^b^b=a</code>)은 불(Boolean) 대수의 기본 정리로, 모든 CPU 아키텍처 매뉴얼(Intel SDM XOR 명령 설명 포함)에서 동일하게 성립.</li><li>반복 키/체인 XOR 패턴은 CTF 리버싱 writeup에서 흔히 관찰되는 구현 방식을 일반화한 것(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghidra와 GDB를 같이 쓰는 워크플로 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>Ghidra와 GDB를 같이 쓰는 워크플로</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>Linux ELF 문제는 <strong>Ghidra로 함수 구조와 디컴파일 의사코드를 확보한 뒤, GDB(+Pwndbg)로 그 의사코드가 실제 실행 중에 맞는지 레지스터/메모리 값으로 검증</strong>하는 흐름이 기본이며, 두 도구를 오갈 때는 PIE 오프셋 계산과 심볼 이름 동기화가 핵심이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Ghidra에서 디컴파일한 C 유사 코드를 실제 실행 결과와 대조해서 맞는지 확인해야 할 때</li><li>PIE(Position Independent Executable)라서 Ghidra의 주소와 GDB에서 보이는 실제 주소가 다를 때</li><li>Ghidra 내장 Debugger 모듈과 별도 터미널 GDB 중 무엇을 쓸지, 어떻게 연동할지 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Ghidra는 정적 디컴파일에 강하고(무료로 C 유사 의사코드 생성), GDB는 실제 프로세스를 제어하며 값 확인에 강하다. 이 조합의 핵심 이슈는 두 가지다.</p>
+<ol><li><strong>PIE 오프셋 문제</strong>: 최신 리눅스 배포판의 ELF는 대부분 PIE로 빌드되어(<code>readelf -h</code>의 <code>Type: DYN</code>), 매 실행마다 로드 베이스 주소가 바뀐다(ASLR). Ghidra는 파일 기준 주소(보통 <code>0x00100000</code>대)를 보여주지만, 실제 실행 중인 프로세스는 그 주소에 임의의 베이스가 더해진 곳에 있다.</li><li><strong>심볼 이름 동기화</strong>: Ghidra에서 함수를 리네임(<code>L</code> 단축키)해도 GDB는 그 이름을 자동으로 모른다. strip된 바이너리라면 GDB는 애초에 <code>FUN_00101234</code> 같은 이름조차 모르고 순수 주소로만 보여준다.</li></ol>
+<p>이 문제를 푸는 표준 방법은 GDB에서 프로세스의 실제 메모리 매핑을 확인해 베이스 주소를 얻고, 거기에 Ghidra의 파일 주소(가상 주소, PIE는 보통 링크 베이스가 <code>0x100000</code>)를 더해 실제 위치를 계산하는 것이다. Pwndbg를 쓰면 <code>vmmap</code> 명령으로 이 매핑을 한눈에 볼 수 있어 훨씬 편하다.</p>
+<p>또한 Ghidra 9.2+ 버전은 내장 <strong>Debugger</strong> 모듈을 제공해서, GDB를 백엔드로 붙여 Ghidra 안에서 직접 브레이크포인트를 걸고 실행 상태를 볼 수도 있다. 별도 터미널 GDB와 Ghidra Debugger 둘 다 같은 GDB 엔진을 쓰므로 선택은 취향 문제지만, 이 문서는 더 널리 쓰이고 스크립팅이 쉬운 "별도 터미널 GDB" 방식을 기준으로 설명한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Ghidra 디컴파일에서 함수 시작 주소가 <code>0x00101a1d</code>인데, GDB <code>info proc mappings</code> 결과의 실행 파일 베이스가 <code>0x00555555554000</code>처럼 완전히 다른 자릿수로 보인다.</li><li><code>break *0x00101a1d</code>를 GDB에서 입력했는데 브레이크포인트가 걸리지 않거나 프로그램 시작 전에는 "No symbol table" 경고가 뜬다.</li><li>Ghidra에서 붙인 함수 이름(<code>check_flag</code>)이 GDB <code>disassemble</code> 결과에는 안 보이고 주소만 나온다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>readelf -h ./chall | grep Type</code>으로 PIE(<code>DYN</code>) 여부를 확인한다. PIE라면 이후 모든 주소 계산에 베이스 주소 보정이 필요하다는 것을 전제로 시작한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) Ghidra에서 정적 분석 및 함수 주소 확보</strong> Ghidra의 Symbol Tree 또는 Function Manager에서 관심 함수(예: <code>check_flag</code>)를 찾고, 그 함수의 시작 주소(Ghidra 기준 가상 주소, 예: <code>0x00101a1d</code>)를 기록한다. Decompile 창(자동으로 우측에 표시)에서 의사코드를 읽고 가설을 세운다.</p>
+<p><strong>2) GDB로 실행 후 베이스 주소 확인</strong></p>
+<pre><code class="language-bash">gdb ./chall
+(gdb) break main
+(gdb) run
+(gdb) info proc mappings</code></pre>
+<p><code>info proc mappings</code> 결과에서 <code>chall</code>(실행 파일 자신) 라인의 시작 주소가 실제 로드 베이스다. Pwndbg를 쓴다면 <code>vmmap</code> 명령이 더 보기 좋게 같은 정보를 보여준다.</p>
+<p><strong>3) 실제 브레이크포인트 주소 계산</strong></p>
+<pre><code>실제 주소 = 로드 베이스 + (Ghidra 주소 - Ghidra의 링크 베이스)</code></pre>
+<p>대부분의 PIE 바이너리에서 Ghidra 링크 베이스는 <code>0x00100000</code>이므로, 실질적으로는 "Ghidra 주소의 하위 오프셋 부분"을 로드 베이스에 더하면 된다. GDB/Pwndbg는 이를 더 쉽게 하는 방법을 제공한다.</p>
+<p><strong>4) PIE 대응 브레이크포인트 설정(더 쉬운 방법)</strong> 바이너리가 strip되지 않았다면 GDB에서 이름으로 바로 브레이크포인트를 걸 수 있다.</p>
+<pre><code class="language-bash">(gdb) break check_flag
+(gdb) run</code></pre>
+<p>strip되어 이름이 없다면 Pwndbg의 심볼 없는 주소 지정 방식을 쓴다.</p>
+<pre><code class="language-bash">(gdb) break *0x555555554000+0x1a1d</code></pre>
+<p><code>0x555555554000</code>은 2단계에서 확인한 실제 로드 베이스, <code>0x1a1d</code>는 Ghidra 주소(<code>0x00101a1d</code>)의 하위 오프셋(링크 베이스 <code>0x100000</code>을 뺀 값)이다.</p>
+<p><strong>5) 실행 및 값 확인</strong></p>
+<pre><code class="language-bash">(gdb) continue
+(gdb) info registers
+(gdb) x/8xb $rsi</code></pre>
+<p>브레이크포인트에 멈추면 레지스터와 메모리 값을 확인해 Ghidra에서 세운 가설(예: "이 인자가 사용자 입력 포인터")이 맞는지 검증한다.</p>
+<p><strong>6) 값 확인 후 Ghidra로 복귀해 주석/이름 기록</strong> GDB에서 확인한 실제 값을 Ghidra 디컴파일 창에 주석(<code>;</code> 단축키)으로 남기고, 확인된 변수는 리네임(Ghidra에서 변수 우클릭 → Rename Variable, 단축키 없으면 컨텍스트 메뉴 사용)한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">readelf -h ./chall | grep Type
+gdb ./chall
+(gdb) break main
+(gdb) run
+(gdb) info proc mappings     # 또는 pwndbg의 vmmap
+(gdb) break check_flag       # strip 안 된 경우
+(gdb) break *&lt;실제주소&gt;       # strip된 경우
+(gdb) continue
+(gdb) info registers
+(gdb) x/8xb $rsi
+(gdb) x/s $rdi</code></pre>
+<p>Ghidra: Symbol Tree에서 함수 더블클릭, <code>L</code>(리네임), <code>;</code>(주석), Decompile 창 자동 갱신.</p>
+<h2>출력 해석</h2>
+<ul><li><code>info proc mappings</code>(또는 <code>vmmap</code>)의 첫 실행 파일 매핑 라인이 실제 로드 베이스다. 이 값이 실행할 때마다 바뀌면 ASLR이 켜져 있다는 뜻이며, 매번 새로 확인해야 한다(<code>disable-randomization</code> 설정으로 고정할 수도 있다).</li><li><code>x/8xb $rsi</code> 결과가 Ghidra에서 예상한 문자열/배열 값과 일치하면 그 지점의 함수 인자 해석이 맞다는 뜻이다.</li><li>GDB에서 함수 이름으로 브레이크포인트가 걸리면(<code>Breakpoint 1 at 0x...</code>) 그 이름이 심볼 테이블에 남아있다는 뜻이므로, strip되지 않은 바이너리임이 재확인된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>PIE인 것을 모르고 Ghidra 주소를 GDB에 그대로 <code>break *0x00101a1d</code>로 입력해서 브레이크포인트가 전혀 다른 곳(또는 매핑되지 않은 주소라 실패)에 걸리는 것.</li><li>매 실행마다 로드 베이스가 바뀌는데 이전 실행에서 계산한 베이스 주소를 재사용하는 것.</li><li>Ghidra에서 변수/함수 이름을 바꿔놓고 GDB 세션에는 반영되지 않는다는 걸 잊고 GDB에서 그 이름으로 브레이크포인트를 걸려다 실패하는 것(디버그 정보가 없는 한 GDB는 Ghidra의 리네임을 모른다).</li><li><code>info registers</code>만 보고 메모리 내용(<code>x</code> 명령)은 확인하지 않아, 포인터가 가리키는 실제 데이터를 놓치는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>PIE 오프셋 계산 자체가 헷갈린다 → REV-0642 GDB 명령어 심화 치트시트(watch/catch/tbreak), REV-0643 Pwndbg 명령어 심화 치트시트(heap/got/plt)에서 주소 관련 명령 재확인</li><li>아예 정적/동적 어느 단계로 넘어갈지부터 헷갈린다 → REV-0309 정적분석과 동적분석을 오가는 타이밍 판단법</li><li>Windows PE 문제라 이 워크플로가 안 맞는다 → REV-0306 IDA로 정적분석 후 x64dbg로 검증하는 워크플로</li></ul>
+<h2>미니 예제</h2>
+<p><code>chall</code>(PIE, not stripped)의 <code>check_flag</code> 함수를 검증한다.</p>
+<ol><li>Ghidra에서 <code>check_flag</code> 디컴파일 → <code>if (input[i] ^ key[i] != target[i]) return 0;</code> 형태의 XOR 비교 루프 확인. 함수 시작 주소 <code>0x00101a1d</code> 기록.</li><li><code>gdb ./chall</code> → <code>break check_flag</code>(strip 안 됐으므로 이름으로 바로 가능) → <code>run</code>.</li><li>브레이크에 멈춤 → <code>info registers</code>로 인자 레지스터(<code>rdi</code>) 확인 → <code>x/s $rdi</code>로 실제 입력 문자열 확인.</li><li><code>key</code>, <code>target</code> 배열 주소를 Ghidra에서 확인한 뒤 GDB <code>x/8xb &lt;주소&gt;</code>로 실제 값 덤프 → Ghidra가 보여준 초기값과 일치함을 확인.</li><li>검증 완료 → Ghidra로 돌아가 <code>key</code>, <code>target</code> 배열에 주석으로 실제 16진수 값을 남기고, 이제 solve.py 작성 단계로 이동.</li></ol>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0309-static-dynamic-switch-timing.html">REV-0309 — 정적분석과 동적분석을 오가는 타이밍 판단법</a></li><li><a href="rev-0306-ida-static-x64dbg-verify-workflow.html">REV-0306 — IDA로 정적분석 후 x64dbg로 검증하는 워크플로</a></li><li><a href="rev-0642-gdb-advanced-cheatsheet.html">REV-0642 — GDB 명령어 심화 치트시트(watch/catch/tbreak)</a></li><li><a href="rev-0643-pwndbg-advanced-cheatsheet.html">REV-0643 — Pwndbg 명령어 심화 치트시트(heap/got/plt)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>GDB <code>info proc mappings</code>, <code>break</code>, <code>x</code> 명령어: GNU GDB 공식 문서(sourceware.org/gdb) 기준.</li><li>Pwndbg <code>vmmap</code> 명령: Pwndbg 공식 GitHub 문서 기준.</li><li>Ghidra Symbol Tree/Decompile/리네임/주석 기능: Ghidra 공식 문서(Ghidra Help) 기준.</li><li>PIE/ASLR과 실제 로드 베이스 관계: System V ABI 및 Linux 커널 ASLR 문서 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

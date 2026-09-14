@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>x64dbg Memory Map과 Module View · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>x64dbg Memory Map과 Module View</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><strong>Memory Map 탭</strong>은 현재 디버깅 중인 프로세스가 사용하는 모든 메모리 영역을 주소·크기·소속 모듈·보호 속성(읽기/쓰기/실행) 단위로 보여주는 표이고, 여기서 우클릭으로 특정 영역 전체에 브레이크포인트를 걸거나 Dump로 이동할 수 있어 "지금 이 주소가 어느 모듈, 어느 섹션에 속하는지" 파악할 때 가장 먼저 확인해야 하는 창이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>어떤 DLL이 프로세스에 로드되어 있는지, 각 모듈이 메모리 어디에 위치하는지 확인하고 싶을 때</li><li>특정 주소가 <code>.text</code>(코드), <code>.data</code>(데이터), 힙, 스택 중 어디에 속하는지 모를 때</li><li>패킹된 바이너리에서 언패킹된 실제 코드가 새로 할당된 메모리 영역에 풀렸는지 확인하고 싶을 때(원래는 쓰기 가능이었다가 실행 가능으로 바뀌는 영역 등)</li><li>특정 메모리 페이지 전체에 접근/쓰기 브레이크포인트를 걸고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>프로세스가 실행되면 실행 파일 자신, 로드된 모든 DLL, 힙, 스레드 스택, 메모리 매핑 파일 등 여러 종류의 메모리 영역이 가상 주소 공간에 흩어져 존재한다. Windows는 이걸 페이지 단위로 관리하며, 각 영역마다 <strong>보호 속성(Protection)</strong>이 붙는다.</p>
+<ul><li><strong>R (Read)</strong> — 읽기 가능</li><li><strong>W (Write)</strong> — 쓰기 가능</li><li><strong>E (Execute)</strong> — 실행 가능(코드로 실행 가능)</li></ul>
+<p>정상적인 코드 섹션(<code>.text</code>)은 보통 읽기+실행(R-E)만 되고 쓰기는 안 되도록 설정되어 있다. 반대로 데이터 섹션(<code>.data</code>)은 읽기+쓰기(RW-)만 되고 실행은 안 되는 게 정상이다. 이 규칙에서 벗어난 영역, 예를 들어 <strong>RWX(읽기+쓰기+실행이 모두 가능)</strong> 영역이 실행 도중에 새로 생겨난다면, 이는 패커/언패킹 스텁이 코드를 그 자리에 풀어놓고 실행하려는 전형적인 패턴이다. 그래서 패킹 여부를 의심할 때 Memory Map을 확인하는 것이 기본 루틴이다.</p>
+<p><strong>Modules(모듈)</strong>는 프로세스에 로드된 실행 파일(exe)과 DLL들을 말한다. 각 모듈은 자신만의 베이스 주소(로드된 시작 주소), 크기, 엔트리 포인트, 파일 경로를 가진다. Memory Map에는 각 영역이 어느 모듈에 속하는지 <code>Info</code>/<code>Module</code> 열에 표시되므로, 모듈 목록은 사실상 Memory Map의 요약본이라고 볼 수 있다. 더 상세한 심볼(함수 이름) 목록이 필요하면 <strong>Symbols 탭</strong>에서 왼쪽에 모듈 목록을, 오른쪽에 그 모듈이 내보내는(export) 함수 심볼을 확인할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Memory Map 탭의 표는 보통 <code>Address</code>(시작 주소), <code>Size</code>(크기), <code>Info</code>(모듈명 또는 섹션 이름), <code>Type</code>(Image/Private/Mapped 등), <code>Protection</code>(현재 보호 속성) 열로 구성된다.</li><li>실행 파일 자신의 영역은 여러 줄로 나뉘어 나타나는데, 각 줄이 <code>.text</code>, <code>.data</code>, <code>.rdata</code> 같은 PE 섹션에 대응한다.</li><li>힙이나 스레드 스택으로 쓰이는 영역은 <code>Info</code> 열에 보통 모듈 이름 없이 "Heap", "Stack" 같은 표시가 붙거나 비어 있다.</li><li>패킹된 바이너리를 실행 초반에 관찰하면 처음에는 없던 영역이 실행 도중 새로 생기고, 그 영역의 Protection이 RW로 시작했다가 잠시 후 RWX나 R-E로 바뀌는 것을 볼 수 있다(언패킹 완료 신호로 흔히 쓰인다).</li><li>Symbols 탭 왼쪽 모듈 목록에서 모듈을 클릭하면 오른쪽에 그 모듈이 내보내는 함수(예: <code>kernel32.dll</code>의 <code>CreateFileW</code>) 목록이 뜬다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>디버깅을 새로 시작했다면, 코드를 들여다보기 전에 Memory Map 탭을 한 번 열어서 전체 그림을 본다. 실행 파일 자신의 베이스 주소, 로드된 주요 DLL(특히 <code>kernel32.dll</code>, <code>ntdll.dll</code>, <code>user32.dll</code> 등), 그리고 이상하게 큰 RWX 영역이 있는지부터 훑는다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) Memory Map 탭 열기</strong></p>
+<p>화면 위쪽 탭 목록에서 <code>Memory Map</code>을 클릭한다(또는 CPU 탭에서 우클릭 → <code>Follow in Memory Map</code>으로 특정 주소를 기준으로 열 수도 있다).</p>
+<p><strong>2) 전체 레이아웃 훑어보기</strong></p>
+<p>표를 위에서 아래로 스크롤하면서 실행 파일 자신의 섹션들(<code>Info</code> 열에 exe 파일명이 붙은 여러 줄), 그다음 로드된 DLL들, 그다음 힙/스택 영역 순서로 대략적인 배치를 파악한다.</p>
+<p><strong>3) 특정 영역의 상세 정보 보기</strong></p>
+<p>한 줄을 우클릭하면 다음과 같은 메뉴가 나온다.</p>
+<ul><li><code>Follow in Disassembler</code> — 그 영역의 시작 주소를 코드로 간주하고 CPU 탭에서 열기</li><li><code>Follow in Dump</code> — 그 영역을 Dump 창에서 열기</li><li><code>Set Breakpoint on Access/Write/Execute</code> — 그 메모리 페이지 전체에 접근/쓰기/실행 브레이크포인트를 건다. 언패킹 스텁이 새 영역에 코드를 다 풀어놓은 직후 실행으로 넘어가는 순간을 잡을 때 특히 유용하다.</li><li><code>Dump Memory to File</code> — 그 영역을 파일로 저장(언패킹된 코드를 추출할 때 사용).</li></ul>
+<p><strong>4) Modules/Symbols 탭에서 함수 목록 보기</strong></p>
+<p><code>Symbols</code> 탭을 열면 왼쪽에 현재 로드된 모듈 목록이 나온다. 관심 있는 DLL(예: <code>kernel32.dll</code>)을 클릭하면 오른쪽에 그 모듈이 내보내는 함수 심볼 목록이 뜬다. 여기서 함수를 더블클릭하면 해당 함수의 코드 시작 위치로 이동하며, 우클릭으로 바로 브레이크포인트도 걸 수 있다.</p>
+<p><strong>5) 보호 속성으로 패킹/언패킹 관찰하기</strong></p>
+<p>의심스러운 바이너리라면, 실행 초반(F8로 한 줄씩, 또는 몇 번 F9)에 Memory Map을 반복해서 열어 새로 생기는 영역과 그 Protection 값의 변화를 관찰한다. RW로 시작했다가 실행 흐름이 그 영역으로 넘어가기 직전 RWX나 R-E로 바뀌는 지점이 있다면, 그 순간이 언패킹이 끝나고 원본 코드로 점프하는 지점일 가능성이 높다.</p>
+<h2>명령어/단축키</h2>
+<ul><li><code>Memory Map</code> 탭 클릭 : 메모리 맵 열기</li><li>우클릭 → <code>Follow in Disassembler</code> : 해당 영역을 CPU 탭에서 코드로 열기</li><li>우클릭 → <code>Follow in Dump</code> : 해당 영역을 Dump 창에서 열기</li><li>우클릭 → <code>Set Breakpoint on Access/Write/Execute</code> : 페이지 단위 하드웨어/메모리 브레이크포인트</li><li>우클릭 → <code>Dump Memory to File</code> : 해당 영역을 파일로 저장</li><li><code>Symbols</code> 탭 클릭 : 모듈별 export 함수 심볼 목록 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Protection 열에 <code>RWE</code>나 <code>RWX</code>처럼 세 권한이 모두 있는 영역이 실행 중 새로 나타나면 언패킹/자체 수정 코드(self-modifying code)를 의심할 신호다. 정상적인 코드 섹션은 보통 쓰기 권한이 빠져 있다.</li><li><code>Info</code> 열이 비어 있고 <code>Type</code>이 <code>Private</code>인 영역은 프로그램이 직접 <code>VirtualAlloc</code> 등으로 할당한 메모리로, 원본 PE 섹션이 아니라 실행 중에 만들어진 영역이다.</li><li>Symbols 탭에서 특정 DLL의 함수 목록이 텅 비어 있으면, 그 DLL이 아직 완전히 로드되지 않았거나 export 테이블이 특이한 방식으로 구성되어 있다는 신호일 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Memory Map을 한 번만 보고 "이게 전부"라고 단정하는 경우 — 프로세스는 실행 중 계속 메모리를 할당/해제하므로, 패킹 분석 시에는 여러 시점에서 반복 확인해야 한다.</li><li>모듈의 베이스 주소가 실행할 때마다 달라진다는 것(ASLR, 주소 공간 배치 랜덤화)을 모르고, 이전에 적어둔 절대 주소를 다음 실행에 그대로 쓰다가 엉뚱한 곳을 보는 경우 — 절대 주소 대신 <code>모듈이름+오프셋</code> 형태로 기록해두는 습관이 안전하다.</li><li>힙/스택 영역을 모듈 영역과 혼동해서, 그 안에서 함수 심볼을 찾으려 헤매는 경우 — 심볼은 Symbols 탭에서 모듈 단위로 찾아야 한다.</li><li>특정 영역에 <code>Set Breakpoint on Execute</code>를 걸어놓고, 그 페이지 안의 다른 무관한 코드가 실행될 때도 계속 멈춰서 원하는 지점을 못 찾고 헤매는 경우 — 페이지 전체 감시이므로 히트가 너무 잦으면 조건부 브레이크포인트와 조합해서 좁혀야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>특정 주소의 실제 바이트 값을 보고 싶다면 → ./rev-0181-x64dbg-dump-stack-view.md 문서를 참고한다.</li><li>특정 페이지에 건 브레이크포인트가 너무 자주 걸린다면 → ./rev-0183-x64dbg-conditional-breakpoints.md 문서로 조건을 추가한다.</li><li>패킹이 의심되는데 더 깊이 파고들고 싶다면 → ../packing/ 카테고리의 패킹 탐지·언패킹 관련 문서를 참고한다(정확한 파일명은 별도 확인 필요).</li><li>언패킹된 코드를 찾은 뒤 원본 파일 형태로 저장하고 싶다면 → ./rev-0184-x64dbg-patching.md 문서를 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p>언패킹 스텁이 코드를 풀어놓는 지점을 Memory Map으로 관찰하는 흐름이다.</p>
+<pre><code class="language-text">1. 대상 exe를 x64dbg로 로드, 엔트리 포인트에서 Pause
+2. Memory Map 탭을 열어 현재 영역 목록과 Protection 값을 스크린샷하듯 기억
+3. F8로 몇 줄씩 실행하며 중간중간 Memory Map을 다시 열어 새 영역이 생기는지 관찰
+4. RW로 시작한 새 영역이 RWX/R-E로 바뀌는 시점 발견
+5. 그 영역을 우클릭 → Set Breakpoint on Execute로 걸고 F9 실행
+6. 브레이크포인트에 걸리면 그 지점이 언패킹된 원본 코드의 시작점일 가능성이 높음</code></pre>
+<h2>Memory Map을 Dump/CPU와 함께 쓰는 습관</h2>
+<p>Memory Map은 그 자체로 끝나는 창이 아니라, 다른 창들과 오가며 쓸 때 진가를 발휘한다. 예를 들어 Dump 창에서 지금 보고 있는 주소가 어느 모듈, 어느 섹션에 속하는지 궁금하면 Dump 창을 우클릭해 <code>Follow in Memory Map</code>을 선택하면 Memory Map 탭이 열리며 해당 영역이 자동으로 선택된 상태로 표시된다. 반대로 Memory Map에서 관심 영역을 찾은 뒤에는 <code>Follow in Dump</code>/<code>Follow in Disassembler</code>로 다시 세부 내용을 확인하는 식으로, 이 세 창을 순환하며 분석하는 것이 x64dbg의 기본적인 작업 흐름이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0181-x64dbg-dump-stack-view.html">REV-0181 — x64dbg Dump와 Stack View</a></li><li><a href="rev-0178-x64dbg-breakpoints.html">REV-0178 — x64dbg Breakpoint 설정과 삭제</a></li><li><a href="rev-0180-x64dbg-find-assembly.html">REV-0180 — x64dbg Find Assembly 사용법</a></li><li>../windows-pe/rev-0127-x64dbg-first-analysis.md — x64dbg로 EXE 첫 분석 시작</li></ul>
+<h2>출처/검증</h2>
+<ul><li>Memory Map 탭의 열 구성(Address/Size/Info/Type/Protection), 우클릭 메뉴(Follow in Disassembler/Dump, Set Breakpoint on Access/Write/Execute, Dump Memory to File), Symbols 탭의 모듈별 export 목록 기능은 공식 문서 help.x64dbg.com의 Feature-set 페이지("Memory map view", "Modules and symbols view")를 근거로 정리했다(2026-09-08 조사).</li><li>R/W/E 보호 속성과 PE 섹션 권한, RWX 영역이 언패킹의 전형적 신호라는 설명은 Windows 메모리 보호 모델과 리버싱 커뮤니티에서 일반적으로 통용되는 지식에 근거했다.</li><li>우클릭 메뉴의 정확한 문구와 위치는 x64dbg 버전에 따라 다를 수 있어 라이브 설치 환경에서 재확인을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

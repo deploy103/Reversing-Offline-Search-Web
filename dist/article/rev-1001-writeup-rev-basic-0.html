@@ -1,0 +1,68 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Write-up] rev-basic-0 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / writeup</div>
+<article class="article-body">
+<h1>[Write-up] rev-basic-0</h1>
+<div class="article-meta"><span class="tag">writeup</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">Detect It Easy</span></div>
+<h2>한 줄 요약</h2>
+<p>rev-basic-0은 입력 문자열을 정답 문자열과 <code>strcmp</code>로 그대로 직접 비교하는 가장 단순한 유형이며, IDA로 검증 함수 하나만 디컴파일하면 비교 대상 문자열이 코드에 그대로 노출된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>드림핵 워게임 rev-basic 시리즈 중 가장 처음(rev-basic-0) 문제를 열었는데 어디부터 봐야 할지 감이 안 잡힐 때</li><li>프로그램을 실행해서 아무 문자열이나 넣어봤는데 계속 <code>Wrong</code>만 나오고, <code>Correct</code>가 나오는 조건을 코드에서 못 찾을 때</li><li>IDA에서 <code>sub_140001000</code> 같은 이름 없는 함수 안에 들어갔는데 배열도 없고 루프도 없어서 오히려 더 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<p>이 문제는 실행하면 <code>Input : </code>을 출력하고 사용자로부터 문자열을 하나 입력받은 뒤, 내부 검증 함수의 반환값에 따라 <code>Correct</code> 또는 <code>Wrong</code>을 출력하는 64비트 Windows PE 실행 파일이다. 목표는 <code>Correct</code>가 뜨는 정답 문자열을 알아내 드림핵에 <code>DH{정답}</code> 형식으로 제출하는 것이다.</p>
+<p>검증 로직의 종류를 미리 분류해두면 분석이 빨라진다. 이 문제의 검증 함수는 XOR 연산이나 배열 인덱스 순회 같은 복잡한 변환 없이, 입력 버퍼 전체를 정답 문자열과 <code>strcmp</code>(문자열이 완전히 같은지 비교하는 C 표준 함수)로 한 번에 비교하고 그 결과가 0(같음)인지만 검사한다. 즉 "암호화된 값을 복호화"하는 문제가 아니라 "정답이 코드/데이터 어딘가에 평문으로 박혀 있는" 문제다. 이런 유형은 REV-0196에서 다루는 <code>strcmp</code> 기반 검증 패턴의 가장 전형적인 예시다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>PowerShell(또는 cmd)에서 실행하면 <code>Input : </code>이 출력되고 커서가 입력을 기다린다.</li><li>아무 문자열이나 입력하면 <code>Wrong</code>이 출력된다.</li><li>IDA에서 <code>main</code>을 F5로 디컴파일하면 입력을 받는 함수 호출, 그리고 결과 문자열을 비교해 분기하는 <code>if</code> 문이 보인다.</li><li><code>main</code>이 호출하는 이름 없는 함수(<code>sub_140001000</code> 형태의 주소 기반 이름) 안에 <code>strcmp</code> 호출과 함께 문자열 리터럴이 인자로 들어가 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>Detect It Easy(DIE)로 파일을 열어 64비트 PE, 컴파일러(보통 MSVC), 패킹 여부를 먼저 확인한다. 패킹이 없는 일반 PE라면 곧바로 IDA로 넘어가도 된다. 그다음 실제로 한 번 실행해서 입출력 문구(<code>Input : </code>, <code>Correct</code>, <code>Wrong</code>)를 정확히 기억해 둔다. 이 문구들은 뒤에서 IDA Strings 창(REV-0144, Shift+F12)으로 검증 함수 위치를 찾는 이정표가 된다.</p>
+<h2>단계별 절차</h2>
+<ol><li>DIE로 아키텍처/컴파일러/패킹 여부 확인.</li><li>파일을 실행해 임의 문자열 입력 시 <code>Wrong</code>이 나오는지 확인.</li><li>IDA로 파일을 열고 자동 분석이 끝나면 <code>main</code> 함수로 이동(Imports나 Strings 창에서 <code>Input :</code> 문자열을 더블클릭해 참조 위치로 진입).</li><li><code>main</code>을 F5로 디컴파일. 입력 함수 호출, 검증 함수 호출, 그리고 반환값에 따른 <code>Correct</code>/<code>Wrong</code> 분기 구조를 확인한다.</li><li>검증 함수(예: <code>sub_140001000</code>) 위에서 더블클릭해 진입, F5로 디컴파일한다.</li><li>디컴파일된 코드 안에서 <code>strcmp(입력버퍼, "문자열리터럴")</code> 형태의 호출을 찾는다. 이 문자열 리터럴이 곧 정답이다.</li><li>찾은 문자열을 그대로 실행 파일에 입력해 <code>Correct</code>가 나오는지 검증한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 파일 열기 후 자동 분석 대기, <code>main</code> 진입 → <code>F5</code>(디컴파일), 함수 이름 더블클릭(하위 함수 진입), <code>Shift+F12</code>(Strings 창, REV-0144).</li><li>DIE: 실행 파일을 창에 드래그 앤 드롭만 하면 헤더/컴파일러/엔트로피 정보가 표시된다.</li><li>PowerShell: <code>.\rev-basic-0.exe</code> 실행 후 임의 문자열 입력.</li></ul>
+<h2>출력 해석</h2>
+<p>디컴파일된 검증 함수에서 <code>return strcmp(a1, "Compar3_the_str1ng") == 0;</code> 같은 코드가 보이면, 이는 "입력값(a1)과 문자열 리터럴이 완전히 같을 때만 1(true)을 반환한다"는 뜻이다. <code>strcmp</code>는 두 문자열이 같으면 0을 반환하므로 <code>== 0</code> 비교가 붙어 있는 것이 정상이며, <code>!= 0</code>으로 되어 있다면 반대로 "다를 때 true"라는 의미이니 분기 방향을 착각하지 않도록 주의한다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>strcmp</code>의 반환값 의미를 헷갈려서(0이 아니라 1이 "같음"이라고 착각) 반대로 해석하는 것.</li><li>문자열 리터럴을 IDA 디컴파일 화면에서 못 보고 넘어가는 것 — 디컴파일러가 문자열을 <code>a2</code> 같은 변수로만 표시하면 변수를 더블클릭해 실제 참조를 따라가야 한다.</li><li>정답 문자열을 찾았는데 대소문자나 특수문자를 하나 빼먹고 입력해서 여전히 <code>Wrong</code>이 나오는 것.</li><li><code>Input :</code> 문자열이 여러 곳에서 참조될 수 있다는 것을 모르고 첫 번째로 찾은 참조만 보고 잘못된 함수를 검증 함수로 오인하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>strcmp</code> 비교가 아니라 배열을 순회하며 한 바이트씩 상수와 비교하는 형태라면 다음 문제인 REV-1002(rev-basic-1)의 패턴에 더 가깝다.</li><li>문자열이 코드에 안 보이고 배열 인덱스 접근만 보인다면 REV-1003(rev-basic-2)의 배열 stride 문제를 먼저 참고한다.</li><li><code>strcmp</code> 자체의 일반적인 검증 패턴이 더 궁금하면 REV-0196을 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p>검증 함수를 단순화하면 다음과 같은 형태다.</p>
+<pre><code class="language-c">int check(char *a1) {
+    return strcmp(a1, "Compar3_the_str1ng") == 0;
+}</code></pre>
+<p>이 경우 정답은 문자열 리터럴 그 자체이므로, <code>main</code> 쪽에서 반환값이 1일 때 <code>Correct</code>를 출력하는 흐름만 확인하면 추가 연산 없이 곧바로 답이 나온다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0196-strcmp-check-pattern.html">REV-0196 — strcmp 기반 Flag 검증 패턴</a></li><li><a href="rev-0146-ida-f5-decompile.html">REV-0146 — IDA F5 디컴파일과 Pseudocode 읽기</a></li><li><a href="rev-0144-ida-strings-window.html">REV-0144 — IDA Strings 창과 Shift+F12</a></li><li><a href="rev-0126-die-basics.html">REV-0126 — Detect It Easy로 컴파일러 패커 확인</a></li><li><a href="rev-0001-first-30-seconds.html">REV-0001 — 리버싱 문제 파일을 받았을 때 30초 트리아지</a></li><li>[REV-1002 — [Write-up] rev-basic-1](rev-1002-writeup-rev-basic-1.html)</li><li>[REV-1003 — [Write-up] rev-basic-2](rev-1003-writeup-rev-basic-2.html)</li><li>[REV-1004 — [Write-up] rev-basic-3](rev-1004-writeup-rev-basic-3.html)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>드림핵 워게임 rev-basic-0 챌린지 페이지(dreamhack.io/wargame/challenges, reversing 태그, Bronze 4 티어, 풀이자 8126명, 2026-09-09 조회 기준).</li><li>참고 블로그: <code>velog.io/@helenason/dreamhack-wargame-rev-basic-0</code> — IDA로 <code>main</code>과 <code>sub_140001000</code>을 디컴파일해 <code>strcmp(a1, "Compar3_the_str1ng") == 0</code> 형태의 직접 비교 로직을 확인한 것으로 조사됨.</li><li>위 원문 문장을 그대로 인용하지 않고, 검증 로직의 종류(strcmp 직접 비교)와 분석 절차만 재구성해 한국어로 새로 서술했다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

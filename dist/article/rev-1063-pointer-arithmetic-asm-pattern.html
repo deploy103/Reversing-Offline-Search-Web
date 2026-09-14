@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>포인터 산술이 어셈블리에서 보이는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / c-analysis</div>
+<article class="article-body">
+<h1>포인터 산술이 어셈블리에서 보이는 패턴</h1>
+<div class="article-meta"><span class="tag">c-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>p + n</code> 같은 포인터 산술은 실제로는 <code>n * sizeof(가리키는 타입)</code>만큼 주소를 이동시키는 연산이며, 어셈블리에서는 대부분 <code>LEA</code>(주소 계산) 명령 하나로, 크기가 1/2/4/8바이트인 경우 스케일 인덱스(<code>[reg + reg*4]</code>)로 압축되어 나타난다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>p + 1</code>인데 어셈블리에서 4나 8이 더해져 있어서 "덧셈이 왜 이렇게 되나" 헷갈릴 때</li><li><code>lea rax, [rdi+rsi*4]</code>처럼 <code>*4</code>, <code>*8</code>이 붙은 <code>LEA</code>를 보고 뭘 계산하는지 모를 때</li><li>포인터를 반환하는 함수인데 실제로는 곱셈 명령이 안 보여서 산술 연산이 어디 있는지 못 찾을 때</li><li>포인터 산술과 배열 인덱싱(<code>p[i]</code>)이 결국 같은 코드로 컴파일되는 이유가 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>C에서 <code>int *p</code>에 대해 <code>p + 1</code>은 "1바이트 뒤"가 아니라 "<code>sizeof(int)</code>(보통 4바이트) 뒤"를 의미한다. 이는 언어 차원의 규칙이고, 컴파일러는 이 스케일링을 <strong>컴파일 시점에 이미 곱해서</strong> 어셈블리에 넣는다. 즉 런타임에 "곱셈 명령"이 보이지 않아도 이미 반영되어 있는 것이다.</p>
+<p>두 가지 경우로 나뉜다.</p>
+<ul><li><strong>상수만큼 이동</strong> (<code>p + 1</code>, <code>p + 5</code> 등 컴파일 시점에 정해진 값): 그냥 상수를 곱한 값을 더한다. <code>lea rax, [rdi+4]</code>처럼 보인다.</li><li><strong>변수만큼 이동</strong> (<code>p + n</code>, n이 함수 인자나 변수): x86-64는 메모리 오퍼랜드에서 인덱스 레지스터에 1/2/4/8배의 스케일을 하드웨어가 직접 지원하므로(<code>[base + index*scale]</code>), <code>sizeof(타입)</code>이 1/2/4/8이면 <code>LEA</code> 한 줄로 끝난다. 8보다 크거나 1/2/4/8이 아니면(예: 12바이트 구조체) <code>imul</code>로 먼저 곱한 뒤 더해야 한다(REV-1064에서 다룸).</li></ul>
+<p><code>LEA</code>는 실제로 메모리를 읽지 않고 <strong>주소만 계산</strong>하는 명령이라는 점이 핵심이다(REV-0042). 포인터 산술은 값을 읽는 게 아니라 새 주소를 만드는 것이므로 자연스럽게 <code>LEA</code>와 짝을 이룬다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>lea rax, [rdi + rsi*4]</code> — <code>int*</code>(4바이트) 기준 <code>p + n</code> 계산. <code>*4</code>가 <code>sizeof(int)</code>를 반영</li><li><code>lea rax, [rdi + rsi*8]</code> — <code>long*</code>, <code>double*</code>, 포인터 배열(<code>sizeof(포인터)=8</code>) 기준</li><li><code>add rax, 4</code> 또는 <code>lea rax, [rax+4]</code> — 반복문에서 포인터를 1씩 전진(<code>p++</code>)시킬 때, 이미 4가 곱해져 더해짐</li><li>Ghidra pseudocode에서 <code>p + n</code>이 그대로 유지되거나, 타입 정보가 없으면 <code>(int *)((char *)p + n * 4)</code>처럼 바이트 단위로 풀어서 보여줄 때도 있음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>LEA</code> 또는 <code>ADD</code>에 곱해진 상수(스케일 또는 즉시값)를 보고 그 값을 4, 8 등으로 나눠본다. 나눈 값이 딱 맞아떨어지면 그것이 바로 원본 C 코드의 "포인터 이동 개수(n)"다. 예를 들어 <code>[rax+40]</code>이면 <code>40 / 4 = 10</code>, 즉 <code>int</code> 배열이라면 <code>p + 10</code> 또는 <code>p[10]</code>에 대응할 가능성이 높다.</p>
+<h2>단계별 절차</h2>
+<ol><li>함수가 포인터를 인자로 받는지 시그니처(첫 인자가 스택/레지스터에서 8바이트로 다뤄지는지)로 확인한다.</li><li><code>LEA</code>나 <code>ADD rax, N</code> 형태로 그 포인터 레지스터에 값을 더하는 줄을 찾는다.</li><li>더해지는 값이 상수(즉시값)인지, 스케일 인덱스(<code>*2/*4/*8</code>)가 붙은 레지스터인지 구분한다.</li><li>상수라면 그 값을 원래 가리키는 타입 크기로 나눠서 "몇 개 앞/뒤로 이동했는지" 계산한다.</li><li>결과 주소(<code>rax</code>)가 바로 역참조(<code>[rax]</code>)되는지 확인하면, 이 포인터 산술이 배열 인덱싱과 동일한 의도로 쓰였는지 알 수 있다(REV-1062, REV-0034).</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA/Ghidra: 포인터 변수에 정확한 타입(<code>int *</code> 등)을 지정하면 pseudocode가 바이트 오프셋 대신 <code>p[n]</code>, <code>p+n</code> 형태로 자동 정리됨</li><li>GDB: <code>p p+1</code> (포인터 변수에 대해 GDB가 타입 크기를 반영해 계산해줌), <code>p (char*)p2 - (char*)p1</code> (두 포인터 차이를 바이트로 확인)</li><li>x64dbg: 레지스터 계산기에서 <code>rdi + rsi*4</code> 직접 계산해보며 검증</li></ul>
+<h2>출력 해석</h2>
+<pre><code class="language-c">int *advance(int *p, long n) {
+    return p + n;
+}
+
+int sum_first_three(int *p) {
+    return p[0] + p[1] + p[2];
+}</code></pre>
+<pre><code class="language-asm">; advance, rdi = p, rsi = n
+advance:
+    push    rbp
+    mov     rbp, rsp
+    mov     [rbp-8], rdi
+    mov     [rbp-16], rsi
+    mov     rax, [rbp-8]      ; rax = p
+    mov     rdx, [rbp-16]     ; rdx = n
+    lea     rax, [rax+rdx*4]  ; rax = p + n*4바이트 = p + n (int 기준)
+    leave
+    ret
+
+; sum_first_three, rdi = p
+sum_first_three:
+    push    rbp
+    mov     rbp, rsp
+    mov     [rbp-8], rdi
+    mov     rax, [rbp-8]
+    mov     edx, [rax]        ; p[0] = *(p+0)
+    mov     rax, [rbp-8]
+    mov     ecx, [rax+4]      ; p[1] = *(p+1), 오프셋 4 = 1*sizeof(int)
+    add     edx, ecx
+    mov     rax, [rbp-8]
+    mov     eax, [rax+8]      ; p[2] = *(p+2), 오프셋 8 = 2*sizeof(int)
+    add     eax, edx
+    leave
+    ret</code></pre>
+<p><code>advance</code>의 <code>lea rax, [rax+rdx*4]</code>는 <code>p + n</code>을 계산만 하고 아직 역참조하지 않는다(<code>LEA</code>라서 메모리를 읽지 않음). 반면 <code>sum_first_three</code>에서는 <code>[rax+4]</code>, <code>[rax+8]</code>처럼 대괄호로 감싸 실제로 값을 읽으므로 역참조까지 포함된 배열 인덱싱이다. <strong>포인터 산술만 하면 <code>LEA</code>, 산술 결과를 역참조하면 일반 <code>mov [reg+offset]</code></strong>이라는 것이 이 둘의 차이다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>LEA</code>에 곱해진 스케일(<code>*4</code>, <code>*8</code>)을 보고 "곱셈 연산이 있다"고 착각해 <code>IMUL</code>을 찾아다니는 것 — 스케일 인덱스는 하드웨어가 무료로 처리하므로 별도 곱셈 명령이 없다.</li><li>포인터 산술 결과가 바로 새 포인터 값인지, 역참조된 데이터 값인지 대괄호 유무로 구분하지 않고 혼동하는 것.</li><li><code>char *</code> 기준 포인터 산술(스케일이 1이라 <code>LEA</code>에서 스케일 표기가 생략됨)을 보고 "덧셈이 안 맞다"고 오해하는 것 — <code>sizeof(char)==1</code>이라 <code>*1</code>은 그냥 표기되지 않는다.</li><li>구조체 크기가 4/8이 아닌 경우(예: 12바이트) <code>LEA</code> 스케일로 안 되고 <code>IMUL</code>이 별도로 나오는데, 이를 "포인터 산술이 아니다"라고 오판하는 것(REV-1064에서 다룸).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>구조체 크기가 4/8이 아니라 곱셈이 별도로 나오는 경우는 → REV-1064 구조체 배열 순회가 어셈블리에서 보이는 패턴</li><li><code>LEA</code>의 기본 문법과 왜 산술처럼 보이는지 원리는 → REV-0042 LEA: 주소 계산인데 왜 산술 연산처럼 보이는가</li><li>단순 배열 인덱싱 패턴 자체가 궁금하면 → REV-1058 1차원 배열 인덱싱이 어셈블리에서 보이는 패턴, REV-0034 배열 접근이 어셈블리로 변하는 방식</li><li>포인터 역참조 자체가 헷갈리면 → REV-1062 포인터 역참조가 어셈블리에서 보이는 패턴</li></ul>
+<h2>미니 예제</h2>
+<p>스케일 값과 타입 크기의 대응표(자주 등장하는 4가지):</p>
+<pre><code>lea rax, [reg + idx*1]   -&gt;  char*, unsigned char* (1바이트 타입)
+lea rax, [reg + idx*2]   -&gt;  short*  (2바이트 타입)
+lea rax, [reg + idx*4]   -&gt;  int*, float*  (4바이트 타입)
+lea rax, [reg + idx*8]   -&gt;  long*, double*, 포인터의 포인터(**p)  (8바이트 타입)</code></pre>
+<p>이 표만 외워두면 디컴파일러 없이 순수 어셈블리만 보고도 포인터가 가리키는 타입의 크기를 즉시 역추정할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-1062-pointer-dereference-asm-pattern.html">REV-1062 — 포인터 역참조가 어셈블리에서 보이는 패턴</a></li><li><a href="rev-1064-struct-array-traversal-asm-pattern.html">REV-1064 — 구조체 배열 순회가 어셈블리에서 보이는 패턴</a></li><li><a href="rev-0042-lea.html">REV-0042 — LEA: 주소 계산인데 왜 산술 연산처럼 보이는가</a></li><li><a href="rev-0034-array-access-in-asm.html">REV-0034 — 배열 접근이 어셈블리로 변하는 방식</a></li><li><a href="rev-0378-array-index-calc-wrong.html">REV-0378 — 배열 인덱스 계산이 이상하게 나올 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>x86-64 메모리 오퍼랜드의 스케일 인덱스(<code>base + index*scale</code>, scale ∈ {1,2,4,8}) 하드웨어 지원: Intel 64 and IA-32 Architectures Software Developer's Manual 기준.</li><li>C 표준상 포인터 산술이 가리키는 타입의 크기 단위로 이루어진다는 규칙: ISO C 표준(포인터 산술 절) 기준.</li><li>gcc/clang이 포인터 산술을 <code>LEA</code> + 스케일 인덱스로 컴파일하는 패턴은 x86-64 리눅스/윈도우 환경에서 반복 확인되는 표준 패턴이다(2026-09-10 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

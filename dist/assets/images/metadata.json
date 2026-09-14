@@ -1,0 +1,57 @@
+[
+  {
+    "local_path": "assets/images/diagrams/stack-call-diagram.svg",
+    "title": "CALL/RET 스택 변화 다이어그램",
+    "source_url": null,
+    "author": "Reversing-Offline-Search-Web project (original)",
+    "license": "CC0 / project-owned, freely reusable within this project",
+    "retrieved_date": null,
+    "created_date": "2026-09-09",
+    "sha256": "54454c591d314e682a41a946f2456e401176b6b37897b7636f4d426b5749cad8",
+    "notes": "핸드메이드 SVG. 외부 소스 없음 - 텍스트/도형만으로 직접 작성. REV-0071(CALL), REV-0072(RET)에서 사용."
+  },
+  {
+    "local_path": "assets/images/diagrams/eflags-register.svg",
+    "title": "EFLAGS 레지스터 비트 레이아웃 다이어그램",
+    "source_url": null,
+    "author": "Reversing-Offline-Search-Web project (original)",
+    "license": "CC0 / project-owned, freely reusable within this project",
+    "retrieved_date": null,
+    "created_date": "2026-09-09",
+    "sha256": "71600b5e2e513366f7a32245a3dec48a4c93d25ddfde338c16becbbdacd53d89",
+    "notes": "핸드메이드 SVG. 비트 값/플래그 이름은 Intel SDM Vol.1 3.4.3(EFLAGS) 공개 사양 기준으로 직접 작성. REV-0060(CMP)에서 사용."
+  },
+  {
+    "local_path": "assets/images/diagrams/calling-convention-x64.svg",
+    "title": "SysV AMD64 vs Microsoft x64 호출 규약 비교 다이어그램",
+    "source_url": null,
+    "author": "Reversing-Offline-Search-Web project (original)",
+    "license": "CC0 / project-owned, freely reusable within this project",
+    "retrieved_date": null,
+    "created_date": "2026-09-09",
+    "sha256": "f739b42bde72a03378b8213fd5a2031ff4794d43d81be2aa3463df64c23c8056",
+    "notes": "핸드메이드 SVG. 레지스터 배정은 System V AMD64 ABI 및 Microsoft x64 calling convention 공식 문서 기준으로 직접 작성. REV-0106(SysV), REV-0122(MS x64)에서 사용."
+  },
+  {
+    "local_path": "assets/images/diagrams/pe-structure.svg",
+    "title": "PE 파일 구조 다이어그램",
+    "source_url": null,
+    "author": "Reversing-Offline-Search-Web project (original)",
+    "license": "CC0 / project-owned, freely reusable within this project",
+    "retrieved_date": null,
+    "created_date": "2026-09-09",
+    "sha256": "fd9aa49911d4c7559cc7244e65f2b335f697c5c3b53112c5d6056cb27d462b04",
+    "notes": "핸드메이드 SVG. PE 포맷 사양은 Microsoft PE/COFF 공식 문서 기준으로 직접 작성. REV-0114(PE 개요)에서 사용."
+  },
+  {
+    "local_path": "assets/images/diagrams/elf-structure.svg",
+    "title": "ELF 파일 구조 다이어그램",
+    "source_url": null,
+    "author": "Reversing-Offline-Search-Web project (original)",
+    "license": "CC0 / project-owned, freely reusable within this project",
+    "retrieved_date": null,
+    "created_date": "2026-09-09",
+    "sha256": "bfc00f4ffca5f106cf526d53b79850b668f878e7ba3bb76b55f28644ee950ed5",
+    "notes": "핸드메이드 SVG. ELF 포맷 사양은 System V ABI / ELF Specification 공식 문서 기준으로 직접 작성. REV-0089(ELF 헤더)에서 사용."
+  }
+]

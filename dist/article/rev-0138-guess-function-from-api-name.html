@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windows API 이름으로 기능 추측하는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>Windows API 이름으로 기능 추측하는 법</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>Windows API 함수 이름은 대부분 "동사+명사" 형태의 일관된 규칙으로 지어지기 때문에, MSDN 문서를 매번 찾아보지 않아도 접두사(<code>Create</code>, <code>Get</code>, <code>Set</code>, <code>Is</code>, <code>Nt</code>)와 접미사(<code>A</code>, <code>W</code>, <code>Ex</code>)의 의미만 알면 처음 보는 함수라도 대략 무슨 일을 하는지 상당히 정확하게 짐작할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>임포트 테이블에 나열된 함수 이름을 봤는데 처음 보는 이름이라 뭘 하는지 감이 안 잡힐 때</li><li>오프라인 환경이라 MSDN을 바로 검색할 수 없는데 함수 이름만으로 급하게 판단해야 할 때</li><li><code>CreateFileA</code>와 <code>CreateFileW</code>처럼 끝에 A/W가 붙은 함수가 왜 두 개씩 있는지 궁금할 때</li><li><code>NtQueryInformationProcess</code>, <code>ZwClose</code>처럼 <code>Nt</code>/<code>Zw</code>로 시작하는 함수를 만났을 때</li><li>IDA가 함수 인자 이름/타입을 자동으로 안 붙여줘서 함수 이름만 갖고 역할을 유추해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Win32 API는 수십 년에 걸쳐 만들어졌지만, 이름 짓는 규칙만큼은 상당히 일관되게 유지되어왔다. 몇 가지 패턴을 알아두면 처음 보는 함수도 절반 이상은 추측이 가능하다.</p>
+<p><strong>1) 동사 접두사(무엇을 하는가)</strong></p>
+<ul><li><code>Create*</code> — 새로운 객체/리소스를 만든다(예: <code>CreateFile</code>, <code>CreateProcess</code>, <code>CreateThread</code>, <code>CreateWindow</code>). 대개 핸들(<code>HANDLE</code>)을 반환한다.</li><li><code>Open*</code> — 이미 존재하는 객체에 접근 권한을 얻어 연다(예: <code>OpenProcess</code>, <code>OpenFile</code>). <code>Create</code>가 "새로 만들기"라면 <code>Open</code>은 "기존 것 붙잡기"에 가깝다.</li><li><code>Close*</code> — 핸들을 닫아 자원을 해제한다(예: <code>CloseHandle</code>).</li><li><code>Get*</code> / <code>Set*</code> — 어떤 속성값을 읽거나(Get) 쓴다(Set). 짝을 이루는 경우가 많다(<code>GetWindowText</code>/<code>SetWindowText</code>, <code>GetFileAttributes</code>/<code>SetFileAttributes</code>).</li><li><code>Is*</code> / <code>Has*</code> — 참/거짓(<code>BOOL</code>)을 묻는 질의 함수(예: <code>IsDebuggerPresent</code>, <code>IsWindowVisible</code>).</li><li><code>Enum*</code> — 여러 개의 항목을 콜백 함수를 통해 하나씩 순회한다(예: <code>EnumProcesses</code>, <code>EnumWindows</code>). 보통 콜백 함수 포인터를 인자로 받는다.</li><li><code>Duplicate*</code> — 기존 핸들을 복제한다(예: <code>DuplicateHandle</code>).</li><li><code>Alloc*</code> / <code>Free*</code> — 메모리를 할당/해제하는 짝 함수(예: <code>HeapAlloc</code>/<code>HeapFree</code>, <code>VirtualAlloc</code>/<code>VirtualFree</code>, <code>LocalAlloc</code>/<code>LocalFree</code>, <code>GlobalAlloc</code>/<code>GlobalFree</code>). 어떤 힙/메모리 관리자를 쓰는지가 접두사(<code>Heap</code>, <code>Virtual</code>, <code>Local</code>, <code>Global</code>)에 드러난다.</li><li><code>Read*</code> / <code>Write*</code> — 데이터를 읽거나 쓴다(예: <code>ReadFile</code>/<code>WriteFile</code>, <code>ReadProcessMemory</code>/<code>WriteProcessMemory</code>).</li></ul>
+<p><strong>2) 접미사 <code>A</code>와 <code>W</code>(문자 인코딩)</strong> Windows API 중 문자열을 다루는 함수는 대부분 두 가지 버전이 존재한다.</p>
+<ul><li><code>A</code> 접미사 — ANSI(1바이트 문자, 로케일에 따른 코드페이지 사용). 예: <code>CreateFileA</code>, <code>MessageBoxA</code>.</li><li><code>W</code> 접미사 — Wide(UTF-16, 2바이트 문자, 유니코드). 예: <code>CreateFileW</code>, <code>MessageBoxW</code>.</li></ul>
+<p>내부적으로는 대부분 <code>W</code> 버전이 진짜 구현체이고, <code>A</code> 버전은 입력받은 ANSI 문자열을 <code>MultiByteToWideChar</code>로 UTF-16으로 변환한 뒤 <code>W</code> 버전을 그대로 호출하는 얇은 래퍼(wrapper)인 경우가 많다. 그래서 문자열 처리 관련 진짜 로직을 보고 싶다면 <code>A</code> 함수보다 <code>W</code> 함수 쪽을 확인하는 것이 더 정확할 때가 있다. IDA의 임포트 목록에서 함수 이름 끝의 <code>A</code>/<code>W</code>만 보고도 "이 프로그램이 유니코드 문자열을 쓰는지 아닌지"를 짐작할 수 있다.</p>
+<p><strong>3) 접미사 <code>Ex</code>(확장판)</strong> 같은 이름에 <code>Ex</code>가 붙은 함수(예: <code>CreateProcessEx</code>, <code>RegisterClassEx</code>, <code>HeapAllocEx</code>)는 대개 원래 함수보다 인자가 더 많거나 옵션 플래그가 추가된 확장 버전이다. 오래된 함수를 유지하면서 새로운 기능을 넣을 때 Windows가 자주 쓰는 방식이다.</p>
+<p><strong>4) <code>Nt*</code>/<code>Zw*</code> 접두사(네이티브 API)</strong> <code>kernel32.dll</code>/<code>user32.dll</code> 같은 일반 Win32 API 아래에는 <code>ntdll.dll</code>이 제공하는 더 낮은 수준의 <strong>네이티브 API</strong>가 있다. 이 함수들은 <code>Nt</code>(User 모드에서 호출) 또는 <code>Zw</code>(커널 모드 진입점, User 모드에서 호출 시 사실상 <code>Nt</code> 버전과 동일하게 동작) 접두사를 쓴다(예: <code>NtQueryInformationProcess</code>, <code>NtCreateFile</code>, <code>ZwClose</code>). 일반 Win32 API 함수 내부는 결국 이 <code>Nt*</code> 함수를 호출해서 실제 시스템 콜로 넘어가는 구조이므로, <code>Nt*</code> 함수가 임포트/호출되고 있다면 "일반적인 방식보다 한 단계 더 low-level로 직접 접근하고 있다"는 신호이며, 안티디버깅이나 후킹 우회 목적으로 쓰이는 경우가 흔하다.</p>
+<p><strong>5) 그 외 자주 보이는 접두사</strong></p>
+<ul><li><code>Reg*</code> — 레지스트리 관련(<code>RegOpenKeyEx</code>, <code>RegQueryValueEx</code>).</li><li><code>Crypt*</code>/<code>BCrypt*</code> — 암호화 관련(REV-0140에서 자세히 다룸).</li><li><code>Wsa*</code>/<code>socket</code>, <code>connect</code>, <code>send</code>, <code>recv</code> — 네트워킹(Winsock) 관련.</li><li><code>Nt</code>/<code>Zw</code> 외에 <code>Rtl*</code>(Run-Time Library)로 시작하는 함수도 <code>ntdll.dll</code>의 저수준 유틸리티 함수군이다(예: <code>RtlMoveMemory</code>, <code>RtlZeroMemory</code>).</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>임포트 목록에 <code>CreateFileW</code>, <code>GetProcAddress</code>, <code>IsDebuggerPresent</code> 처럼 동사로 시작하는 이름이 줄줄이 나열됨</li><li>동일한 이름이 <code>A</code>/<code>W</code> 두 버전으로 같이 임포트되어 있거나, 하나만 임포트되어 있어서 이 프로그램이 어떤 인코딩을 쓰는지 짐작 가능</li><li><code>ntdll.dll</code>이 임포트 목록에 별도로 있고 <code>Nt</code>/<code>Zw</code>로 시작하는 함수가 보임</li><li>IDA에서 잘 알려진 Win32 함수를 임포트하면 Hex-Rays 디컴파일러가 자동으로 파라미터 이름과 타입까지 붙여서 보여줌(타입 정보 라이브러리가 있는 경우)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>낯선 함수 이름을 만나면 먼저 <strong>동사 부분</strong>(앞쪽 단어)만 떼어서 <code>Create</code>/<code>Get</code>/<code>Set</code>/<code>Is</code>/<code>Open</code>/<code>Close</code> 중 무엇에 해당하는지 확인한다.</li><li>나머지 명사 부분(<code>File</code>, <code>Process</code>, <code>Window</code>, <code>Thread</code> 등)으로 "무엇에 대한" 동작인지 파악한다.</li><li>끝에 <code>A</code>/<code>W</code>/<code>Ex</code>가 붙어있으면 그건 인코딩/확장판 표시일 뿐이므로 핵심 의미와는 분리해서 생각한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 이름 분해</strong> 예를 들어 <code>NtQueryInformationProcess</code>를 만났다고 하자.</p>
+<ul><li><code>Nt</code> — 네이티브 API(낮은 수준)</li><li><code>Query</code> — 조회(값을 얻어옴, <code>Get</code>과 비슷한 계열)</li><li><code>Information</code> — 정보</li><li><code>Process</code> — 프로세스 대상</li></ul>
+<p>이렇게 분해하면 "프로세스에 대한 어떤 정보를 조회하는 저수준 함수"라는 것을 이름만으로 알 수 있다. 실제로 이 함수는 디버거 부착 여부 확인(<code>ProcessDebugPort</code> 등 정보 클래스) 등 다양한 안티디버깅 용도로 쓰인다.</p>
+<p><strong>2) IDA에서 시그니처 확인</strong></p>
+<ul><li>임포트 함수 위에서 더블클릭하거나 <code>Ctrl+마우스오버</code>로 툴팁을 보면, IDA가 알고 있는 표준 헤더 기반 함수 프로토타입(인자 개수, 타입, 반환형)이 표시되는 경우가 많다. 이는 이름 추측보다 훨씬 정확한 정보이므로 반드시 함께 확인한다.</li><li>인자 이름 자체가 힌트인 경우가 많다(<code>lpFileName</code>, <code>dwDesiredAccess</code>, <code>lpBuffer</code> 등 헝가리안 표기법 접두사도 타입을 암시한다: <code>lp</code>=포인터, <code>dw</code>=DWORD, <code>b</code>=BOOL, <code>h</code>=핸들, <code>sz</code>=null 종료 문자열).</li></ul>
+<p><strong>3) 오프라인 자료로 교차 확인</strong></p>
+<ul><li>인터넷이 안 되는 환경이라면, 이 지식베이스의 Windows API 관련 다른 글이나 로컬에 캐시된 문서를 우선 참고한다.</li><li>함수 이름 추측이 애매하면 REV-0139(CreateFile/ReadFile/WriteFile) 같은 구체적인 API별 글에서 정확한 인자 순서를 확인한다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 임포트 함수 이름 위에서 마우스 오버(툴팁으로 프로토타입 확인), <code>Y</code>(프로토타입 수동 지정), <code>Shift+F12</code>(문자열 검색으로 관련 문맥 파악)</li><li>x64dbg: 함수에 브레이크포인트(<code>bp 함수이름</code>) 후 인자 레지스터/스택 값을 직접 확인해서 이름 추측이 맞는지 검증(자세한 절차는 REV-0139 참고)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>이름 추측은 "가설"이지, 확정이 아니다. 반드시 실제 인자 값(문자열, 크기, 플래그)을 확인해서 가설이 맞는지 검증해야 한다.</li><li><code>A</code>/<code>W</code> 두 버전이 동시에 임포트되어 있다면, 프로그램 내부에서 문자열 인코딩을 상황에 따라 섞어 쓰고 있다는 뜻일 수 있으니 각각 어디서 쓰이는지 구분해서 본다.</li><li><code>Nt</code>/<code>Zw</code> 함수가 직접 호출되고 있다면 일반적인 Win32 API 경유 방식보다 탐지를 우회하려는 의도가 있는지 의심해볼 만하다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>이름만 보고 100% 확신해서 실제 인자 확인을 생략하는 것. 같은 동사라도 문맥에 따라 뜻이 달라질 수 있다(예: <code>CreateEvent</code>의 <code>Event</code>는 UI 이벤트가 아니라 동기화 객체다).</li><li><code>A</code>와 <code>W</code>의 차이를 "그냥 이름이 다른 별개 함수"로 오해하는 것. 실제로는 인코딩만 다를 뿐 거의 동일한 기능이다.</li><li><code>Ex</code> 접미사가 붙은 함수를 완전히 다른 함수로 취급하는 것. 대개 원본 함수의 상위 호환 확장판이다.</li><li><code>Rtl*</code>, <code>Nt*</code>, <code>Zw*</code> 함수를 전부 "커널 함수라서 유저 모드에서는 못 본다"고 착각하는 것. 이들은 <code>ntdll.dll</code>에 있는 유저 모드 라이브러리 함수이며, 일반 프로그램에서도 직접 호출할 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>CreateFile</code>/<code>ReadFile</code>/<code>WriteFile</code>처럼 파일 입출력 계열 함수의 정확한 인자 순서가 필요하면 → REV-0139(CreateFile ReadFile WriteFile 입력 데이터 추적)를 확인한다.</li><li><code>Crypt*</code>/<code>BCrypt*</code> 접두사 함수를 만났다면 → REV-0140(Crypt API BCrypt API 흔적 찾기)으로 이동한다.</li><li>CRT 함수 이름과 진짜 Win32 API 이름이 섞여서 헷갈린다면 → REV-0137(Visual C++ Runtime 함수가 많은 바이너리 정리법)을 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p>임포트 목록에서 다음 세 함수를 봤다고 하자.</p>
+<pre><code class="language-text">IsDebuggerPresent
+GetTickCount
+VirtualProtect</code></pre>
+<ul><li><code>IsDebuggerPresent</code> — <code>Is</code> 접두사이므로 참/거짓 질의. "디버거가 붙어있는가"를 묻는 함수임을 이름만으로 바로 알 수 있다(안티디버깅 단골 함수).</li><li><code>GetTickCount</code> — <code>Get</code> 접두사이므로 어떤 값을 조회. "시스템 부팅 이후 경과한 틱(ms) 수를 가져온다"는 뜻이며, 두 번 호출해서 차이를 재면 실행 시간을 측정할 수 있다(타이밍 기반 안티디버깅에 자주 쓰임).</li><li><code>VirtualProtect</code> — <code>Virtual</code> 접두사(가상 메모리 관리자 계열)에 <code>Protect</code>(보호 속성 변경)가 붙었으므로, "메모리 페이지의 접근 권한(읽기/쓰기/실행)을 바꾼다"는 뜻이다. 언패킹 코드에서 압축 해제된 코드를 실행 가능하게 만들 때 자주 등장한다.</li></ul>
+<p>이 세 함수가 한 함수 안에 같이 등장한다면, "실행 시간을 재서 느리면(디버거로 스텝 실행 중이면) 의심하고, 디버거 존재 여부도 직접 확인한 뒤, 메모리 보호 속성을 바꿔 뭔가를 실행 가능하게 만드는" 전형적인 안티디버깅+언패킹 조합일 가능성이 높다고 짐작할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0119-import-table.html">REV-0119 — Import Table에서 중요한 API 찾기</a></li><li><a href="rev-0136-dotnet-vs-native.html">REV-0136 — .NET EXE인지 Native EXE인지 구분</a></li><li><a href="rev-0137-vcruntime-noise.html">REV-0137 — Visual C++ Runtime 함수가 많은 바이너리 정리법</a></li><li><a href="rev-0139-createfile-readfile-writefile.html">REV-0139 — CreateFile ReadFile WriteFile 입력 데이터 추적</a></li><li><a href="rev-0140-crypt-bcrypt-api.html">REV-0140 — Crypt API BCrypt API 흔적 찾기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Win32 API 네이밍 컨벤션(동사 접두사, <code>A</code>/<code>W</code>/<code>Ex</code> 접미사, 헝가리안 표기법)은 Microsoft Win32 API 공식 문서 및 스타일 가이드 기준이다.</li><li><code>Nt*</code>/<code>Zw*</code>/<code>Rtl*</code> 네이티브 API의 위치(<code>ntdll.dll</code>)와 Win32 API와의 관계는 Windows 내부 구조를 다루는 공식/준공식 문서(Windows Internals 계열 레퍼런스) 기준이다.</li><li><code>IsDebuggerPresent</code>, <code>GetTickCount</code>, <code>VirtualProtect</code> 등 개별 함수의 시그니처와 용도는 Microsoft 공식 API 문서 기준이다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

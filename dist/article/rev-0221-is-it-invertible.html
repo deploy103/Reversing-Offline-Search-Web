@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>역연산 가능한 알고리즘 판단법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>역연산 가능한 알고리즘 판단법</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>바이너리에서 찾은 변환 <code>y = f(x)</code>를 역으로 풀어 <code>x = f^-1(y)</code>를 바로 계산할 수 있는지는 연산 하나하나를 뜯어서 판단해야 한다. XOR/ADD/SUB/ROL/ROR/NOT과 "홀수 상수 곱셈"은 항상 역연산이 가능하지만, AND/OR/단순 SHIFT/짝수 곱셈/암호학적 해시는 정보가 소실되어 일반적으로 역연산이 불가능하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>체크 함수의 루프를 다 읽었는데 "이걸 브루트포스해야 하나, 아니면 거꾸로 계산하면 바로 풀리나?" 판단이 안 설 때</li><li><code>and</code>, <code>or</code>, <code>shr</code>, <code>shl</code>이 상수와 함께 쓰인 코드를 만나서 "이 비트가 진짜 사라진 건지" 확신이 안 설 때</li><li>곱셈 상수가 나왔는데 이걸 나눗셈으로 되돌릴 수 있는지 궁금할 때 (일반 나눗셈이 아니라 모듈러 역원을 써야 함)</li><li>룩업 테이블(치환 테이블)이 나왔는데 이게 진짜 1:1 대응인지 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>리버싱 문제의 체크 루틴은 대부분 여러 개의 "원자적 연산"(atomic operation)을 순서대로 이어붙인 것이다. <code>hash = ((x ^ 0x5A) + 7) * 3</code> 같은 식이 있으면, 이 전체를 한 번에 뒤집으려 하지 말고 <strong>연산 하나씩</strong> 분류한 다음 <strong>역순으로</strong> 뒤집어야 한다. 핵심은 "이 연산이 정보를 보존하는가(bijection, 전단사)"이다. 입력 전체 범위와 출력 전체 범위가 1:1로 정확히 대응되면 역연산이 항상 가능하고, 여러 입력이 같은 출력으로 뭉개지면(many-to-one) 역연산은 원칙적으로 불가능하며 후보값 집합만 얻을 수 있다.</p>
+<p><strong>연산별 역연산 가능 여부 표</strong></p>
+<table><thead><tr><th>연산</th><th>역연산 가능?</th><th>이유</th></tr></thead><tbody><tr><td><code>XOR</code> (상수/키)</td><td>항상 가능, 자기 자신이 역함수</td><td><code>(x^k)^k = x</code> 이므로 <code>x = y ^ k</code></td></tr><tr><td><code>ADD</code>/<code>SUB</code> (상수, mod 2^n)</td><td>항상 가능</td><td>고정폭 정수에서 덧셈은 전단사. <code>x = (y - k) &amp; mask</code></td></tr><tr><td><code>ROL</code>/<code>ROR</code> (고정 회전량)</td><td>항상 가능</td><td>비트를 버리지 않고 위치만 바꿈. <code>ROL k</code>의 역은 <code>ROR k</code></td></tr><tr><td><code>NOT</code> (비트 반전)</td><td>항상 가능, 자기 자신이 역함수</td><td>전체 1로 XOR한 것과 동일</td></tr><tr><td>곱셈 (홀수 상수, mod 2^n)</td><td>가능, 모듈러 역원 필요</td><td>홀수는 <code>Z/2^n Z</code> 링에서 gcd(k,2^n)=1인 유닛(unit)</td></tr><tr><td>곱셈 (짝수 상수, mod 2^n)</td><td>불가능(일반적으로)</td><td>gcd(k,2^n)&gt;1 → 여러 입력이 같은 출력으로 뭉개짐</td></tr><tr><td><code>AND</code>/<code>OR</code> (상수)</td><td>불가능</td><td>특정 비트를 강제로 0 또는 1로 고정 — 원래 값 소실</td></tr><tr><td><code>SHL</code>/<code>SHR</code> 단독</td><td>불가능</td><td>밀려난 비트가 그냥 사라짐 (회전이 아니라 진짜 시프트일 때)</td></tr><tr><td>룩업 테이블 치환</td><td>테이블이 순열(permutation)일 때만 가능</td><td>출력값 중복이 없어야(전단사) 역테이블을 만들 수 있음</td></tr><tr><td>암호학적 해시(MD5/SHA/FNV/CRC)</td><td>원칙적으로 불가능</td><td>의도적으로 many-to-one, 고정폭 출력으로 압축됨</td></tr></tbody></table>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>imul eax, eax, 3</code> / <code>imul eax, eax, 0x69</code> 같은 홀수 상수 곱셈 → "나눗셈으로 못 되돌리나?"라는 착각이 들기 쉬운 지점 (실제로는 모듈러 역원 사용)</li><li><code>and eax, 0F0h</code> / <code>and eax, 0FFh</code> 같은 마스킹 → 하위 비트가 통째로 사라진 흔적</li><li><code>shl</code>/<code>shr</code> 뒤에 그 반대 방향 시프트로 OR 결합하는 패턴(<code>(x&lt;&lt;k)|(x&gt;&gt;(32-k))</code>)이 <strong>함께</strong> 보이면 이건 사실 회전(rotate) 에뮬레이션이므로 역연산 가능하다 — 단독 시프트와 반드시 구분할 것</li><li>디컴파일에서 배열 인덱싱으로 값을 바꾸는 <code>table[x]</code> 형태 → 룩업 테이블 치환, 역연산 가능 여부는 테이블 내용을 직접 덤프해서 확인해야 함</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>루프 본문을 한 줄씩 나열하고, 각 줄이 위 표의 어느 항목에 해당하는지 표시한다. 전부 "항상 가능" 칸에 속하면 전체 체인을 역순으로 뒤집는 함수를 만들면 되고, 하나라도 "불가능" 칸에 걸리면 그 지점부터는 REV-0219(브루트포스 가능성 계산)나 REV-0220(Meet-in-the-middle)으로 전략을 바꿔야 한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 연산을 원자 단위로 분리</strong></p>
+<p>디컴파일 코드에서 한 줄에 여러 연산이 섞여 있으면(<code>h = (h ^ b) * 3 + 1</code>) 이를 <code>t1 = h ^ b</code>, <code>t2 = t1 * 3</code>, <code>t3 = t2 + 1</code> 처럼 단계별로 쪼갠다.</p>
+<p><strong>2) 각 단계를 표에 대조해 분류</strong></p>
+<p>각 <code>tN</code>이 XOR/ADD/AND/곱셈 중 어디에 속하는지, 상수가 홀수인지 짝수인지, 마스크 폭이 몇 비트인지 확인한다.</p>
+<p><strong>3-a) 전부 가역이면: 역순으로 역함수 체인 작성</strong></p>
+<p>정방향이 <code>x → XOR k → ADD c → 곱셈(홀수 m) → y</code> 였다면, 역방향은 <code>y → 곱셈(m의 모듈러 역원) → SUB c → XOR k → x</code> 순서로 만든다. <strong>순서를 반드시 뒤집어야 한다</strong> — 정방향과 같은 순서로 역연산을 적용하면 틀린 값이 나온다.</p>
+<p><strong>3-b) 하나라도 비가역이면: 소실된 비트 폭을 계산</strong></p>
+<p><code>AND 0xF0</code>이면 하위 4비트(2^4=16가지)가 소실된 것이고, 이 4비트만 브루트포스하면 충분하다(전체 바이트를 브루트포스할 필요 없음). 이런 "부분 브루트포스"는 REV-0219의 계산법을 그대로 적용한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python"># 홀수 상수의 모듈러 역원 구하기 (Python 3.8+)
+inv = pow(3, -1, 256)   # 결과: 171
+
+# 룩업 테이블이 순열(전단사)인지 확인
+def is_bijection(table):
+    return len(set(table)) == len(table)
+
+# 순열 테이블의 역테이블 만들기
+def invert_table(table):
+    inv = [0] * len(table)
+    for i, v in enumerate(table):
+        inv[v] = i
+    return inv</code></pre>
+<p>IDA/Ghidra: 곱셈 상수에서 <code>H</code> 키로 16진/10진 토글 후, 그 값이 홀수인지(마지막 헥스자리가 1,3,5,7,9,B,D,F) 바로 눈으로 확인 가능.</p>
+<h2>출력 해석</h2>
+<ul><li>역함수로 계산한 값을 다시 정방향 함수에 넣었을 때 원래 <code>y</code>가 나오지 않으면, 역순서를 잘못 적용했거나 모듈러 역원 계산에 실수가 있는 것이다. 반드시 왕복 검증(<code>f(f^-1(y)) == y</code>)을 해볼 것.</li><li><code>pow(a, -1, m)</code>이 <code>ValueError: base is not invertible</code>을 던지면 <code>a</code>와 <code>m</code>이 서로소가 아니라는 뜻 — 즉 그 곱셈은 애초에 비가역이라는 걸 파이썬이 확인해준 것이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>짝수 상수 곱셈에도 무작정 <code>pow(a,-1,m)</code>을 시도했다가 예외가 나는 걸 보고 당황하는 것 — 애초에 짝수는 비가역이니 발생 자체가 정상적인 검증이다.</li><li><code>AND</code>로 소실된 비트를 "어차피 안 보이니까 아무 값이나 넣어도 되겠지"라고 방치했다가, 최종 문자열이 출력 가능한 ASCII 범위를 벗어나는 걸 놓치는 것 — 소실된 비트도 다른 제약(예: 출력 가능 문자 여부)으로 후보를 좁힐 수 있다.</li><li>시프트와 회전을 혼동해서, 회전(rotate) 코드를 보고 "시프트니까 비가역"이라고 성급히 판단하는 것 — <code>(x&lt;&lt;k)|(x&gt;&gt;(32-k))</code> 형태인지 시프트 뒤에 나머지 비트를 버리는지 반드시 페어로 확인.</li><li>체인을 뒤집을 때 순서를 정방향과 동일하게 유지하는 것 — 역함수는 반드시 "마지막에 적용된 연산부터" 역순으로 풀어야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>곱셈 상수가 홀수인지 짝수인지조차 헷갈린다면 → 16진수 마지막 자리만 보면 된다(1,3,5,7,9,B,D,F = 홀수).</li><li>소실된 비트 폭이 너무 커서 부분 브루트포스도 부담스럽다면 → 이 페이지의 링크 중 rev-0219-bruteforce-feasibility.md에서 정확한 시간 계산법 확인.</li><li>체인 전체가 복잡한 Feistel 구조(TEA/XTEA류)라서 "정말 다 가역인가?" 의심된다면 → 이 페이지의 링크 중 rev-0210-tea-xtea.md에서 TEA/XTEA가 라운드별로 완전히 역연산 가능한 이유를 확인.</li><li>최종적으로 해시 함수라서 역연산 자체가 불가능하다고 결론났다면 → rev-0208-fnv-16777619.md에서 FNV가 왜 원천적으로 단방향인지, 그럴 때 무엇을 해야 하는지 확인.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 홀수 곱셈의 모듈러 역원</strong></p>
+<p>바이너리에서 <code>x' = (x * 3) &amp; 0xFF</code> 형태의 변환을 찾았다고 하자. 역연산을 하려면 <code>3 * y ≡ 1 (mod 256)</code>을 만족하는 <code>y</code>가 필요하다. <code>y = 171</code>을 대입하면 <code>3 * 171 = 513</code>이고, <code>513 = 2*256 + 1</code>이므로 <code>513 mod 256 = 1</code>이 성립한다. 즉 곱셈의 역원은 171이고, 역변환은 <code>x = (x' * 171) &amp; 0xFF</code>이다.</p>
+<p>검증: <code>x = 10</code>일 때 정방향 <code>x' = (10*3) &amp; 0xFF = 30</code>. 역방향 <code>(30*171) &amp; 0xFF = 5130 &amp; 0xFF</code>. <code>5130</code>을 <code>256</code>으로 나누면 <code>256*20=5120</code>, 나머지 <code>5130-5120=10</code>. 정확히 원래값 <code>10</code>이 복원된다. 파이썬에서는 이 171을 직접 계산할 필요 없이 <code>pow(3, -1, 256)</code>을 호출하면 바로 <code>171</code>이 나온다.</p>
+<p><strong>예제 2 — AND는 정보를 잃는다</strong></p>
+<p><code>y = x &amp; 0xF0</code> 변환에 <code>x = 0x37</code>을 넣으면 <code>y = 0x30</code>이 나온다. 그런데 <code>x = 0x30</code>부터 <code>x = 0x3F</code>까지 16개의 값 모두 <code>&amp; 0xF0</code>을 거치면 똑같이 <code>0x30</code>이 된다(하위 니블이 완전히 자유롭기 때문이다). 따라서 <code>y = 0x30</code>만 보고 원래 <code>x</code>가 정확히 무엇이었는지 알아낼 방법은 없다 — 최대 16개짜리 후보 집합만 얻을 수 있고, 이 4비트(2^4=16가지)는 다른 조건(예: 출력 가능한 아스키 문자인지)으로 좁히거나 그냥 16가지를 다 브루트포스해야 한다.</p>
+<p><strong>예제 3 — 룩업 테이블이 순열인지 확인</strong></p>
+<p><code>T = [3, 1, 4, 1, 5, 9, 2, 6]</code>이라는 테이블이 있다고 하자. <code>len(set(T))</code>를 계산하면 <code>{3,1,4,5,9,2,6}</code>으로 7개뿐인데(값 <code>1</code>이 인덱스 1과 3에서 중복), <code>len(T)</code>는 8이다. <code>7 != 8</code>이므로 이 테이블은 순열이 아니고 역테이블을 만들 수 없다 — 출력 <code>1</code>만 봐서는 원래 입력이 인덱스 1이었는지 3이었는지 구분이 안 된다. 반면 <code>T2 = [3,1,4,0,2,7,5,6]</code>은 <code>len(set(T2)) == len(T2) == 8</code>로 완전한 순열이므로 <code>invert_table(T2)</code>로 역테이블을 안전하게 만들 수 있다.</p>
+<p><strong>판단 절차 요약</strong>: (1) 루프 안의 연산을 하나씩 분리한다 → (2) 위 표로 각 연산을 분류한다 → (3) 전부 가역이면 역순으로 역함수 체인을 만든다 → (4) 하나라도 비가역이면 그 단계에서 소실된 비트 폭만 부분 브루트포스하거나, 전체를 rev-0219-bruteforce-feasibility.md / rev-0220-meet-in-the-middle.md / rev-0223-known-plaintext-narrowing.md 전략으로 전환한다.</p>
+<p><strong>심화 예제 — 3단계 연산 체인을 통째로 역산해서 flag를 복원하는 완결된 스크립트</strong></p>
+<p>바이너리에서 각 바이트에 <code>y = ((x ^ 0x5A) + 7) * 3</code> (mod 256) 같은 3단계 체인이 적용되는 것을 확인했다고 하자. 아래 스크립트는 이 체인을 정방향/역방향 함수로 각각 만들어서, 실제로 암호화된 flag 바이트열을 복원하는 전체 과정을 보여준다.</p>
+<pre><code class="language-python">def forward(x: int) -&gt; int:
+    # ↑ 바이너리에서 확인한 정방향 변환을 한 바이트(0~255)에 대해 그대로 재현한 함수.
+    t1 = x ^ 0x5A
+    # ↑ 1단계: XOR. 항상 역연산 가능한 연산이다(자기 자신이 역함수).
+    t2 = (t1 + 7) &amp; 0xFF
+    # ↑ 2단계: 8비트 범위에서 7을 더함. 고정폭 덧셈이라 항상 역연산 가능하다.
+    t3 = (t2 * 3) &amp; 0xFF
+    # ↑ 3단계: 홀수(3)를 곱함. mod 256에서 3은 gcd(3,256)=1이므로 역연산 가능하다.
+    return t3
+    # ↑ 세 단계를 모두 거친 최종 결과를 돌려준다.
+
+def inverse(y: int) -&gt; int:
+    # ↑ forward()를 정확히 역순으로 뒤집는 함수.
+    inv3 = pow(3, -1, 256)
+    # ↑ 파이썬 3.8 이상의 pow(a, -1, m)은 "a의 mod m에 대한 곱셈의 역원"을 계산해준다.
+    #   즉 3 * inv3를 256으로 나눈 나머지가 1이 되는 inv3를 자동으로 찾아준다(그 값은 171).
+    t2 = (y * inv3) &amp; 0xFF
+    # ↑ 3단계(곱셈)를 역으로 되돌린다 — 나눗셈이 아니라 모듈러 역원을 곱하는 방식.
+    t1 = (t2 - 7) &amp; 0xFF
+    # ↑ 2단계(덧셈)를 역으로 되돌린다 — 뺄셈.
+    x = t1 ^ 0x5A
+    # ↑ 1단계(XOR)를 역으로 되돌린다 — 같은 키로 다시 XOR.
+    return x
+    # ↑ 완전히 복원된 원래 바이트를 돌려준다.
+
+if __name__ == "__main__":
+    # ↑ 이 파일을 직접 실행할 때만 아래 블록을 수행한다.
+
+    # 1) 먼저 한 바이트로 forward/inverse가 서로 정확히 반대인지 검증한다.
+    test_byte = ord("f")
+    # ↑ 문자 'f'의 아스키 코드값(0x66)을 가져온다.
+    encoded_byte = forward(test_byte)
+    # ↑ 이 바이트를 정방향으로 변환한다.
+    decoded_byte = inverse(encoded_byte)
+    # ↑ 변환된 값을 다시 역방향으로 되돌린다.
+    print(f"한 바이트 검증: {hex(test_byte)} -&gt; {hex(encoded_byte)} -&gt; {hex(decoded_byte)}")
+    # ↑ 원래 값, 정방향 결과, 역방향으로 되돌린 결과를 순서대로 출력한다.
+    assert decoded_byte == test_byte
+    # ↑ 역방향으로 되돌린 값이 원래 값과 정확히 같은지 스스로 검증한다.
+
+    # 2) 이제 바이트 하나가 아니라, flag 전체(여러 바이트)에 같은 체인을 적용해본다.
+    original_flag = b"flag{invertible}"
+    # ↑ 검증용 원본 flag(실전에서는 모르는 값 — 바이너리가 저장하는 건 encoded 쪽이다).
+
+    encoded_flag = bytes(forward(b) for b in original_flag)
+    # ↑ flag의 모든 바이트에 forward()를 하나씩 적용해서, 바이너리가 실제로
+    #   저장/비교하는 것과 같은 형태의 암호화된 바이트열을 만든다.
+    print("암호화된 바이트열(hex):", encoded_flag.hex())
+    # ↑ 암호화된 결과를 16진수 문자열로 출력한다.
+
+    decoded_flag = bytes(inverse(b) for b in encoded_flag)
+    # ↑ 암호화된 바이트열의 모든 바이트에 inverse()를 하나씩 적용해서 원래 flag를 복원한다.
+    print("복원된 flag:", decoded_flag)
+    # ↑ 복원된 결과를 출력한다.
+
+    assert decoded_flag == original_flag
+    # ↑ 복원된 flag가 원본과 정확히 같은지 스스로 검증한다.
+    print("검증 성공: 3단계 체인 전체가 정확히 역순으로 복원되었다.")</code></pre>
+<p>이 스크립트를 그대로 실행하면 다음과 같이 출력된다(직접 계산해서 검증한 값):</p>
+<pre><code>한 바이트 검증: 0x66 -&gt; 0xc9 -&gt; 0x66
+암호화된 바이트열(hex): c9b7c6cc78aeb199d28d9faebdb7d28a
+복원된 flag: b'flag{invertible}'
+검증 성공: 3단계 체인 전체가 정확히 역순으로 복원되었다.</code></pre>
+<p>여기서 가장 중요한 점은 <strong>역함수를 적용하는 순서가 정방향과 정확히 반대</strong>라는 것이다 — 정방향이 "XOR → 덧셈 → 곱셈" 순서였다면, 역방향은 반드시 "곱셈의 역원 → 뺄셈 → XOR" 순서로 적용해야 한다. 이 순서를 뒤집지 않고 그대로 적용하면 <code>assert</code> 문에서 곧바로 에러가 나면서 잘못 짰다는 것을 스스로 알려준다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0208-fnv-16777619.html">rev-0208-fnv-16777619.md</a> — 암호학적 해시가 원천적으로 비가역인 구체적 예시</li><li><a href="rev-0210-tea-xtea.html">rev-0210-tea-xtea.md</a> — 복잡해 보여도 완전히 가역인 Feistel 구조의 대표 사례</li><li><a href="rev-0219-bruteforce-feasibility.html">rev-0219-bruteforce-feasibility.md</a> — 비가역 구간을 만났을 때 남은 비트를 브루트포스할 수 있는지 계산하는 법</li><li><a href="rev-0222-reimplement-in-python.html">rev-0222-reimplement-in-python.md</a> — 가역/비가역 판단 이후 실제 파이썬 코드로 옮기는 절차</li></ul>
+<h2>출처/검증</h2>
+<ul><li>모듈러 역원과 <code>Z/2^n Z</code>에서 홀수가 유닛이 되는 원리: 초등 정수론(modular arithmetic)의 표준 결과, Python 공식 문서의 <code>pow()</code> 3항 형태(음수 지수 시 모듈러 역원 계산) 설명 기준 (2026-09-08 검증).</li><li>비트 연산의 전단사/비전단사 구분: 일반적인 컴퓨터 산술(고정폭 정수 연산) 교재 수준의 표준 개념.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

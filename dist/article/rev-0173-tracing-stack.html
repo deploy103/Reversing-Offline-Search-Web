@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>스택 값을 실행 중 추적하는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>스택 값을 실행 중 추적하는 법</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>디버거의 스택 창(x64dbg) 또는 <code>x/x $rsp</code>, <code>bt</code>(GDB/Pwndbg)로 RSP(스택 포인터) 주변 메모리를 직접 들여다보면, 지역 변수, 저장된 레지스터, 반환 주소, 함수 인자(스택으로 넘어간 경우)가 실제로 어떤 값으로 쌓여 있는지 확인할 수 있다 — 스택 오버플로우, 반환 주소 덮어쓰기, 지역 변수 추적 같은 문제에서 필수적인 기술이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>함수 안에서 <code>[rbp-0x20]</code> 같은 지역 변수의 실제 값이 뭔지 궁금할 때</li><li>스택 버퍼 오버플로우 문제를 풀면서 내가 넣은 입력이 실제로 스택 어디까지 덮어썼는지 확인하고 싶을 때</li><li>함수 호출 체인이 어떻게 쌓여 있는지(누가 누구를 불렀는지) 확인하고 싶을 때(콜스택)</li><li>반환 주소가 스택의 정확히 어느 위치에 있는지, 그리고 그 값이 내 입력으로 덮였는지 확인하고 싶을 때</li><li>x64dbg의 스택 창에 나오는 여러 줄의 주소와 값이 뭘 의미하는지 모를 때</li><li>GDB에서 <code>bt</code>(backtrace)를 쳤는데 나오는 스택 프레임 목록을 어떻게 읽어야 할지 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>스택이란 무엇을 담고 있는가 (복습)</h3>
+<p>스택은 함수 호출/지역 변수를 위해 쓰는 메모리 영역으로, 높은 주소에서 낮은 주소 방향으로 자란다(PUSH하면 RSP가 감소). 함수가 호출되면 그 안에 다음과 같은 것들이 순서대로 쌓인다(REV-0031 스택 프레임 참고).</p>
+<ol><li><code>CALL</code> 실행 시 반환 주소가 PUSH됨</li><li>함수 프롤로그에서 이전 RBP가 PUSH됨(<code>push rbp</code>)</li><li><code>sub rsp, N</code>으로 지역 변수 공간이 확보됨</li><li>그 공간에 지역 변수(버퍼, 카운터 등)가 저장됨</li></ol>
+<p>스택을 추적한다는 것은 이 메모리 영역을 실행 중 실제로 읽어서, "지금 이 순간 이 주소에 무슨 값이 들어있는가"를 확인하는 것이다.</p>
+<h3>x64dbg 스택 창</h3>
+<p>x64dbg는 기본 레이아웃에 항상 "Stack" 창을 띄워둔다. 이 창은 RSP를 기준으로 위에서부터 순서대로 8바이트(x64)/4바이트(x86)씩 메모리 값을 보여주며, 각 줄 왼쪽에는 그 값이 저장된 실제 메모리 주소, 오른쪽에는 x64dbg가 자동으로 해석한 주석(예: 그 값이 반환 주소라면 어느 함수의 어느 줄로 돌아가는지, 문자열이면 그 내용)이 함께 표시된다. RSP가 가리키는 줄에는 화살표 표시가 있어 "지금 스택 맨 위"를 바로 알 수 있다.</p>
+<h3>RSP vs RBP 기준</h3>
+<ul><li><strong>RSP(스택 포인터)</strong>: 현재 스택의 맨 위(가장 낮은 주소)를 가리킨다. PUSH/POP, CALL/RET마다 계속 바뀐다.</li><li><strong>RBP(베이스 포인터)</strong>: 함수 진입 시점의 RSP 값을 고정해서 저장해 둔 것(표준 프롤로그 <code>push rbp; mov rbp, rsp</code> 사용 시). 함수 실행 중 RSP는 계속 움직이지만 RBP는 고정되어 있으므로, 지역 변수는 보통 <code>[rbp-0x14]</code>처럼 <strong>RBP 기준 음수 오프셋</strong>으로 표현된다. IDA/Ghidra 디스어셈블리에 나오는 <code>[rbp-0x20]</code> 같은 표현이 바로 이것이다.</li><li>최적화된 코드(프레임 포인터 생략, <code>-fomit-frame-pointer</code>)에서는 RBP를 범용 레지스터로 재활용하고 지역 변수를 전부 RSP 기준 오프셋으로 표현하기도 한다 — 이 경우 IDA가 스택 뷰(View → Open subviews → Stack frame)로 정리해서 보여준다.</li></ul>
+<h3>콜스택(Call Stack)이란</h3>
+<p>스택에 쌓인 여러 개의 반환 주소를 순서대로 따라가면, 지금 실행 중인 함수가 "누구에게 불려서 여기까지 왔는지" 그 호출 경로 전체를 재구성할 수 있다. 이것이 콜스택(호출 스택)이다. x64dbg는 별도의 "Call Stack" 창에서 이를 자동으로 정리해 보여주고, GDB는 <code>bt</code>(backtrace) 명령으로 확인한다. 디버깅 중 "지금 내가 어느 함수 안의 어디에 있고, 여기까지 어떻게 왔는지" 감을 잃었을 때 가장 먼저 확인해야 할 창이다.</p>
+<h3>메모리를 직접 읽기 (임의 주소)</h3>
+<p>스택 창/콜스택 창이 자동으로 보여주는 범위를 벗어나 임의의 스택 주소를 직접 조회하고 싶을 수도 있다(예: 버퍼가 스택의 얼마나 깊은 곳까지 덮어쓰는지 확인). 이때는 x64dbg의 Dump 창에 주소를 입력하거나, GDB의 <code>x</code>(examine memory) 명령을 쓴다.</p>
+<h3>스택 추적이 특히 중요한 상황 — 버퍼 오버플로우</h3>
+<p>지역 변수 버퍼(예: <code>char buf[16]</code>)에 사용자 입력을 그대로 복사하는 코드(<code>strcpy</code>, <code>gets</code> 등)가 있으면, 입력이 16바이트를 넘을 때 그 뒤에 있는 스택 데이터(저장된 RBP, 반환 주소)까지 덮어쓸 수 있다. 실제로 이게 일어나는지 확인하려면, 입력 함수 호출 직후와 함수가 반환하기 직전(RET 실행 직전) 두 시점에 각각 브레이크포인트를 걸고 스택 창에서 버퍼 영역과 반환 주소 영역의 값이 실제로 어떻게 바뀌었는지 비교하면 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>x64dbg 스택 창에서 어떤 줄 오른쪽에 <code>return to main+0x1A</code> 같은 주석이 붙어 있으면, 그 값이 반환 주소이고 어디로 돌아가는지 자동 해석된 것이다.</li><li>x64dbg에서 RSP가 가리키는 줄에 화살표(→)가 표시된다.</li><li>GDB <code>bt</code> 출력에서 <code>#0</code>, <code>#1</code>, <code>#2</code> ... 번호가 매겨진 목록이 나오면, 각 번호가 하나의 스택 프레임(함수 호출 단계)이며 숫자가 작을수록 현재 실행 중인 곳에 가깝다.</li><li>GDB <code>x/8xg $rsp</code> 같은 명령 출력에서 <code>0x7fffffffe420:  0x0000000000401235  0x0000000000000000</code> 처럼 나오면, 각 값이 8바이트(g=giant, quad word) 단위 메모리 내용이다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>지금 보고 싶은 것이 "지역 변수 값"인지 "반환 주소"인지 "콜스택 전체 경로"인지 먼저 명확히 한다.</li><li>지역 변수라면 IDA/Ghidra에서 그 변수의 RBP(또는 RSP) 기준 오프셋을 먼저 확인한다.</li><li>해당 함수 안 원하는 지점에 브레이크포인트를 건다.</li><li>스택 창/<code>x</code> 명령으로 그 오프셋의 실제 값을 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>x64dbg</strong></p>
+<ol><li>브레이크포인트를 걸고 <code>F9</code>로 원하는 지점까지 실행한다.</li><li>화면의 "Stack" 창에서 RSP 기준 위에서부터 값들을 확인한다.</li><li>특정 지역 변수(예: <code>[rbp-0x20]</code>)를 보고 싶다면, 레지스터 창에서 RBP 값을 확인한 뒤 Dump 창에 <code>RBP-20</code>(또는 실제 계산된 주소)을 입력해서 이동한다. 또는 디스어셈블리 창에서 <code>[rbp-0x20]</code>이 쓰인 줄을 우클릭 → "Follow in Dump"를 선택하면 자동으로 이동한다.</li><li>콜스택 전체를 보려면 별도의 "Call Stack" 창을 확인한다(기본 레이아웃에 포함, 없으면 View 메뉴에서 활성화).</li><li>Dump 창에서 값을 우클릭하면 "Follow DWORD/QWORD in Dump"로 그 값이 가리키는 주소로 다시 이동할 수 있다(포인터 체인 추적).</li></ol>
+<p><strong>GDB / Pwndbg</strong></p>
+<ol><li>브레이크포인트를 걸고 <code>run</code>으로 실행한다.</li><li>스택 맨 위 근처 메모리를 직접 보려면:</li></ol>
+<pre><code>   x/8xg $rsp      ; RSP부터 8바이트씩 8개(quad word) 16진수로 출력
+   x/16xw $rsp      ; RSP부터 4바이트씩 16개(word) 16진수로 출력</code></pre>
+<ol><li>특정 지역 변수(RBP 기준 오프셋)를 직접 조회하려면:</li></ol>
+<pre><code>   x/xg $rbp-0x20
+   p *(long*)($rbp-0x20)</code></pre>
+<ol><li>콜스택(호출 경로) 전체를 보려면:</li></ol>
+<pre><code>   bt
+   backtrace</code></pre>
+<ol><li>현재 스택 프레임의 정보(인자, 저장된 레지스터 위치 등)를 자세히 보려면:</li></ol>
+<pre><code>   info frame</code></pre>
+<ol><li>Pwndbg를 쓰면 정지할 때마다 자동으로 스택 영역이 색상과 함께 정리되어 표시된다(<code>context</code> 화면의 STACK 섹션). 수동으로 다시 보고 싶다면:</li></ol>
+<pre><code>   context</code></pre>
+<p>Pwndbg는 스택 값이 다른 스택 주소를 가리키거나 알려진 문자열/함수를 가리키면 자동으로 화살표와 함께 풀어서 보여준다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: Stack 창(기본 표시), Call Stack 창, Dump 창에 주소 입력(<code>Ctrl+G</code>), 값 우클릭 → "Follow DWORD/QWORD in Dump"(포인터 추적)</li><li>GDB/Pwndbg: <code>x/Nxg &lt;addr&gt;</code>(g=8바이트 단위), <code>x/Nxw &lt;addr&gt;</code>(w=4바이트 단위), <code>bt</code>(backtrace), <code>info frame</code>, <code>p *(long*)(addr)</code>, Pwndbg <code>context</code>(자동 스택 정리 및 포인터 풀이)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>x64dbg 스택 창에서 어떤 줄의 값이 코드 영역 주소이고 주석에 함수 이름이 붙어 있으면, 그 줄은 반환 주소일 가능성이 매우 높다.</li><li>GDB <code>bt</code> 결과 예: <code>#0 check_flag (input=...) at chal.c:12</code> / <code>#1 0x0000000000401235 in main () at chal.c:20</code> — <code>#0</code>이 현재 실행 중인 함수, <code>#1</code>이 그 함수를 호출한 곳(main의 0x401235 주소)이다.</li><li><code>x/8xg $rsp</code> 결과에서 값이 <code>0x0000000000401235</code>처럼 코드 영역(바이너리 로드 주소 범위) 안에 있다면 반환 주소일 가능성이 크고, <code>0x00007fffffffe4a0</code>처럼 스택 영역 자체를 가리키는 값이면 저장된 RBP(이전 프레임의 스택 포인터)일 가능성이 크다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>RBP 기준 오프셋(<code>[rbp-0x20]</code>)과 실제 메모리 주소를 혼동하는 것 — <code>[rbp-0x20]</code>은 "RBP 레지스터의 현재 값에서 0x20을 뺀 주소"이므로, 먼저 RBP의 실제 값을 확인한 뒤 그 값에서 계산해야 한다.</li><li>스택이 아래로 자란다는 것을 잊고 "버퍼 뒤"를 반대 방향(더 낮은 주소)에서 찾는 것 — 버퍼 오버플로우는 낮은 주소(버퍼 시작)에서 높은 주소(반환 주소가 있는 방향) 쪽으로 흘러넘친다.</li><li>최적화된 코드에서 RBP가 지역 변수 기준점으로 안 쓰이는 경우(프레임 포인터 생략)를 모르고 <code>[rbp-...]</code> 표현만 찾다가 못 찾는 것 — 이 경우 IDA의 Stack frame 뷰나 RSP 기준 오프셋을 확인해야 한다.</li><li>콜스택이 깨진 것처럼 보일 때(스택 오버플로우로 반환 주소가 손상된 경우) <code>bt</code>가 이상한 함수 이름이나 <code>??</code>를 출력하는 것을 디버거 오류로 착각하는 것 — 실제로 스택이 손상됐다는 중요한 신호일 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>지역 변수 값이 이상하다면 → 정말 맞는 오프셋을 보고 있는지, RBP 값이 스텝 중간에 바뀌지 않았는지 확인한다.</li><li>콜스택이 이상하게 나온다면 → 스택이 손상됐거나(오버플로우) 프레임 포인터가 생략된 최적화 코드일 가능성을 의심한다.</li><li>반환 주소가 정확히 어디 있는지 못 찾겠다면 → 함수 진입 직후(프롤로그 실행 전) <code>[rsp]</code>가 바로 반환 주소이므로, 그 시점에 먼저 확인해두고 이후 RBP 기준으로 환산한다.</li><li>포인터가 가리키는 실제 데이터(문자열, 구조체)까지 보고 싶다면 → x64dbg "Follow in Dump" 또는 GDB <code>x/s &lt;addr&gt;</code>(문자열로 출력)를 쓴다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>x64dbg — 지역 변수 버퍼 값 확인</strong></p>
+<pre><code class="language-asm">sub_401200:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 0x30
+    lea     rax, [rbp-0x20]   ; buf 주소
+    ; ... scanf 등으로 buf에 입력을 채움</code></pre>
+<p><code>lea</code> 다음 줄에 브레이크포인트를 걸고 <code>F9</code> → 정지 후 Dump 창에 <code>Ctrl+G</code>로 <code>rbp-20</code>을 입력하면 버퍼에 실제로 어떤 바이트가 들어있는지 확인할 수 있다.</p>
+<p><strong>GDB/Pwndbg — 콜스택과 스택 메모리 함께 확인</strong></p>
+<pre><code>(gdb) break check_flag
+(gdb) run
+(gdb) bt
+#0  check_flag (input=0x7fffffffe420 "flag{test}") at chal.c:12
+#1  0x0000000000401235 in main () at chal.c:20
+(gdb) x/4xg $rsp
+0x7fffffffe3f0: 0x0000000000401235  0x0000000000000000
+0x7fffffffe400: 0x00007ffff7dcfd90  0x0000000000000001</code></pre>
+<p><code>x/4xg $rsp</code>의 첫 값(<code>0x401235</code>)이 <code>bt</code>의 <code>#1</code> 줄에 나온 반환 주소와 일치하는 것을 확인할 수 있다 — 이것이 실제로 스택에 저장된 반환 주소다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0169-what-is-a-breakpoint.html">REV-0169 — Breakpoint가 무엇이고 어디에 걸어야 하는가</a></li><li><a href="rev-0172-tracing-registers.html">REV-0172 — 레지스터 값을 실행 중 추적하는 법</a></li><li><a href="rev-0195-tracing-input-buffer.html">REV-0195 — 디버거에서 입력 버퍼가 실제로 변하는 과정 추적</a></li><li><a href="rev-0044-push.html">REV-0044 — PUSH: 스택에 값 넣기</a></li><li><a href="rev-0045-pop.html">REV-0045 — POP: 스택에서 값 꺼내기</a></li><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li><li><a href="rev-0072-ret.html">REV-0072 — RET: 함수 반환과 스택 변화</a></li><li><a href="rev-0031-stack-frame.html">REV-0031 — 스택 프레임이 무엇인지</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>스택 프레임 구조(반환 주소, saved RBP, 지역 변수 배치)와 RSP/RBP 관계: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 1, "Stack Operation" 섹션 및 System V AMD64 ABI "Function Calling Sequence" 절 기준.</li><li>x64dbg Stack/Call Stack 창과 Dump 창(Follow in Dump) 동작: x64dbg 공식 문서(Debugging, Stack, Memory Map) 기준.</li><li>GDB <code>x</code>(examine memory), <code>bt</code>(backtrace), <code>info frame</code> 명령: GNU GDB 공식 매뉴얼 "Examining Memory", "Backtraces", "Examining the Stack" 챕터 기준.</li><li>Pwndbg <code>context</code> 명령의 스택 자동 풀이(포인터 체인 해석): Pwndbg 공식 GitHub 문서(Commands) 기준.</li><li>2026-09-08 검증.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA와 Ghidra 디컴파일 결과가 서로 다를 때 무엇을 믿을지 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA와 Ghidra 디컴파일 결과가 서로 다를 때 무엇을 믿을지</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>IDA(Hex-Rays)와 Ghidra는 서로 다른 디컴파일러 엔진이라 같은 바이너리에서도 <strong>변수 타입 추론, 인자 개수 판단, 최적화 코드 해석 방식</strong>이 다르게 나올 수 있으며, 둘 중 하나가 "맞다"고 단정하기보다 <strong>원본 디스어셈블리(어셈블리 명령어 자체)를 기준점으로 두고 두 결과를 서로 검증</strong>하는 것이 가장 안전하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>같은 함수를 IDA F5와 Ghidra Decompile 창으로 각각 열었는데 로직이나 변수 개수가 다르게 보일 때</li><li>한쪽 도구에서는 조건문/반복문이 깔끔하게 나오는데 다른 쪽에서는 이상하게 뒤틀려 보일 때</li><li>어느 디컴파일러 결과를 신뢰해서 계속 분석을 이어가야 할지 판단이 안 설 때</li><li>IDA는 유료라 일부만 쓰고 Ghidra로 나머지를 분석하는데 결과가 안 맞아 혼란스러울 때</li></ul>
+<h2>핵심 개념</h2>
+<p>IDA의 디컴파일러(Hex-Rays)와 Ghidra의 디컴파일러는 완전히 독립적으로 개발된 서로 다른 소프트웨어다. 둘 다 "어셈블리 → 중간 표현(IR) → 타입/변수 추론 → C 유사 코드 출력"이라는 비슷한 파이프라인을 거치지만, 각 단계의 휴리스틱(추정 규칙)이 다르기 때문에 결과가 갈릴 수 있다. 대표적인 차이 지점은 다음과 같다.</p>
+<ol><li><strong>타입 추론 정확도</strong>: 두 도구 모두 함수 인자의 개수/타입을 디버그 정보가 없으면 추정해야 하는데, 이 추정 로직이 달라 한쪽은 <code>int</code>로, 다른 쪽은 <code>undefined4</code>나 <code>long</code>으로 표시하는 등 차이가 난다.</li><li><strong>최적화 코드 해석</strong>: 컴파일러가 강하게 최적화한 코드(레지스터 재사용, 인라이닝, 벡터화)를 사람이 읽기 좋은 형태로 재구성하는 능력이 도구마다 다르다. 한쪽은 자연스러운 <code>for</code>/<code>while</code>로 복원하는데 다른 쪽은 <code>goto</code>가 잔뜩 섞인 형태로 출력하기도 한다.</li><li><strong>구조체/클래스 인식</strong>: C++ vtable, RTTI 정보를 처리하는 방식이 달라 클래스 멤버 접근 표현이 다르게 보일 수 있다.</li><li><strong>디버그 심볼/시그니처 데이터베이스 활용도</strong>: IDA의 FLIRT, Ghidra의 FID(Function ID)처럼 라이브러리 함수를 식별하는 서명 데이터베이스가 서로 달라, 한쪽은 실제 함수 이름을 알아내는데 다른 쪽은 <code>FUN_</code>/<code>sub_</code> 이름 그대로 남기도 한다.</li><li><strong>버전 차이</strong>: 같은 도구라도 버전이 다르면 디컴파일 품질이 달라질 수 있으므로, "IDA vs Ghidra" 차이처럼 보이는 것이 실제로는 "구버전 vs 신버전" 차이인 경우도 있다.</li></ol>
+<p>중요한 것은 <strong>두 디컴파일러 모두 원본 기계어를 사람이 읽기 좋게 재구성한 "해석 결과"일 뿐, 원본 그 자체가 아니라는 점</strong>이다. 진짜 기준점은 항상 디스어셈블리(어셈블리 명령어)이며, 디컴파일 결과는 그것을 더 쉽게 읽기 위한 보조 수단이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>같은 주소의 함수를 열었는데 IDA 의사코드와 Ghidra 의사코드의 변수 개수, 분기 구조, 반환 타입이 다르게 표시된다.</li><li>한쪽 도구의 결과에는 <code>goto</code>가 여러 개 섞여 있는데 다른 쪽은 깔끔한 <code>if</code>/<code>else</code>로 나온다.</li><li>한쪽은 함수 이름을 실제 라이브러리 함수명으로 표시하는데 다른 쪽은 <code>FUN_</code>/<code>sub_</code> 형태 그대로다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>두 결과 중 어느 쪽이 "맞는지" 바로 판단하려 하지 말고, 먼저 문제가 되는 지점의 원본 디스어셈블리를 양쪽 도구에서 각각 열어 명령어 시퀀스 자체가 동일한지부터 확인한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 디스어셈블리 레벨에서 먼저 비교</strong></p>
+<p>두 도구의 Listing(IDA의 IDA View-A, Ghidra의 Listing)을 같은 주소로 맞춰 놓고 명령어가 동일한지 확인한다. 이 단계에서 이미 다르다면 문제는 디컴파일러가 아니라 디스어셈블(코드 인식) 단계에 있는 것이다.</p>
+<p><strong>2) 디스어셈블리가 같다면 의심 지점을 어셈블리로 직접 추적</strong></p>
+<p>디컴파일 결과가 갈리는 특정 변수/분기에 대해, 그 변수가 실제로 어떤 레지스터/스택 오프셋에 대응하는지 어셈블리에서 직접 따라간다. 두 디컴파일러 모두 이 원본 명령어를 "해석"한 것이므로, 어셈블리를 직접 읽으면 어느 해석이 더 실제에 가까운지 판단할 근거가 생긴다.</p>
+<p><strong>3) 타입 힌트를 수동으로 보정</strong></p>
+<p>두 도구 모두 함수 인자/변수 타입을 자동으로 잘못 추정했을 수 있다. 문자열 비교, 상수 크기, 호출 규약(SysV/Windows x64) 등 문맥 정보를 근거로 타입을 수동으로 재지정(IDA는 <code>Y</code>, Ghidra는 <code>Ctrl+L</code>)하면 양쪽 모두 더 정확한 결과를 낼 수 있다.</p>
+<p><strong>4) 한쪽이 명백히 더 깨끗하면 그쪽을 주 분석 도구로</strong></p>
+<p>특정 함수에서 한쪽 디컴파일러가 눈에 띄게 더 자연스러운 제어 흐름을 복원했다면, 그 함수는 그 도구를 주력으로 읽고, 다른 쪽은 XREF나 문자열 검색 등 보조 용도로만 병행 사용한다.</p>
+<p><strong>5) 라이브러리 함수 식별 차이는 시그니처 데이터베이스 문제로 분리</strong></p>
+<p>한쪽만 함수 이름을 알아냈다면, 이는 로직 해석의 차이가 아니라 시그니처 매칭(FLIRT/FID)의 차이이므로, 이름이 안 붙은 쪽에서는 알아낸 이름을 수동으로 복사해 붙여넣는 것으로 충분하다.</p>
+<p><strong>6) 버전 차이 가능성 배제</strong></p>
+<p>가능하면 두 도구 모두 최신 안정 버전인지 확인한다. 구버전의 디컴파일러 결함으로 인한 차이라면 업데이트만으로 해결될 수 있다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">IDA:    F5(디컴파일), X(xrefs), Y(타입 지정)
+Ghidra: 함수 클릭(디컴파일 자동 갱신), X(xrefs), Ctrl+L(Retype)
+공통:   양쪽 Listing/디스어셈블리를 같은 주소로 맞춰 직접 대조</code></pre>
+<h2>출력 해석</h2>
+<ul><li>디스어셈블리 단계부터 다르면(명령어 자체가 다르게 인식됨) 이는 디컴파일러 차이가 아니라 각 도구의 함수 경계/코드 인식 오류일 가능성이 크다 — REV-0783/REV-0154 참고.</li><li>디스어셈블리는 같은데 의사코드만 다르면, 순수하게 해석(타입 추론, 제어 흐름 재구성) 방식의 차이이므로 원본 어셈블리를 기준으로 직접 판단해야 한다.</li><li>변수/함수 타입이 다르게 추정된 경우, 실제 사용 맥락(비교 대상 문자열, 산술 연산 크기)을 보면 어느 쪽이 더 그럴듯한지 대개 판단할 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>유료 도구인 IDA 결과를 무조건 더 신뢰하는 것 — 두 도구 모두 특정 최적화 패턴에서는 서로 다른 약점을 가지므로 맹신은 금물이다.</li><li>디스어셈블리 단계의 차이(함수 경계 오류 등)를 디컴파일러 품질 차이로 오인하는 것.</li><li>한쪽 결과만 보고 결론을 내린 뒤, 다른 쪽에서 훨씬 명확한 힌트가 있었다는 것을 나중에야 발견하는 것 — 애매한 함수는 두 도구를 함께 열어 교차 검증하는 습관이 시간을 아낀다.</li><li>둘 다 오래된 버전이라 겪는 문제인데, 도구 자체의 근본적 한계로 결론짓는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>디스어셈블리 자체는 같은데 디컴파일 결과가 실제 실행과도 다르게 보이면 → REV-0789.</li><li>문제가 함수 경계 인식 차이 때문인 것 같다면 → REV-0783(Ghidra), REV-0154(IDA).</li><li>Ghidra 디컴파일 창을 읽는 기본기가 부족하다면 → REV-0158.</li></ul>
+<h2>미니 예제</h2>
+<p>동일한 <code>check_serial</code> 함수를 두 도구로 열었더니, IDA는 인자를 2개(<code>a1</code>, <code>a2</code>)로, Ghidra는 3개(<code>param_1</code>, <code>param_2</code>, <code>param_3</code>)로 표시했다.</p>
+<ol><li>두 도구의 Listing을 함수 시작 주소로 맞춰 프롤로그부터 비교 — 명령어 자체는 동일함을 확인.</li><li>호출 규약(SysV x64라면 RDI/RSI/RDX)에 따라 실제로 함수 진입 시 RDX가 쓰이는지 어셈블리에서 직접 확인.</li><li>RDX가 실제로 함수 내부에서 사용됨을 확인 → Ghidra의 3개 인자 추정이 더 정확한 것으로 판단.</li><li>IDA 쪽에서 수동으로 함수 원형을 3개 인자로 재지정(<code>Y</code>)해 두 결과를 일치시킨다.</li></ol>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0789-decompile-vs-assembly-mismatch.html">REV-0789 — 디컴파일 결과랑 실제 어셈블리가 다르게 보일 때</a></li><li><a href="rev-0783-ghidra-wrong-function-boundary.html">REV-0783 — Ghidra에서 함수 경계가 잘못 잡혔을 때</a></li><li><a href="rev-0154-ida-wrong-function-boundary.html">REV-0154 — IDA에서 함수 경계가 잘못 잡혔을 때</a></li><li><a href="rev-0158-ghidra-decompiler-window.html">REV-0158 — Ghidra Decompiler 창 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>IDA(Hex-Rays)와 Ghidra 디컴파일러가 독립적으로 구현된 서로 다른 엔진이며, 타입 추론/제어 흐름 복원 방식에 차이가 있다는 점: Hex-Rays 공식 문서 및 Ghidra 공식 문서(디컴파일러 설계 개요) 기준.</li><li>디스어셈블리가 디컴파일보다 더 원본에 가까운 "1차 사실"이라는 관점은 두 도구 공식 문서 모두에서 디컴파일 결과를 "추정에 기반한 재구성"으로 설명하는 데서 일관되게 확인된다.</li><li>이 문서는 특정 바이너리로 두 도구를 직접 나란히 비교 재현하지 않았으며, 공식 문서와 일반적으로 알려진 두 디컴파일러의 특성 차이를 바탕으로 정리했다. 실제 차이는 함수/컴파일러/최적화 옵션에 따라 다를 수 있다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

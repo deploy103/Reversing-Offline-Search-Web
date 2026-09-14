@@ -150,7 +150,7 @@ libc.symbols['system']             # 정확한 오프셋
 
 ## 막혔을 때 다음 체크
 - 애초에 `.so`를 못 찾아 실행 자체가 안 된다면 → REV-0706(공유 라이브러리를 못 찾아서 error while loading shared libraries가 뜰 때)
-- glibc 버전 차이로 실행 자체가 거부된다면 → REV-0705(glibc 버전이 안 맞아서 바이너리가 실행이 안 될 때, CONTENT_PLAN 예정 항목)
+- glibc 버전 차이로 실행 자체가 거부된다면 → REV-0705(glibc 버전이 안 맞아서 바이너리가 실행이 안 될 때)
 - Pwndbg 힙 명령이 이 libc 버전을 인식 못 한다면 → REV-0709(Pwndbg에서 heap 명령이 이 glibc 버전에서 지원 안 된다고 할 때)
 - ASLR로 인해 매번 주소가 달라지는 것까지 겹쳐 있다면 → REV-0714(동적분석 중 ASLR 때문에 라이브러리 베이스 주소가 계속 바뀔 때)
 

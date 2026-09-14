@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>BTR: 비트 지우며 테스트 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>BTR: 비트 지우며 테스트</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>BTR</code>(Bit Test and Reset)는 지정한 비트의 <strong>원래 값을 CF로 복사한 뒤, 그 비트를 강제로 0으로 해제(reset)</strong> 하는 명령어다. <a href="rev-0398-bts.html">BTS</a>의 정반대(설정 대신 해제) 버전이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>btr eax, 3</code> 같은 코드를 보고 <a href="rev-0398-bts.html">BTS</a>와 무엇이 다른지 궁금할 때</li><li>락(lock) 해제 코드나 플래그 초기화 코드에서 <code>lock btr</code>을 만났을 때</li><li>비트셋의 <code>clear()</code>/<code>reset()</code> 함수가 어셈블리로 어떻게 나오는지 알고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>BTR r/m16, r16
+BTR r/m32, r32
+BTR r/m64, r64
+BTR r/m16/32/64, imm8</code></pre>
+<p>오퍼랜드 형식은 <a href="rev-0397-bt.html">BT</a>/<a href="rev-0398-bts.html">BTS</a>와 동일하다 — dest(검사·수정할 값), src(비트 위치).</p>
+<h3>실제로 하는 일</h3>
+<pre><code>CF   = (dest &gt;&gt; n) &amp; 1        ; 원래 비트 값을 CF에 저장
+dest = dest &amp; ~(1 &lt;&lt; n)       ; 그 비트를 0으로 강제 해제</code></pre>
+<p>BTS가 <code>OR</code>로 비트를 켜는 것과 대칭적으로, BTR은 <code>AND NOT</code>(비트 마스크에서 해당 비트만 뺀 값과 AND)으로 비트를 끈다.</p>
+<h3>플래그 변화</h3>
+<ul><li><strong>CF</strong>: 수정 전 원래 비트 값</li><li><strong>OF, SF, ZF, AF, PF</strong>: 정의되지 않음</li></ul>
+<h3>스택/RSP/RIP 변화</h3>
+<p>없음.</p>
+<h3>LOCK 접두사와 원자적 비트 해제 — 락 해제(release) 패턴</h3>
+<p><code>LOCK BTR</code>은 스핀락/뮤텍스를 <strong>해제(release)</strong> 할 때 흔히 쓰인다. <a href="rev-0398-bts.html">BTS</a>로 락을 잡았다면, BTR로 락을 놓는다:</p>
+<pre><code class="language-asm">lock btr dword ptr [lock_flag], 0   ; 락 비트를 원자적으로 0으로 해제</code></pre>
+<p>BTS와 짝을 이뤄 "락 획득/해제" 쌍을 이루는 경우가 많으므로, 한쪽을 발견하면 반드시 짝이 되는 다른 쪽도 코드 어딘가에 있는지 xref로 찾아보는 것이 동시성 로직을 이해하는 데 도움이 된다.</p>
+<h3>BT 계열에서 BTR의 위치</h3>
+<table><thead><tr><th>명령</th><th>dest 수정 여부</th><th>수정 방식</th><th>CF에 담기는 값</th></tr></thead><tbody><tr><td><code>BT</code> (<a href="rev-0397-bt.html">REV-0397</a>)</td><td>수정 안 함</td><td>없음(읽기 전용)</td><td>원래 비트 값</td></tr><tr><td><code>BTS</code> (<a href="rev-0398-bts.html">REV-0398</a>)</td><td>수정함</td><td>무조건 1로 설정</td><td>수정 전 값</td></tr><tr><td><code>BTR</code> (이 글)</td><td>수정함</td><td>무조건 0으로 해제</td><td>수정 전 값</td></tr><tr><td><code>BTC</code> (<a href="rev-0400-btc.html">REV-0400</a>)</td><td>수정함</td><td>반전(토글)</td><td>수정 전 값</td></tr></tbody></table>
+<p>네 명령 모두 오퍼랜드 형식과 비트 위치 지정 방식(즉시값 또는 레지스터, 레지스터 dest일 때 오퍼랜드 크기로 모듈로 처리)이 완전히 동일하며, 차이는 오직 "수정 후 그 비트가 어떤 값이 되는가"에만 있다.</p>
+<h3>참조 카운트/자원 반납 패턴에서의 BTR</h3>
+<p>비트맵으로 자원 풀(예: 스레드 풀 슬롯, 페이지 프레임, 핸들 테이블 인덱스)을 관리하는 코드에서는 "이 슬롯을 반납한다"는 동작이 곧 해당 비트를 0으로 되돌리는 것과 같다. 이런 코드에서 <code>BTR</code>이 반복문 없이 단발성으로 등장한다면, 대개 "인덱스 하나를 반납/해제"하는 함수(예: <code>free_slot(idx)</code>, <code>release_handle(idx)</code>)일 가능성이 높다 — 함수 이름이 난독화되어 있어도 이 패턴만으로 기능을 추정할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>btr eax, 2</code> — 2번 비트를 끄면서 이전 상태를 CF로 확인</li><li><code>lock btr [rdi], eax</code> — 원자적 비트 해제, 락 해제/플래그 초기화 코드 의심</li><li>BTR 직후 <code>jc</code> — "원래 켜져 있었다면 분기"(끄기 전 상태에 따른 후처리)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>LOCK 접두사 여부 확인</li><li>dest와 비트 위치(상수/레지스터) 확인</li><li>BTR 직후 CF 기반 분기 의미(원래 켜져 있었는가?) 해석</li><li>근처에 대응되는 BTS(락 획득)가 있는지 xref로 확인</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 비트 플래그를 끄면서 원래 상태 확인</strong></p>
+<pre><code class="language-asm">btr  eax, ecx
+jnc  was_already_clear
+; 여기 도달하면 원래 켜져 있었고 방금 껐다는 뜻</code></pre>
+<p><strong>2) 원자적 락 해제 패턴</strong></p>
+<pre><code class="language-asm">; 임계 구역 종료
+lock btr dword ptr [lock], 0   ; 락 해제</code></pre>
+<p><strong>3) 자원 풀에서 인덱스 반납</strong></p>
+<pre><code class="language-asm">mov  eax, [pool_bitmap]
+btr  eax, idx        ; idx번 슬롯을 사용 중(1) -&gt; 미사용(0)으로 되돌림
+mov  [pool_bitmap], eax</code></pre>
+<p>→ <code>pool_bitmap &amp;= ~(1 &lt;&lt; idx);</code> — "idx번 자원을 반납했다"는 의미.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA/Ghidra 의사코드: <code>btr</code> 단독은 <code>value &amp;= ~(1 &lt;&lt; n)</code> 형태로 정리된다.</li><li>x64dbg/GDB: 실행 전후 dest 값과 CF를 비교해서 "지워지기 전 값"을 확인한다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>CF=1이면 지우기 전 그 비트가 켜져 있었다는 뜻(그리고 지금은 확실히 꺼짐).</li><li>CF=0이면 원래도 꺼져 있었다는 뜻(연산이 사실상 no-op).</li><li>디버거로 <code>lock btr</code> 실행 전후 메모리 값을 비교할 때는, 다른 스레드가 동시에 같은 주소를 건드릴 수 있으므로 단일 스텝 실행 중에도 값이 예상과 다르게 보일 수 있다는 점을 감안해야 한다 — 이는 원자적 연산 자체의 문제가 아니라 디버거로 관찰하는 시점과 다른 스레드의 실행이 겹치기 때문이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>BTR을 BT처럼 읽기 전용이라 착각하는 것 — BTR은 dest를 반드시 수정한다(해당 비트를 0으로).</li><li>CF를 "해제 후" 값으로 착각하는 것 — CF는 항상 <strong>수정 전</strong> 값이다.</li><li>BTR과 <a href="rev-0055-and.html">AND</a>를 동일시하는 것 — 결과적으로 비트를 끈다는 점은 같지만, BTR은 이전 값을 CF로 돌려주고 LOCK과 결합해 원자적 해제가 가능하다는 점이 다르다.</li><li>BTS(락 획득)만 보고 BTR(락 해제)이 코드 어딘가에 반드시 있어야 한다는 점을 놓치는 것 — 짝이 안 맞으면 데드락 버그를 의심해볼 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>CF 분기 의미가 헷갈리면 → "CF는 항상 수정 전 값" 규칙 재확인.</li><li><code>lock btr</code>이 왜 있는지 모르겠다면 → 앞서 나온 <code>lock bts</code>(락 획득)와 짝을 이루는지, 함수의 진입/종료 지점에 각각 위치하는지 확인.</li><li>BT/BTS/BTR/BTC 구분이 헷갈리면 → 마지막 글자(없음=읽기전용, S=Set, R=Reset, C=Complement)로 기억.</li><li>자원 풀 반납 함수인지 확신이 안 서면 → 대응되는 "할당" 함수(비트맵에서 빈 슬롯을 찾아 BTS로 켜는 코드)가 같은 파일/모듈 안에 있는지 찾아 짝을 맞춰본다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 비트셋에서 특정 인덱스 끄기</strong></p>
+<pre><code class="language-c">void clear_bit(unsigned *bitmap, int idx) {
+    *bitmap &amp;= ~(1u &lt;&lt; idx);
+}</code></pre>
+<pre><code class="language-asm">mov  eax, [bitmap]
+mov  ecx, idx
+btr  eax, ecx
+mov  [bitmap], eax</code></pre>
+<p><strong>예제 2 — 원자적 스핀락 해제</strong></p>
+<pre><code class="language-c">__sync_lock_release(&amp;lock);</code></pre>
+<pre><code class="language-asm">lock btr dword ptr [lock], 0</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0397-bt.html">REV-0397 — BT: 비트 테스트</a></li><li><a href="rev-0398-bts.html">REV-0398 — BTS: 비트 설정하며 테스트</a></li><li><a href="rev-0400-btc.html">REV-0400 — BTC: 비트 토글하며 테스트</a></li><li><a href="rev-0055-and.html">REV-0055 — AND: 마스크와 비트 제거</a></li><li><a href="rev-0059-test.html">REV-0059 — TEST: 값을 바꾸지 않는 AND 비교</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>BTR 명령어의 오퍼랜드/플래그/원자성 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "BTR—Bit Test and Reset" 및 Volume 3A "Locked Atomic Operations" 섹션 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

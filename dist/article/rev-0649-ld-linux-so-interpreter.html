@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ELF Interpreter(ld-linux.so)가 하는 일 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>ELF Interpreter(ld-linux.so)가 하는 일</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">readelf</span><span class="tag">patchelf</span></div>
+<h2>한 줄 요약</h2>
+<p>동적 링킹된 ELF를 실행하면 커널은 프로그램 코드를 바로 실행하지 않고 ELF의 <code>PT_INTERP</code> 세그먼트에 적힌 경로(보통 <code>/lib64/ld-linux-x86-64.so.2</code>)의 프로그램, 즉 동적 로더를 먼저 실행시키며, 이 로더가 필요한 공유 라이브러리를 매핑하고 재배치를 끝낸 뒤에야 진짜 프로그램의 진입점으로 점프한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>readelf -l ./chall</code> 출력에서 <code>INTERP</code> 줄과 <code>Requesting program interpreter</code> 문구를 봤는데 정확히 무슨 역할인지 모를 때</li><li>CTF에서 특정 버전의 libc를 강제로 쓰게 만들고 싶어서 <code>/lib64/ld-linux-x86-64.so.2 ./chall</code> 같은 명령을 봤는데 왜 되는지 궁금할 때</li><li>원격 서버에서 <code>No such file or directory</code> 에러가 나는데 파일은 분명히 있어서 원인이 인터프리터 경로 문제일 수 있다고 의심될 때</li><li><code>patchelf --set-interpreter</code>를 써야 하는 이유와 동작 원리를 이해하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>PT_INTERP 세그먼트</h3>
+<p>동적 링킹된 ELF의 Program Header 중에는 <code>PT_INTERP</code> 타입 엔트리가 있다. 이 세그먼트의 내용은 단순한 문자열 하나, 즉 실행 시 사용할 동적 로더의 절대 경로다. x86-64 리눅스 기본값은 <code>/lib64/ld-linux-x86-64.so.2</code>이고, x86(32비트)은 <code>/lib/ld-linux.so.2</code>, musl은 <code>/lib/ld-musl-x86_64.so.1</code>이다(REV-0647). 커널의 <code>execve()</code> 시스템 콜은 ELF 헤더를 파싱하다가 <code>PT_INTERP</code>를 발견하면, 원래 실행하려던 파일이 아니라 이 경로의 파일을 대신 로드하고 그 인터프리터의 진입점으로 제어를 넘긴다.</p>
+<h3>ld.so 자신도 ELF다</h3>
+<p><code>/lib64/ld-linux-x86-64.so.2</code>는 그 자체로 <code>ET_DYN</code> 타입의 공유 오브젝트이며, glibc 소스에서 <code>elf/rtld.c</code>의 <code>_dl_start</code> 함수가 실제 시작점이다. 커널이 인터프리터를 실행할 때는 원본 실행 파일의 정보(경로, 세그먼트 위치 등)를 보조 벡터(auxiliary vector, REV-0677)에 실어서 넘겨준다. <code>_dl_start</code>는 이 정보를 이용해 다음 작업을 순서대로 수행한다.</p>
+<ol><li>자기 자신(<code>ld.so</code>)의 재배치를 먼저 처리한다(로더 스스로도 위치 독립 코드로 컴파일되어 있어야 하므로 셀프 부트스트랩이 필요하다).</li><li>대상 실행 파일의 <code>.dynamic</code> 섹션을 읽어 <code>DT_NEEDED</code> 엔트리들, 즉 필요한 공유 라이브러리 목록을 확인한다(REV-0101).</li><li><code>LD_LIBRARY_PATH</code>, <code>DT_RPATH</code>/<code>DT_RUNPATH</code>, <code>/etc/ld.so.cache</code> 순서로 각 라이브러리를 검색해 메모리에 매핑한다(REV-0651에서 정확한 순서를 다룸).</li><li>실행 파일과 각 라이브러리의 재배치 테이블(<code>.rela.dyn</code>, <code>.rela.plt</code>)을 이용해 심볼을 연결한다. 이 과정 일부가 GOT를 채우는 작업이다(REV-0100).</li><li>TLS(Thread Local Storage) 세그먼트를 초기화한다(REV-0680).</li><li>IFUNC(Indirect Function) 재배치를 해석해 CPU 기능에 맞는 함수 구현을 선택한다(REV-0679).</li><li>모든 준비가 끝나면 원래 실행 파일의 <code>e_entry</code>(보통 <code>_start</code>)로 점프한다.</li></ol>
+<p>즉 <code>./chall</code>을 실행하는 순간 실제로 먼저 실행되는 코드는 우리 프로그램이 아니라 <code>ld.so</code>이며, 우리 프로그램의 <code>_start</code>(REV-0098)는 이 모든 준비가 끝난 뒤에야 실행된다.</p>
+<h3>ld.so를 직접 실행할 수 있다 — CTF의 핵심 활용법</h3>
+<p><code>ld-linux-x86-64.so.2</code>는 실행 가능한 파일이므로, 대상 프로그램을 인자로 넘겨 직접 실행할 수 있다.</p>
+<pre><code class="language-bash">/lib64/ld-linux-x86-64.so.2 ./chall</code></pre>
+<p>이 방식이 중요한 이유는 <strong>어떤 로더와 어떤 라이브러리를 쓸지 사용자가 직접 지정할 수 있기 때문</strong>이다. CTF 배포 파일에 특정 버전의 <code>libc.so.6</code>과 그에 맞는 <code>ld-2.31.so</code>가 함께 온다면, 시스템 기본 로더 대신 그 로더를 지정해서 실행하면 문제 서버와 정확히 같은 libc 버전으로 로컬 재현이 가능하다.</p>
+<pre><code class="language-bash">./ld-2.31.so --library-path . ./chall</code></pre>
+<p><code>--library-path</code> 옵션은 <code>LD_LIBRARY_PATH</code>처럼 라이브러리 검색 경로를 지정한다. 이렇게 하면 바이너리 자체는 수정하지 않고도 지정한 libc로 강제 실행할 수 있다. 비슷한 목적으로 바이너리의 <code>PT_INTERP</code> 자체를 영구히 바꿔버리는 <code>patchelf --set-interpreter ./ld-2.31.so --set-rpath . ./chall</code> 방법도 널리 쓰인다 — 이러면 <code>./chall</code>을 그냥 실행하기만 해도 지정한 로더가 쓰인다(pwntools의 <code>pwninit</code> 도구가 이 작업을 자동화해준다).</p>
+<h3>ldd의 정체</h3>
+<p><code>ldd ./chall</code>이 하는 일도 사실 이 로더를 활용한 것이다. <code>ldd</code>는 내부적으로 <code>LD_TRACE_LOADED_OBJECTS=1</code> 환경변수를 설정하고 대상 프로그램을 로더에게 넘겨 실행시킨다. 로더는 이 환경변수를 보면 실제로 프로그램을 실행하지 않고 라이브러리 매핑 목록만 출력하고 종료한다. 즉 <code>ldd</code>는 대상 바이너리를 아주 잠깐이나마 "실행"시키는 셈이라, 신뢰할 수 없는 바이너리에는 <code>ldd</code> 대신 <code>readelf -d</code>만 쓰는 것이 안전하다(REV-0101에서 언급).</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>readelf -l ./chall</code> 출력에 <code>INTERP</code> 세그먼트와 <code>[Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]</code></li><li>GDB로 실행 시작 직후 <code>info sharedlibrary</code>를 치면 아직 아무 라이브러리도 안 보이다가, <code>_start</code> 이후 시점에는 <code>libc.so.6</code>, <code>ld-linux-x86-64.so.2</code> 모두 매핑된 상태로 보임</li><li><code>strace ./chall</code> 출력의 맨 앞부분에 <code>execve</code> 직후 <code>ld.so</code>가 여러 <code>openat</code>, <code>mmap</code> 호출로 라이브러리를 찾고 매핑하는 과정이 잔뜩 나옴(REV-0662)</li><li>잘못된 인터프리터 경로(<code>patchelf</code> 실수 등)로는 <code>bash: ./chall: No such file or directory</code>처럼 파일이 실제로 존재해도 커널이 인터프리터를 못 찾아 실행 자체가 거부됨</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>readelf -l ./chall | grep interpreter</code>로 이 바이너리가 요구하는 로더 경로를 확인한다. 특정 libc 버전으로 강제 실행해야 하는 상황이라면, 시스템 기본 로더를 건드리지 말고 원하는 버전의 <code>ld-X.Y.so</code>를 직접 실행 인자로 넘기는 방식(<code>./ld-X.Y.so --library-path . ./chall</code>)부터 시도한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>readelf -l ./chall</code>로 <code>PT_INTERP</code> 경로 확인</li><li>CTF에서 배포된 libc가 있다면 대응되는 로더(<code>ld-2.xx.so</code>)도 함께 있는지 확인 — 없다면 해당 배포판의 <code>libc6</code> 패키지에서 추출하거나 <code>glibc-all-in-one</code> 같은 도구로 구한다</li><li><code>chmod +x ld-2.xx.so</code>로 실행 권한 부여</li><li><code>./ld-2.xx.so --library-path . ./chall</code>로 정확한 버전 조합 실행 테스트</li><li>GDB로 디버깅할 때도 같은 방식을 써야 한다: <code>gdb --args ./ld-2.xx.so --library-path . ./chall</code></li><li>매번 이렇게 실행하기 번거로우면 <code>patchelf --set-interpreter ./ld-2.xx.so --set-rpath . ./chall</code>로 바이너리 자체를 패치(원본은 백업 권장)</li><li>pwntools를 쓴다면 <code>ELF.patchelf()</code> 또는 <code>pwninit</code> 도구로 이 과정을 자동화 가능</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">readelf -l ./chall | grep -A1 INTERP
+/lib64/ld-linux-x86-64.so.2 ./chall
+./ld-2.31.so --library-path . ./chall
+patchelf --set-interpreter ./ld-2.31.so --set-rpath . ./chall
+LD_TRACE_LOADED_OBJECTS=1 ./chall   # ldd와 동일한 효과</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>readelf -l</code> 결과에서 <code>INTERP</code> 세그먼트의 <code>[Requesting program interpreter: ...]</code>는 이 값이 절대 경로 문자열 그대로 커널에 전달된다는 뜻이다. 경로가 시스템에 없으면 실행 자체가 실패한다.</li><li><code>./ld-2.31.so --library-path . ./chall</code> 실행 시 프로그램이 정상 동작하면, 그 디렉터리의 <code>libc.so.6</code>을 실제로 사용했다는 뜻이므로 오프셋 계산에 안심하고 그 libc를 기준으로 삼을 수 있다.</li><li><code>LD_TRACE_LOADED_OBJECTS=1 ./chall</code> 결과는 <code>ldd ./chall</code>과 완전히 동일하다 — <code>ldd</code>는 이 환경변수를 설정해주는 셸 스크립트일 뿐이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>patchelf --set-interpreter</code>만 하고 <code>--set-rpath</code>를 빼먹어서, 로더는 바뀌었는데 여전히 시스템 libc를 찾아가 오프셋이 안 맞는 것.</li><li>로더 파일에 실행 권한(<code>chmod +x</code>)을 안 줘서 <code>Permission denied</code>가 나는 것.</li><li>GDB에서 <code>file ./chall</code>로만 열고 <code>run</code>을 눌러서 시스템 기본 로더로 실행돼버리는 것 — 특정 로더를 쓰려면 <code>gdb --args ./ld-2.xx.so --library-path . ./chall</code>처럼 로더를 직접 지정해야 한다.</li><li>신뢰할 수 없는 CTF 바이너리에 <code>ldd</code>를 그냥 실행해서 의도치 않게 페이로드가 실행되는 것 — <code>ldd</code>도 결국 로더를 통해 대상 코드를 실행하는 것과 유사한 경로를 타므로 주의가 필요하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>라이브러리 검색 순서(<code>LD_LIBRARY_PATH</code> vs <code>RPATH</code>/<code>RUNPATH</code>)를 더 정확히 알고 싶다면 → REV-0651 LD_LIBRARY_PATH와 라이브러리 탐색 순서</li><li>커널이 로더에 넘겨주는 보조 벡터(auxv) 구조가 궁금하면 → REV-0677 ELF Auxiliary Vector(auxv) 개요</li><li>로더가 마지막에 점프하는 <code>_start</code>부터의 흐름이 궁금하면 → REV-0098 _start 함수 읽는 법</li><li>대상 libc 버전을 정확히 확인하는 법이 필요하면 → REV-0648 glibc 버전별 함수 시그니처 차이 확인법</li><li>GOT/PLT 재배치가 이 로더 작업의 어느 부분인지 궁금하면 → REV-0100 PLT와 GOT 기초</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ readelf -l ./chall | grep -A1 INTERP
+  INTERP         0x0000000000000318 0x0000000000000318 0x0000000000000318
+                 0x000000000000001c 0x000000000000001c  R      0x1
+      [Requesting program interpreter: /lib64/ld-linux-x86-64.so.2]
+
+$ ./ld-2.31.so --library-path . ./chall
+(정상 실행되면 이 디렉터리의 libc.so.6을 사용했다는 뜻)
+
+$ LD_TRACE_LOADED_OBJECTS=1 ./chall
+linux-vdso.so.1 (0x00007ffd...)
+libc.so.6 =&gt; /lib/x86_64-linux-gnu/libc.so.6 (0x00007f...)
+/lib64/ld-linux-x86-64.so.2 (0x00007f...)</code></pre>
+<p>마지막 줄이 <code>ldd ./chall</code>을 실행했을 때와 완전히 동일한 출력이라는 점이 <code>ldd</code>의 정체를 잘 보여준다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0101-dynamic-linking.html">REV-0101 — Dynamic Linking과 Import 함수 추적</a></li><li><a href="rev-0651-ld-library-path-search-order.html">REV-0651 — LD_LIBRARY_PATH와 라이브러리 탐색 순서</a></li><li><a href="rev-0648-glibc-version-function-signature-diff.html">REV-0648 — glibc 버전별 함수 시그니처 차이 확인법</a></li><li><a href="rev-0098-start-function.html">REV-0098 — _start 함수 읽는 법</a></li><li><a href="rev-0100-plt-got.html">REV-0100 — PLT와 GOT 기초</a></li><li><a href="rev-0677-auxiliary-vector-auxv.html">REV-0677 — ELF Auxiliary Vector(auxv) 개요</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>PT_INTERP</code> 세그먼트와 커널 <code>execve</code> 처리 방식: System V ABI 및 Linux <code>man 8 ld.so</code>, ELF Specification 기준.</li><li><code>_dl_start</code>, <code>elf/rtld.c</code> 부트스트랩 절차: glibc 공식 소스 저장소 기준.</li><li><code>ld.so --library-path</code> 옵션 및 <code>LD_TRACE_LOADED_OBJECTS</code>(ldd 구현 원리): <code>man 8 ld.so</code> 공식 매뉴얼 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

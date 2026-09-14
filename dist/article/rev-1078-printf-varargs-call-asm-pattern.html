@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>printf 스타일 가변 인자 호출이 어셈블리에서 보이는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / c-analysis</div>
+<article class="article-body">
+<h1>printf 스타일 가변 인자 호출이 어셈블리에서 보이는 패턴</h1>
+<div class="article-meta"><span class="tag">c-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>printf</code> 같은 가변 인자(variadic) 함수를 SysV x64에서 호출할 때는 고정 인자(포맷 문자열)부터 시작해 정수/포인터 인자는 순서대로 <code>rdi, rsi, rdx, rcx, r8, r9</code>에, 부동소수 인자는 완전히 별도의 순서로 <code>xmm0, xmm1, ...</code>에 나눠 담고, 추가로 <code>al</code> 레지스터에 사용한 <code>xmm</code> 레지스터 개수를 넣어줘야 하는 특수한 호출 패턴이 나타난다(Windows x64는 이 규칙이 다르다).</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>printf</code>나 다른 가변 인자 함수를 호출하는 코드 직전에 <code>mov al, N</code> 같은, 다른 함수 호출에서는 안 보이던 명령이 나와서 이게 뭔지 궁금할 때</li><li>정수 인자는 <code>esi</code>, <code>edx</code>, <code>ecx</code>에 있는데 <code>double</code>/<code>float</code> 인자는 그 순서와 무관하게 <code>xmm0</code>부터 채워지는 걸 보고 인자 순서가 왜 이렇게 나뉘는지 헷갈릴 때</li><li>IDA/Ghidra가 <code>printf</code> 호출 인자 개수를 실제 포맷 문자열의 <code>%d</code>, <code>%s</code> 개수와 다르게 표시하거나 인자를 잘못 나열할 때 직접 손으로 검증해야 할 때</li><li>Windows API의 가변 인자 함수(<code>wsprintf</code> 등)와 Linux <code>printf</code>의 인자 전달 방식이 왜 다른지 비교해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>가변 인자 함수는 호출된 시점에는 몇 개의 인자가 왔는지, 그 타입이 뭔지 컴파일러가 함수 정의만 보고는 알 수 없다(정의에 <code>...</code>만 있음). 그래서 <strong>호출하는 쪽(caller)</strong>이 모든 정보를 정해진 규칙대로 레지스터/스택에 배치해야 하며, 함수 내부는 그 규칙(그리고 포맷 문자열 같은 힌트)에 의존해 인자를 해석한다. SysV x64 ABI에서는 정수/포인터형과 부동소수형이 완전히 독립적인 레지스터 순서를 가지며, 정수형 레지스터가 이미 여러 개 쓰였어도 부동소수형은 항상 <code>xmm0</code>부터 시작한다.</p>
+<pre><code class="language-c">void report(int id, const char *name, double score) {
+    printf("id=%d name=%s score=%.1f\n", id, name, score);
+}</code></pre>
+<p>x86-64 SysV, <code>-O0</code>, Intel 문법:</p>
+<pre><code class="language-asm">report:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 24
+    mov     [rbp-20], edi        ; id 저장            (report 자신의 인자: id는 edi로 전달받음)
+    mov     [rbp-32], rsi        ; name 저장          (report 자신의 인자: name은 rsi로 전달받음)
+    movsd   [rbp-16], xmm0       ; score 저장         (report 자신의 인자: double은 xmm0로 전달받음)
+    mov     edx, [rbp-20]        ; edx = id
+    mov     rcx, [rbp-32]        ; rcx = name
+    movsd   xmm1, [rbp-16]       ; xmm1 = score
+    lea     rax, [rip+.LC0]      ; rax = "id=%d name=%s score=%.1f\n" 문자열 주소
+    mov     rdi, rax             ; printf 1번째 인자(고정 인자): 포맷 문자열 -&gt; rdi
+    mov     esi, edx             ; printf 2번째 인자(가변 인자#1, int)   -&gt; esi
+    mov     rdx, rcx             ; printf 3번째 인자(가변 인자#2, pointer) -&gt; rdx
+    movapd  xmm0, xmm1           ; printf 4번째 인자(가변 인자#3, double) -&gt; xmm0  (정수 레지스터 순서와 별개로 xmm0부터)
+    mov     al, 1                ; xmm 레지스터를 1개 사용했다는 것을 al에 기록 (printf 내부의 va_start 처리가 참고)
+    call    printf
+    leave
+    ret</code></pre>
+<p>핵심은 두 가지다. 첫째, <code>id</code>(정수)와 <code>name</code>(포인터)은 <code>esi</code>, <code>rdx</code> 순서로 채워지는데 이는 <code>rdi</code>(포맷 문자열) 다음 정수/포인터 슬롯을 순서대로 차지하는 것이다. 둘째, <code>score</code>(double)는 그 순서에 끼어들지 않고 별도로 <code>xmm0</code>에 채워진다 — 만약 인자 순서가 <code>id, score, name</code>이었어도 정수 인자는 여전히 <code>esi</code>부터, 부동소수 인자는 여전히 <code>xmm0</code>부터 채워진다. 마지막으로 <code>mov al, 1</code>은 SysV x64 ABI의 특수 규칙으로, 가변 인자 함수 내부가 저장해야 할 <code>xmm</code> 레지스터가 몇 개인지 몰라서 호출자가 힌트를 남겨주는 것이다(정수 레지스터 개수는 힌트가 필요 없음 — 이유는 아래 흔한 실수 참고).</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>call printf</code>, <code>call sprintf</code>, <code>call fprintf</code> 등 가변 인자 함수 호출 직전에 <code>mov al, N</code>(N은 보통 0~8)이 있음</li><li>정수/포인터 인자는 <code>rdi → rsi → rdx → rcx → r8 → r9</code> 순서로, 부동소수 인자는 <code>xmm0 → xmm1 → ...</code> 순서로 서로 독립적으로 채워짐</li><li>포맷 문자열 리터럴의 주소가 항상 첫 번째 정수 레지스터(<code>rdi</code>)에 들어감(포맷 문자열 자체는 고정 인자이므로 가변 규칙과 무관하게 맨 앞)</li><li>Windows x64에서는 <code>printf</code> 계열 대신 자체 CRT 함수(<code>printf</code>도 MSVC CRT에 있음)를 호출하며, 이 경우 인자가 그냥 <code>rcx, rdx, r8, r9</code> + 스택 순서로 나열되고 부동소수 인자도 정수 인자와 슬롯을 공유하는(같이 카운트되는) 차이가 있음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>call printf</code> 계열 직전의 <code>mov al, N</code>을 찾아 N값(사용된 xmm 레지스터 개수)을 확인한 다음, 포맷 문자열을 <code>rdi</code>에서 읽어 <code>%d</code>/<code>%s</code>/<code>%f</code> 개수와 위치를 파악하고, 그 개수만큼 정수/포인터 레지스터와 부동소수 레지스터를 각각 순서대로 대응시킨다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>call printf</code>(또는 다른 가변 인자 함수) 직전 코드에서 <code>rdi</code>에 들어가는 값을 확인해 포맷 문자열을 특정한다.</li><li>포맷 문자열의 <code>%</code> 지시자를 순서대로 나열해 몇 개의 정수/포인터 인자와 몇 개의 부동소수 인자가 필요한지 센다.</li><li>정수/포인터 인자는 <code>rsi, rdx, rcx, r8, r9</code> 순서로(포맷 문자열이 이미 <code>rdi</code>를 차지했으므로 두 번째 슬롯부터), 부동소수 인자는 <code>xmm0, xmm1, ...</code> 순서로 각각 대응시킨다.</li><li><code>mov al, N</code>의 N이 실제로 사용한 xmm 레지스터 개수와 일치하는지 검증해 분석이 맞는지 재확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>call printf</code> 호출부에서 포맷 문자열 인자를 자동 인식하면 나머지 인자도 자동으로 나열해 주는 경우가 많음(Hex-Rays의 printf 시그니처 인식)</li><li>Ghidra: Decompile 창에서 포맷 문자열 기반 인자 추론(자동은 아닐 수 있어 수동 확인 필요)</li><li>GDB: <code>call</code> 직전에 브레이크포인트를 걸고 <code>p $rdi</code>, <code>p $rsi</code>, <code>p $xmm0.v2_double</code> 등으로 각 레지스터 값을 직접 확인</li><li>x64dbg: 함수 호출 직전 레지스터 창과 FPU/XMM 레지스터 창을 동시에 열어 정수·부동소수 인자를 나란히 비교</li></ul>
+<h2>출력 해석</h2>
+<p><code>mov al, 1</code>은 "이 호출에서 부동소수 가변 인자를 1개(즉 <code>xmm0</code>만) 사용했다"는 뜻이다. glibc의 <code>printf</code> 내부 구현(<code>vfprintf</code>)은 이 값을 참고해서 나중에 <code>va_arg</code>로 꺼내 쓸 <code>xmm</code> 레지스터 값들을 스택의 레지스터 저장 영역(register save area)에 얼마나 저장해야 하는지 결정한다. 이 값이 실제 사용한 개수보다 작으면 뒤쪽 부동소수 인자를 잘못 읽어 엉뚱한 값이 나올 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li>모든 인자가 <code>rdi, rsi, rdx, rcx, r8, r9</code> 순서로만 채워진다고 생각하고 부동소수 인자가 그 순서 어딘가에 끼어 있다고 착각하는 것 — 부동소수는 완전히 별도의 <code>xmm</code> 순서를 쓴다.</li><li><code>mov al, N</code>을 정수 인자 개수라고 오해하는 것 — 이는 오직 부동소수(<code>xmm</code>) 인자 개수만을 나타내며, 정수 인자 개수에 대한 힌트는 SysV ABI에 따로 없다(정수 레지스터는 스택 프레임 구조상 몇 개를 썼는지 몰라도 안전하게 처리 가능하기 때문).</li><li>Windows x64 가변 인자 호출을 SysV 규칙으로 해석하는 것 — Windows x64는 부동소수 인자도 정수 인자와 같은 위치 슬롯을 하나씩 차지하며(예: 두 번째 인자가 <code>double</code>이면 <code>xmm1</code>에도 들어가지만 그 자리의 정수 레지스터 <code>rdx</code>는 그냥 비워둠), <code>al</code> 같은 개수 힌트 레지스터도 쓰지 않는다.</li><li>고정 인자(포맷 문자열)까지 "가변 인자"로 잘못 묶어서 세는 것 — 포맷 문자열은 항상 고정된 첫 인자이며 <code>...</code> 이전에 선언된 부분이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>가변 인자 함수 내부가 스택/레지스터에서 인자를 어떻게 다시 꺼내는지(callee 관점)가 궁금하면 → REV-0356 가변 인자 함수(varargs)가 메모리에서 동작하는 방식</li><li><code>printf</code> 계열 함수 자체의 동작과 포맷 지시자 종류가 궁금하면 → REV-0635 libc 함수 사전: printf 계열 포맷 문자열 함수</li><li>SysV 정수 인자 전달 규칙 자체가 헷갈리면 → REV-0106 SysV AMD64 Calling Convention</li><li>Windows x64에서의 인자 전달 규칙과 비교하려면 → REV-0122 Microsoft x64 Calling Convention</li></ul>
+<h2>미니 예제</h2>
+<p>부동소수 인자가 두 개인 경우로, <code>xmm0</code>과 <code>xmm1</code>이 모두 쓰이고 <code>al</code>이 2로 세팅되는 모습을 보여준다.</p>
+<pre><code class="language-c">void log_pair(const char *label, double x, double y) {
+    printf("%s: (%.2f, %.2f)\n", label, x, y);
+}</code></pre>
+<pre><code class="language-asm">log_pair:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 24
+    mov     [rbp-24], rdi        ; label
+    movsd   [rbp-16], xmm0       ; x
+    movsd   [rbp-8], xmm1        ; y
+    mov     rax, [rbp-24]        ; rax = label
+    lea     rdx, [rip+.LC1]      ; "%s: (%.2f, %.2f)\n" 주소
+    mov     rsi, rax             ; printf 2번째 인자(가변#1, pointer): label -&gt; rsi
+    mov     rdi, rdx             ; printf 1번째 인자(고정): 포맷 문자열 -&gt; rdi
+    movsd   xmm0, [rbp-16]       ; printf 부동소수 가변#1: x -&gt; xmm0
+    movsd   xmm1, [rbp-8]        ; printf 부동소수 가변#2: y -&gt; xmm1
+    mov     al, 2                ; xmm 레지스터 2개(xmm0, xmm1) 사용했음을 기록
+    call    printf
+    leave
+    ret</code></pre>
+<p>정수/포인터 인자는 <code>label</code> 하나뿐이라 <code>rsi</code> 한 자리만 쓰지만, 부동소수 인자는 <code>x</code>, <code>y</code> 두 개라 <code>xmm0</code>, <code>xmm1</code> 두 자리를 쓰고 그만큼 <code>al</code>도 <code>2</code>로 세팅된다 — 두 순서가 서로 완전히 독립적으로 카운트된다는 사실이 다시 확인된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0356-varargs-memory-layout.html">REV-0356 — 가변 인자 함수(varargs)가 메모리에서 동작하는 방식</a></li><li><a href="rev-0635-libc-printf-family.html">REV-0635 — libc 함수 사전: printf 계열 포맷 문자열 함수</a></li><li><a href="rev-0106-sysv-amd64-calling-convention.html">REV-0106 — SysV AMD64 Calling Convention</a></li><li><a href="rev-0122-ms-x64-calling-convention.html">REV-0122 — Microsoft x64 Calling Convention</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>가변 인자 호출 시 정수/포인터와 부동소수 레지스터가 독립적인 순서를 가지며 <code>al</code>에 사용한 SSE 레지스터 개수를 기록해야 하는 규칙: System V Application Binary Interface AMD64 Architecture Processor Supplement, 3.5.7절(Variable Argument Lists) 기준.</li><li>Windows x64 가변 인자 호출에서 부동소수 인자도 정수 인자와 같은 위치 슬롯을 공유한다는 차이: Microsoft x64 소프트웨어 규약(calling convention) 공식 문서 기준 (2026-09-10 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

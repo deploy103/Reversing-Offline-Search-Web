@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>x64dbg Find Assembly 사용법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>x64dbg Find Assembly 사용법</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>x64dbg에서 "이런 어셈블리/바이트 코드가 어디 또 있는지" 찾을 때는 <strong>Ctrl+G</strong>(주소·심볼로 바로 이동), <strong>Ctrl+B</strong>(바이트 패턴 검색, 와일드카드 <code>??</code> 지원), 그리고 우클릭 <code>Search for → Pattern</code>(검색 범위 전체에서 패턴을 찾아 References 탭에 결과를 모아줌) 세 가지를 상황에 맞게 조합해서 쓴다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>함수 이름이나 주소는 모르지만 "이 바이트 시퀀스(예: 특정 상수 비교 코드)가 다른 곳에도 있는지" 확인하고 싶을 때</li><li>IDA에서 본 오프셋을 x64dbg에서도 바로 찾아가고 싶을 때(주소/심볼 이동)</li><li>패킹된 코드에서 언패킹 스텁의 특정 명령어 패턴(예: <code>popad</code> 직후 <code>jmp</code>)을 찾고 싶을 때</li><li>같은 검사 로직이 여러 함수에 복붙되어 있는지 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>x64dbg에서 "코드를 찾는다"는 행위는 성격이 다른 세 가지 도구로 나뉜다.</p>
+<ol><li><strong>Go to expression (Ctrl+G)</strong> — 검색이 아니라 "이동"이다. 주소, 레지스터, 심볼(<code>kernel32.CreateFileW</code>), 라벨(<code>main</code>) 같은 표현식을 입력하면 그 위치로 디스어셈블리 커서가 바로 이동한다. 위치를 이미 알고 있을 때 가장 빠른 방법이다.</li><li><strong>Find Pattern (Ctrl+B)</strong> — 현재 보고 있는 지점부터 지정한 범위 안에서 정확한 바이트 패턴(헥스)을 순차적으로 검색한다. <code>48 8B ?? 10</code>처럼 <code>??</code>를 와일드카드로 써서 "특정 바이트는 몰라도 되는" 부분을 표시할 수 있다. 찾으면 그 위치로 바로 이동하며, 같은 패턴을 계속 찾으려면 다시 실행한다.</li><li><strong>Search for → Pattern (우클릭 메뉴)</strong> — Find Pattern과 비슷하게 바이트 패턴을 검색하지만, 검색 범위(현재 영역/현재 모듈/전체 모듈)를 먼저 고를 수 있고, 결과를 한 번에 여러 개 찾아서 <strong>References 탭</strong>에 목록으로 정리해준다. 여러 군데에 흩어진 동일 패턴을 한꺼번에 보고 싶을 때 이 방법이 더 유리하다.</li></ol>
+<p>정리하면, <strong>위치를 안다 → Ctrl+G</strong>, <strong>바이트 시퀀스 하나를 지금 위치에서부터 찾는다 → Ctrl+B</strong>, <strong>바이트 시퀀스가 있는 모든 곳을 한 번에 리스트로 보고 싶다 → 우클릭 Search for → Pattern</strong> 순서로 고르면 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Ctrl+G를 누르면 화면 중앙에 입력창이 뜨고, 커서가 깜빡이며 표현식을 기다린다.</li><li>잘못된 심볼/주소를 입력하면 입력창 테두리가 빨갛게 변하거나 "invalid expression"류 메시지가 뜬다.</li><li>Ctrl+B로 패턴을 찾으면, 검색이 끝난 뒤 디스어셈블리 창이 자동으로 첫 번째로 일치하는 위치로 스크롤되고 그 줄이 강조된다.</li><li><code>Search for → Pattern</code>을 실행하면 References 탭이 자동으로 열리고, 검색에 걸린 모든 주소가 표 형태로 나열된다.</li><li>숫자를 입력할 때 앞에 <code>.</code>을 안 붙이면 항상 16진수로 해석된다는 점이 다른 도구와 다르다(예: <code>100</code>을 입력하면 10진수 100이 아니라 16진수 0x100, 즉 256으로 해석됨). 10진수로 입력하려면 <code>.100</code>처럼 앞에 마침표를 붙여야 한다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>지금 찾으려는 것이 "주소/함수 이름을 이미 알고 있어서 그냥 이동하면 되는 것"인지, 아니면 "바이트/명령어 패턴 자체를 몰라서 찾아야 하는 것"인지부터 구분한다. 전자는 Ctrl+G 한 번으로 끝나므로, 굳이 패턴 검색을 쓸 필요가 없다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) Go to expression으로 바로 이동하기 (위치를 아는 경우)</strong></p>
+<p>CPU 탭 디스어셈블리 창에서 <strong>Ctrl+G</strong>를 누른다. 입력창에 다음과 같은 표현식을 넣을 수 있다.</p>
+<ul><li><code>00401234</code> : 절대 주소로 이동</li><li><code>sample.00401234</code> : 모듈 기준 주소로 이동(재배치를 신경 쓰지 않아도 됨)</li><li><code>kernel32.CreateFileW</code> : 모듈의 export 함수 심볼로 이동</li><li><code>rip+10</code> : 현재 RIP 기준 상대 오프셋으로 이동</li></ul>
+<p>Enter를 누르면 즉시 그 위치로 화면이 이동한다.</p>
+<p><strong>2) Find Pattern으로 바이트 패턴 찾기 (Ctrl+B)</strong></p>
+<p>찾고 싶은 명령어의 원본 바이트를 안다면(디스어셈블리 창의 바이트 열을 참고하거나, 이미 본 명령어를 기억해서) <strong>Ctrl+B</strong>를 누른다. 검색창에 공백으로 구분된 헥스 바이트를 입력한다.</p>
+<pre><code class="language-text">E8 ?? ?? ?? ?? 85 C0</code></pre>
+<p>이 예시는 "<code>call</code> 명령어(오퍼랜드 4바이트는 몰라도 됨) 다음에 <code>test eax, eax</code>가 오는 패턴"을 찾는다. <code>??</code>는 "이 바이트는 어떤 값이든 상관없다"는 와일드카드다. 검색 시작 위치는 현재 커서가 있는 주소이며, 그 이후 범위에서 순서대로 찾는다.</p>
+<p><strong>3) 특정 명령어의 바이트를 먼저 복사해서 패턴 만들기</strong></p>
+<p>이미 알고 있는 명령어 한 줄(또는 여러 줄)을 디스어셈블리에서 드래그로 선택한 뒤 우클릭 → <code>Copy → Selection (bytes)</code> 계열 메뉴로 원본 바이트를 클립보드에 복사할 수 있다. 이걸 Ctrl+B 검색창에 그대로 붙여넣으면 정확한 패턴을 손으로 타이핑할 필요가 없다.</p>
+<p><strong>4) 우클릭 Search for → Pattern으로 전체 범위 훑기</strong></p>
+<p>디스어셈블리 창에서 우클릭 → <code>Search for</code> → 범위(<code>Current Module</code> 등) → <code>Pattern</code>을 선택한다. 헥스 패턴(와일드카드 <code>??</code> 사용 가능)을 입력하면, 그 범위 안에서 일치하는 모든 위치를 찾아 <strong>References 탭</strong>에 목록으로 채워준다. 결과가 여러 개일 때 하나씩 Ctrl+B를 반복하는 것보다 훨씬 효율적이다.</p>
+<p><strong>5) 결과 확인 및 이동</strong></p>
+<p>References 탭의 행을 더블클릭하면 해당 주소로 바로 이동한다. 여러 함수에 같은 로직이 복사되어 있는지 확인할 때 이 목록을 위에서부터 훑으면 된다.</p>
+<h2>Ctrl+G에서 쓸 수 있는 표현식을 조금 더 알아보기</h2>
+<p>Ctrl+G의 표현식은 단순 주소 이동뿐 아니라 계산식도 그대로 받아들인다. 예를 들어 <code>sample.00401000+0x20</code>처럼 모듈 베이스 기준 오프셋에 추가 연산을 더할 수도 있고, <code>[rsp]</code>처럼 대괄호로 감싸면 "그 표현식이 계산한 주소가 아니라, 그 주소가 가리키는 메모리 값 자체"로 이동하는 것도 가능하다(예: 함수 포인터 배열에서 실제 함수 주소로 바로 점프하고 싶을 때). 이 문법은 조건부 브레이크포인트에서 쓰는 표현식 문법과 완전히 동일하므로, 한 번 익혀두면 Ctrl+G, Ctrl+B, 조건부 브레이크포인트 세 곳에서 모두 재사용할 수 있다.</p>
+<p>Ctrl+G 입력창에는 최근 입력했던 표현식 목록이 드롭다운으로 남아있어서, 자주 오가는 주소라면 다시 타이핑하지 않고 목록에서 골라 이동할 수도 있다.</p>
+<h2>명령어/단축키</h2>
+<ul><li><code>Ctrl+G</code> : Go to expression(주소/심볼/레지스터 기반 표현식으로 이동)</li><li><code>Ctrl+B</code> : Find Pattern(현재 위치부터 바이트 패턴 검색, <code>??</code> 와일드카드 지원)</li><li>디스어셈블리 우클릭 → <code>Search for → [범위] → Pattern</code> : 범위 전체에서 패턴 검색, 결과는 References 탭</li><li>디스어셈블리 우클릭 → <code>Copy → Selection (bytes)</code> : 선택한 명령어의 원본 바이트를 패턴 검색용으로 복사</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Ctrl+B/Pattern 검색에서 "찾을 수 없음"이 뜨면 패턴의 와일드카드 위치나 바이트 순서가 실제 코드와 다르다는 뜻이다. 원본 명령어를 다시 확인하고, 오퍼랜드(주소/상수) 부분만 <code>??</code>로 바꿨는지 점검한다.</li><li>숫자 앞에 <code>.</code>을 안 붙였는데 예상과 다른 위치로 이동했다면, 10진수로 생각한 값이 16진수로 해석됐을 가능성이 크다(x64dbg 표현식은 기본이 16진수).</li><li>References 탭 결과가 너무 많으면(수십~수백 건) 패턴이 너무 짧거나 흔한 바이트 조합이라는 뜻이다. 패턴 길이를 늘리거나 와일드카드를 줄여서 더 구체적으로 만든다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Ctrl+G와 Ctrl+B를 헷갈려서, 이미 주소를 아는데도 굳이 바이트 패턴을 만들어 검색하는 경우 — 주소/심볼을 알면 Ctrl+G가 훨씬 빠르다.</li><li>와일드카드 없이 오퍼랜드(주소값, 즉시값)까지 통째로 패턴에 넣어서, 재배치나 다른 인스턴스에서는 값이 달라 검색이 실패하는 경우 — 가변적인 바이트는 반드시 <code>??</code>로 마스킹해야 한다.</li><li>검색 범위를 <code>Current Region</code>으로 좁혀놓고 다른 함수에서 결과가 안 나온다고 당황하는 경우 — 함수 밖까지 찾으려면 <code>Current Module</code>이나 <code>All Modules</code>로 범위를 넓혀야 한다.</li><li>10진수 값을 그대로 입력했다가 16진수로 해석되어 완전히 엉뚱한 주소로 이동하는 경우 — 10진수는 항상 앞에 <code>.</code>을 붙여야 한다는 규칙을 잊지 않는다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>문자열을 실마리로 코드를 찾고 싶다면 → ./rev-0179-x64dbg-string-references.md 문서가 더 적합하다.</li><li>찾은 위치에 멈춰서 조사하고 싶다면 → ./rev-0178-x64dbg-breakpoints.md 문서를 참고한다.</li><li>찾은 코드가 특정 조건에서만 실행되는지 확인하고 싶다면 → ./rev-0183-x64dbg-conditional-breakpoints.md 문서를 참고한다.</li><li>메모리 영역 자체(섹션, 보호 속성)를 먼저 파악하고 싶다면 → ./rev-0182-x64dbg-memory-map.md 문서를 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p><code>call</code> 직후 <code>test eax, eax</code>로 리턴값을 검사하는 패턴이 여러 함수에 있는지 확인하는 흐름이다.</p>
+<pre><code class="language-text">1. 이미 아는 한 곳에서 call XXXXXXXX / test eax, eax 두 줄을 드래그 선택
+2. 우클릭 → Copy → Selection (bytes)로 원본 바이트 복사
+3. Ctrl+B를 눌러 검색창에 붙여넣고, call의 4바이트 오퍼랜드 부분만 ?? ?? ?? ??로 수정
+4. 검색 실행 → 같은 패턴의 다음 위치로 자동 이동
+5. 여러 곳을 한 번에 보고 싶다면 우클릭 → Search for → Current Module → Pattern으로 References 탭에서 전체 목록 확인</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0179-x64dbg-string-references.html">REV-0179 — x64dbg String References 찾기</a></li><li><a href="rev-0182-x64dbg-memory-map.html">REV-0182 — x64dbg Memory Map과 Module View</a></li><li><a href="rev-0178-x64dbg-breakpoints.html">REV-0178 — x64dbg Breakpoint 설정과 삭제</a></li><li><a href="rev-0172-tracing-registers.html">REV-0172 — 레지스터 값을 실행 중 추적하는 법</a></li><li><a href="rev-0174-before-conditional-branch.html">REV-0174 — 조건 분기 직전에 무엇을 봐야 하는가</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>Search for → Pattern</code>의 동작 방식(헥스 문자열을 검색해 References 탭에 결과 표시)은 공식 문서 help.x64dbg.com의 GUI Tips 페이지(gui/tips.html)에 근거했다(2026-09-08 조사, 원문 확인).</li><li>표현식이 기본적으로 16진수로 해석되며 10진수는 앞에 <code>.</code>을 붙여야 한다는 규칙, 그리고 값/레지스터/메모리/변수를 아우르는 표현식 문법은 공식 문서 Expressions 페이지(introduction/Expressions.html)를 근거로 정리했다(2026-09-08 조사, 원문 확인).</li><li>Ctrl+G/Ctrl+B라는 정확한 단축키 바인딩과 "Copy → Selection (bytes)" 메뉴 문구는 x64dbg 커뮤니티에서 널리 알려진 기본값을 기준으로 서술했으나, 라이브 설치 환경에서 직접 재확인하지 못했다. 버전에 따라 메뉴 문구나 단축키가 다를 수 있으므로 <code>Options → Preferences → Shortcuts</code>에서 실제 값을 확인할 것을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

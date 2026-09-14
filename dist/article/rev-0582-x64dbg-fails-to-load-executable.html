@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>x64dbg가 실행 파일을 로드하지 못할 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>x64dbg가 실행 파일을 로드하지 못할 때</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">x64dbg</span><span class="tag">DIE</span><span class="tag">PE-bear</span></div>
+<h2>한 줄 요약</h2>
+<p>x64dbg가 실행 파일 로드에 실패하면 대부분 32/64비트 불일치, 손상된 PE 헤더, 권한 문제, 백신 차단 중 하나이며 오류 메시지 문구로 원인을 좁힐 수 있다.</p>
+<h2>진단 먼저: 어떤 증상인지부터 구분한다</h2>
+<p>x64dbg가 파일을 못 여는 상황은 크게 세 가지로 나뉘며, 원인과 해결책이 서로 다르다.</p>
+<ol><li><strong>"Only x64 applications are supported!"</strong> 같은 메시지가 뜨거나 File → Open 직후 아무 반응 없이 실패한다 → <strong>아키텍처 불일치</strong>. 가장 흔한 원인이다.</li><li>Windows 자체가 <strong>"이 앱은 사용 중인 PC에서 실행할 수 없습니다"/"~은(는) 올바른 Win32 응용 프로그램이 아닙니다"</strong> 같은 대화상자를 띄운다 → <strong>파일 자체가 손상되었거나 대상 아키텍처의 Windows에서 실행 불가능</strong>.</li><li>파일은 열리는데(디스어셈블리는 보임) 실행(<code>F9</code>)만 누르면 즉시 죽거나 반응이 없다 → 이건 로드 실패가 아니라 <strong>REV-0583(anti-attach)</strong> 또는 <strong>REV-0585(entry point 오류)</strong> 문제이므로 해당 글을 참고한다.</li></ol>
+<h2>언제 검색해야 하나</h2>
+<ul><li>x64dbg로 File → Open File(<code>F3</code>)을 했는데 파일이 열리지 않거나 에러 메시지가 뜰 때</li><li>32비트 실행 파일을 x64dbg(64비트용)로 열었을 때, 또는 그 반대일 때</li><li>방금 언패킹/덤프한 파일이 x64dbg는 물론 탐색기에서 더블클릭해도 안 열릴 때</li><li>관리자 권한 없이 x64dbg를 실행해서 특정 프로세스나 파일에 접근이 막힐 때</li></ul>
+<h2>핵심 개념</h2>
+<p>x64dbg 프로젝트는 아키텍처별로 완전히 분리된 두 개의 실행 파일을 제공한다: <strong><code>x32dbg.exe</code></strong>(32비트 대상 전용)와 <strong><code>x64dbg.exe</code></strong>(64비트 대상 전용). <code>x64dbg.exe</code>는 시작 시 <code>x96dbg.exe</code> 런처를 통해 대상 파일의 PE 헤더(<code>IMAGE_FILE_HEADER.Machine</code>)를 보고 자동으로 올바른 서브 프로세스를 실행해주지만, <code>x32dbg.exe</code>/<code>x64dbg.exe</code>를 직접(런처를 거치지 않고) 실행한 상태에서 반대 아키텍처 파일을 열면 명시적으로 거부한다. 이는 디버거가 대상 프로세스와 같은 비트수의 메모리 공간을 다뤄야 레지스터/스택/구조체 크기를 정확히 해석할 수 있기 때문이다.</p>
+<p>Windows 로더 차원의 실패("올바른 Win32 응용 프로그램이 아님")는 x64dbg와 무관하게 파일 자체가 실행 가능한 PE 구조를 갖추지 못했다는 뜻이며, PE 헤더가 손상되었거나(수동 편집 실수), 32비트 전용 Windows에서 64비트 EXE를 실행하려 했거나, 파일이 아예 PE가 아닌데 확장자만 <code>.exe</code>인 경우다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>x64dbg 로그 창(하단)에 <code>Only x64 applications are supported, use x32dbg instead!</code>(또는 반대) 메시지가 출력됨</li><li>Windows 대화상자: <code>%1은(는) 올바른 Win32 응용 프로그램이 아닙니다.</code> 또는 <code>이 앱은 사용 중인 PC에서 실행할 수 없습니다.</code></li><li>x64dbg가 파일 선택 대화상자까지는 정상 동작하지만, 확인을 누른 직후 아무 창도 안 뜨고 로그에만 실패 메시지가 남음</li><li>PE-bear로 열었을 때 <code>IMAGE_FILE_HEADER.Machine</code> 필드가 <code>0x8664</code>(AMD64)인데 32비트용 도구로 열려 했거나, <code>0x014c</code>(I386)인데 64비트용 도구로 열려 한 경우</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>대상 파일이 32비트인지 64비트인지부터 확인한다. PE-bear로 열어 <code>File Header</code> → <code>Machine</code> 필드를 보거나, DIE로 열어 상단에 표시되는 "32-bit"/"64-bit" 표시를 확인한다. 그다음 그에 맞는 실행 파일(<code>x32dbg.exe</code> 또는 <code>x64dbg.exe</code>)을 직접 실행해서 다시 시도한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 아키텍처 확인 및 올바른 실행 파일 선택</strong></p>
+<ul><li>x64dbg 설치 폴더에는 <code>x32dbg.exe</code>, <code>x64dbg.exe</code>, 그리고 자동 판별용 <code>x96dbg.exe</code>가 함께 있다. 어떤 비트인지 모르겠다면 <code>x96dbg.exe</code>(또는 바탕화면에 x96dbg로 만든 바로가기)로 열면 자동으로 알맞은 쪽을 실행해준다.</li><li>32비트 파일은 <code>x32dbg.exe</code>로, 64비트 파일은 <code>x64dbg.exe</code>로 직접 열면 이 문제는 대부분 해결된다.</li></ul>
+<p><strong>2) Windows 자체 로드 실패("올바른 Win32 응용 프로그램 아님")일 때</strong></p>
+<ul><li>PE-bear나 HxD로 파일을 열어 첫 두 바이트가 <code>MZ</code>(0x4D 0x5A)로 시작하는지, DOS 헤더의 <code>e_lfanew</code> 필드가 실제 <code>PE\0\0</code> 시그니처 위치를 정확히 가리키는지 확인한다. 수동 편집 중 이 값이 틀어지면 이 오류가 뜬다.</li><li>언패킹 도구나 덤프 도구(Scylla 등)로 만든 파일이라면, 헤더 재구성(섹션 정렬, <code>SizeOfImage</code> 재계산)이 제대로 되었는지 다시 확인한다.</li><li>64비트 EXE를 32비트 전용 Windows에서 실행하려는 것은 아닌지 확인한다(과거 32비트 Windows 환경에서 흔한 문제).</li></ul>
+<p><strong>3) 관리자 권한/보안 소프트웨어 문제일 때</strong></p>
+<ul><li>대상 파일이 서비스 실행 파일이거나 시스템 보호 폴더에 있다면 x64dbg를 관리자 권한("관리자 권한으로 실행")으로 다시 열어본다.</li><li>백신/EDR이 새로 만든(패치/덤프한) 실행 파일을 격리(quarantine)했을 수 있으므로 백신 로그를 확인한다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>F3</code>(File → Open File), 로그 창은 기본적으로 하단에 표시(안 보이면 View → Log)</li><li>PE-bear: 파일 드래그 후 좌측 트리에서 <code>IMAGE_FILE_HEADER</code> → <code>Machine</code> 필드 확인</li><li>DIE: 상단 요약 영역에서 비트수(32-bit/64-bit) 즉시 확인 가능</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>Machine</code> 필드가 <code>0x014c</code>면 x86(32비트), <code>0x8664</code>면 x64(AMD64, 64비트), <code>0x01c0</code>이면 ARM 계열이므로 x64dbg가 아예 지원하지 않는 대상일 수 있다.</li><li>x64dbg 로그에 <code>Failed to load the debuggee!</code>가 뜨면 아키텍처 문제가 아니라 파일 경로/권한/파일 자체 손상 쪽을 의심해야 한다 — 파일 경로에 한글/공백이 포함된 경우도 드물게 문제를 일으키므로 영문 경로로 옮겨서 재시도해본다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>x64dbg.exe</code>라는 이름만 보고 "64비트 프로그램은 이걸로, 32비트도 이걸로 다 된다"고 착각하는 것 — 이름 자체가 "64비트 대상 전용"이라는 뜻이다.</li><li><code>x96dbg.exe</code> 런처를 안 쓰고 매번 수동으로 어떤 걸 써야 할지 헷갈려하는 것 — 바탕화면 바로가기를 x96dbg로 만들어두면 이후 계속 편하다.</li><li>파일이 손상된 것을 x64dbg의 버그로 오인해서 재설치를 반복하는 것 — PE-bear/HxD로 헤더를 먼저 확인하면 원인이 x64dbg가 아니라 파일 자체임을 바로 알 수 있다.</li><li>관리자 권한 문제를 아키텍처 문제로 착각해서 계속 다른 아키텍처의 x64dbg/x32dbg를 번갈아 시도하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>파일은 열리는데 실행하자마자 바로 죽는다면 → REV-0583(x64dbg로 붙였는데 바로 종료(anti-attach)될 때) 참고</li><li>"Entry Point를 찾을 수 없다"는 별도 오류가 뜬다면 → REV-0585(Entry Point를 찾을 수 없다는 오류가 뜰 때) 참고</li><li>x64dbg 자체 사용법이 처음이라면 → REV-0127(x64dbg로 EXE 첫 분석 시작) 참고</li></ul>
+<h2>미니 예제</h2>
+<pre><code>x64dbg 상태바: "Failed to load module!"
+→ file target.exe 결과: "PE32 executable" (32비트)
+→ 실행한 도구: x64dbg.exe (64비트 전용)
+→ x32dbg.exe로 다시 열면 정상 로드됨</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0127-x64dbg-first-analysis.html">REV-0127 — x64dbg로 EXE 첫 분석 시작</a></li><li><a href="rev-0583-x64dbg-anti-attach-terminates.html">REV-0583 — x64dbg로 붙였는데 바로 종료(anti-attach)될 때</a></li><li><a href="rev-0585-entry-point-not-found-error.html">REV-0585 — Entry Point를 찾을 수 없다는 오류가 뜰 때</a></li><li><a href="rev-0114-pe-overview.html">REV-0114 — PE 파일 구조 한 번에 보기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>x64dbg가 <code>x32dbg.exe</code>/<code>x64dbg.exe</code>로 아키텍처별 실행 파일을 분리 제공하고, <code>x96dbg.exe</code>가 자동 판별 런처 역할을 한다는 점은 x64dbg 공식 프로젝트(x64dbg.com, GitHub x64dbg/x64dbg)의 배포 구조 기준이다.</li><li><code>IMAGE_FILE_HEADER.Machine</code> 필드 값(<code>0x014c</code>=I386, <code>0x8664</code>=AMD64)은 Microsoft PE Format 공식 문서 기준이다.</li><li>Windows의 "올바른 Win32 응용 프로그램이 아닙니다" 오류는 일반적으로 알려진 Windows 로더 동작에 대한 서술이다(2026-09-08 기준).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

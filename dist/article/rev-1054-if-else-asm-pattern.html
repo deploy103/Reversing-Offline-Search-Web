@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>if-else가 어셈블리에서 보이는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / c-analysis</div>
+<article class="article-body">
+<h1>if-else가 어셈블리에서 보이는 패턴</h1>
+<div class="article-meta"><span class="tag">c-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>if-else</code>는 조건을 검사해 참이면 곧바로 본문(then)을 실행하고 거짓이면 반대로 뛰어넘는 <strong>반대 조건(inverted condition)으로 else 블록으로 분기</strong>한 뒤, then 블록 끝에서 else 블록을 건너뛰는 무조건 점프(<code>jmp</code>) 하나가 붙는 "두 블록 + 합류 지점" 모양으로 컴파일된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>cmp</code> 뒤에 조건부 분기 하나, 그 아래 코드 블록, 그리고 무조건 <code>jmp</code>가 있고, 그 뒤에 또 다른 코드 블록이 이어지는 모양을 발견해서 이게 if-else인지 확인하고 싶을 때</li><li>소스의 <code>if (x &lt; 0)</code> 조건이 어셈블리에서는 반대로 <code>jge</code>(크거나 같으면 점프)로 나오는 걸 보고 왜 뒤집혔는지 궁금할 때</li><li>IDA 그래프 뷰에서 한 블록이 두 개의 자식 블록으로 갈라졌다가 다시 하나로 합쳐지는 다이아몬드(diamond) 모양을 봤을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>원본 C 코드</h3>
+<pre><code class="language-c">int abs_val(int x) {
+    int result;
+    if (x &lt; 0) {
+        result = -x;
+    } else {
+        result = x;
+    }
+    return result;
+}</code></pre>
+<h3>-O0 x86-64 어셈블리</h3>
+<pre><code class="language-asm">abs_val:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 0x10
+    mov     [rbp-0x14], edi   ; x
+    cmp     dword [rbp-0x14], 0
+    jge     .L_else            ; x &gt;= 0 이면 else로 (조건이 반대로 뒤집힘)
+    mov     eax, [rbp-0x14]
+    neg     eax
+    mov     [rbp-4], eax        ; result = -x   (then 블록)
+    jmp     .L_end               ; else 블록을 건너뛰는 무조건 점프
+.L_else:
+    mov     eax, [rbp-0x14]
+    mov     [rbp-4], eax        ; result = x    (else 블록)
+.L_end:
+    mov     eax, [rbp-4]
+    leave
+    ret</code></pre>
+<h3>줄 단위 대응</h3>
+<ul><li><code>cmp dword [rbp-0x14], 0</code> / <code>jge .L_else</code> — 소스는 <code>if (x &lt; 0)</code>이지만 어셈블리는 정반대 조건인 <code>x &gt;= 0</code>을 검사해서 참이면 else로 뛴다. 컴파일러는 항상 <strong>"조건이 거짓일 때 어디로 갈지"</strong>를 조건부 분기로 표현하고, "조건이 참일 때"는 그냥 다음 줄로 자연스럽게 흘러가게(fall-through) 만든다. 그래서 소스의 <code>&lt;</code> 조건이 어셈블리에서는 <code>jge</code>(반대 조건)로 항상 뒤집혀 보인다.</li><li>then 블록(<code>neg eax</code>) 끝의 <code>jmp .L_end</code> — else 블록을 건너뛰기 위한 무조건 점프. <strong>이 jmp가 if-else의 확정적 증거</strong>다. 만약 이 jmp가 없다면 else가 없는 단순 if문일 가능성이 크다(REV-1055 참고).</li><li><code>.L_else</code> 레이블과 그 블록 — else 본문.</li><li><code>.L_end</code> 레이블 — then과 else가 다시 합류하는 지점. 두 경로 모두 결국 여기로 모인다.</li></ul>
+<h3>디컴파일러가 복원한 pseudocode</h3>
+<pre><code class="language-c">int abs_val(int x)
+{
+  int result;
+  if (x &lt; 0) {
+    result = -x;
+  } else {
+    result = x;
+  }
+  return result;
+}</code></pre>
+<p>IDA/Ghidra는 조건부 분기의 반대 조건(<code>jge</code>)을 다시 뒤집어서(<code>x &gt;= 0</code>이 아니라 <code>x &lt; 0</code>으로) 사람이 읽기 편한 원래 방향의 조건으로 복원해준다. <code>neg eax</code> 같은 단항 연산도 <code>-x</code>로 정확히 복원되는 경우가 많아, if-else는 디컴파일러 결과가 원본 소스와 거의 1:1로 대응되는 편에 속한다. 다만 then/else 블록의 코드가 복잡해지면 컴파일러가 두 블록에서 공통되는 코드를 미리 앞으로 끌어올리는(code hoisting) 최적화를 적용해 원본과 다른 모양이 될 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>cmp</code>(또는 <code>test</code>) 하나, 그 다음 조건부 분기 하나(목적지가 뒤쪽의 else 레이블).</li><li>조건부 분기 다음 블록(then) 끝에 무조건 <code>jmp</code>가 있고, 그 목적지가 else 블록보다 더 뒤에 있는 합류 레이블.</li><li>IDA 그래프 뷰에서 하나의 블록이 두 갈래로 갈라졌다가(다이아몬드 모양) 바로 다시 하나로 합쳐진다 — 루프처럼 위로 되돌아가는 화살표는 없다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>조건부 분기를 찾으면 그 조건을 소스 관점으로 뒤집어서 읽는다(<code>jge</code>가 보이면 원본은 <code>&lt;</code> 조건이었을 가능성이 크다). then 블록 끝에 <code>jmp</code>가 있는지부터 확인해서 else 블록의 존재 여부를 판단한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>cmp</code>/<code>test</code> 다음의 조건부 분기 명령과 그 목적지 주소를 확인한다.</li><li>조건부 분기 목적지 이전 코드(then 블록)를 읽고, 그 끝에 무조건 <code>jmp</code>가 있는지 확인한다.</li><li><code>jmp</code>가 있으면 그 목적지가 최종 합류 지점(<code>.L_end</code>)이고, 조건부 분기 목적지가 else 블록의 시작이다.</li><li>then과 else 두 블록이 각각 같은 변수(<code>result</code> 등)에 값을 쓰고 합류 지점에서 그 변수를 읽는지 확인해서 두 블록이 진짜 "양자택일" 관계인지 검증한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code>(gdb) disas abs_val
+(gdb) break *0x&lt;addr_of_cmp&gt;
+(gdb) info registers eax</code></pre>
+<p>IDA: 그래프 뷰에서 조건부 분기 노드를 클릭하면 두 자식 블록이 색으로 구분되어 표시된다. x64dbg: 조건부 분기에서 <code>F8</code>(step over) 대신 분기 예측 표시(초록/빨강 화살표)로 어느 쪽이 실제로 타는지 바로 확인 가능.</p>
+<h2>출력 해석</h2>
+<ul><li>조건부 분기의 방향(taken/not-taken)에 따라 then/else 중 어느 쪽이 실행됐는지는 디버거로 실제 값을 넣어봐야 확실히 알 수 있다. 정적 분석만으로는 두 경로 모두 도달 가능하다고 가정해야 한다.</li><li>then 블록 끝의 <code>jmp</code> 목적지와 else 블록 바로 다음 주소가 같다면, else 블록이 곧 합류 지점 바로 앞이라는 뜻이고 코드가 짧게 최적화된 것이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>조건부 분기의 조건을 뒤집지 않고 그대로 읽어서 then/else를 반대로 해석하는 것 — <code>jge</code>가 있으면 "크거나 같으면 else"라는 뜻이지 "then"이 아니다.</li><li>then 블록 끝의 <code>jmp</code>를 놓치고 else 블록까지 같은 조건 아래 실행되는 코드로 착각하는 것.</li><li><code>-O2</code>에서 then/else 두 블록의 결과가 단순 대입 하나뿐이면 컴파일러가 분기 자체를 없애고 <code>cmovcc</code>(조건부 이동, REV-0075)로 대체할 수 있다는 점을 놓치는 것 — 이 경우 <code>jmp</code>/레이블 구조 없이 한 줄의 <code>cmovge</code>/<code>cmovl</code>만 남아 if-else 구조 자체가 사라진 것처럼 보인다.</li><li>else가 없는 단순 if문(REV-1055의 앞부분)과 if-else를 혼동하는 것 — else가 없으면 then 블록 끝에 else를 건너뛸 <code>jmp</code>가 필요 없으므로 아예 없거나, 있어도 목적지가 조건부 분기의 목적지와 같아진다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>조건이 세 개 이상 이어지는 경우가 궁금하면 → REV-1055(if-elseif-else 체인이 어셈블리에서 보이는 패턴).</li><li>분기 대신 <code>cmovcc</code>로 대체된 경우가 궁금하면 → REV-0075(CMOVcc: 분기 없는 조건부 이동), REV-1073(삼항 연산자가 CMOV 또는 분기로 컴파일되는 패턴).</li><li><code>cmp</code>/<code>test</code>의 정확한 동작이 헷갈리면 → REV-0060(CMP), REV-0059(TEST).</li><li>조건부 분기 명령어 자체(<code>jge</code>, <code>jl</code> 등)의 의미가 헷갈리면 → REV-0069(JG JGE JL JLE: Signed 비교 분기).</li></ul>
+<h2>미니 예제</h2>
+<p>두 값 중 더 큰 값을 고르는 함수도 같은 뼈대를 따른다.</p>
+<pre><code class="language-c">int max2(int a, int b) {
+    int result;
+    if (a &gt; b) {
+        result = a;
+    } else {
+        result = b;
+    }
+    return result;
+}</code></pre>
+<pre><code class="language-asm">max2:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 0x10
+    mov     [rbp-4], edi     ; a
+    mov     [rbp-8], esi     ; b
+    mov     eax, [rbp-4]
+    cmp     eax, [rbp-8]
+    jle     .L_else            ; a &gt; b가 거짓(a &lt;= b)이면 else
+    mov     eax, [rbp-4]
+    mov     [rbp-0xc], eax     ; result = a
+    jmp     .L_end
+.L_else:
+    mov     eax, [rbp-8]
+    mov     [rbp-0xc], eax     ; result = b
+.L_end:
+    mov     eax, [rbp-0xc]
+    leave
+    ret</code></pre>
+<p><code>a &gt; b</code>의 반대 조건인 <code>jle</code>(작거나 같으면 else)로 뒤집혀 있는 것, then 블록 끝의 <code>jmp .L_end</code>, 그리고 두 블록이 합류하는 구조가 앞의 <code>abs_val</code>과 동일하다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-1055-if-elseif-else-chain-asm-pattern.html">REV-1055 — if-elseif-else 체인이 어셈블리에서 보이는 패턴</a></li><li><a href="rev-1073-ternary-cmov-or-branch-pattern.html">REV-1073 — 삼항 연산자(?:)가 CMOV 또는 분기로 컴파일되는 패턴</a></li><li><a href="rev-0075-cmovcc.html">REV-0075 — CMOVcc: 분기 없는 조건부 이동</a></li><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li><li><a href="rev-0069-jg-jge-jl-jle.html">REV-0069 — JG JGE JL JLE: Signed 비교 분기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>컴파일러가 조건을 반전시켜 "거짓일 때 분기"로 코드를 생성하고 참일 때는 fall-through로 처리하는 방식은 x86-64 gcc/clang <code>-O0</code> 실제 출력에서 반복 확인되는 표준 패턴이다.</li><li>단순 대입 결과의 조건부 이동(<code>cmovcc</code>) 대체 최적화: GCC/LLVM 공식 최적화 문서 및 x86-64 명령어 세트 설명 기준 (2026-09-10 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

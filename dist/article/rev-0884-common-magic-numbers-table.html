@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>리버싱에서 자주 보는 매직넘버 모음표 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>리버싱에서 자주 보는 매직넘버 모음표</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">HxD</span></div>
+<h2>한 줄 요약</h2>
+<p>파일 헤더나 메모리에서 특정 고정 바이트 패턴(<code>MZ</code>, <code>7F 45 4C 46</code>, <code>0xCCCCCCCC</code>, <code>0xDEADBEEF</code> 등)을 보면, 그 자체로 파일 형식이나 메모리 상태(초기화 안 됨/해제됨 등)를 즉시 알아낼 수 있다 — 이 문서는 리버싱 중 가장 자주 마주치는 매직넘버들을 한 번에 찾아볼 수 있도록 정리한 표다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>HxD/IDA로 파일을 열었는데 시작 부분의 바이트가 무슨 의미인지 모를 때</li><li>디버거에서 메모리를 봤는데 <code>CC CC CC CC</code>나 <code>CD CD CD CD</code>처럼 반복되는 패턴이 있어서 이게 의도적인 값인지 우연인지 헷갈릴 때</li><li>코드에 <code>0xDEADBEEF</code>, <code>0xCAFEBABE</code> 같은 눈에 띄는 16진수 상수가 하드코딩되어 있을 때</li><li>알 수 없는 바이너리 blob의 포맷을 시그니처만으로 빠르게 추측하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p><strong>실행 파일/아카이브 포맷 시그니처 (파일 맨 앞 몇 바이트)</strong></p>
+<table><thead><tr><th>바이트 (hex)</th><th>ASCII</th><th>의미</th></tr></thead><tbody><tr><td><code>4D 5A</code></td><td><code>MZ</code></td><td>DOS/PE 실행 파일(EXE) 헤더 시작</td></tr><tr><td><code>50 45 00 00</code></td><td><code>PE\0\0</code></td><td>PE(Portable Executable) 헤더 시그니처(DOS 스텁 뒤에 위치)</td></tr><tr><td><code>7F 45 4C 46</code></td><td><code>.ELF</code></td><td>ELF(Executable and Linkable Format) 매직</td></tr><tr><td><code>50 4B 03 04</code></td><td><code>PK..</code></td><td>ZIP 아카이브(및 ZIP 기반 포맷: JAR, APK, DOCX/XLSX/PPTX, APPX)</td></tr><tr><td><code>1F 8B</code></td><td>-</td><td>GZIP 압축</td></tr><tr><td><code>52 61 72 21</code></td><td><code>Rar!</code></td><td>RAR 아카이브</td></tr><tr><td><code>37 7A BC AF 27 1C</code></td><td>-</td><td>7-Zip 아카이브</td></tr><tr><td><code>89 50 4E 47 0D 0A 1A 0A</code></td><td><code>.PNG....</code></td><td>PNG 이미지</td></tr><tr><td><code>FF D8 FF</code></td><td>-</td><td>JPEG 이미지</td></tr><tr><td><code>42 4D</code></td><td><code>BM</code></td><td>BMP 이미지</td></tr><tr><td><code>25 50 44 46</code></td><td><code>%PDF</code></td><td>PDF 문서</td></tr><tr><td><code>CA FE BA BE</code></td><td>-</td><td>Java <code>.class</code> 파일(빅엔디안) 또는 Mach-O Fat/Universal Binary</td></tr><tr><td><code>FE ED FA CE</code> / <code>FE ED FA CF</code></td><td>-</td><td>Mach-O 32/64비트 실행 파일(macOS/iOS)</td></tr><tr><td><code>55 50 58 21</code></td><td><code>UPX!</code></td><td>UPX로 패킹된 실행 파일의 표식</td></tr></tbody></table>
+<p><strong>디버거/힙에서 보이는 "채움(fill) 패턴" 상수 — Windows 디버그 빌드 전용</strong></p>
+<table><thead><tr><th>값 (hex)</th><th>의미</th></tr></thead><tbody><tr><td><code>0xCCCCCCCC</code></td><td>MSVC 디버그 빌드에서 <strong>초기화되지 않은 스택</strong> 변수를 채우는 값(<code>0xCC</code>는 <code>INT3</code> 브레이크포인트 opcode이기도 함)</td></tr><tr><td><code>0xCDCDCDCD</code></td><td>MSVC 디버그 힙에서 <strong><code>malloc</code>/<code>new</code>로 갓 할당되어 아직 값이 안 채워진</strong> 메모리</td></tr><tr><td><code>0xDDDDDDDD</code></td><td>MSVC 디버그 힙에서 <strong><code>free</code>/<code>delete</code>로 이미 해제된</strong> 메모리(use-after-free 탐지용)</td></tr><tr><td><code>0xFEEEFEEE</code></td><td>Windows 힙(HeapFree 이후)에서 해제된 블록을 채우는 값</td></tr><tr><td><code>0xABABABAB</code></td><td>MSVC 디버그 힙에서 할당 블록 앞뒤의 <strong>가드 바이트(버퍼 오버런 탐지용)</strong></td></tr><tr><td><code>0xBAADF00D</code></td><td>Windows <code>LocalAlloc(LMEM_FIXED)</code> 등으로 할당은 됐지만 <strong>아직 초기화 안 된</strong> 힙 메모리</td></tr></tbody></table>
+<p><strong>코드에 자주 하드코딩되는 "장난스러운" 상수 (플레이스홀더/테스트/매직값)</strong></p>
+<table><thead><tr><th>값 (hex)</th><th>흔히 쓰이는 맥락</th></tr></thead><tbody><tr><td><code>0xDEADBEEF</code></td><td>범용 플레이스홀더/센티널 값. "여기 값이 있어야 하는데 없다"는 의도적 표식으로 자주 사용</td></tr><tr><td><code>0xDEADC0DE</code></td><td>ARM 임베디드/부트로더에서 크래시 덤프 표식으로 자주 사용</td></tr><tr><td><code>0x8BADF00D</code></td><td>iOS 크래시 리포트에서 "watchdog timeout"을 뜻하는 코드(Apple 고유 관례)</td></tr><tr><td><code>0xFACEFEED</code> / <code>0xFEEDFACE</code></td><td>여러 시스템에서 매직 헤더/버전 표식으로 재사용(Mach-O와는 바이트 순서가 다름에 주의)</td></tr><tr><td><code>0x0BADC0DE</code></td><td>마이크로소프트류 코드에서 오류/예외 표식으로 종종 등장</td></tr></tbody></table>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-text">00000000: 4D 5A 90 00 03 00 00 00  MZ......   &lt;- DOS 헤더
+...
+000000F0: 50 45 00 00 64 86 07 00  PE..d...   &lt;- PE 시그니처(64 86h = IMAGE_FILE_MACHINE_AMD64)</code></pre>
+<pre><code class="language-text">스택 덤프: CC CC CC CC CC CC CC CC   &lt;- 아직 값이 대입되지 않은 지역변수
+힙 덤프:   CD CD CD CD CD CD CD CD   &lt;- malloc 직후, memset/초기화 이전</code></pre>
+<h2>가장 먼저 할 것</h2>
+<p>분석 대상 파일을 HxD/IDA로 열어 첫 4~8바이트를 위 표와 대조한다. 파일 포맷을 먼저 확정하면 이후 어떤 파서/도구(PE-bear, readelf 등)를 써야 할지 바로 정해진다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 파일 시작 바이트 확인</strong> — <code>MZ</code>(PE), <code>\x7fELF</code>(ELF), <code>PK\x03\x04</code>(ZIP류) 중 어디에 해당하는지 확인.</p>
+<p><strong>2) 서브 시그니처 확인</strong> — PE라면 DOS 헤더의 <code>e_lfanew</code> 필드가 가리키는 오프셋에 <code>PE\0\0</code>이 있는지 재확인(<code>readelf</code>/<code>file</code> 명령으로도 빠르게 확인 가능).</p>
+<p><strong>3) 메모리 채움 패턴이면 디버그 빌드임을 인지</strong> — <code>0xCCCCCCCC</code>/<code>0xCDCDCDCD</code>/<code>0xDDDDDDDD</code> 계열이 보이면 릴리즈 최적화가 아니라 디버그 빌드 환경에서 실행 중이라는 뜻이므로, 실제 버그와 "디버그 채움 패턴"을 혼동하지 않도록 구분한다.</p>
+<p><strong>4) 코드 내 장난스러운 상수는 그대로 검색 키워드로 활용</strong> — <code>0xDEADBEEF</code>류는 종종 인터넷 검색만으로도 어떤 오픈소스 라이브러리/샘플 코드에서 왔는지 바로 찾아낼 수 있다.</p>
+<p><strong>5) <code>file</code> 명령으로 교차 확인</strong></p>
+<pre><code class="language-bash">file challenge.bin</code></pre>
+<p>리눅스 <code>file</code> 유틸리티는 내부적으로 이런 매직넘버 데이터베이스(<code>/usr/share/file/magic</code>)를 갖고 있어 즉시 포맷을 알려준다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>Linux: <code>file &lt;파일&gt;</code>, <code>xxd &lt;파일&gt; | head</code>, <code>readelf -h &lt;파일&gt;</code></li><li>IDA/Ghidra: 파일을 열 때 자동으로 포맷을 인식하지만, 헤더가 손상된 경우 HxD로 직접 매직바이트를 비교</li><li>HxD: <code>Ctrl+G</code>(주소 이동)로 오프셋 0으로 이동해 첫 바이트 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>파일 시그니처가 알려진 표와 정확히 일치하면 해당 포맷 전용 도구(PE-bear, readelf, <code>unzip -l</code> 등)로 넘어간다.</li><li>매직바이트가 표에 없는 낯선 값이면, 커스텀/난독화된 포맷이거나 헤더가 암호화·패킹되어 있을 가능성을 의심(REV-0652 공유 라이브러리 분석이나 패킹 탐지 관련 문서로 이동).</li><li>디버그 채움 패턴(<code>0xCCCCCCCC</code> 등)이 스택/힙에 남아 있다면, 그 위치의 변수가 실제로 한 번도 초기화되지 않고 사용됐다는 버그 신호일 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>0xCCCCCCCC</code>를 프로그램이 의도적으로 넣은 값이라고 착각하는 것 — 대부분 MSVC 디버그 런타임이 자동으로 채우는 "미초기화 표식"이며 실제 버그가 아니라 디버그 빌드의 정상적인 동작이다.</li><li>PE와 ELF 매직을 혼동해서 잘못된 파서 도구를 쓰는 것 — <code>4D 5A</code>(MZ)는 PE, <code>7F 45 4C 46</code>은 ELF로 완전히 다른 플랫폼이다.</li><li>Mach-O 매직(<code>0xFEEDFACE</code>/<code>0xFEEDFACF</code>)과 임베디드 크래시 덤프 표식(<code>0xDEADC0DE</code>)처럼 비슷하게 생긴 "장난스러운 hex" 상수를 서로 혼동하는 것 — 반드시 문맥(어떤 플랫폼, 어떤 로그 근처인지)과 함께 판단해야 한다.</li><li>매직넘버 하나만 보고 포맷 전체를 확정하는 것 — 일부 CTF 문제는 매직바이트를 일부러 조작해 파서를 오작동시키므로, 매직 이후의 구조(헤더 필드, 크기)도 함께 검증해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>PE 헤더 구조(MZ/DOS 헤더) 자체를 더 깊이 파악해야 하면 → REV-0115 — DOS Header와 MZ 시그니처.</li><li>ELF 헤더/섹션 구조가 궁금하면 → REV-0089 — ELF 헤더 읽는 법.</li><li>매직바이트가 표준과 다르게 조작된 것 같으면(의도적 난독화) → REV-0885 — 알고리즘 유형별 판별 체크리스트에서 전체 판별 절차부터 다시 밟기.</li></ul>
+<h2>미니 예제</h2>
+<p><code>file</code> 명령으로 다음 결과를 얻었다:</p>
+<pre><code class="language-text">$ file challenge
+challenge: ELF 64-bit LSB executable, x86-64, version 1 (SYSV), dynamically linked, ...</code></pre>
+<p><code>ELF 64-bit</code>라는 문구는 파일 시작이 <code>7F 45 4C 46</code>(ELF 매직)이고 그다음 클래스 바이트가 <code>02</code>(ELFCLASS64)였다는 뜻이다. HxD로 직접 열어도 같은 바이트를 확인할 수 있다:</p>
+<pre><code class="language-text">00000000: 7F 45 4C 46 02 01 01 00  .ELF....</code></pre>
+<p><code>02</code>(64비트), <code>01</code>(리틀엔디안), <code>01</code>(현재 ELF 버전)까지 표준 헤더 구조와 정확히 일치하는지 바로 눈으로 확인 가능하다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0115-dos-header.html">REV-0115 — DOS Header와 MZ 시그니처</a></li><li><a href="rev-0089-elf-header.html">REV-0089 — ELF 헤더 읽는 법</a></li><li><a href="rev-0885-algorithm-identification-checklist.html">REV-0885 — 알고리즘 유형별 판별 체크리스트</a></li><li><a href="rev-0876-hash-function-magic-constants.html">REV-0876 — 해시 함수 매직 상수 빠른 참조(MD5/SHA1/SHA256 초기값)</a></li><li><a href="rev-0877-crc-polynomial-constants.html">REV-0877 — CRC 다항식 상수 빠른 참조표</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>PE(<code>MZ</code>/<code>PE\0\0</code>) 시그니처: Microsoft PE/COFF 공식 명세("Microsoft Portable Executable and Common Object File Format Specification") 기준 (2026-09-09 검증).</li><li>ELF(<code>7F 45 4C 46</code>) 매직: System V ABI / ELF 명세("Executable and Linkable Format (ELF)") 기준.</li><li>ZIP/GZIP/PNG/JPEG/PDF/Mach-O/Java class 파일 시그니처: 각 포맷의 공개 표준 문서 및 널리 알려진 파일 시그니처 데이터베이스(예: 리눅스 <code>file</code> 유틸리티의 magic 데이터베이스) 기준.</li><li>MSVC 디버그 힙/스택 채움 패턴(<code>0xCCCCCCCC</code>, <code>0xCDCDCDCD</code>, <code>0xDDDDDDDD</code>, <code>0xABABABAB</code>, <code>0xFEEEFEEE</code>): Microsoft Learn 공식 문서("CRT Debug Heap Details") 기준 (2026-09-09 검증).</li><li><code>0xBAADF00D</code>(LocalAlloc 미초기화 표식), <code>0x8BADF00D</code>(iOS watchdog 크래시 코드): Microsoft 및 Apple의 공개 디버깅/크래시 리포트 문서에서 널리 알려진 관례 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

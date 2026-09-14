@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>나머지 연산(%)이 어셈블리로 최적화되는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>나머지 연산(%)이 어셈블리로 최적화되는 패턴</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>x % N</code>(상수 N)은 대부분 <code>DIV</code>/<code>IDIV</code>를 직접 쓰지 않고, N이 2의 거듭제곱이면 <code>AND</code> 마스크 한 번으로, 그 외의 상수면 REV-0454에서 다룬 매직 넘버 방식으로 몫을 먼저 구한 뒤 <code>나머지 = 원래값 - 몫 * N</code>을 <code>IMUL</code>+<code>SUB</code>로 계산하는 방식으로 컴파일된다 — 즉 나머지 연산은 거의 항상 "나눗셈 최적화의 부산물"로 함께 나타난다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>소스에 <code>%</code>(나머지) 연산이 있어야 할 것 같은데 <code>DIV</code>/<code>IDIV</code>가 안 보이고, <code>IMUL</code> 다음에 <code>SUB</code>가 오면서 그 결과가 원래 값에서 무언가를 뺀 형태로 나올 때</li><li><code>AND</code> 명령 하나만으로 나머지가 계산되는 것처럼 보이는데 왜 그런지 이해가 안 될 때</li><li>REV-0454(나눗셈 매직 넘버 패턴)를 이미 본 코드 바로 뒤에 <code>IMUL</code>+<code>SUB</code>가 추가로 붙어 있어서 "나눗셈 다음에 뭘 더 하는 거지?"라는 의문이 들 때</li><li>해시 테이블 인덱싱(<code>hash % table_size</code>), 순환 버퍼 인덱스(<code>idx % capacity</code>) 같은 코드를 분석할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>나머지의 정의와 나눗셈과의 관계</h3>
+<p>정수 나눗셈에서 <code>q = x / N</code>(몫), <code>r = x % N</code>(나머지)이라 하면, 정의상 항상 <code>x = q * N + r</code>이 성립한다. 이를 뒤집으면 <code>r = x - q * N</code>이다. 즉 <strong>몫을 구할 수만 있다면, 나머지는 "몫에 N을 곱해서 원래 값에서 빼는" 한 번의 곱셈과 뺄셈으로 바로 얻을 수 있다.</strong> 그래서 컴파일러는 나머지 연산을 위해 별도의 알고리즘을 쓰지 않고, REV-0454에서 다룬 몫 계산 최적화(매직 넘버 곱셈+시프트, 또는 2의 거듭제곱이면 시프트)를 그대로 재사용한 뒤, 마지막에 <code>IMUL</code>(곱)+<code>SUB</code>(뺄셈)만 추가한다.</p>
+<h3>2의 거듭제곱 나머지 — AND 마스크 (Unsigned)</h3>
+<p>나누는 값 N이 2의 거듭제곱(2, 4, 8, 16, ...)이고 <strong>부호 없는(unsigned)</strong> 값이라면, 나머지는 하위 비트를 그대로 떼어내는 것과 같다. 예를 들어 <code>x % 8</code>은 "x의 하위 3비트"와 정확히 같다.</p>
+<pre><code class="language-asm">; unsigned x % 8
+mov     eax, x
+and     eax, 7          ; N-1 = 7 = 0b111, 하위 3비트만 남김</code></pre>
+<p><code>AND</code>(REV-0055)로 <code>N-1</code>을 마스크로 사용하는 이 패턴은 극도로 빠르고 흔해서, 해시 테이블/순환 버퍼 크기를 2의 거듭제곱으로 정하는 실전 관례(<code>table_size = 1 &lt;&lt; k</code>)의 근본적인 이유이기도 하다.</p>
+<h3>2의 거듭제곱 나머지 — Signed는 단순 AND로 안 된다</h3>
+<p><strong>부호 있는(signed)</strong> 정수에서는 음수일 때 단순 <code>AND</code>만으로는 C의 나머지 규칙(부호는 피제수 <code>x</code>의 부호를 따름, <code>truncation</code> 나눗셈과 일관됨)을 만족하지 못한다. 그래서 REV-0454의 signed 2의 거듭제곱 나눗셈과 마찬가지로 바이어스 보정이 들어간 뒤에야 마스킹이 적용된다.</p>
+<pre><code class="language-asm">; signed x % 8
+mov     eax, x
+cdq                    ; x의 부호를 edx 전체로 확장 (양수면 0, 음수면 -1)
+and     edx, 7           ; 음수면 7, 양수면 0
+add     eax, edx          ; 바이어스 보정
+and     eax, 0FFFFFFF8h   ; 몫 계산용 마스크(하위 3비트 제거)
+sub     ecx, eax           ; 원래 x - (보정된 몫*8) = 나머지</code></pre>
+<p>정확한 명령 순서는 컴파일러/버전에 따라 다르지만, 핵심은 "부호 보정 → 마스킹/시프트 → 원래 값에서 빼기"라는 흐름이 signed 나머지에서는 unsigned보다 한두 단계 더 많다는 것이다.</p>
+<h3>일반 상수 나머지 — 매직 넘버 몫 + IMUL/SUB</h3>
+<p>N이 2의 거듭제곱이 아니면(예: 10, 3, 7), REV-0454의 매직 넘버 나눗셈으로 몫을 먼저 구하고, 그 몫에 N을 다시 곱해서 원래 값에서 빼는 방식이다.</p>
+<pre><code class="language-asm">; signed x % 10
+mov     eax, x
+mov     edx, 66666667h
+imul    edx
+sar     edx, 2
+mov     eax, edx
+shr     eax, 1Fh
+add     eax, edx        ; eax = x / 10  (REV-0454와 완전히 동일한 몫 계산)
+imul    eax, eax, 0Ah    ; eax = (x/10) * 10
+sub     ecx, eax          ; ecx = 원래 x - (x/10)*10 = x % 10</code></pre>
+<p>여기서 <code>IMUL eax, eax, 0Ah</code>는 "3-오퍼랜드 IMUL" 형태로, <code>eax = eax * 10</code>을 한 번에 계산한다(REV-0051 참고). 이 곱셈은 REV-0454의 매직 넘버 곱셈과는 <strong>완전히 다른, 평범한 상수 곱셈</strong>이라는 점에 주의한다 — 몫 계산용 매직 넘버 곱셈과 나머지 계산용 <code>N</code> 곱셈을 혼동하지 않아야 한다.</p>
+<h3>레지스터/메모리 효과와 플래그</h3>
+<ul><li><code>AND</code>(마스킹)는 결과에 따라 <code>SF</code>, <code>ZF</code>, <code>PF</code>를 세팅하고 <code>CF</code>, <code>OF</code>를 0으로 클리어한다(REV-0055 참고). 하지만 이 패턴에서는 그 플래그를 후속 로직이 사용하지 않는 경우가 대부분이다.</li><li><code>IMUL</code>/<code>SUB</code>도 각각 자신의 플래그 규칙을 따르지만(REV-0051, REV-0048), 나머지 계산 목적에서는 결과 값 자체가 중요하지 나머지 계산 과정에서 세팅된 플래그는 보통 무시된다.</li><li>signed/unsigned 구분이 나머지 연산에서는 나눗셈보다 더 중요하다 — <strong>부호 있는 나머지의 결과 부호는 항상 피제수(x)의 부호를 따른다</strong>(C99 이후 표준 규칙). 예: <code>-7 % 3 == -1</code>(3이 아니라), <code>7 % -3 == 1</code>. 이 규칙 때문에 signed 나머지는 항상 부호 보정 코드가 따라붙는다.</li><li>스택/RIP에는 영향이 없다.</li></ul>
+<h3>IDA/Ghidra 디컴파일에서 보이는 형태</h3>
+<p>Hex-Rays와 Ghidra는 이 "몫 계산 + IMUL + SUB" 또는 "AND 마스크" 패턴을 대부분 정확히 <code>x % N</code>으로 재인식해서 보여준다. 특히 나눗셈(<code>x / N</code>)과 나머지(<code>x % N</code>)를 <strong>같은 x, 같은 N에 대해 동시에</strong> 쓰는 코드(<code>q = x / N; r = x % N;</code>)는, 컴파일러가 몫 계산 코드를 단 한 번만 만들고 나머지는 그 몫을 재사용해서 계산하도록 합쳐버리는 경우가 많다 — 이때는 디스어셈블리에 <code>DIV</code>/<code>IDIV</code>나 매직 넘버 블록이 단 한 번만 나타나고, 그 결과가 몫으로도 쓰이고 <code>IMUL</code>+<code>SUB</code>를 거쳐 나머지로도 쓰인다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">; unsigned 2의 거듭제곱 나머지
+mov     eax, x
+and     eax, 0Fh        ; x % 16</code></pre>
+<pre><code class="language-asm">; signed 일반 상수 나머지 (몫 재사용)
+mov     eax, ecx
+mov     edx, 66666667h
+imul    edx
+sar     edx, 2
+mov     eax, edx
+shr     eax, 1Fh
+add     eax, edx         ; eax = ecx / 10 (몫, q)
+imul    eax, eax, 0Ah     ; eax = q * 10
+sub     ecx, eax           ; ecx = ecx - q*10 = ecx % 10</code></pre>
+<pre><code class="language-asm">; 나눗셈과 나머지를 동시에 쓰는 코드
+mov     [q], eax          ; 몫 저장
+imul    eax, eax, 0Ah
+sub     ecx, eax
+mov     [r], ecx           ; 나머지 저장</code></pre>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>AND</code> 하나로 끝나는지, 아니면 <code>IMUL</code>+<code>SUB</code> 조합이 있는지 확인한다 — 전자는 unsigned 2의 거듭제곱 나머지, 후자는 일반 상수 나머지다.</li><li><code>IMUL</code>+<code>SUB</code> 패턴이면, 그 직전에 REV-0454 스타일의 몫 계산 블록(매직 넘버 <code>IMUL</code>/<code>MUL</code> + <code>SAR</code>/<code>SHR</code>)이 있는지 확인한다 — 있으면 그 몫을 재사용하는 나머지 계산이다.</li><li><code>SUB</code>의 두 오퍼랜드 중 어느 쪽이 "원래 값"이고 어느 쪽이 "몫*N"인지 순서를 정확히 확인한다 — 순서가 바뀌면 부호가 반대로 해석된다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 몫 계산부와 나머지 계산부 분리</strong></p>
+<p><code>IMUL eax, eax, N</code>(N은 원래 나누려던 상수) 직전까지가 몫 계산(REV-0454 패턴), 그 이후 <code>SUB</code>까지가 나머지 계산이다. 두 부분을 분리해서 각각 REV-0454의 절차대로 분석한다.</p>
+<p><strong>2) N값 확인</strong></p>
+<p><code>IMUL eax, eax, N</code>의 세 번째 오퍼랜드(즉시값)가 곧 나누는 상수 N이다 — 이건 매직 넘버와 달리 사람이 읽을 수 있는 평범한 10진수/16진수라서 바로 알아볼 수 있다(예: <code>0Ah</code> = 10).</p>
+<p><strong>3) 2의 거듭제곱인지 확인</strong></p>
+<p><code>IMUL</code>/<code>SUB</code> 없이 <code>AND</code>만 있다면, 마스크 값에 1을 더했을 때 2의 거듭제곱이 되는지 확인한다(<code>AND eax, 0Fh</code> → <code>0xF+1=16</code>, 즉 <code>% 16</code>).</p>
+<p><strong>4) signed 여부와 결과 부호 확인</strong></p>
+<p>부호 보정 코드(<code>CDQ</code>, <code>SAR ..., 1Fh</code> 등)가 있으면 signed이고, 음수 입력에 대해 나머지 부호가 피제수를 따른다는 규칙을 적용해서 해석한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>F5</code>(디컴파일, <code>%</code> 연산자로 재인식되는지 확인), <code>IMUL eax, eax, N</code>의 N을 더블클릭해서 상수 확인</li><li>Ghidra: Decompile 창 자동 재인식 확인, Listing에서 <code>imul</code>+<code>sub</code> 연속 패턴을 눈으로 스캔</li><li>Python(오프라인 검증): 여러 x값에 대해 <code>x % N</code>을 직접 계산해서 디스어셈블리에서 역산한 값과 일치하는지 대조</li></ul>
+<h2>출력 해석</h2>
+<ul><li>IDA가 <code>x % 10</code>으로 정확히 복원했다면 신뢰하고 넘어가면 된다.</li><li><code>q = x / 10; r = x % 10;</code>처럼 몫과 나머지가 동시에 변수로 나오면, 어셈블리 레벨에서는 몫 계산이 단 한 번만 있고 나머지는 그 몫을 재사용한 것임을 기억해둔다 — 즉 두 변수가 코드상 별개로 보여도 실제로는 강하게 연결된 계산이다.</li><li><code>AND</code> 결과가 항상 <code>[0, N-1]</code> 범위 안에만 있다면 unsigned 2의 거듭제곱 나머지임을 재확인할 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>IMUL</code>+<code>SUB</code> 조합을 REV-0454(나눗셈)와 완전히 별개의 새로운 패턴으로 오인해서, 몫 계산 부분을 다시 처음부터 분석하려 드는 것 — 사실 몫 계산 로직은 REV-0454와 100% 동일하며, 이 글에서 다루는 건 그 뒤에 붙는 <code>IMUL</code>+<code>SUB</code>뿐이다.</li><li><code>AND</code> 마스크 패턴을 보고 무조건 "비트 플래그 검사"라고 오판하는 것 — 마스크 값이 <code>2^k - 1</code>(모든 하위 k비트가 1) 형태이고, 그 결과가 이후 배열 인덱스나 나머지처럼 쓰인다면 나머지 연산일 가능성을 함께 고려해야 한다.</li><li>signed 나머지의 부호 규칙을 잘못 기억하는 것 — <code>%</code>의 결과 부호는 <strong>제수(N)가 아니라 피제수(x)의 부호를 따른다</strong>(C99/C++11 이후 표준). <code>-7 % 3</code>은 <code>-1</code>이지 <code>2</code>가 아니다.</li><li>나머지 계산에 쓰인 <code>IMUL eax, eax, N</code>의 <code>N</code>을 매직 넘버와 혼동하는 것 — 몫 계산에 쓰인 매직 넘버(예: <code>0x66666667</code>)와 나머지 계산에 쓰인 진짜 나누는 값(예: <code>10</code>)은 전혀 다른 상수이며 혼동하면 원래 코드를 잘못 재구성하게 된다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>몫 계산 부분이 이해가 안 되면 → REV-0454(나눗셈이 곱셈과 시프트로 최적화되는 패턴)를 먼저 읽는다.</li><li><code>AND</code>가 왜 플래그를 세팅하는지, 어떤 플래그인지 헷갈리면 → REV-0055(AND: 마스크와 비트 제거)를 다시 읽는다.</li><li>signed 나머지의 부호 보정 로직이 여전히 헷갈리면 → REV-0053(IDIV), REV-0063(SAR)에서 부호 있는 나눗셈/시프트의 절삭 규칙을 함께 복습한다.</li><li>실제 N값을 정확히 확정해야 하는데 자신이 없다면 → <code>IMUL eax, eax, N</code>의 즉시값을 그대로 신뢰해도 된다(이 값은 매직 넘버가 아니라 평범한 상수이므로 역산이 필요 없다).</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 해시 테이블 인덱싱(2의 거듭제곱)</strong></p>
+<pre><code class="language-c">unsigned int idx = hash % 256;</code></pre>
+<pre><code class="language-asm">mov     eax, [hash]
+and     eax, 0FFh</code></pre>
+<p><strong>예제 2 — 일반 상수 나머지</strong></p>
+<pre><code class="language-c">int last_digit = n % 10;</code></pre>
+<pre><code class="language-asm">mov     eax, ecx
+mov     edx, 66666667h
+imul    edx
+sar     edx, 2
+mov     eax, edx
+shr     eax, 1Fh
+add     eax, edx          ; eax = n / 10
+imul    eax, eax, 0Ah
+sub     ecx, eax            ; ecx = n % 10</code></pre>
+<p><strong>예제 3 — 몫과 나머지를 동시에 쓰는 코드</strong></p>
+<pre><code class="language-c">int minutes = total_sec / 60;
+int seconds = total_sec % 60;</code></pre>
+<pre><code class="language-asm">; total_sec / 60 계산 (매직 넘버 생략)
+...
+mov     [minutes], eax      ; 몫
+imul    eax, eax, 3Ch        ; eax = minutes * 60
+sub     ecx, eax              ; ecx = total_sec - minutes*60
+mov     [seconds], ecx</code></pre>
+<p><strong>예제 4 — signed 2의 거듭제곱 나머지 (부호 보정 포함)</strong></p>
+<pre><code class="language-c">int r = x % 4;   // x가 음수일 수 있음</code></pre>
+<pre><code class="language-asm">mov     eax, x
+cdq
+and     edx, 3
+add     eax, edx
+and     eax, 0FFFFFFFCh
+mov     ecx, x
+sub     ecx, eax             ; ecx = x % 4 (부호는 x를 따름)</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0454-division-magic-number-pattern.html">REV-0454 — 나눗셈이 곱셈과 시프트로 최적화되는 패턴(Magic Number)</a></li><li><a href="rev-0055-and.html">REV-0055 — AND: 마스크와 비트 제거</a></li><li><a href="rev-0052-div.html">REV-0052 — DIV: Unsigned 나눗셈</a></li><li><a href="rev-0053-idiv.html">REV-0053 — IDIV: Signed 나눗셈</a></li><li><a href="rev-0051-imul.html">REV-0051 — IMUL: Signed 곱셈과 컴파일러 패턴</a></li><li><a href="rev-0048-sub.html">REV-0048 — SUB: 뺄셈과 플래그</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>x = q*N + r</code> 나눗셈-나머지 관계 및 컴파일러가 몫 계산을 재사용해 나머지를 유도하는 코드 생성 전략: Henry S. Warren Jr., "Hacker's Delight" 2nd Edition, Chapter 10 기준.</li><li>signed 나머지 결과 부호가 피제수를 따른다는 규칙: ISO C99/C++11 이후 표준의 정수 나눗셈/나머지 연산자 규정 기준.</li><li><code>AND</code>, <code>IMUL</code>, <code>SUB</code>의 플래그 영향: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2 각 명령어 항목 기준.</li><li>2의 거듭제곱 크기 해시 테이블/순환 버퍼에서 <code>AND</code> 마스크로 모듈로를 대체하는 관례는 일반적인 자료구조 구현 및 컴파일러 최적화 관행 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

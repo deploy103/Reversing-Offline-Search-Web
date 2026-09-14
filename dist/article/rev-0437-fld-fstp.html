@@ -1,0 +1,95 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLD와 FSTP: x87 스택 로드/저장 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>FLD와 FSTP: x87 스택 로드/저장</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>FLD</code>는 메모리(또는 다른 <code>ST(i)</code>)의 실수 값을 x87 스택 맨 위(<code>ST(0)</code>)에 <strong>push</strong>하고, <code>FSTP</code>는 <code>ST(0)</code>의 값을 메모리(또는 <code>ST(i)</code>)에 저장한 뒤 스택에서 <strong>pop</strong>한다 — REV-0044(PUSH)/REV-0045(POP)의 FPU 버전이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>fld dword ptr [ebp-4]</code>, <code>fstp qword ptr [ebp-8]</code> 같은 코드를 처음 보고 무슨 뜻인지 모를 때</li><li><code>FST</code>와 <code>FSTP</code>의 차이(P가 붙고 안 붙고)가 헷갈릴 때</li><li><code>FILD</code>/<code>FISTP</code>처럼 뒤에 I가 붙은 변형이 왜 있는지 궁금할 때</li><li>x87 스택 언더플로/오버플로 관련 경고나 이상 동작을 조사할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>FLD: 스택에 값 push</h3>
+<p><code>FLD src</code>는 다음을 수행한다.</p>
+<ol><li><code>src</code>(메모리 32/64/80비트 실수, 또는 <code>ST(i)</code>)의 값을 읽어 내부적으로 80비트 확장 정밀도로 변환한다.</li><li>x87 스택 포인터(TOP)를 하나 감소시킨다.</li><li>그 새 <code>ST(0)</code> 자리에 변환된 값을 쓴다. 이전에 <code>ST(0)</code>이었던 값은 이제 <code>ST(1)</code>이 된다.</li></ol>
+<p>메모리에서 읽는 <code>fld dword ptr [...]</code>(단정도), <code>fld qword ptr [...]</code>(배정도), <code>fld tbyte ptr [...]</code>(80비트 확장 정밀도) 외에, 상수를 바로 push하는 전용 명령도 있다: <code>FLD1</code>(1.0), <code>FLDZ</code>(0.0), <code>FLDPI</code>(π), <code>FLDL2E</code>, <code>FLDLN2</code> 등.</p>
+<p><strong>왜 항상 80비트로 변환해서 저장하는가</strong>: x87은 정밀도가 다른 값들을 섞어 계산해도 항상 스택 내부에서는 80비트 확장 정밀도로 다룬다. 그래서 <code>float</code>(32비트) 두 개를 더한 결과를 다시 <code>float</code>으로 저장하면(<code>FSTP dword ptr [...]</code>), 계산 중간에는 80비트 정밀도로 더했다가 마지막에 32비트로 반올림되는 셈이라 이론적으로 더 정확한 결과가 나올 수 있다. 반대로 이 때문에 "같은 수식인데 x87로 계산한 결과와 SSE2(XMM, 항상 지정된 정밀도만 사용)로 계산한 결과가 미세하게 다르다"는 현상이 생기기도 한다 — 디버거로 값을 비교할 때 이 차이를 반올림 오차로 오인하지 않도록 주의한다.</p>
+<h3>FST와 FSTP: 저장, 그리고 pop 여부의 차이</h3>
+<ul><li><code>FST dest</code> — <code>ST(0)</code>의 값을 <code>dest</code>(메모리 또는 다른 <code>ST(i)</code>)에 <strong>복사만 하고 스택은 그대로 둔다.</strong> <code>ST(0)</code>은 그대로 유지된다.</li><li><code>FSTP dest</code> — <code>FST</code>와 동일하게 저장하되, 저장 직후 <strong>스택에서 pop한다(P = Pop).</strong> TOP이 하나 증가하고, 이전 <code>ST(1)</code>이 새 <code>ST(0)</code>이 된다.</li></ul>
+<p>실무에서는 계산이 끝난 최종 결과를 메모리에 쓰고 스택도 비우고 싶은 경우가 많아서 <code>FSTP</code>가 <code>FST</code>보다 훨씬 자주 보인다. <code>FST</code>는 중간값을 "복사만 해두고 스택 값은 계속 쓰고 싶을 때" 쓰인다.</p>
+<h3>정수 변환 변형: FILD / FIST / FISTP</h3>
+<p>FPU는 정수와 실수 간 변환도 스택 push/pop과 함께 처리한다.</p>
+<ul><li><code>FILD src</code> — 메모리의 <strong>정수</strong>(16/32/64비트)를 읽어 실수로 변환한 뒤 <code>ST(0)</code>에 push. <code>int</code>를 <code>double</code>/<code>long double</code>로 바꾸는 코드에서 흔하다.</li><li><code>FISTP dest</code> — <code>ST(0)</code>의 실수 값을 <strong>정수</strong>로 반올림/변환해서 메모리에 저장하고 pop. <code>(int)someDouble</code> 같은 캐스팅에서 흔하다.</li></ul>
+<p><code>FISTP</code>가 정수로 변환할 때 어떤 반올림 규칙을 쓰는지는 Control Word의 반올림 모드 비트에 달려 있다(기본값은 "가장 가까운 짝수로 반올림", round-to-nearest-even). C의 <code>(int)x</code> 캐스팅은 "0 방향으로 자르기(truncate)"를 요구하므로, 컴파일러는 <code>FISTP</code> 앞에서 <code>FLDCW</code>로 반올림 모드를 잠깐 "0 방향 절삭"으로 바꿨다가 변환 후 다시 원래 모드로 되돌리는 코드를 넣거나, x87 대신 SSE2의 <code>CVTTSD2SI</code>(자르기 전용) 명령을 쓰기도 한다. 이런 <code>FLDCW</code> 쌍이 <code>FISTP</code> 앞뒤로 보이면 "정수 캐스팅을 위한 반올림 모드 임시 변경"이라고 이해하면 된다.</p>
+<h3>플래그와 부호/정밀도</h3>
+<ul><li>이 명령들은 EFLAGS를 변경하지 않는다. 대신 x87 상태 워드(Status Word)의 예외 비트(스택 오버플로/언더플로, 부정확한 결과 등)에 영향을 줄 수 있다.</li><li><code>FLD</code>/<code>FSTP</code>는 부호 있는 실수를 그대로 다루므로 별도의 signed/unsigned 구분은 없다(부동소수점은 항상 부호 비트를 포함한다). 다만 <code>FILD</code>/<code>FISTP</code>로 정수를 오갈 때는 그 정수가 signed인지(대부분 x87 정수 명령은 signed 정수를 가정) 확인해야 한다 — unsigned 64비트처럼 x87이 직접 지원하지 않는 폭/부호는 컴파일러가 보정 코드를 추가로 넣기도 한다.</li></ul>
+<h3>스택/레지스터 효과 요약</h3>
+<table><thead><tr><th>명령</th><th>방향</th><th>스택 효과</th></tr></thead><tbody><tr><td><code>FLD src</code></td><td>src → ST(0)</td><td>push (TOP -1)</td></tr><tr><td><code>FST dest</code></td><td>ST(0) → dest</td><td>변화 없음</td></tr><tr><td><code>FSTP dest</code></td><td>ST(0) → dest</td><td>pop (TOP +1)</td></tr><tr><td><code>FILD src</code></td><td>src(int) → ST(0)</td><td>push</td></tr><tr><td><code>FISTP dest</code></td><td>ST(0) → dest(int)</td><td>pop</td></tr></tbody></table>
+<h3>컴파일러 패턴과 디컴파일러 화면</h3>
+<p>전형적인 <code>float c = a + b;</code> 코드는 <code>fld a; fld b; faddp; fstp c</code> 형태로 컴파일된다(산술 명령 상세는 REV-0438 참고). IDA/Ghidra는 이런 로드/저장 시퀀스를 대부분 하나의 대입문으로 깔끔하게 합쳐서 보여주지만, 함수 경계나 인라인 어셈블리가 섞인 경우 <code>FLD</code>/<code>FSTP</code> 원문이 그대로 노출될 수 있다.</p>
+<h3>리버싱 관점에서의 의미</h3>
+<p><code>FLD</code>/<code>FSTP</code> 개수가 함수 안에서 짝이 맞는지 세어보면, 그 함수가 x87 스택을 깨끗이 정리하고 끝나는지(정상) 아니면 스택에 값을 남긴 채 반환하는지(비정상적이거나 특이한 호출 규약)를 빠르게 판단할 수 있다. 또한 <code>FSTP st(0)</code>처럼 목적지가 <code>ST(0)</code> 자신인 코드는 "값은 필요 없고 그냥 스택만 비우고 싶다(pop만 하고 싶다)"는 관용구로 자주 쓰인다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>fld dword/qword/tbyte ptr [...]</code> — 메모리에서 스택으로 로드</li><li><code>fstp dword/qword/tbyte ptr [...]</code> — 스택에서 메모리로 저장 후 pop</li><li><code>fild</code>/<code>fistp</code> — 정수 메모리 피연산자와 함께 등장(정수↔실수 변환)</li><li><code>fstp st(0)</code> — 값을 버리고 스택만 비우는 관용구</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>피연산자의 크기 접미사(<code>dword</code>=32비트, <code>qword</code>=64비트, <code>tbyte</code>=80비트)를 확인해서 원본 타입(<code>float</code>/<code>double</code>/<code>long double</code>)을 추정한다.</li><li><code>FST</code>인지 <code>FSTP</code>인지(P 유무)를 확인해서 이 명령 이후 스택이 줄어드는지 아닌지 판단한다.</li><li><code>FILD</code>/<code>FISTP</code>가 보이면 정수↔실수 변환이 일어난다는 것을 표시해두고 원본 변수 타입을 역추적한다.</li></ol>
+<h2>단계별 절차</h2>
+<ol><li><code>FLD</code>(로드)인지 <code>FST</code>/<code>FSTP</code>(저장)인지 먼저 구분한다 — L은 스택에 넣기, ST는 꺼내 쓰기다.</li><li>오퍼랜드 크기 접미사로 원본 타입을 적어둔다 (dword=float, qword=double, tbyte=long double).</li><li><code>FSTP</code>처럼 P가 붙었으면 이 명령 이후 스택 깊이가 1 줄어든다는 것을 표시한다.</li><li>여러 FLD/FSTP가 섞인 블록이면 순서대로 스택 그림을 그려서 최종적으로 무엇이 메모리에 저장되는지 추적한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 레지스터 창의 FPU 탭에서 push/pop 직후 <code>ST0</code>~<code>ST7</code> 값 변화를 즉시 확인.</li><li>x64dbg: FPU 패널에서 <code>dword</code>/<code>qword</code>/<code>tbyte</code> 형식으로 메모리 피연산자를 바로 보기(우클릭 → "Follow in Dump").</li><li>GDB/Pwndbg: <code>x/gx $rbp-8</code> 등으로 메모리에 저장된 실수 값을 16진수로 확인 후 필요 시 <code>p (double)*(double*)($rbp-8)</code>처럼 캐스팅해서 값 확인.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>FST</code>가 <code>FSTP</code>처럼 항상 pop한다고 착각하는 것 — <code>FST</code>는 스택을 건드리지 않는다.</li><li><code>FLD</code>/<code>FSTP</code> 호출 횟수를 세지 않고 넘어가서, 함수 끝에서 스택이 비었는지 안 비었는지 놓치는 것.</li><li><code>FILD</code>/<code>FISTP</code>를 <code>FLD</code>/<code>FSTP</code>와 같은 것으로 착각해서 정수↔실수 변환이 일어난다는 사실을 놓치는 것.</li><li>메모리 피연산자 크기 접미사(<code>dword</code>/<code>qword</code>/<code>tbyte</code>)를 무시하고 모두 같은 정밀도라고 가정하는 것 — 32비트 float, 64비트 double, 80비트 확장 정밀도는 서로 다른 결과를 낼 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>스택 자체의 원리(TOP, ST(i) 상대 개념)가 헷갈리면 → REV-0436.</li><li>로드/저장이 아니라 실제 사칙연산 방향이 궁금하면 → REV-0438.</li><li>반올림 모드 관련 <code>FLDCW</code> 쌍이 왜 있는지 더 알고 싶으면 → 위 "정수 변환 변형" 절의 반올림 모드 설명을 다시 확인.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — float 덧셈</strong></p>
+<pre><code class="language-c">float c = a + b;</code></pre>
+<pre><code class="language-asm">fld     dword ptr [a]
+fld     dword ptr [b]
+faddp   st(1), st(0)
+fstp    dword ptr [c]</code></pre>
+<p><strong>예제 2 — int를 double로 변환</strong></p>
+<pre><code class="language-c">double d = (double)n;</code></pre>
+<pre><code class="language-asm">fild    dword ptr [n]     ; 정수를 읽어 실수로 변환, push
+fstp    qword ptr [d]     ; 결과 저장, pop</code></pre>
+<p><strong>예제 3 — 값만 복사하고 스택은 유지 (FST)</strong></p>
+<pre><code class="language-asm">fld     dword ptr [x]
+fst     dword ptr [tmp1]   ; ST(0)은 그대로 유지된 채 tmp1에 복사
+fstp    dword ptr [tmp2]   ; 같은 값을 tmp2에 저장하고 이번엔 pop</code></pre>
+<p><strong>예제 4 — 스택만 비우는 관용구</strong></p>
+<pre><code class="language-asm">fstp    st(0)   ; ST(0) 값을 자기 자신에 "저장"하는 형태로, 사실상 값을 버리고 pop만 수행</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0436-x87-fpu-stack.html">REV-0436 — x87 FPU 스택 레지스터 개념 기초</a></li><li><a href="rev-0438-fadd-fsub-fmul-fdiv.html">REV-0438 — FADD FSUB FMUL FDIV: x87 산술 명령 개요</a></li><li><a href="rev-0039-mov.html">REV-0039 — MOV: 값 복사와 레지스터 메모리 이동</a></li><li><a href="rev-0044-push.html">REV-0044 — PUSH: 스택에 값 넣기</a></li><li><a href="rev-0045-pop.html">REV-0045 — POP: 스택에서 값 꺼내기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>FLD</code>/<code>FST</code>/<code>FSTP</code>/<code>FILD</code>/<code>FISTP</code> 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "FLD—Load Floating-Point Value" / "FST/FSTP" / "FILD" / "FIST/FISTP" 섹션 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

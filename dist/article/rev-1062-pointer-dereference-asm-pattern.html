@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>포인터 역참조가 어셈블리에서 보이는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / c-analysis</div>
+<article class="article-body">
+<h1>포인터 역참조가 어셈블리에서 보이는 패턴</h1>
+<div class="article-meta"><span class="tag">c-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>*p</code>처럼 포인터를 역참조하는 코드는 항상 "레지스터에 주소를 담고, 그 레지스터를 대괄호로 감싸서 메모리를 읽거나 쓴다"는 두 단계로 쪼개지며, <code>**pp</code>(이중 포인터)는 이 과정이 한 번 더 반복되어 <code>mov</code>가 연쇄적으로 늘어난다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>소스에 <code>*p</code>, <code>*p = 값</code>, <code>**pp</code> 같은 코드가 있는데 실제 어셈블리에서 어느 줄이 그에 대응하는지 못 찾을 때</li><li><code>mov rax, [rax]</code>처럼 같은 레지스터가 반복되는 줄을 보고 무한루프인지 착각할 때</li><li>IDA/Ghidra pseudocode에 <code>*(int *)a1</code>처럼 캐스트가 붙은 역참조가 나올 때 원래 C 타입이 뭐였는지 감을 못 잡을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>C에서 포인터 역참조는 "이 주소에 있는 값을 읽어와라(<code>*p</code>)" 또는 "이 주소에 이 값을 써라(<code>*p = v</code>)"라는 뜻이다. 어셈블리에서는 레지스터 자체가 주소를 담을 수도 있고 값을 담을 수도 있는데, <strong>대괄호(<code>[]</code>)로 감싸느냐 아니냐</strong>가 그 경계선이다.</p>
+<ul><li><code>mov rax, [rbp-8]</code> — <code>rbp-8</code>은 지역변수가 저장된 스택 슬롯의 <strong>주소</strong>이고, 여기서 값을 읽어 <code>rax</code>에 넣는다. 이 시점 <code>rax</code>는 포인터 변수 <code>p</code>의 <strong>값</strong>(즉 p가 가리키는 주소)이다.</li><li><code>mov edx, [rax]</code> — 이제 <code>rax</code>(포인터 값)를 다시 대괄호로 감싸서, <code>rax</code>가 가리키는 메모리에서 값을 읽는다. 이것이 바로 <code>*p</code>다.</li></ul>
+<p>즉 <code>*p</code>는 최소 두 번의 <code>mov</code>(포인터 변수 자체 로드 + 그 값으로 실제 메모리 접근)로 나타나며, <code>**pp</code>는 세 번(포인터 변수 로드 + 1차 역참조 + 2차 역참조)이 필요하다.</p>
+<p>쓰기(<code>*p = 5</code>)는 방향이 반대다. 주소를 레지스터에 담은 뒤, 그 레지스터를 대괄호로 감싼 곳에 값을 쓴다: <code>mov rax, [rbp-8]</code> (p 로드) 다음 <code>mov dword [rax], 5</code> (그 주소에 5 저장).</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>mov reg, [reg]</code> 형태로 <strong>같은 레지스터가 좌변·우변에 걸쳐 재사용</strong>되는 줄이 역참조다</li><li>이중 포인터는 이 패턴이 연속 두 번 나온다: <code>mov rax,[rax]</code> → <code>mov rax,[rax]</code> (혹은 <code>mov eax,[rax]</code>로 마무리)</li><li>Ghidra pseudocode의 <code>*param_1</code>, <code>**param_1</code>, <code>*(int *)*param_1</code> 표현이 바로 이 역참조 횟수를 그대로 반영한다</li><li>쓰기 방향은 <code>mov [rax], edx</code>처럼 <strong>대괄호가 목적지(왼쪽)</strong>에 오는 형태로 구분된다</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문제가 되는 <code>mov</code> 줄에서 대괄호가 어느 쪽(좌변/우변)에 있는지부터 확인한다. 우변에 대괄호가 있으면 "읽기"(역참조해서 값을 가져옴), 좌변에 대괄호가 있으면 "쓰기"(역참조한 곳에 값을 저장)다. 그다음 같은 레지스터가 몇 번 연쇄적으로 재사용되는지 세면 포인터가 몇 단계인지(단일 포인터 vs 이중 포인터) 바로 알 수 있다.</p>
+<h2>단계별 절차</h2>
+<ol><li>함수 인자가 스택에 저장되는 첫 줄(<code>mov [rbp-8], rdi</code>)에서 이 슬롯이 포인터 타입 인자임을 확인한다.</li><li>그 슬롯을 레지스터로 로드하는 줄(<code>mov rax, [rbp-8]</code>)을 찾는다 — 이건 포인터 "변수" 자체를 가져오는 것이지 아직 역참조가 아니다.</li><li>바로 이어서 그 레지스터를 다시 대괄호로 감싸는 줄이 있는지 본다. 있다면 그게 1차 역참조(<code>*p</code>)다.</li><li>그 결과를 또 대괄호로 감싸면 2차 역참조(<code>**pp</code>)다. 이 단계가 몇 번 반복되는지가 포인터의 "깊이"다.</li><li>GDB에서 <code>x/gx $rax</code>(64비트) 또는 <code>x/wx $rax</code>(32비트)로 각 단계의 실제 메모리 내용을 찍어보며 값이 유효한 주소인지 실제 데이터인지 구분하면 확실하다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>GDB: <code>x/gx $rax</code> (역참조 전 rax가 가리키는 8바이트 확인), <code>p *(int*)$rax</code> (역참조 결과를 int로 해석)</li><li>x64dbg: 레지스터 값 우클릭 → <code>Follow in Dump</code> → 그 주소의 실제 바이트 확인</li><li>IDA: 변수에 <code>int *</code>, <code>int **</code> 타입을 지정하면 pseudocode가 <code>*p</code>, <code>**pp</code> 형태로 정리되어 훨씬 읽기 쉬워짐</li><li>Ghidra: <code>Retype Variable</code>로 포인터 깊이를 지정하면 동일하게 정리됨</li></ul>
+<h2>출력 해석</h2>
+<pre><code class="language-c">int deref_read(int *p) {
+    return *p;
+}
+
+void deref_write(int *p) {
+    *p = 5;
+}
+
+int deref_double(int **pp) {
+    return **pp;
+}</code></pre>
+<pre><code class="language-asm">; deref_read, rdi = p
+deref_read:
+    push    rbp
+    mov     rbp, rsp
+    mov     [rbp-8], rdi
+    mov     rax, [rbp-8]     ; rax = p (포인터 값 로드)
+    mov     eax, [rax]       ; eax = *p (역참조: rax가 가리키는 곳에서 읽기)
+    pop     rbp
+    ret
+
+; deref_write, rdi = p
+deref_write:
+    push    rbp
+    mov     rbp, rsp
+    mov     [rbp-8], rdi
+    mov     rax, [rbp-8]     ; rax = p
+    mov     dword [rax], 5   ; *p = 5 (역참조: rax가 가리키는 곳에 쓰기)
+    pop     rbp
+    ret
+
+; deref_double, rdi = pp
+deref_double:
+    push    rbp
+    mov     rbp, rsp
+    mov     [rbp-8], rdi
+    mov     rax, [rbp-8]     ; rax = pp (포인터의 포인터 값 로드)
+    mov     rax, [rax]       ; rax = *pp (1차 역참조: int* 값을 얻음)
+    mov     eax, [rax]       ; eax = **pp (2차 역참조: 실제 int 값을 얻음)
+    pop     rbp
+    ret</code></pre>
+<p><code>deref_read</code>와 <code>deref_write</code>는 대괄호 위치만 반대다. <code>deref_double</code>은 <code>mov rax, [rax]</code>가 반복되는데, 첫 번째는 아직 포인터 값(<code>int *</code>)을 얻는 것이고 두 번째(<code>mov eax, [rax]</code>)에서 크기가 <code>eax</code>(32비트)로 바뀌는 순간 비로소 실제 <code>int</code> 데이터를 얻은 것이다. 레지스터 크기(<code>rax</code> vs <code>eax</code>)가 바뀌는 지점을 보면 "포인터를 얻었는지" "실제 값을 얻었는지" 구분할 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>mov rax, [rax]</code>를 보고 무조건 무한 루프나 이상한 코드라고 의심하는 것 — 이중 포인터 역참조의 정상 패턴이다.</li><li>대괄호가 좌변에 있는 쓰기 연산(<code>mov [rax], edx</code>)을 읽기로 착각해 데이터 흐름을 반대로 추적하는 것.</li><li><code>eax</code>(32비트)와 <code>rax</code>(64비트) 크기 차이를 무시하고 "포인터를 읽은 것"과 "포인터가 가리키는 int를 읽은 것"을 구분하지 못하는 것.</li><li>NULL 포인터 역참조(<code>p</code>가 0일 때 <code>[rax]</code> 접근)로 크래시가 나는 지점을 디버거에서 못 찾고 엉뚱한 곳을 보는 것 — 크래시 시점의 레지스터 값이 0인지 먼저 확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>포인터 산술(<code>p+1</code>, <code>p[i]</code>)과 역참조를 같이 쓰는 경우가 헷갈리면 → REV-1063 포인터 산술이 어셈블리에서 보이는 패턴</li><li>구조체 멤버를 포인터로 따라가는 경우(<code>-&gt;</code>)는 → REV-1061 중첩 구조체 접근이 어셈블리에서 보이는 패턴</li><li>배열 인덱싱과 포인터 역참조의 관계가 궁금하면 → REV-0034 배열 접근이 어셈블리로 변하는 방식</li><li>포인터 값을 숫자로 착각해서 헷갈리는 문제라면 → REV-0380 포인터 값인데 숫자로 착각해서 헷갈릴 때</li></ul>
+<h2>미니 예제</h2>
+<p>디버거에서 <code>deref_double</code> 실행 중 두 단계를 직접 관찰하는 예:</p>
+<pre><code>(gdb) p $rdi
+$1 = (int **) 0x7fffffffe020
+(gdb) x/gx 0x7fffffffe020
+0x7fffffffe020: 0x0000555555558010   ; 이것이 *pp (int* 값)
+(gdb) x/wx 0x555555558010
+0x555555558010: 0x0000002a           ; 이것이 **pp (실제 int 값, 42)</code></pre>
+<p>어셈블리의 <code>mov rax,[rax]</code> → <code>mov eax,[rax]</code> 두 줄이 정확히 이 두 단계에 대응한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-1061-nested-struct-access-asm-pattern.html">REV-1061 — 중첩 구조체 접근이 어셈블리에서 보이는 패턴</a></li><li><a href="rev-1063-pointer-arithmetic-asm-pattern.html">REV-1063 — 포인터 산술이 어셈블리에서 보이는 패턴</a></li><li><a href="rev-0033-pointers-in-asm.html">REV-0033 — 포인터와 역참조를 어셈블리에서 읽는 법</a></li><li><a href="rev-0380-pointer-value-mistaken-as-number.html">REV-0380 — 포인터 값인데 숫자로 착각해서 헷갈릴 때</a></li><li><a href="rev-0034-array-access-in-asm.html">REV-0034 — 배열 접근이 어셈블리로 변하는 방식</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>x86-64 메모리 오퍼랜드 문법(<code>[base]</code>, <code>[base+offset]</code>)과 레지스터 재사용 규칙: Intel 64 and IA-32 Architectures Software Developer's Manual 기준.</li><li>gcc/clang <code>-O0</code>에서 포인터 역참조가 "로드 후 재역참조" 형태의 연쇄 <code>mov</code>로 컴파일되는 패턴은 x86-64 리눅스/윈도우 환경에서 반복 확인되는 표준 패턴이다(2026-09-10 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

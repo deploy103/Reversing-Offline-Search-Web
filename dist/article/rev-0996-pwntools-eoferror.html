@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pwntools 프로세스 연결이 EOFError로 끊길 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / automation</div>
+<article class="article-body">
+<h1>pwntools 프로세스 연결이 EOFError로 끊길 때</h1>
+<div class="article-meta"><span class="tag">automation</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">pwntools</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>pwntools의 <code>EOFError</code>는 "더 이상 읽을 데이터가 없다"는 뜻으로, 대상 프로세스가 이미 종료(정상 종료든 크래시든)되었는데 스크립트가 그 이후에도 <code>recv()</code>/<code>recvline()</code>/<code>recvuntil()</code>을 호출해서 발생하며, 대부분은 pwntools 자체 버그가 아니라 스크립트가 보낸 입력이 대상 프로그램을 실제로 죽였거나 예상한 프롬프트/구분자가 애초에 출력되지 않은 것이 원인이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>p.recvline()</code>이나 <code>p.recvuntil()</code>을 호출한 직후 <code>EOFError</code>가 발생하며 스크립트가 멈출 때</li><li>로컬에서 손으로 실행하면 멀쩡한 바이너리인데 pwntools로 자동화하면 중간에 죽는 것처럼 보일 때</li><li><code>sendline()</code>으로 어떤 값을 보낸 직후부터 <code>EOFError</code>가 나기 시작해서, 그 입력이 크래시를 유발했는지 확인하고 싶을 때</li><li>반복문으로 여러 후보값을 자동 테스트하는 스크립트가 특정 후보에서만 <code>EOFError</code>로 멈출 때</li></ul>
+<h2>핵심 개념</h2>
+<p>pwntools의 <code>tube</code>(프로세스/소켓 연결을 추상화한 공통 인터페이스) 객체는 대상이 데이터를 더 보내지 않고 연결 자체를 닫으면(프로세스 종료, 소켓 close) 그 사실을 <code>EOFError</code> 예외로 알려준다. 이는 파이썬 파일 객체가 파일 끝(EOF)에 도달했을 때의 개념과 같다 — "읽을 게 더 있는데 못 읽는 것"이 아니라 "정말로 더 이상 아무것도 오지 않는다"는 확정적 신호다.</p>
+<p><code>EOFError</code>가 발생하는 전형적인 원인은 다음과 같다.</p>
+<ol><li><strong>대상 프로그램이 정상적으로 실행을 끝내고 종료</strong>했는데, 스크립트는 그 이후에도 응답을 더 기다리며 <code>recv()</code>를 호출한 경우.</li><li><strong>스크립트가 보낸 입력이 대상 프로그램을 크래시시킨 경우</strong>(버퍼 오버플로우, 잘못된 형식의 입력, <code>NULL</code> 역참조 유발 등). 크래시가 나면 프로세스가 즉시 종료되므로 그 이후 <code>recv</code> 계열 호출은 전부 <code>EOFError</code>가 난다.</li><li><strong><code>recvuntil()</code>에 넘긴 구분자가 실제 프로그램 출력과 정확히 일치하지 않는 경우.</strong> 이 경우 프로그램은 이미 출력을 다 하고 종료했는데, pwntools는 구분자를 못 찾아 계속 기다리다가 결국 EOF를 만나 예외를 던진다.</li><li><strong>잘못된 인자/경로로 대상을 실행해서 즉시 종료된 경우.</strong> 예를 들어 32비트 전용 바이너리를 아키텍처가 안 맞는 환경에서 실행하면 즉시 죽는다.</li></ol>
+<p>즉 <code>EOFError</code>는 "무엇이 문제인가"를 직접 알려주지 않는 대신, "대상이 이미 죽었다"는 사실만 알려준다. 원인을 좁히려면 죽기 직전까지 어떤 데이터가 오갔는지를 직접 봐야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-python">&gt;&gt;&gt; p = process('./chall')
+&gt;&gt;&gt; p.recvuntil(b'password: ')
+b'Enter password: '
+&gt;&gt;&gt; p.sendline(b'A' * 200)
+&gt;&gt;&gt; response = p.recvline()
+Traceback (most recent call last):
+  ...
+EOFError</code></pre>
+<p>프로세스 종료 로그가 그 사이에 같이 출력되는 경우도 많다.</p>
+<pre><code class="language-text">[*] Process './chall' stopped with exit code -11 (SIGSEGV) (pid 12345)</code></pre>
+<p><code>exit code -11</code>은 시그널 11(<code>SIGSEGV</code>, 세그멘테이션 폴트)로 죽었다는 뜻이며, 이는 방금 보낸 입력이 크래시를 유발했다는 강력한 단서다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>스크립트 맨 위에 <code>context.log_level = 'debug'</code>를 추가해서 실제로 어떤 바이트가 오갔는지, 그리고 프로세스가 어떤 종료 코드로 죽었는지부터 확인한다. 이 한 줄만으로 원인의 대부분(정상 종료인지 크래시인지, 어느 시점에 끊겼는지)을 즉시 알 수 있다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 디버그 로그로 실제 송수신 내역 확인</strong></p>
+<pre><code class="language-python">from pwn import *
+context.log_level = 'debug'
+
+p = process('./chall')
+p.recvuntil(b'password: ')
+p.sendline(b'A' * 200)
+response = p.recvline()</code></pre>
+<p>디버그 모드에서는 <code>[DEBUG] Sent 0x...</code> / <code>[DEBUG] Received 0x...</code> 형태로 실제 바이트가 전부 로그로 찍히므로, 어느 시점 이후로 아무것도 안 오는지 눈으로 확인할 수 있다.</p>
+<p><strong>2) 종료 코드로 크래시 여부 판단</strong></p>
+<pre><code class="language-python">p = process('./chall')
+p.sendline(b'test')
+try:
+    p.recvline()
+except EOFError:
+    print('EOF, exit code:', p.poll())  # 음수면 시그널로 종료(예: -11 == SIGSEGV)</code></pre>
+<p><code>p.poll()</code>은 프로세스가 이미 종료됐으면 종료 코드를, 아직 살아있으면 <code>None</code>을 반환한다. 리눅스에서 음수 값은 <code>-시그널번호</code>를 뜻한다(<code>-11</code>은 <code>SIGSEGV</code>, <code>-6</code>은 <code>SIGABRT</code>).</p>
+<p><strong>3) recvuntil 구분자를 실제 출력과 정확히 대조</strong></p>
+<pre><code class="language-python">context.log_level = 'debug'
+p = process('./chall')
+# 여기서 구분자가 실제 프롬프트와 한 글자라도 다르면 EOF까지 계속 기다리다 예외가 난다
+p.recvuntil(b'Enter password: ')  # 실제 출력이 'password:'(콜론 뒤 공백 없음)라면 여기서 이미 어긋남</code></pre>
+<p>디버그 로그에 찍힌 실제 수신 바이트를 그대로 복사해서 구분자로 써보는 것이 가장 확실하다.</p>
+<p><strong>4) recvall로 죽기 직전까지 나온 모든 출력 한 번에 확인</strong></p>
+<pre><code class="language-python">p = process('./chall')
+p.sendline(b'A' * 200)
+leftover = p.recvall(timeout=2)  # EOF가 나도 예외 대신 지금까지 받은 데이터를 그대로 반환
+print(leftover)</code></pre>
+<p><code>recvall()</code>은 연결이 끊길 때까지 받은 모든 데이터를 모아서 반환하며, <code>EOFError</code>를 던지지 않고 조용히 끝난다는 점에서 디버깅용으로 유용하다.</p>
+<p><strong>5) 프로세스가 즉시 죽는지 먼저 단독으로 확인</strong></p>
+<pre><code class="language-bash">./chall
+# 손으로 몇 가지 입력을 넣어보며 실제로 정상 동작하는지, 특정 입력에서 죽는지 확인
+echo $?  # 리눅스에서 마지막 실행 종료 코드 확인</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li><code>context.log_level = 'debug'</code> : 모든 송수신 바이트와 프로세스 상태 로그 출력</li><li><code>p.poll()</code> : 프로세스 종료 여부/종료 코드 확인(음수면 시그널 번호)</li><li><code>p.recvall(timeout=n)</code> : EOF까지 받은 모든 데이터를 예외 없이 반환</li><li><code>p.recvrepeat(timeout=n)</code> : 지정 시간 동안 들어오는 데이터를 계속 모아 반환(EOF나 타임아웃에도 예외 없이 종료)</li><li><code>try/except EOFError:</code> : EOF를 정상적인 "프로세스 종료" 신호로 처리하고 싶을 때 감싸서 처리</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>EOFError</code> (그 자체) — 대상이 연결을 닫았고 더 받을 데이터가 없다는 뜻. 예외 시점 직전에 보낸 입력, 그리고 그 전에 기대했던 프롬프트를 실제로 받았는지부터 확인한다.</li><li><code>Process '...' stopped with exit code 0</code> — 정상 종료. 스크립트가 종료 이후에도 응답을 더 기다린 것이 원인이다.</li><li><code>Process '...' stopped with exit code -11 (SIGSEGV)</code> — 세그멘테이션 폴트로 죽었다는 뜻. 방금 보낸 입력이 오버플로우 등으로 크래시를 유발했을 가능성이 크다(취약점 자체를 찾는 과정에서는 오히려 이것이 목표 신호일 수도 있다).</li><li><code>Process '...' stopped with exit code -6 (SIGABRT)</code> — <code>abort()</code> 호출(스택 카나리 감지, <code>assert</code> 실패, 힙 손상 감지 등)로 죽었다는 뜻.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>recvuntil()</code>의 구분자 문자열이 실제 출력과 공백/대소문자 하나라도 달라서, 프로그램이 이미 종료됐는데도 pwntools는 계속 기다리다 결국 <code>EOFError</code>를 던지는 것을 "pwntools가 이상하다"고 오해하는 것.</li><li>크래시(<code>SIGSEGV</code>)로 죽은 것을 "스크립트 버그"로 착각해서 정작 취약점을 찾은 것을 놓치는 것.</li><li><code>try/except EOFError</code>로 예외를 조용히 삼키기만 하고, 왜 EOF가 났는지(정상 종료인지 크래시인지) 확인하지 않아 같은 문제를 반복해서 만나는 것.</li><li>32비트 전용 바이너리를 64비트 전용 환경(또는 그 반대)에서 실행해서 애초에 실행 자체가 실패하는데, 이를 로직 문제로 오해하는 것 — <code>file ./chall</code>로 아키텍처부터 확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>같은 스크립트가 멈추는 게 아니라 계속 대기 상태로 걸려 있다면(EOF가 아니라 타임아웃 문제) → REV-0997 pwntools 타임아웃(TimeoutError)이 반복될 때.</li><li>송수신하는 바이트가 문자열 처리 중 깨진다면 → REV-0995 Python 문자열/바이트 인코딩 오류.</li><li>프로세스 실행/입력 기초부터 다시 확인하고 싶다면 → REV-0266 pwntools로 프로세스 실행하고 입력 보내기.</li></ul>
+<h2>미니 예제</h2>
+<p>표준입력으로 문자열을 받아 20바이트 버퍼에 <code>strcpy</code>로 그대로 복사하는(오버플로우가 있는) 예시 프로그램을 pwntools로 테스트하는 상황이다.</p>
+<pre><code class="language-c">// chall.c
+#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+int main() {
+    char buf[20];
+    printf("input: ");
+    char tmp[256];
+    fgets(tmp, sizeof(tmp), stdin);
+    strcpy(buf, tmp);  // 취약점: buf보다 긴 입력이 들어오면 오버플로우
+    printf("you said: %s", buf);
+    return 0;
+}</code></pre>
+<pre><code class="language-python">from pwn import *
+context.log_level = 'debug'
+
+p = process('./chall')
+p.recvuntil(b'input: ')
+p.sendline(b'A' * 100)   # 20바이트 버퍼를 훨씬 넘는 입력
+
+try:
+    response = p.recvline()
+    print(response)
+except EOFError:
+    print('EOF! exit code:', p.poll())  # -11 (SIGSEGV) 이면 오버플로우로 크래시난 것</code></pre>
+<p>디버그 로그와 <code>p.poll()</code> 결과를 함께 보면, 100바이트 입력이 스택을 손상시켜 프로세스가 <code>SIGSEGV</code>로 죽었고, 그래서 이후 <code>recvline()</code>이 <code>EOFError</code>를 던졌다는 인과관계를 정확히 확인할 수 있다.</p>
+<h3>에러를 재현하는 잘못된 코드 vs 고쳐서 정상 동작하는 코드</h3>
+<p>C 바이너리를 따로 컴파일하지 않아도 그대로 실행해볼 수 있도록, 파이썬 자신을 <code>process()</code>의 대상으로 실행한다. 이 "가짜 대상 프로세스"는 <code>ready</code>를 출력하고 입력을 한 줄 받은 뒤, 마치 크래시가 난 것처럼 곧바로 종료 코드 1로 종료한다. <code>pip install pwntools</code>만 되어 있으면 리눅스에서 그대로 실행된다.</p>
+<p><strong>잘못된 코드 — 대상이 이미 종료됐을 가능성을 고려하지 않고 계속 recv를 시도해서 EOFError로 죽음</strong></p>
+<pre><code class="language-python">from pwn import *
+
+# 실제 C 바이너리 대신, 파이썬 자신을 "대상 프로세스"로 사용한다.
+# ready를 출력하고 입력 한 줄을 받은 뒤 곧바로 종료(exit code 1)한다 -- 크래시 상황을 흉내낸 것.
+target_script = (
+    "import sys\n"
+    "print('ready', flush=True)\n"   # flush=True: 버퍼에 남지 않고 즉시 출력되게 함
+    "sys.stdin.readline()\n"          # 입력 한 줄을 받고
+    "sys.exit(1)\n"                    # 그대로 종료 (SIGSEGV 등으로 죽는 상황을 단순화한 것)
+)
+
+p = process(['python3', '-c', target_script])   # 파이썬을 자식 프로세스로 실행
+p.recvline()          # b'ready\n' 수신
+p.sendline(b'trigger')   # 아무 입력이나 전송 -&gt; 대상은 이 직후 곧바로 종료됨
+
+# *** 잘못된 부분: 대상이 이미 죽었을 수 있다는 걸 고려하지 않고 그냥 recvline을 또 호출 ***
+response = p.recvline()   # 대상이 이미 종료해서 더 보낼 데이터가 없음 -&gt; EOFError 발생
+print(response)             # 이 줄까지 도달하지 못하고 예외로 스크립트가 중단된다</code></pre>
+<p><strong>고친 코드 — EOFError를 명시적으로 예상하고, poll()로 종료 상태까지 확인</strong></p>
+<pre><code class="language-python">from pwn import *
+
+target_script = (
+    "import sys\n"
+    "print('ready', flush=True)\n"
+    "sys.stdin.readline()\n"
+    "sys.exit(1)\n"
+)
+
+p = process(['python3', '-c', target_script])
+p.recvline()
+p.sendline(b'trigger')
+
+# *** 고친 부분: EOFError가 날 수 있다는 것을 미리 알고 try/except로 감싼다 ***
+try:
+    response = p.recvline(timeout=2)
+    print('응답:', response)
+except EOFError:
+    exit_code = p.poll()   # 이미 종료된 프로세스의 종료 코드 확인 (음수면 -시그널번호)
+    print(f'EOF 발생 - 대상이 이미 종료됨 (exit code={exit_code})')
+    # exit_code == 1 이면 sys.exit(1)로 정상적으로 종료했다는 뜻이므로,
+    # 이 상황을 예외로 스크립트를 죽이는 대신 정상적인 분기로 처리할 수 있다.</code></pre>
+<p>두 스크립트를 비교하면, 문제는 pwntools가 아니라 "대상이 이미 죽었다"는 사실을 스크립트가 미리 예상하고 처리했는지 여부에 있다는 것을 알 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0997-pwntools-timeouterror.html">REV-0997 — pwntools 타임아웃(TimeoutError)이 반복될 때</a></li><li><a href="rev-0995-python-unicodedecodeerror.html">REV-0995 — Python 문자열/바이트 인코딩 오류(UnicodeDecodeError)가 날 때</a></li><li><a href="rev-0266-pwntools-process-basics.html">REV-0266 — pwntools로 프로세스 실행하고 입력 보내기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>pwntools <code>tube</code> 인터페이스(<code>recv</code>, <code>recvline</code>, <code>recvuntil</code>, <code>recvall</code>, <code>poll</code>, <code>EOFError</code> 발생 조건)는 pwntools 공식 문서(docs.pwntools.com)의 <code>pwnlib.tubes.tube</code> 레퍼런스를 기준으로 정리했다(2026-09-09 검증).</li><li>리눅스에서 음수 종료 코드가 시그널 번호를 뜻한다는 점은 POSIX <code>wait(2)</code>/<code>waitpid(2)</code> 매뉴얼 기준이다.</li><li>코드 예제는 <code>pip install pwntools</code> 환경의 표준 CPython 3 + 리눅스에서 재현 가능하다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

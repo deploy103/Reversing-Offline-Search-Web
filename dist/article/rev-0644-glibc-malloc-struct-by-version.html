@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>glibc 버전별 malloc 구조 요약표 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>glibc 버전별 malloc 구조 요약표</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>glibc의 힙 청크 기본 구조(<code>malloc_chunk</code>)는 오랫동안 거의 그대로지만, tcache 도입(2.26), tcache 이중 해제 탐지(2.29), 각종 무결성 검사 강화(2.30~), safe-linking(2.32) 등 버전별로 <strong>보호 메커니즘</strong>이 계속 추가되어 왔기 때문에 "이 glibc 버전에서 무엇이 가능하고 무엇이 막히는지"를 아는 것이 힙 관련 리버싱/pwn 문제 접근의 출발점이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>pwndbg</code>의 <code>bins</code>/<code>heap</code> 결과에서 <code>fd</code> 값이 예상과 다르게(포인터 같지 않은 이상한 값으로) 보일 때</li><li>대상 바이너리의 glibc 버전을 확인했는데, 그 버전에서 tcache가 있는지 없는지 헷갈릴 때</li><li>write-up에서 "safe-linking 때문에 fd를 그냥 덮어쓸 수 없다"는 설명이 이해가 안 될 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>malloc_chunk 구조체 (공통 기본형)</h3>
+<pre><code class="language-c">struct malloc_chunk {
+    INTERNAL_SIZE_T mchunk_prev_size;  // 이전 청크가 free 상태일 때만 유효한, 이전 청크 크기
+    INTERNAL_SIZE_T mchunk_size;       // 이 청크의 크기 + 하위 3비트 플래그
+    struct malloc_chunk* fd;           // free 상태일 때: 다음 free 청크 (같은 bin 내)
+    struct malloc_chunk* bk;           // free 상태일 때: 이전 free 청크 (같은 bin 내)
+    struct malloc_chunk* fd_nextsize;  // largebin 전용: 다음으로 큰 크기의 청크
+    struct malloc_chunk* bk_nextsize;  // largebin 전용: 다음으로 작은 크기의 청크
+};</code></pre>
+<p><code>mchunk_size</code>의 하위 3비트는 크기 정보가 아니라 플래그다: <code>PREV_INUSE</code>(bit0, 직전 청크가 사용 중인지), <code>IS_MMAPPED</code>(bit1, <code>mmap</code>으로 별도 할당됐는지), <code>NON_MAIN_ARENA</code>(bit2, 메인 arena가 아닌 스레드별 arena 소속인지). 실제 사용 가능 크기를 구하려면 <code>mchunk_size &amp; ~0x7</code>로 하위 3비트를 마스킹해야 한다. <code>fd</code>/<code>bk</code>/<code>fd_nextsize</code>/<code>bk_nextsize</code>는 청크가 <strong>할당된 상태에서는 사용자 데이터 영역</strong>으로 쓰이고, <strong>free된 상태에서만</strong> 링크드리스트 포인터로 재사용된다(오버레이 구조).</p>
+<h3>tcache_entry 구조체 (glibc 2.26+)</h3>
+<pre><code class="language-c">typedef struct tcache_entry {
+    struct tcache_entry *next;
+    struct tcache_perthread_struct *key;   // 2.29+ : 이중 해제 탐지용
+} tcache_entry;</code></pre>
+<p><code>tcache_perthread_struct</code>는 스레드별로 하나씩 존재하며, 크기별로 최대 64개 bin(각 bin은 기본 최대 7개 청크까지 캐시)을 갖는다. tcache는 <code>malloc</code>/<code>free</code>의 가장 빠른 캐시 경로로, fastbin보다도 먼저 확인된다.</p>
+<h3>버전별 주요 변경점</h3>
+<table><thead><tr><th>glibc 버전</th><th>연도</th><th>변경점</th></tr></thead><tbody><tr><td>2.25 이하</td><td>~2017</td><td>tcache 없음. fastbin/unsortedbin/smallbin/largebin만 존재. fastbin 이중 해제 탐지가 약해서 고전적인 fastbin dup 공격이 비교적 쉬움</td></tr><tr><td><strong>2.26</strong></td><td>2017</td><td><strong>tcache 도입.</strong> 스레드별 캐시로 <code>malloc</code>/<code>free</code> 성능 향상, 하지만 초기에는 이중 해제 검사가 없어 tcache dup 공격이 매우 쉬웠음</td></tr><tr><td><strong>2.29</strong></td><td>2019</td><td>tcache에 <code>key</code> 필드 추가 — <code>free()</code> 시 해당 청크가 이미 tcache에 있는지 <code>key</code> 값으로 검사해 <strong>"double free detected in tcache 2"</strong> 에러로 이중 해제를 탐지</td></tr><tr><td>2.30</td><td>2019</td><td><code>malloc</code>/<code>free</code> 경로에 청크 크기 정합성 검사 등 각종 sanity check 강화(<code>free(): invalid size</code> 등 에러 메시지 다수 추가)</td></tr><tr><td><strong>2.32</strong></td><td>2020</td><td><strong>safe-linking 도입.</strong> fastbin/tcache의 <code>fd</code> 포인터를 그냥 저장하지 않고, <code>PROTECT_PTR</code> 매크로로 <code>(청크 자신의 주소 &gt;&gt; 12) XOR 원래_fd값</code> 형태로 <strong>난독화</strong>해서 저장. 힙 주소 일부를 모르면 <code>fd</code>를 임의 값으로 덮어써도 유효한 포인터를 만들기 어려워짐</td></tr><tr><td><strong>2.34</strong></td><td>2021</td><td>libpthread/libdl/libutil이 libc.so로 통합(malloc 자체 로직 변경은 아니지만 스레드 arena 관련 심볼 위치가 바뀜)</td></tr><tr><td>2.35~</td><td>2022+</td><td>지속적인 하드닝 패치(추가 sanity check 등), 큰 구조 변화는 없음</td></tr></tbody></table>
+<h3>safe-linking 계산식</h3>
+<pre><code class="language-c">#define PROTECT_PTR(pos, ptr) \
+    ((__typeof(ptr))((((size_t)pos) &gt;&gt; 12) ^ ((size_t)ptr)))</code></pre>
+<p>저장된 <code>fd</code> 값을 실제 포인터로 복원하려면 <code>(청크_주소 &gt;&gt; 12) XOR 저장된_fd값</code>을 계산해야 한다. Pwndbg는 이 계산을 <code>bins</code>/<code>heap</code> 출력에서 자동으로 해서 보여준다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Pwndbg <code>bins</code> 출력에서 tcache 항목 자체가 안 보이면 → glibc 2.26 미만일 가능성</li><li><code>free()</code> 중 프로그램이 <code>*** stack smashing detected ***</code>가 아니라 <code>double free or corruption</code>, <code>free(): invalid pointer</code>, <code>malloc(): unaligned tcache chunk detected</code> 같은 glibc 자체 abort 메시지로 죽으면 → 해당 버전의 sanity check에 걸린 것</li><li><code>fd</code> 값이 힙 주소치고 이상하게 큰/이해 안 되는 값이면 → safe-linking으로 XOR된 값일 가능성(2.32+)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>대상 바이너리와 함께 배포된 <code>libc.so.6</code>(또는 시스템 libc)의 버전을 먼저 확인한다.</p>
+<pre><code class="language-bash">./libc.so.6 --version
+strings ./libc.so.6 | grep -i 'GNU C Library'</code></pre>
+<h2>단계별 절차</h2>
+<p><strong>1) glibc 버전 확인</strong></p>
+<pre><code class="language-bash">strings ./libc.so.6 | grep 'GNU C Library) stable release version'</code></pre>
+<p><strong>2) 해당 버전에서 tcache 유무 판단</strong> 2.26 미만이면 tcache 없음(fastbin/unsortedbin 위주 분석), 2.26 이상이면 tcache부터 확인.</p>
+<p><strong>3) Pwndbg로 실제 구조 확인</strong></p>
+<pre><code class="language-gdb">heap
+bins
+malloc_chunk &lt;청크주소&gt;</code></pre>
+<p><strong>4) safe-linking 여부 확인(2.32+ 의심 시)</strong> <code>fd</code> 원본 값을 XOR로 복원해야 하는지 Pwndbg <code>bins</code> 출력의 자동 복원값과 raw 메모리 값을 비교해본다.</p>
+<pre><code class="language-gdb">x/2gx &lt;청크주소&gt;
+bins</code></pre>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">strings ./libc.so.6 | grep 'GNU C Library'
+./libc.so.6 --version</code></pre>
+<p>GDB/Pwndbg: <code>heap</code>, <code>bins</code>, <code>tcachebins</code>, <code>fastbins</code>, <code>malloc_chunk &lt;addr&gt;</code>, <code>p/x *(struct malloc_chunk*)&lt;addr&gt;</code></p>
+<h2>출력 해석</h2>
+<pre><code>$ ./libc.so.6 --version
+GNU C Library (Ubuntu GLIBC 2.35-0ubuntu3.8) stable release version 2.35.</code></pre>
+<p><code>2.35</code>이므로 tcache 있음(2.26+), tcache 이중 해제 탐지 있음(2.29+), safe-linking 적용됨(2.32+)임을 바로 유추할 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li>대상 바이너리가 어떤 glibc와 함께 배포됐는지 확인하지 않고, 자기 로컬 시스템의 glibc 버전 지식으로 공격 기법을 그대로 적용하려는 것 — CTF에서는 문제 배포 파일에 포함된 <code>libc.so.6</code>을 반드시 따로 확인해야 한다.</li><li>safe-linking을 모르고 <code>fd</code>를 그냥 원하는 주소로 덮어써서 왜 안 되는지 헤매는 것 — 2.32+에서는 반드시 XOR 마스킹 계산이 필요하다.</li><li>fastbin/tcache 이중 해제가 예전 write-up처럼 항상 조용히 성공할 거라 기대하는 것 — 최신 glibc는 <code>free()</code> 시점에 여러 검사를 추가해서 예전 기법이 그대로 안 통하는 경우가 많다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>Pwndbg로 힙 상태를 실제로 확인하는 명령이 궁금하면 → REV-0643 Pwndbg 명령어 심화 치트시트(heap/got/plt).</li><li>glibc 버전에 따른 함수 시그니처/심볼 차이 자체가 궁금하면 → REV-0648 glibc 버전별 함수 시그니처 차이 확인법(예정).</li><li>musl libc처럼 아예 다른 malloc 구현과의 차이가 궁금하면 → REV-0647 musl libc와 glibc 차이가 리버싱에 미치는 영향(예정).</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-gdb">pwndbg&gt; malloc_chunk 0x555555559290
+Allocated chunk | PREV_INUSE
+Addr: 0x555555559290
+Size: 0x21 (0x20 usable, PREV_INUSE 플래그 켜짐)</code></pre>
+<p><code>Size: 0x21</code>에서 최하위 비트 <code>1</code>이 <code>PREV_INUSE</code> 플래그이고, 실제 사용 가능 크기는 <code>0x21 &amp; ~0x7 = 0x20</code>이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0643-pwndbg-advanced-cheatsheet.html">REV-0643 — Pwndbg 명령어 심화 치트시트(heap/got/plt)</a></li><li><a href="rev-0638-libc-pthread-create-basics.html">REV-0638 — libc 함수 사전: pthread_create 기초</a></li><li><a href="rev-0096-checksec.html">REV-0096 — checksec 결과 읽는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>malloc_chunk</code>/<code>tcache_entry</code>/<code>tcache_perthread_struct</code> 필드 구성 및 <code>PREV_INUSE</code>/<code>IS_MMAPPED</code>/<code>NON_MAIN_ARENA</code> 플래그: glibc 소스 <code>malloc/malloc.c</code> 구조체 정의 기준.</li><li>tcache 도입(2.26), tcache key 이중 해제 탐지(2.29), safe-linking <code>PROTECT_PTR</code> 매크로 도입(2.32), libpthread 통합(2.34): 각 해당 glibc 버전의 공식 NEWS 파일 및 릴리스 노트 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

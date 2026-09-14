@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LD_PRELOAD로 함수 후킹해서 관찰하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>LD_PRELOAD로 함수 후킹해서 관찰하기</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">GCC</span><span class="tag">ltrace</span><span class="tag">strace</span></div>
+<h2>한 줄 요약</h2>
+<p><code>LD_PRELOAD</code> 환경변수에 공유 라이브러리(<code>.so</code>) 경로를 지정하면 동적 로더가 그 라이브러리를 다른 모든 라이브러리보다 먼저 로드해서 같은 이름의 함수를 덮어쓰게 만들 수 있으며, 이를 이용해 바이너리를 한 바이트도 수정하지 않고 <code>malloc</code>, <code>free</code>, <code>strcmp</code> 같은 함수 호출을 가로채 인자와 반환값을 관찰할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>malloc</code>/<code>free</code>가 정확히 어떤 크기로, 어떤 순서로 호출되는지 매번 GDB로 브레이크포인트 잡지 않고 빠르게 로그로 보고 싶을 때</li><li>바이너리를 패치하지 않고 특정 함수(예: 난수 생성 함수, 시간 함수)의 반환값을 고정값으로 바꿔서 재현 가능한 실행 환경을 만들고 싶을 때</li><li><code>LD_PRELOAD=./hook.so ./chall</code>을 실행했는데 후킹이 전혀 먹히지 않아서 원인을 찾고 싶을 때</li><li>ltrace/strace만으로는 부족한, 함수 내부 인자 구조체까지 파싱해서 보고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>심볼 탐색 순서와 LD_PRELOAD</h3>
+<p>REV-0651에서 다루는 라이브러리 탐색 순서와 별개로, 동적 로더는 각 심볼(함수 이름)을 해석할 때 로드된 라이브러리들을 특정 순서로 뒤져서 가장 먼저 찾은 정의를 사용한다. <code>LD_PRELOAD</code>에 나열된 라이브러리는 실행 파일이 명시적으로 요구하는 <code>DT_NEEDED</code> 라이브러리들(예: <code>libc.so.6</code>)보다 먼저 로드되므로, 같은 이름의 함수가 있으면 그 라이브러리의 것이 우선 선택된다. 즉 <code>malloc</code>이라는 심볼을 요청받았을 때 로더는 preload 라이브러리에 <code>malloc</code>이 있는지부터 확인하고, 있으면 그것을 쓴다.</p>
+<h3>후킹 라이브러리 작성법</h3>
+<p>가로챈 함수 안에서 "진짜" 원본 함수를 호출하려면 <code>dlsym(RTLD_NEXT, "malloc")</code>을 쓴다. <code>RTLD_NEXT</code>는 "현재 라이브러리 다음 순서에 있는 정의를 달라"는 의미의 특수 핸들로, <code>&lt;dlfcn.h&gt;</code>에 정의되어 있다.</p>
+<pre><code class="language-c">#define _GNU_SOURCE
+#include &lt;stdio.h&gt;
+#include &lt;dlfcn.h&gt;
+#include &lt;stddef.h&gt;
+
+static void *(*real_malloc)(size_t) = NULL;
+
+void *malloc(size_t size) {
+    if (!real_malloc)
+        real_malloc = dlsym(RTLD_NEXT, "malloc");
+    void *ptr = real_malloc(size);
+    fprintf(stderr, "[hook] malloc(%zu) = %p\n", size, ptr);
+    return ptr;
+}</code></pre>
+<p>컴파일과 실행은 다음과 같다.</p>
+<pre><code class="language-bash">gcc -shared -fPIC -o hook.so hook.c -ldl
+LD_PRELOAD=./hook.so ./chall</code></pre>
+<p><code>fprintf(stderr, ...)</code>를 쓰는 이유는, 만약 <code>stdout</code>에 쓰면 원래 프로그램의 출력과 뒤섞여 어느 줄이 후킹 로그인지 구분이 어려워지기 때문이다. <code>free</code>, <code>strcmp</code>, <code>read</code> 등 원하는 모든 함수에 같은 패턴을 적용할 수 있다.</p>
+<h3>언제 통하지 않는가</h3>
+<ul><li><strong>정적 링킹 바이너리</strong>: <code>LD_PRELOAD</code>는 동적 로더가 심볼을 해석하는 과정에 개입하는 메커니즘이므로, 애초에 동적 링킹을 하지 않는 정적 바이너리(REV-0646)에는 효과가 없다.</li><li><strong>setuid/setgid 바이너리</strong>: 커널이 <code>AT_SECURE</code>(보조 벡터, REV-0677)를 1로 설정해 "안전 실행 모드"에 들어간 프로세스에서는 <code>ld.so</code>가 <code>LD_PRELOAD</code>, <code>LD_LIBRARY_PATH</code> 등 보안에 민감한 환경변수를 무시한다. 권한 상승에 악용되는 것을 막기 위한 장치다. glibc 내부적으로는 <code>__libc_enable_secure</code> 플래그로 이 상태를 판단한다.</li><li><strong>정적 심볼로 직접 참조된 호출</strong>: 컴파일러가 함수를 인라인하거나 내부 별칭(<code>GLIBC_PRIVATE</code> 심볼 등)으로 직접 호출한 경우 PLT를 거치지 않을 수 있어 후킹이 안 먹힐 수 있다.</li></ul>
+<h3>시스템 전역 후킹 — /etc/ld.so.preload</h3>
+<p><code>LD_PRELOAD</code> 환경변수는 프로세스 단위지만, <code>/etc/ld.so.preload</code> 파일에 라이브러리 경로를 한 줄씩 적어두면 시스템의 거의 모든 동적 링킹 프로세스에 전역으로 적용된다. 이 방식은 공격자가 루트킷을 심을 때도 악용되는 고전적인 기법이라, 침해사고 분석에서 <code>/etc/ld.so.preload</code>의 존재 여부를 점검하는 것이 표준 체크리스트에 들어간다. 리버싱/CTF 목적으로는 보통 환경변수 방식이면 충분하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>strace ./chall</code> 결과 초반에 <code>LD_PRELOAD</code>로 지정한 <code>.so</code>가 다른 라이브러리들보다 먼저 <code>openat</code>/<code>mmap</code>되는 것이 보임</li><li>후킹이 성공하면 <code>stderr</code>에 로그가 프로그램 실행과 인터리브되어 출력됨</li><li>후킹이 실패하면(setuid 등) 로그가 전혀 안 찍히고 원래 동작만 일어남</li><li><code>ldd ./chall</code> 결과에 <code>LD_PRELOAD</code>로 지정한 <code>.so</code>가 목록 맨 앞에 추가되어 보임</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>간단한 후킹 라이브러리부터 만들어서 <code>LD_PRELOAD=./hook.so ./chall</code>로 테스트한다. 로그가 전혀 안 찍히면 먼저 <code>file ./chall</code>로 정적 링킹 여부를, 그다음 <code>ls -l ./chall</code>로 setuid 비트(<code>s</code> 권한)가 있는지 확인한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>관찰하고 싶은 함수(예: <code>malloc</code>)를 감싸는 <code>hook.c</code> 작성</li><li><code>void *(*real_func)(...)</code> 함수 포인터를 전역으로 선언하고, 첫 호출 시 <code>dlsym(RTLD_NEXT, "함수이름")</code>으로 초기화</li><li><code>gcc -shared -fPIC -o hook.so hook.c -ldl</code>로 컴파일</li><li><code>LD_PRELOAD=./hook.so ./chall</code>로 실행하며 <code>stderr</code> 로그 관찰</li><li>여러 함수를 동시에 후킹하려면 같은 <code>.so</code> 안에 여러 함수를 정의하면 된다(하나의 <code>.so</code>가 여러 심볼을 오버라이드 가능)</li><li>반환값이나 인자를 조작해서 프로그램 동작 자체를 바꿔보고 싶다면(예: 난수 함수 고정값 반환) <code>real_func</code> 호출 없이 바로 원하는 값을 리턴</li><li>정적 바이너리나 setuid 바이너리라 안 먹히면 GDB 브레이크포인트나 <code>ptrace</code> 기반 접근(REV-0672)으로 전환</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">gcc -shared -fPIC -o hook.so hook.c -ldl
+LD_PRELOAD=./hook.so ./chall
+LD_PRELOAD=./hook.so gdb --args ./chall   # GDB와 결합
+ls -l ./chall   # setuid 비트(s) 확인</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>[hook] malloc(32) = 0x55...</code> 같은 로그가 정상적으로 나오면 후킹이 성공한 것이고, 이 주소값을 그대로 GDB <code>break *주소</code>나 <code>watch</code> 조건에 활용할 수 있다.</li><li>로그가 하나도 안 나오는데 프로그램은 정상 실행된다면, 그 함수가 애초에 호출 안 됐거나(로직상 다른 경로), PLT를 거치지 않는 형태로 호출됐거나, <code>LD_PRELOAD</code>가 무시되는 상황(정적/setuid) 중 하나다.</li><li><code>strace</code>로 봤을 때 <code>hook.so</code>가 <code>openat</code>되지 않는다면 경로 문제(상대경로 대신 절대경로 필요)일 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>hook.c</code>에서 <code>dlsym(RTLD_NEXT, ...)</code> 결과를 캐싱하지 않고 매번 새로 호출해서 불필요한 오버헤드를 만드는 것(치명적이진 않지만 비효율적).</li><li><code>LD_PRELOAD=hook.so</code>처럼 상대경로를 현재 디렉터리 기준 없이 그냥 파일명만 써서 로더가 못 찾는 것 — <code>./hook.so</code>처럼 명시적 경로를 쓰거나 절대경로를 쓰는 것이 안전하다.</li><li>setuid 바이너리에 왜 후킹이 안 되는지 모르고 코드 문제로 착각하는 것 — <code>AT_SECURE</code>/<code>__libc_enable_secure</code>로 인한 의도된 보안 동작이다.</li><li>정적 링킹 바이너리(REV-0646)에 <code>LD_PRELOAD</code>를 시도하고 안 된다고 당황하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>LD_PRELOAD</code>가 왜 안 통하는지 라이브러리 탐색 순서 관점에서 더 알고 싶다면 → REV-0651 LD_LIBRARY_PATH와 라이브러리 탐색 순서</li><li>정적 바이너리라 후킹이 안 통한다면 → REV-0646 정적 링킹된(Statically Linked) ELF 분석 접근법</li><li>후킹 대신 시스템 콜 레벨에서 관찰하고 싶다면 → REV-0662 strace 결과를 파일/네트워크 시스템콜로 필터링해서 노이즈 줄이기</li><li>후킹 대신 라이브러리 호출 인자를 자동으로 보고 싶다면 → REV-0111 ltrace로 라이브러리 호출 빠르게 보기, REV-0663 ltrace 결과에서 라이브러리 호출 인자 해석하기</li><li>커널이 언제 AT_SECURE를 켜는지 궁금하면 → REV-0677 ELF Auxiliary Vector(auxv) 개요</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ cat hook.c
+#define _GNU_SOURCE
+#include &lt;stdio.h&gt;
+#include &lt;dlfcn.h&gt;
+
+static int (*real_strcmp)(const char *, const char *) = NULL;
+
+int strcmp(const char *a, const char *b) {
+    if (!real_strcmp) real_strcmp = dlsym(RTLD_NEXT, "strcmp");
+    int r = real_strcmp(a, b);
+    fprintf(stderr, "[hook] strcmp(\"%s\", \"%s\") = %d\n", a, b, r);
+    return r;
+}
+
+$ gcc -shared -fPIC -o hook.so hook.c -ldl
+$ LD_PRELOAD=./hook.so ./chall
+[hook] strcmp("guess", "flag{fake}") = 1
+Wrong password!</code></pre>
+<p>비밀번호 비교 로직을 코드 한 줄 패치 없이 실시간으로 관찰한 예시다. 이 방식은 REV-0110에서 다룬 <code>strcmp</code> 추적을 코드 정적 분석 없이 실행만으로 빠르게 확인하는 보완 수단이 된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0651-ld-library-path-search-order.html">REV-0651 — LD_LIBRARY_PATH와 라이브러리 탐색 순서</a></li><li><a href="rev-0646-statically-linked-elf-analysis.html">REV-0646 — 정적 링킹된(Statically Linked) ELF 분석 접근법</a></li><li><a href="rev-0111-ltrace-basics.html">REV-0111 — ltrace로 라이브러리 호출 빠르게 보기</a></li><li><a href="rev-0663-ltrace-argument-interpretation.html">REV-0663 — ltrace 결과에서 라이브러리 호출 인자 해석하기</a></li><li><a href="rev-0110-comparison-functions.html">REV-0110 — strcmp strncmp memcmp 비교 추적</a></li><li><a href="rev-0677-auxiliary-vector-auxv.html">REV-0677 — ELF Auxiliary Vector(auxv) 개요</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>LD_PRELOAD</code> 동작 원리와 <code>dlsym(RTLD_NEXT, ...)</code> 사용법: <code>man 8 ld.so</code>, <code>man 3 dlsym</code> 공식 매뉴얼 기준.</li><li>setuid/setgid 프로세스에서 <code>LD_PRELOAD</code>가 무시되는 것(<code>AT_SECURE</code>, secure-execution mode): <code>man 8 ld.so</code> "Secure-execution mode" 항목 기준.</li><li><code>/etc/ld.so.preload</code> 전역 후킹 메커니즘: <code>man 8 ld.so</code> 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

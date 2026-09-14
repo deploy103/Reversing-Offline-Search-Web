@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>솔버를 짜기 전에 직접 로직을 복원하는 순서 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>솔버를 짜기 전에 직접 로직을 복원하는 순서</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>바로 Python 스크립트부터 짜지 말고, <strong>의사코드로 손/텍스트에 옮겨 적기 → 입출력 몇 쌍으로 손으로 검증 → 역연산 방향 결정 → 그 다음에 코드 작성</strong> 순서를 지키면, "스크립트는 다 짰는데 왜 답이 안 나오는지 모르겠다"는 상황을 크게 줄일 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>검증 함수의 어셈블리/디컴파일은 다 읽었는데, 어떻게 솔버 코드로 옮겨야 할지 막막할 때</li><li>Python으로 로직을 옮겨서 돌렸는데 결과가 안 맞아서 어디서부터 잘못됐는지 못 찾을 때</li><li>로직이 복잡해서 어디서부터 "역산"을 시작해야 할지 감이 안 잡힐 때</li></ul>
+<h2>핵심 개념</h2>
+<p>검증 함수를 찾고 상수도 다 기록했다고 해서 바로 솔버(정답을 계산해내는 스크립트)를 짤 수 있는 건 아니다. 많은 초보자가 이 단계에서 곧바로 Python 코드를 치기 시작하는데, 이러면 다음 문제가 생긴다.</p>
+<ul><li>디컴파일 코드를 한 줄씩 기계적으로 옮기다가 <strong>부호(signed/unsigned)</strong>, <strong>오버플로우</strong>, <strong>연산 순서</strong>를 놓치는 실수를 한다.</li><li>전체 로직의 "역방향"이 뭔지 생각 안 하고 순방향 로직만 그대로 옮겨서, 정작 "정답을 구하는" 코드가 아니라 "정답을 검증만 하는" 코드가 되어버린다(이 경우 결국 브루트포스가 필요해진다 — <a href="rev-0016-when-bruteforce-works.html">rev-0016-when-bruteforce-works.md</a> 참고).</li><li>실수를 했을 때 코드 전체를 의심하게 되어, 어느 줄이 잘못됐는지 디버깅하는 데 시간을 다 쓴다.</li></ul>
+<p>이를 막는 방법은 <strong>코드를 짜기 전에 먼저 사람이 읽을 수 있는 의사코드(pseudocode)로 정리하고, 그 의사코드가 맞는지 손으로/작은 예제로 검증</strong>하는 것이다. 이 중간 단계 하나가 전체 시간을 절약해준다.</p>
+<p><strong>순방향 로직 vs 역방향 로직</strong>: 검증 함수는 대개 "입력 → 변형 → 비교"의 순방향으로 짜여 있다. 우리가 원하는 건 "target(정답) → 역변형 → 입력"이라는 역방향이다. 모든 연산이 역산 가능한 건 아니다.</p>
+<ul><li><strong>역산 가능한 연산</strong>: XOR(자기 자신이 역함수), 덧셈/뺄셈(반대 연산으로 되돌림), 곱셈(모듈러 역원이 존재하면 가능), 비트 회전(반대 방향 회전), 선형 변환.</li><li><strong>역산이 어렵거나 불가능한 연산</strong>: 단방향 해시(MD5, SHA 등), 나눗셈으로 정보가 손실된 경우(정수 나눗셈의 나머지 손실), 여러 입력이 하나의 출력에 겹쳐지는 경우(체크섬처럼 정보량이 줄어드는 연산).</li></ul>
+<p>역산이 어려운 연산이 섞여 있으면, 솔버 대신 브루트포스나 제약 조건 풀이(Z3 같은 SMT solver)로 접근을 바꿔야 한다는 판단도 이 단계에서 내려야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>디컴파일 코드에 반복문 안에서 여러 산술 연산(XOR, 덧셈, 시프트)이 섞여 있다.</li><li>변수가 이전 반복의 결과를 다음 반복에서 사용한다(체이닝) — 예: <code>state = state * 33 + input[i]</code> 같은 해시 누적 패턴.</li><li>코드에 <code>md5</code>, <code>sha256</code> 같은 함수명이나 관련 상수(<code>0x67452301</code> 등 MD5 초기값)가 보인다 — 이건 단방향이라 역산이 불가능하다는 신호다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>검증 함수의 디컴파일 코드를 그대로 종이나 텍스트 파일에 <strong>의사코드</strong>로 옮겨 적는다. 이때 IDA 변수명 그대로가 아니라 사람이 이해하기 쉬운 이름으로 바꿔 적는다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 의사코드로 옮기기</strong> 디컴파일 코드를 한 줄씩 최대한 단순한 말로 바꿔 적는다.</p>
+<pre><code>입력: input (8바이트)
+key = [01 03 03 07 0C 0A 0F 0E]  (고정 상수)
+for i in 0..7:
+    input[i] = input[i] XOR key[i]
+if input == target:
+    성공</code></pre>
+<p>이 단계에서 이미 "이 연산은 XOR라서 역산이 쉽다"는 판단이 선다.</p>
+<p><strong>2) 작은 예제로 손 검증</strong> 의사코드가 맞는지, 임의의 값 하나를 손으로 넣어서 검산해본다. 예를 들어 <code>input = [0,0,0,0,0,0,0,0]</code>이면 결과가 <code>key</code> 그 자체와 같아야 한다는 걸 손으로 계산해보고, 실제 동적 분석(디버거로 이 입력을 넣고 중간값 확인)과 비교한다. 이 검증을 건너뛰면 의사코드 자체가 틀렸을 때 나중에 원인을 못 찾는다.</p>
+<p><strong>3) 역방향 설계</strong> 순방향 로직을 뒤집는다.</p>
+<pre><code>target을 알고 있음 (memcmp 비교 대상, 기록해둔 상수)
+input[i] = target[i] XOR key[i]   (XOR는 자기 역함수이므로 그대로 뒤집으면 됨)</code></pre>
+<p>연산이 여러 개 체이닝되어 있으면, <strong>가장 마지막 연산부터 거꾸로</strong> 하나씩 뒤집는다. 예를 들어 <code>a = (b + 5) * 3</code>이었다면 <code>b = a / 3 - 5</code>처럼 순서를 반대로, 연산도 반대로 적용한다.</p>
+<p><strong>4) 역산 불가능한 부분 식별</strong> 해시나 정보 손실이 있는 연산이 섞여 있다면, 그 부분만 브루트포스로 채우고 나머지는 역산하는 <strong>하이브리드 접근</strong>을 설계한다. 예를 들어 8바이트 중 4바이트는 XOR라서 바로 역산되고, 나머지 4바이트가 체크섬 검증만 있다면 그 4바이트만 브루트포스(<code>256^4</code>가 아니라 자리별 독립이면 <code>256×4</code>)로 채운다.</p>
+<p><strong>5) 이제서야 코드 작성</strong> 의사코드와 역방향 설계가 검증됐으면, 그때 Python으로 옮긴다.</p>
+<pre><code class="language-python">key = bytes([0x01,0x03,0x03,0x07,0x0C,0x0A,0x0F,0x0E])
+target = bytes.fromhex("...")  # 기록해둔 값
+flag = bytes(t ^ k for t, k in zip(target, key))
+print(flag)</code></pre>
+<p><strong>6) 실제 바이너리로 재검증</strong> 계산해낸 값을 실제 바이너리에 입력해서 "Correct!"가 나오는지 반드시 확인한다. 의사코드 단계의 실수를 여기서 최종적으로 걸러낼 수 있다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>의사코드는 특별한 도구가 필요 없다 — <code>notes.md</code>에 코드 블록으로 적으면 충분하다.</li><li>동적으로 중간값 검증: x64dbg/GDB에서 검증 함수에 브레이크포인트를 걸고, 반복문의 각 단계에서 레지스터/메모리 값을 확인해 의사코드와 대조한다.</li><li>Python: <code>pwntools</code>의 <code>xor()</code> 함수(<code>from pwn import xor</code>)로 XOR 역산을 간단히 처리 가능.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>손 검증(2단계)에서 의사코드로 계산한 값과 디버거에서 실제로 확인한 값이 다르면, 의사코드 어딘가에서 연산 순서나 부호를 잘못 옮긴 것이다 — 이 시점에서 잡아야 나중에 코드 전체를 의심하는 상황을 피할 수 있다.</li><li>최종 계산한 flag 후보를 바이너리에 넣었는데 틀렸다고 나오면, 3단계(역방향 설계)의 연산 순서가 뒤집혔거나, 상수 기록(REV-0013)에 오타가 있었을 가능성을 먼저 의심한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>검증 없이 의사코드를 바로 Python으로 옮겨서, 실수가 있어도 어디서 틀렸는지 모른 채 전체 코드를 계속 고쳐보는 것.</li><li>연산 체이닝을 뒤집을 때 순서를 안 바꾸고 연산만 반대로 적용하는 것 — 역산은 <strong>연산도 반대로, 순서도 반대로</strong>(가장 나중에 적용된 연산부터 먼저 뒤집기) 해야 한다.</li><li>해시처럼 애초에 역산이 안 되는 연산에 대해 계속 역산 방법을 찾으려고 시간을 낭비하는 것 — 이런 경우는 빨리 브루트포스나 SMT solver(Z3)로 전환 판단을 내려야 한다.</li><li>상수를 다시 확인하지 않고 처음 기록한 값을 무조건 신뢰하는 것 — 솔버가 안 맞으면 상수 기록 자체도 재검증 대상이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>역산이 안 되는 연산이 섞여 있다 → <a href="rev-0016-when-bruteforce-works.html">rev-0016-when-bruteforce-works.md</a></li><li>상수가 의심된다 → <a href="rev-0013-record-constants-first.html">rev-0013-record-constants-first.md</a>로 돌아가 재확인</li><li>디컴파일 자체가 못 미덥다 → <a href="rev-0011-when-to-trust-asm.html">rev-0011-when-to-trust-asm.md</a></li><li>전체 흐름을 처음부터 재점검하고 싶다 → <a href="rev-0018-full-ctf-routine.html">rev-0018-full-ctf-routine.md</a></li></ul>
+<h2>미니 예제</h2>
+<p>디컴파일 코드:</p>
+<pre><code class="language-c">int v = 0;
+for (int i = 0; i &lt; 4; i++)
+    v = v * 31 + input[i];
+if (v == 0x1A2B3C)
+    puts("Correct!");</code></pre>
+<p>이건 해시 누적 패턴이라 <strong>역산이 불가능하다</strong>(여러 입력이 하나의 정수로 뭉개짐, 정보 손실). 의사코드 단계에서 이걸 알아챘다면, 바로 Python으로 "역산 코드"를 짜려는 시도 대신, 4바이트 각각을 브루트포스(<code>256^4 = 42억</code>, 자리별 독립이 아니라서 전체 탐색 필요 — 다만 곱셈 누적이라 앞자리부터 순차적으로 좁혀나가는 최적화는 가능)하거나, 애초에 이 문제는 다른 접근(예: 프로그램에 값을 여러 번 질의해서 정보를 얻는 방법)이 필요하다고 판단하는 게 맞다. 이 판단을 코드부터 짜고 나서 하면 이미 늦다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0013-record-constants-first.html">rev-0013-record-constants-first.md</a></li><li><a href="rev-0016-when-bruteforce-works.html">rev-0016-when-bruteforce-works.md</a></li><li><a href="rev-0011-when-to-trust-asm.html">rev-0011-when-to-trust-asm.md</a></li><li><a href="rev-0018-full-ctf-routine.html">rev-0018-full-ctf-routine.md</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>역함수/가역 연산 개념: 기초 대수 및 암호학 일반 이론(XOR·모듈러 역원) 기준 서술 (2026-09-08 검증).</li><li>pwntools <code>xor()</code> 유틸리티: pwntools 공식 문서(docs.pwntools.com) 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

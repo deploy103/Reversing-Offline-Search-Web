@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinAPI 파일 입출력 함수 사전: GetFileSize GetFileAttributes · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>WinAPI 파일 입출력 함수 사전: GetFileSize GetFileAttributes</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>GetFileSize</code>/<code>GetFileSizeEx</code>는 이미 열린 파일 핸들의 크기를, <code>GetFileAttributesW</code>/<code>GetFileAttributesExW</code>는 핸들을 열지도 않고 경로만으로 속성(존재 여부 포함)을 알아내는 API로, 후자는 "이 파일이 존재하는가"를 확인하는 가장 가벼운 방법이라 안티디버깅/환경 탐지 코드에서도 자주 재활용된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>GetFileSize</code> 반환값이 예상과 달라서 실패값(<code>INVALID_FILE_SIZE</code>)인지 정상 크기인지 헷갈릴 때</li><li><code>GetFileAttributesW</code>가 <code>CreateFile</code> 없이 갑자기 등장해서 왜 쓰였는지 궁금할 때(파일 존재 확인 패턴)</li><li><code>GetFileAttributesExW</code>의 출력 구조체(<code>WIN32_FILE_ATTRIBUTE_DATA</code>) 필드가 뭔지 확인하고 싶을 때</li><li>속성 비트(<code>FILE_ATTRIBUTE_HIDDEN</code>, <code>FILE_ATTRIBUTE_READONLY</code> 등) 값이 기억나지 않을 때</li></ul>
+<h2>핵심 개념</h2>
+<p><strong><code>GetFileSize</code></strong> — 열린 핸들 기준 파일 크기(바이트)를 얻는다.</p>
+<pre><code class="language-c">DWORD GetFileSize(HANDLE hFile, LPDWORD lpFileSizeHigh);</code></pre>
+<p>반환값이 크기의 하위 32비트, <code>lpFileSizeHigh</code>가 가리키는 곳에 상위 32비트가 채워진다(4GB 이상 파일 대비). 실패 시 반환값은 <code>INVALID_FILE_SIZE</code>(0xFFFFFFFF)인데, 공교롭게도 정상적으로 파일 크기 하위 32비트가 딱 0xFFFFFFFF일 수도 있으므로 실패 여부는 반드시 <code>GetLastError()</code>가 <code>NO_ERROR</code>(0)인지 함께 확인해야 정확하다. 이런 모호함 때문에 최신 코드는 대부분 아래 <code>GetFileSizeEx</code>를 쓴다.</p>
+<p><strong><code>GetFileSizeEx</code></strong> — 64비트 크기를 한 번에, 모호함 없이 얻는다.</p>
+<pre><code class="language-c">BOOL GetFileSizeEx(HANDLE hFile, PLARGE_INTEGER lpFileSize);</code></pre>
+<p><code>LARGE_INTEGER</code>(내부적으로 <code>QuadPart</code>라는 64비트 정수 필드를 가진 공용체) 포인터에 전체 크기가 그대로 채워진다. 반환값 <code>BOOL</code>이 성공/실패를 명확히 알려주므로 <code>GetFileSize</code>보다 안전하다.</p>
+<p><strong><code>GetFileAttributesW</code></strong> — 경로만으로 속성 비트를 얻는다. 핸들을 열 필요가 없다.</p>
+<pre><code class="language-c">DWORD GetFileAttributesW(LPCWSTR lpFileName);</code></pre>
+<p>실패(경로가 없거나 접근 불가) 시 <code>INVALID_FILE_ATTRIBUTES</code>(0xFFFFFFFF)를 반환한다. <strong>가장 흔한 활용법은 파일 존재 여부 확인</strong>이다 — 반환값이 <code>INVALID_FILE_ATTRIBUTES</code>가 아니면 그 경로에 뭔가 존재한다는 뜻이다.</p>
+<p>주요 속성 비트:</p>
+<table><thead><tr><th>값</th><th>이름</th><th>의미</th></tr></thead><tbody><tr><td>0x1</td><td><code>FILE_ATTRIBUTE_READONLY</code></td><td>읽기 전용</td></tr><tr><td>0x2</td><td><code>FILE_ATTRIBUTE_HIDDEN</code></td><td>숨김</td></tr><tr><td>0x4</td><td><code>FILE_ATTRIBUTE_SYSTEM</code></td><td>시스템 파일</td></tr><tr><td>0x10</td><td><code>FILE_ATTRIBUTE_DIRECTORY</code></td><td>디렉터리(반환값에 이 비트가 있으면 파일이 아니라 폴더)</td></tr><tr><td>0x20</td><td><code>FILE_ATTRIBUTE_ARCHIVE</code></td><td>보관 속성(백업 관련)</td></tr><tr><td>0x80</td><td><code>FILE_ATTRIBUTE_NORMAL</code></td><td>다른 속성이 없을 때만 단독으로 쓰임</td></tr><tr><td>0x800</td><td><code>FILE_ATTRIBUTE_COMPRESSED</code></td><td>압축됨</td></tr><tr><td>0x400</td><td><code>FILE_ATTRIBUTE_REPARSE_POINT</code></td><td>심볼릭 링크/정션 등</td></tr></tbody></table>
+<p><strong><code>GetFileAttributesExW</code></strong> — 속성뿐 아니라 크기, 생성/수정/접근 시각까지 한 번에 얻는다.</p>
+<pre><code class="language-c">BOOL GetFileAttributesExW(
+    LPCWSTR                lpFileName,
+    GET_FILEEX_INFO_LEVELS fInfoLevelId,   // 보통 GetFileExInfoStandard
+    LPVOID                 lpFileInformation
+);</code></pre>
+<p><code>lpFileInformation</code>은 <code>WIN32_FILE_ATTRIBUTE_DATA</code> 구조체를 가리키며, 이 구조체 안에 <code>dwFileAttributes</code>, <code>ftCreationTime</code>, <code>ftLastAccessTime</code>, <code>ftLastWriteTime</code>, <code>nFileSizeHigh</code>, <code>nFileSizeLow</code>가 들어 있다. <code>CreateFile</code>로 핸들을 열지 않고도 파일 크기까지 알 수 있어, 단순히 크기만 확인하고 싶을 때 <code>CreateFile</code>+<code>GetFileSize</code>+<code>CloseHandle</code> 3단계보다 더 가볍게 쓰인다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>GetFileAttributesW</code> 호출 직후 <code>cmp eax, 0FFFFFFFFh</code> / <code>je not_exist</code> 형태 — 전형적인 파일 존재 확인 패턴.</li><li><code>CreateFile</code> 없이 <code>GetFileAttributesW</code>만 반복 호출되면 특정 파일/디렉터리(예: 분석 도구 설치 경로, 가상머신 관련 파일)의 존재 여부를 탐지하는 안티분석/환경 체크 코드일 가능성.</li><li><code>GetFileSize</code>/<code>GetFileSizeEx</code> 호출 결과가 <code>malloc</code>/<code>HeapAlloc</code> 크기 인자로 바로 이어지는 패턴 — 파일 전체를 메모리에 읽어들이기 위한 준비 단계.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>GetFileAttributesW</code>가 보이면 인자로 넘어가는 경로 문자열부터 확인한다. 특정 프로세스/도구 이름이 포함된 경로(예: <code>x64dbg.exe</code>, <code>\\.\pipe\...</code>)라면 안티분석 탐지일 가능성이 크다.</p>
+<h2>단계별 절차</h2>
+<ol><li>IDA에서 <code>GetFileAttributesW</code>/<code>GetFileSizeEx</code> 호출을 <code>X</code>(xref)로 확인한다.</li><li><code>F5</code>로 디컴파일해 반환값이 어떤 조건(<code>== -1</code>, <code>&amp; FILE_ATTRIBUTE_DIRECTORY</code> 등)으로 쓰이는지 본다.</li><li>x64dbg에서 <code>bp GetFileAttributesW</code> 후 <code>RCX</code>(경로 문자열 주소)를 Follow in Dump로 확인한다.</li><li><code>Ctrl+F9</code>로 리턴까지 실행해 <code>EAX</code> 값을 확인하고, <code>0xFFFFFFFF</code>인지 실제 속성 비트 조합인지 판단한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp GetFileAttributesW</code>, <code>bp GetFileSizeEx</code>, <code>Ctrl+F9</code>(리턴까지 실행)</li><li>IDA: <code>X</code>(xref), <code>F5</code>(디컴파일)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>GetFileAttributesW</code> 반환값이 <code>0xFFFFFFFF</code>면 파일/경로가 없거나 접근할 수 없는 것이다.</li><li>반환값에 <code>0x10</code>(<code>FILE_ATTRIBUTE_DIRECTORY</code>) 비트가 있으면 그 경로는 파일이 아니라 디렉터리다 — 이후 코드가 파일로 취급해 여는지 확인하면 버그/우회 지점을 찾을 수도 있다.</li><li><code>GetFileSizeEx</code>가 채운 <code>LARGE_INTEGER.QuadPart</code> 값이 곧 힙 할당 크기와 같다면, 프로그램이 파일 전체를 메모리에 올려 처리하는 구조라는 뜻이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>GetFileSize</code>(구버전 API)의 반환값 <code>0xFFFFFFFF</code>를 무조건 실패로 단정하는 것 — 실제로 파일 크기 하위 32비트가 그 값일 수도 있으므로 <code>GetLastError()</code>를 함께 봐야 한다.</li><li><code>GetFileAttributesW</code>가 <code>BOOL</code>을 반환한다고 착각하는 것 — 실제로는 <code>DWORD</code>(속성 비트 조합)를 반환하며, 실패 판정은 <code>INVALID_FILE_ATTRIBUTES</code>와 비교로 해야 한다.</li><li>속성 비트를 하나의 값처럼 <code>==</code>로 비교하는 것 — 여러 속성이 OR로 조합되므로 반드시 <code>&amp;</code>(AND)로 특정 비트만 검사해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>파일을 실제로 여는 단계가 궁금하면 → REV-0496 확인.</li><li>파일 포인터 이동/삭제/이동 API가 궁금하면 → REV-0498 확인.</li><li>이 API가 안티분석 탐지처럼 보인다면 → REV-0138(Windows API 이름으로 기능 추측하는 법)에서 의심스러운 API 판별 기준을 참고.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">if (GetFileAttributesW(L"C:\\Program Files\\x64dbg\\x64dbg.exe") != INVALID_FILE_ATTRIBUTES) {
+    // 분석 도구가 설치되어 있다고 판단 -&gt; 다르게 동작
+}</code></pre>
+<p><code>CreateFile</code>을 전혀 호출하지 않고도 특정 파일의 존재만으로 분기하는 이런 패턴은 디버거/분석 도구 탐지에서 매우 흔하다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0496-createfile-family.html">REV-0496 — WinAPI 파일 입출력 함수 사전: CreateFile 계열</a></li><li><a href="rev-0498-setfilepointer-deletefile-movefile.html">REV-0498 — WinAPI 파일 입출력 함수 사전: SetFilePointer DeleteFile MoveFile</a></li><li><a href="rev-0497-readfile-writefile.html">REV-0497 — WinAPI 파일 입출력 함수 사전: ReadFile WriteFile 상세</a></li><li><a href="rev-0138-guess-function-from-api-name.html">REV-0138 — Windows API 이름으로 기능 추측하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>GetFileSize</code>/<code>GetFileSizeEx</code>/<code>GetFileAttributesW</code>/<code>GetFileAttributesExW</code> 시그니처, <code>WIN32_FILE_ATTRIBUTE_DATA</code> 구조체, <code>FILE_ATTRIBUTE_*</code> 상수는 Microsoft Win32 API 공식 문서 기준(2026-09-08 확인 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

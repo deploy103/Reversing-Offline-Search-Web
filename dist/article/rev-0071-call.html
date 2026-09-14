@@ -1,0 +1,174 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CALL: 함수 호출, 반환 주소, 인자 추적 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>CALL: 함수 호출, 반환 주소, 인자 추적</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>CALL</code>은 "다음 실행할 주소(반환 주소)를 스택에 PUSH한 뒤, 목표 함수로 점프하는" 명령어다. 이 반환 주소 덕분에 함수가 끝나면(<code>RET</code>) 원래 자리로 돌아올 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>어셈블리에 <code>call sub_401230</code>, <code>call rax</code>, <code>call qword ptr [rax+8]</code> 같은 코드가 나오는데 각각 무슨 차이인지 모를 때</li><li>함수 호출 직전에 어떤 레지스터를 보면 인자를 알 수 있는지 모를 때 (<code>rdi rsi 인자</code>, <code>rcx rdx 인자</code>)</li><li>IDA에서 Step Into(F7)와 Step Over(F8)의 차이가 헷갈릴 때</li><li>CALL 대상이 IAT(Import Address Table)를 가리켜서 실제로 무슨 함수를 부르는지 알기 어려울 때</li><li>"함수가 어디서 호출되는지 모르겠음"처럼 xref를 찾아야 하는 상황</li></ul>
+<h2>핵심 개념</h2>
+<h3>CALL이 실제로 하는 일</h3>
+<p><code>CALL target</code>은 다음 두 단계를 원자적으로 수행한다:</p>
+<ol><li><strong>현재 RIP(다음 실행할 명령의 주소, 즉 CALL 바로 다음 명령의 주소)를 스택에 PUSH한다.</strong> 이것이 "반환 주소(return address)"다. x64에서는 RSP가 8만큼 감소하고, x86에서는 ESP가 4만큼 감소한다.</li><li><strong>RIP를 target 주소로 설정한다.</strong> 즉 그 함수의 첫 명령으로 실행 흐름이 넘어간다.</li></ol>
+<p><code>RET</code>(함수가 끝날 때 실행하는 명령)는 정확히 반대로, 스택 맨 위에서 반환 주소를 POP해서 RIP에 넣는다. <code>CALL</code>과 <code>RET</code>는 항상 쌍으로 동작하는 짝이라고 생각하면 된다.</p>
+<p><img src="../assets/images/diagrams/stack-call-diagram.svg" alt="CALL 실행 전후 스택 변화 다이어그램: 복귀 주소가 push되고 RSP가 8만큼 감소하는 모습" loading="lazy" class="article-image"></p>
+<p><strong>JMP와의 차이</strong>: <code>JMP</code>는 그냥 RIP만 바꾸고 스택에 아무것도 남기지 않는다. 그래서 JMP한 곳에서는 "돌아올 방법"이 없다(꼬리 호출/tail call 최적화에서 컴파일러가 CALL 대신 JMP를 쓰는 경우가 있는데, 이는 "돌아올 필요가 없는 마지막 호출"이기 때문이다).</p>
+<h3>Direct Call vs Indirect Call</h3>
+<ul><li><strong>Direct call</strong>: <code>call sub_401230</code> 처럼 목표 주소가 명령어 자체에 고정된 상수(오퍼랜드가 상대 오프셋 rel32)로 박혀 있다. IDA에서는 함수 이름/주소로 바로 표시된다. 어떤 함수를 부르는지 정적으로 100% 확정된다.</li><li><strong>Indirect call</strong>: 목표 주소가 <strong>레지스터</strong>나 <strong>메모리</strong>에서 읽어와서 결정된다.</li><li><code>call rax</code> — RAX 레지스터에 들어있는 값을 목표 주소로 사용. 이 값은 실행 시점에 달라질 수 있다(함수 포인터, 가상 함수 테이블, IAT를 통한 임포트 호출 등).</li><li><code>call qword ptr [rax]</code> — RAX가 가리키는 메모리 위치에서 8바이트(64비트) 값을 읽어 그걸 목표 주소로 사용. C++ 가상 함수 호출(vtable), 함수 포인터 배열, <strong>임포트된 함수 호출</strong>(IAT를 거치는 경우)에서 흔히 보인다.</li><li><code>call [rip+0x2f10]</code> — RIP 기준 상대 주소의 메모리 값을 읽어 호출. Windows PE에서 임포트 함수를 부를 때 컴파일러가 자주 생성하는 패턴(IAT를 통한 호출)이다.</li></ul>
+<p><strong>분석 난이도 차이</strong>: Direct call은 정적 분석만으로 목표를 바로 알 수 있지만, Indirect call은 그 레지스터/메모리에 어떤 값이 들어가는지 역추적하거나(정적) 실제로 실행해서 확인해야(동적) 목표를 알 수 있다. vtable을 통한 C++ 가상 함수 호출이 indirect call로 보이는 대표적인 이유이기도 하다.</p>
+<h3>스택과 RSP 변화</h3>
+<p>x64 기준:</p>
+<pre><code>CALL 실행 전:  RSP = 0x7ffee000
+CALL 실행:     [RSP-8] = 반환주소,  RSP = 0x7ffedff8   (8바이트 감소)
+함수 진입 후 (전형적 프롤로그):
+  push rbp        ; RSP -= 8  (이제 이전 RBP 저장)
+  mov  rbp, rsp
+  sub  rsp, 0x20   ; 지역 변수 공간 확보
+...
+함수 종료 (전형적 에필로그):
+  leave            ; RSP = RBP, 그리고 POP RBP (RSP += 8)
+  ret              ; 반환 주소를 POP → RIP에 로드 (RSP += 8), 그 주소로 점프</code></pre>
+<p><code>RET</code> 이후 RSP는 CALL 실행 직전 값으로 정확히 되돌아온다. 이 균형이 깨지면(스택 불균형) IDA가 "positive sp value has been detected" 같은 경고를 낸다 (REV-0151 참고).</p>
+<h3>호출 규약(Calling Convention)과 인자 위치</h3>
+<p>함수를 호출하기 <strong>직전</strong>에 인자들이 특정 레지스터/스택에 세팅된다. 어느 레지스터를 쓰는지는 플랫폼과 ABI에 따라 다르다.</p>
+<p><strong>SysV AMD64 (Linux/macOS x64)</strong> — 정수/포인터 인자는 순서대로:</p>
+<pre><code>1번째: RDI
+2번째: RSI
+3번째: RDX
+4번째: RCX
+5번째: R8
+6번째: R9
+7번째 이후: 스택에 push (오른쪽에서 왼쪽 순서로)</code></pre>
+<p>예: <code>strcmp(a, b)</code> 호출 직전이라면 <code>RDI = a의 주소</code>, <code>RSI = b의 주소</code>로 세팅된 상태에서 <code>call strcmp</code>가 실행된다.</p>
+<p><strong>Microsoft x64 (Windows x64)</strong> — 정수/포인터 인자는 순서대로:</p>
+<pre><code>1번째: RCX
+2번째: RDX
+3번째: R8
+4번째: R9
+5번째 이후: 스택 (그리고 처음 4개 인자용으로도 "shadow space" 32바이트를 호출자가 예약해야 함)</code></pre>
+<p>예: <code>CreateFileW(...)</code> 호출 직전이라면 <code>RCX</code>에 첫 번째 인자(파일 경로 포인터)가 들어있다.</p>
+<p><strong>어떻게 구분하나</strong>: 바이너리가 PE(Windows)면 Microsoft x64, ELF(Linux)면 SysV AMD64를 기본으로 가정한다. IDA는 플랫폼을 인식해서 디컴파일 결과에 인자를 알아서 나눠 보여주지만, 디스어셈블리(어셈블리 원문)를 직접 읽을 때는 이 레지스터 순서를 외워두는 게 훨씬 빠르다.</p>
+<h3>CALL 직전 인자를 눈으로 확인하는 법</h3>
+<p>CALL 명령어 바로 위쪽 몇 줄을 거슬러 올라가며, 위에서 설명한 순서의 레지스터에 값이 들어가는 지점을 찾는다.</p>
+<pre><code class="language-asm">; SysV x64 예시
+lea     rdi, [rbp-0x20]   ; 1번째 인자 (버퍼 주소)
+mov     esi, 0x40         ; 2번째 인자 (크기 64)
+call    read               ; ssize_t read(int fd, void *buf, size_t count) 형태라면 fd가 먼저 와야 하므로
+                            ; 실제로는 더 위에 mov edi, fd 가 있을 것</code></pre>
+<p>컴파일러는 최적화 때문에 레지스터 세팅 순서가 항상 코드 순서와 일치하지는 않는다 — 하지만 <strong>CALL 직전, "어떤 레지스터에 마지막으로 쓰여진 값"</strong> 을 각 레지스터별로 확인하면 인자를 알아낼 수 있다.</p>
+<h3>반환값</h3>
+<p>함수가 끝나고 값을 돌려줄 때는:</p>
+<ul><li>32비트 정수 반환값 → <strong>EAX</strong></li><li>64비트 정수/포인터 반환값 → <strong>RAX</strong></li><li>실수(float/double) 반환값 → <strong>XMM0</strong></li></ul>
+<p><code>CALL</code> 명령 바로 다음 줄에서 <code>EAX</code>/<code>RAX</code>를 어떻게 쓰는지 보면 그 함수가 무엇을 반환했고 그 값으로 무엇을 하는지(비교, 저장 등) 바로 알 수 있다.</p>
+<h3>임포트 함수 호출 (Imports)</h3>
+<p>프로그램이 자기 코드에 없는 라이브러리 함수(<code>printf</code>, <code>CreateFileW</code>, <code>malloc</code> 등)를 부를 때는 보통 <strong>간접 호출</strong>을 거친다:</p>
+<ul><li>Windows PE: <code>call cs:__imp_CreateFileW</code> 형태로 보이며, 이는 IAT(Import Address Table)의 한 슬롯을 가리키는 간접 호출이다. 실제 주소는 로더가 프로그램 시작 시 채워 넣는다.</li><li>Linux ELF (동적 링킹): <code>call printf</code> 처럼 direct call로 보이지만 실제로는 <strong>PLT(Procedure Linkage Table)</strong> 스텁을 호출하는 것이고, PLT 안에서 GOT(Global Offset Table)를 거쳐 실제 libc 함수로 다시 점프한다. 자세한 내용은 REV-0100(PLT와 GOT 기초) 참고.</li></ul>
+<p>IDA는 이런 호출 대상에 자동으로 <code>CreateFileW</code>, <code>printf</code> 같은 익숙한 이름을 붙여주므로, Imports 탭이나 함수 이름만 봐도 어떤 API를 쓰는지 짐작할 수 있다 — 이것이 REV-0001 트리아지에서 "임포트 목록부터 본다"고 강조하는 이유다.</p>
+<h3>Nested Call과 Call Graph</h3>
+<p>함수 A가 함수 B를 부르고, B가 다시 함수 C를 부르는 것을 <strong>중첩 호출(nested call)</strong> 이라 한다. 스택에는 반환 주소가 계속 쌓인다(A→B로 갈 때 A로 돌아갈 주소, B→C로 갈 때 B로 돌아갈 주소). 이 중첩 관계 전체를 시각화한 것이 <strong>Call Graph(호출 그래프)</strong> 다.</p>
+<p>IDA에서 함수를 선택하고 우클릭 → "View call graph from"을 쓰면, 이 함수가 무엇을 호출하는지 트리 형태로 볼 수 있다. 복잡한 바이너리에서 "핵심 검증 로직이 어디 있는지" 찾을 때, 문자열을 참조하는 함수부터 시작해서 call graph를 위/아래로 훑으면 빠르게 구조를 파악할 수 있다 (REV-0166 참고).</p>
+<h3>CALL Xref (이 함수가 어디서 불리는지)</h3>
+<p>반대로 "이 함수를 누가 호출하는가"를 알고 싶다면, IDA에서 함수 이름 위에 커서를 놓고 <strong>X</strong> 키(Xrefs to)를 누른다. 이 함수를 호출하는 모든 CALL 위치 목록이 뜬다. 더블클릭하면 그 호출 지점으로 바로 이동한다. 이건 "함수가 어디서 호출되는지 모르겠음" 문제를 푸는 표준 방법이다.</p>
+<h3>Step Into vs Step Over</h3>
+<p>디버거(IDA 디버거, x64dbg, GDB 공통 개념)로 실행 중 CALL을 만났을 때:</p>
+<ul><li><strong>Step Into (IDA F7)</strong>: CALL이 가리키는 함수 <strong>내부로 들어가서</strong> 한 줄씩 실행한다. 그 함수의 동작이 궁금할 때 사용.</li><li><strong>Step Over (IDA F8)</strong>: CALL을 <strong>함수 전체를 한 번에 실행</strong>하고, 반환된 직후(CALL 다음 줄)에서 멈춘다. 이미 아는 라이브러리 함수(<code>printf</code> 등)라서 내부를 볼 필요가 없을 때 사용 — 매번 Step Into 했다가 라이브러리 코드 수백 줄을 헤매는 실수를 피할 수 있다.</li></ul>
+<p>x64dbg는 동일하게 F7(Step Into)/F8(Step Over)를 쓰고, GDB/Pwndbg는 <code>stepi</code>(step into 1개 명령어) / <code>nexti</code>(step over 1개 명령어) 또는 소스 레벨의 <code>step</code>/<code>next</code>를 사용한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>call sub_401230</code> — direct call, 정적으로 대상 확정</li><li><code>call rax</code>, <code>call rbx</code> — 레지스터 기반 indirect call, 함수 포인터/가상 함수 의심</li><li><code>call qword ptr [rax+10h]</code> — 메모리(포인터 배열, vtable) 기반 indirect call</li><li><code>call cs:__imp_CreateFileW</code> — Windows 임포트 함수 호출 (IAT 경유)</li><li><code>call printf</code> (ELF, 실제로는 PLT 스텁) — Linux 임포트 함수 호출</li><li>CALL 직후 <code>test eax, eax</code> 또는 <code>cmp eax, ...</code> — 반환값을 바로 검사하는 매우 흔한 패턴</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>CALL을 만나면 순서대로 확인한다:</p>
+<ol><li>Direct인가 Indirect인가 (오퍼랜드가 주소 리터럴인지, 레지스터/메모리인지)</li><li>IDA가 이름을 붙여줬는가 (라이브러리/임포트 함수인지 사용자 코드인지)</li><li>CALL 직전 인자 레지스터(RDI/RSI/RDX/RCX/R8/R9 또는 RCX/RDX/R8/R9)에 어떤 값이 세팅됐는지</li><li>CALL 직후 RAX/EAX를 어떻게 쓰는지 (반환값 활용)</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) Direct call 분석</strong></p>
+<pre><code class="language-asm">call sub_401450</code></pre>
+<p>IDA에서 <code>sub_401450</code>을 더블클릭 → 함수 내부로 진입. F5로 디컴파일해서 어떤 로직인지 확인. 처음 보는 사용자 함수라면 이름을 붙여둔다(N 키).</p>
+<p><strong>2) Indirect call 분석 (레지스터)</strong></p>
+<pre><code class="language-asm">mov rax, [rbp-8]     ; 함수 포인터 로드
+call rax</code></pre>
+<p><code>rax</code>에 어떤 값이 들어가는지 위로 거슬러 올라간다. 정적으로 특정이 안 되면(예: 사용자 입력에 따라 달라짐) 디버거로 실행 중 해당 지점에서 레지스터 값을 직접 확인한다(IDA 디버거 F2로 브레이크포인트 설정 → F9 실행 → 레지스터 창에서 RAX 값 확인).</p>
+<p><strong>3) 인자 확인 (SysV 예시)</strong></p>
+<pre><code class="language-asm">lea     rdi, [rbp-0x30]  ; 1번째 인자
+mov     esi, 0x14        ; 2번째 인자 (20)
+xor     edx, edx         ; 3번째 인자 (0)
+call    some_func</code></pre>
+<p>→ <code>some_func(buf, 20, 0)</code> 형태로 호출된다고 해석.</p>
+<p><strong>4) 반환값 추적</strong></p>
+<pre><code class="language-asm">call    strlen
+cmp     eax, 10
+jg      too_long</code></pre>
+<p>→ <code>strlen()</code>의 반환값(길이)을 EAX에서 받아 10과 비교 후 분기.</p>
+<p><strong>5) 임포트 함수 여부 확인</strong></p>
+<p>IDA에서 함수 이름이 이탤릭체거나 파란 글씨로 다르게 표시되면 임포트/라이브러리 함수인 경우가 많다. Imports 탭(View → Open subviews → Imports)에서 전체 목록을 미리 훑어두면 CALL 대상 이름만 봐도 바로 API 문서를 검색할 수 있다.</p>
+<p><strong>6) Xref로 호출자 찾기</strong></p>
+<p>함수 이름 위에서 <strong>X</strong> → 이 함수를 부르는 모든 위치 목록 확인 → 더블클릭으로 이동.</p>
+<p><strong>7) 디버거로 실제 인자/반환값 확인 (동적 분석)</strong></p>
+<p>정적 분석만으로 값이 애매하면(레지스터 세팅이 복잡한 계산 결과인 경우), CALL 명령 주소에 브레이크포인트를 걸고(IDA F2 또는 x64dbg에서 주소 우클릭 → Breakpoint) 실행을 멈춘 뒤 레지스터 창에서 실제 값을 확인한다. RET 직후에 브레이크포인트를 걸면 RAX의 실제 반환값도 확인 가능하다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>X</code> (Xrefs to — 누가 이 함수를 호출하는가), <code>N</code> (이름 바꾸기), <code>F5</code> (디컴파일), <code>F7</code> (Step Into), <code>F8</code> (Step Over), <code>F2</code> (브레이크포인트), <code>F9</code> (실행/계속), Functions 창에서 우클릭 → "View call graph from ..."</li><li>x64dbg: <code>F7</code>(Step Into), <code>F8</code>(Step Over), CALL 대상 라인 우클릭 → "Follow in Disassembler"로 대상 함수로 이동</li><li>GDB/Pwndbg: <code>stepi</code>(si, 명령어 단위 step into), <code>nexti</code>(ni, 명령어 단위 step over), <code>finish</code>(현재 함수가 끝날 때까지 실행 후 반환값 표시), <code>bt</code>(backtrace, 반환 주소 스택 확인)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>IDA 디컴파일에서 <code>func(a1, a2, a3)</code> 형태로 인자가 자동 정리되어 나오면, 이는 CALL 직전 레지스터 세팅을 IDA가 호출 규약에 맞춰 해석해준 결과다.</li><li><code>call ds:GetProcAddress</code> 처럼 <code>ds:</code>, <code>cs:</code> 접두사가 붙으면 메모리(데이터 세그먼트)를 통한 간접 호출이라는 뜻 — 대부분 임포트 테이블 경유.</li><li>GDB에서 <code>finish</code> 실행 후 <code>Value returned is $1 = 0x2a</code>처럼 나오면 이것이 함수의 반환값(RAX)이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Indirect call(<code>call rax</code>)을 보고 "분석 불가능"이라 포기하는 것 — 디버거로 실제 실행 시 레지스터 값을 보면 대부분 특정 가능하다.</li><li>인자 레지스터 순서를 플랫폼과 무관하게 항상 같다고 착각하는 것 — Windows x64(RCX,RDX,R8,R9)와 Linux SysV x64(RDI,RSI,RDX,RCX,R8,R9)는 순서와 개수 배치가 다르다. 특히 3번째부터는 이름이 겹치는 레지스터(RDX,RCX)라도 순서상 위치가 다르다는 점에 주의.</li><li>Step Into(F7)를 라이브러리 함수(<code>printf</code> 등)에도 계속 눌러서 관계없는 코드 속에서 길을 잃는 것 — 이미 아는 함수는 Step Over(F8)로 건너뛴다.</li><li>CALL과 JMP를 같은 것으로 착각하는 것 — JMP는 반환 주소를 남기지 않는다. Tail call 최적화로 JMP가 함수 호출처럼 쓰인 코드를 보면 헷갈릴 수 있으니, 함수 맨 끝(에필로그 자리)에서의 JMP는 "마지막 호출 후 그대로 반환까지 위임"하는 패턴임을 기억한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>CALL 대상이 계속 레지스터/메모리라서 정적으로 특정이 안 된다면 → 디버거로 브레이크포인트 걸고 동적으로 확인 (REV-0169, REV-0175 참고 예정).</li><li>함수가 어디서 호출되는지 계속 못 찾겠다면 → X(Xrefs to)를 제대로 누르고 있는지, 커서가 함수 이름/시작 주소 위에 정확히 있는지 확인.</li><li>인자를 다 세팅했는데도 결과가 이해 안 되면 → 호출 규약을 잘못 짚었을 가능성(SysV vs Windows x64를 혼동)을 의심.</li><li>반환값(RAX)이 다음 코드에서 안 쓰이는 것 같다면 → 반환값을 버리는 함수(<code>void</code>처럼 취급)일 수 있으니 함수 원형을 다시 확인.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — Direct call + SysV 인자 + 반환값</strong></p>
+<pre><code class="language-c">// 원본 C 코드
+int len = strlen(input);
+if (len != 10) fail();</code></pre>
+<pre><code class="language-asm">lea     rdi, [rbp-0x40]   ; input 주소 -&gt; 1번째 인자 (RDI)
+call    strlen
+cmp     eax, 0Ah          ; 반환값(EAX)을 10과 비교
+jnz     fail</code></pre>
+<p><strong>예제 2 — Windows x64 API 호출 (간접, IAT 경유)</strong></p>
+<pre><code class="language-asm">lea     rcx, [rip+FileName]  ; 1번째 인자 (RCX) - Windows x64 규약
+mov     edx, 80000000h       ; 2번째 인자 (RDX) - GENERIC_READ
+mov     r8d, 1                ; 3번째 인자 (R8) - FILE_SHARE_READ
+...
+call    cs:__imp_CreateFileW  ; IAT를 통한 간접 호출</code></pre>
+<p><strong>예제 3 — Nested call (함수가 함수를 호출)</strong></p>
+<pre><code class="language-asm">sub_401000:
+    call sub_402000    ; A가 B를 호출 (반환 주소 R1을 스택에 push)
+    ret
+
+sub_402000:
+    call sub_403000    ; B가 C를 호출 (반환 주소 R2를 스택에 push)
+    ret                 ; C가 끝나면 R2로 복귀 (B로 돌아옴), 그 다음 이 ret으로 R1로 복귀 (A로 돌아옴)</code></pre>
+<p>이 예제에서 CALL이 실행될 때마다 스택에 반환 주소가 하나씩 쌓이고(push), RET이 실행될 때마다 하나씩 빠진다(pop) — 정확히 짝이 맞아야 프로그램이 정상 종료된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0072-ret.html">REV-0072 — RET: 함수 반환과 스택 변화</a></li><li><a href="rev-0106-sysv-amd64-calling-convention.html">REV-0106 — SysV AMD64 Calling Convention</a></li><li><a href="rev-0122-ms-x64-calling-convention.html">REV-0122 — Microsoft x64 Calling Convention</a></li><li><a href="rev-0100-plt-got.html">REV-0100 — PLT와 GOT 기초</a></li><li><a href="rev-0151-positive-sp-value.html">REV-0151 — IDA Positive SP Value Has Been Detected 경고</a></li><li><a href="rev-0170-step-into-vs-over.html">REV-0170 — Step Into와 Step Over 차이</a></li><li><a href="rev-0175-args-before-call.html">REV-0175 — CALL 직전 함수 인자 확인하는 법</a></li><li><a href="rev-0176-return-value-after-call.html">REV-0176 — CALL 직후 반환값 확인하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>CALL/RET 명령어 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "CALL—Call Procedure" / "RET—Return from Procedure" 섹션 기준 (2026-09-08 검증).</li><li>SysV AMD64 인자 레지스터 순서(RDI,RSI,RDX,RCX,R8,R9): System V Application Binary Interface AMD64 Architecture Processor Supplement 공식 스펙 기준.</li><li>Microsoft x64 인자 레지스터 순서(RCX,RDX,R8,R9)와 shadow space: Microsoft Learn "x64 calling convention" 공식 문서 기준.</li><li>IDA 단축키(F5/F7/F8/F2/F9/X/N): Hex-Rays 공식 IDA 문서(Hotkeys, Cross-references) 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

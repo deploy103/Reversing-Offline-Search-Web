@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>libc 함수 사전: open read write close(시스템콜 래퍼) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>libc 함수 사전: open read write close(시스템콜 래퍼)</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">strace</span><span class="tag">objdump</span></div>
+<h2>한 줄 요약</h2>
+<p><code>open</code>/<code>read</code>/<code>write</code>/<code>close</code>는 glibc가 커널 시스템콜을 거의 그대로 감싼 얇은 래퍼 함수로, <code>fopen</code>/<code>fread</code>/<code>fwrite</code>/<code>fclose</code>(REV-0633)와 달리 <strong>애플리케이션 레벨 버퍼링이 전혀 없어</strong> 호출 즉시 커널로 요청이 전달되며, <code>strace</code>로 관찰했을 때 코드상의 호출 횟수와 실제 시스템콜 횟수가 거의 1:1로 대응한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>call open@plt</code>/<code>call read@plt</code>/<code>call write@plt</code>/<code>call close@plt</code>가 보이는데 <code>fopen</code> 계열과 뭐가 다른지, 왜 저수준 함수를 직접 썼는지 궁금할 때</li><li><code>strace ./chall</code>로 시스템콜 로그를 뜬 뒤, 그 로그의 <code>open</code>/<code>read</code>/<code>write</code> 호출과 디스어셈블리의 함수 호출을 1:1로 대응시키고 싶을 때</li><li>파일 디스크립터 번호(<code>0</code>, <code>1</code>, <code>2</code>, 또는 <code>open</code>이 반환한 값)가 무엇을 가리키는지 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<pre><code class="language-c">int     open(const char *pathname, int flags, mode_t mode);
+ssize_t read(int fd, void *buf, size_t count);
+ssize_t write(int fd, const void *buf, size_t count);
+int     close(int fd);</code></pre>
+<p>이 네 함수는 각각 x86-64 리눅스 syscall 번호 <code>2</code>(open), <code>0</code>(read), <code>1</code>(write), <code>3</code>(close)에 대응하는 <code>syscall(2)</code> 명령어 호출을 감싼 얇은 wrapper다. glibc 내부에서 인자를 레지스터(<code>rax</code>=syscall 번호, <code>rdi, rsi, rdx, ...</code>=인자)에 넣고 <code>syscall</code> 명령어를 실행하는 몇 줄짜리 코드로 구현되어 있다.</p>
+<p><strong>open</strong>: <code>pathname</code>을 <code>flags</code>(<code>O_RDONLY</code>=0, <code>O_WRONLY</code>=1, <code>O_RDWR</code>=2, <code>O_CREAT</code>=0x40, <code>O_TRUNC</code>=0x200, <code>O_APPEND</code>=0x400 등 OR 조합)에 따라 열고, 성공하면 <strong>파일 디스크립터(fd, 0 이상의 정수)</strong>를 반환한다. 실패하면 <code>-1</code>을 반환하고 <code>errno</code>를 설정한다. <code>O_CREAT</code>가 있을 때만 세 번째 인자 <code>mode</code>(예: <code>0644</code>)가 실제로 쓰인다. <code>rdi=pathname</code>, <code>esi=flags</code>, <code>edx=mode</code>.</p>
+<p><strong>read/write</strong>: <code>fd</code>가 가리키는 대상(파일, 파이프, 소켓, 표준입출력 등)과 <code>buf</code> 사이에서 정확히 <code>count</code>바이트를 옮기려 <strong>시도</strong>한다. <strong>반환값이 요청한 <code>count</code>보다 작을 수 있다</strong> — 이는 버그가 아니라 정상 동작이다(파일 끝 도달, 파이프에 데이터가 일부만 준비됨, 시그널에 의한 중단 등). 그래서 견고한 코드는 <code>read</code>/<code>write</code>를 반환값만큼 반복 호출하는 루프(short read/write 처리)를 둔다. <code>read</code>가 <code>0</code>을 반환하면 파일 끝(EOF)을 의미하고, <code>-1</code>은 에러다. <code>rdi=fd</code>, <code>rsi=buf</code>, <code>rdx=count</code>.</p>
+<p><strong>close</strong>: <code>fd</code>를 닫아 커널의 파일 테이블 엔트리를 해제한다. 성공 시 <code>0</code>, 실패 시 <code>-1</code>.</p>
+<p><strong>표준 파일 디스크립터</strong>: <code>0</code>=stdin, <code>1</code>=stdout, <code>2</code>=stderr는 프로세스 시작 시 이미 열려 있다. <code>open</code>이 새로 반환하는 fd는 보통 사용 중이 아닌 가장 작은 정수(예: 첫 <code>open</code> 호출이면 <code>3</code>)부터 할당된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>mov edx, 0x1B6</code> (0644, mode) 후 <code>mov esi, 0x241</code>(O_CREAT|O_TRUNC|O_WRONLY 조합) 후 <code>call open@plt</code></li><li><code>call read@plt</code>/<code>call write@plt</code> 인자가 3개(<code>rdi, rsi, rdx</code>)로 <code>fread</code>/<code>fwrite</code>(인자 4개)보다 하나 적음</li><li>반환값을 <code>cmp eax, -1</code> / <code>je fail</code>로 체크하는 코드가 <code>open</code>/<code>read</code>/<code>write</code> 공통 패턴</li><li><code>strace</code>에서 <code>openat(AT_FDCWD, "flag.txt", O_RDONLY) = 3</code> 처럼 실제 fd 번호와 플래그 심볼이 그대로 보임(최신 glibc는 <code>open</code>을 내부적으로 <code>openat</code> 시스템콜로 구현하는 경우가 많음)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>open</code>의 <code>flags</code> 값을 8진수/16진수 상수 조합으로 해석해 읽기 전용인지 쓰기(생성) 모드인지 먼저 파악한다. 이후 <code>read</code>/<code>write</code>의 <code>fd</code> 인자가 <code>open</code>이 반환한 값인지, 아니면 <code>0</code>/<code>1</code>(표준 입출력)인지 확인한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>objdump -d ./chall | grep 'open@plt\|read@plt\|write@plt\|close@plt'</code>로 호출 지점 나열.</li><li><code>strace ./chall</code>로 실제 실행 중 시스템콜 로그를 떠서 <code>openat</code>/<code>read</code>/<code>write</code>/<code>close</code>의 실제 인자와 반환값을 확인.</li><li>GDB에서 <code>break open</code> 후 <code>x/s $rdi</code>(경로), <code>print/x $rsi</code>(flags)로 8진수/16진수 상수를 실제 매크로로 환산(<code>O_RDONLY=0</code>, <code>O_WRONLY=1</code>, <code>O_RDWR=2</code>, <code>O_CREAT=0x40</code>, <code>O_TRUNC=0x200</code>).</li><li><code>break read</code>(또는 write) 후 <code>print $rdi</code>(fd), <code>print/x $rsi</code>(buf), <code>print $rdx</code>(count) 확인, <code>finish</code> 후 <code>print $rax</code>(실제 처리된 바이트 수)와 비교.</li><li>반환값이 요청보다 작으면 이후 코드가 루프를 도는지(short read 처리) 확인.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">objdump -d ./chall | grep 'open@plt\|read@plt\|write@plt\|close@plt'
+strace -e trace=openat,read,write,close ./chall</code></pre>
+<p>GDB/Pwndbg: <code>break open</code>, <code>break read</code>, <code>break write</code>, <code>x/s $rdi</code>, <code>print/x $rsi</code>, <code>print $rdx</code>, <code>print $rax</code></p>
+<h2>출력 해석</h2>
+<ul><li><code>open</code> 반환값이 <code>-1</code>이면 실패 — <code>strace</code> 로그의 같은 줄 끝에 <code>ENOENT</code>(파일 없음), <code>EACCES</code>(권한 없음) 같은 에러 이름이 함께 출력되어 원인을 바로 알 수 있다.</li><li><code>read</code> 반환값이 <code>0</code>이면 EOF(더 읽을 데이터 없음), 양수면 실제로 읽은 바이트 수, <code>-1</code>이면 에러다. <strong>요청한 <code>count</code>와 다르다고 무조건 에러는 아니다.</strong></li><li><code>strace</code> 로그의 시스템콜 호출 순서(<code>open</code> → <code>read</code>(들) → <code>close</code>)를 그대로 프로그램의 파일 처리 흐름으로 읽을 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>read</code>/<code>write</code>가 항상 요청한 바이트 수만큼 정확히 처리한다고 가정하는 것 — 특히 파이프나 소켓, 큰 파일에서는 short read/write가 흔하고, 이를 무시하면 데이터 일부가 누락된 채로 처리되는 버그가 생긴다.</li><li><code>open</code>의 <code>flags</code> 상수를 10진수 그대로 읽어서 어떤 플래그 조합인지 헷갈리는 것 — 반드시 16진수/8진수로 변환해 <code>O_CREAT</code>(0x40), <code>O_TRUNC</code>(0x200) 등의 비트가 켜져 있는지 OR 분해해서 봐야 한다.</li><li>fd <code>0</code>/<code>1</code>/<code>2</code>를 일반 파일로 착각하는 것 — 이 세 값은 표준 입력/출력/에러이지 <code>open</code>으로 새로 연 파일이 아니다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>버퍼링이 있는 상위 레벨 stdio 함수(fopen/fread/fwrite)와 비교하려면 → REV-0633.</li><li>시스템콜을 전체적으로 추적하는 방법이 궁금하면 → REV-0112(strace).</li><li>라이브러리 호출까지 함께 보고 싶으면 → REV-0111(ltrace).</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">int fd = open("flag.txt", O_RDONLY);   // flags=0
+if (fd &lt; 0) { /* 실패 */ }
+char buf[32];
+ssize_t n = read(fd, buf, sizeof(buf));
+write(1, buf, n);                       // fd=1(stdout)로 그대로 출력
+close(fd);</code></pre>
+<pre><code>$ strace -e trace=openat,read,write,close ./chall
+openat(AT_FDCWD, "flag.txt", O_RDONLY) = 3
+read(3, "CTF{...}\n", 32)              = 9
+write(1, "CTF{...}\n", 9)              = 9
+close(3)                                = 0</code></pre>
+<p><code>open</code>이 반환한 fd <code>3</code>이 이후 <code>read</code>의 첫 인자로 그대로 쓰이고, <code>write</code>는 fd <code>1</code>(stdout)로 화면에 출력하는 흐름을 로그만으로 그대로 재구성할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0633-libc-fopen-fread-fwrite-fclose.html">REV-0633 — libc 함수 사전: fopen fread fwrite fclose</a></li><li><a href="rev-0112-strace-basics.html">REV-0112 — strace로 시스템 콜에서 힌트 찾기</a></li><li><a href="rev-0111-ltrace-basics.html">REV-0111 — ltrace로 라이브러리 호출 빠르게 보기</a></li><li><a href="rev-0106-sysv-amd64-calling-convention.html">REV-0106 — SysV AMD64 Calling Convention</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>open</code>/<code>read</code>/<code>write</code>/<code>close</code> 시그니처, 반환값, <code>errno</code> 규칙: POSIX.1 및 Linux man-pages <code>open(2)</code>, <code>read(2)</code>, <code>write(2)</code>, <code>close(2)</code> 기준.</li><li>x86-64 Linux syscall 번호(read=0, write=1, open=2, close=3)와 레지스터 전달 방식: Linux 커널 <code>arch/x86/entry/syscalls/syscall_64.tbl</code> 및 x86-64 syscall calling convention(공개 syscall table 문서) 기준.</li><li>glibc가 <code>open</code>을 내부적으로 <code>openat</code> 시스템콜로 구현하는 경향: glibc 릴리스 노트 및 <code>strace</code> 실측 관찰 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

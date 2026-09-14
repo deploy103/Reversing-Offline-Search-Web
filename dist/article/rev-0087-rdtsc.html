@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RDTSC: 타이밍 측정과 안티디버깅 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>RDTSC: 타이밍 측정과 안티디버깅</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>RDTSC</code>(Read Time-Stamp Counter)는 오퍼랜드 없이 실행하며, CPU 리셋 이후 누적된 사이클 카운터(타임스탬프)를 64비트 값으로 읽어와 <strong>상위 32비트는 <code>EDX</code>, 하위 32비트는 <code>EAX</code></strong>에 담아주는 명령이다. 정상적으로는 고정밀 시간 측정/프로파일링에 쓰이지만, 리버싱에서는 <strong>"코드 블록 실행 전후로 두 번 호출해 걸린 사이클 수를 비교, 비정상적으로 느리면 디버거/싱글스텝/에뮬레이터로 의심"하는 안티디버깅 기법</strong>의 핵심 명령어로 훨씬 자주 마주친다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>rdtsc</code>가 코드 블록 앞뒤로 두 번 나오고, 그 사이 결과를 빼서 어떤 값과 비교하는 패턴을 볼 때</li><li>디버거로 한 줄씩(Step) 실행하면 프로그램이 갑자기 종료되거나 다르게 동작하는데 원인을 못 찾을 때</li><li><code>shl edx, 20h</code> / <code>or eax, edx</code> 같은 방식으로 <code>EDX:EAX</code>를 64비트 하나로 합치는 코드를 볼 때</li><li><code>rdtscp</code>라는 변형 명령을 봤을 때 <code>rdtsc</code>와 뭐가 다른지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>RDTSC의 기본 동작</h3>
+<pre><code>오퍼랜드 없음
+실행 후: EDX = TSC 상위 32비트,  EAX = TSC 하위 32비트
+(x64에서는 RDX, RAX의 상위 32비트도 0으로 클리어됨)</code></pre>
+<p>TSC(Time-Stamp Counter)는 대부분의 현대 CPU에서 <strong>고정 주파수로 계속 증가하는 64비트 카운터</strong>다(Invariant TSC — CPU 클럭이 절전 모드 등으로 변해도 일정한 속도로 증가하도록 설계됨, Intel/AMD 최신 CPU 대부분 지원). 명령어 하나 실행에 걸리는 사이클 수는 몇 사이클 정도로 매우 작기 때문에, 두 시점의 <code>RDTSC</code> 값을 빼면 그 사이 코드가 실제로 CPU에서 몇 사이클 만에 실행됐는지 매우 정밀하게 잴 수 있다.</p>
+<h3>레지스터 효과</h3>
+<ul><li><strong>소스</strong>: 없음(하드웨어 내부 카운터).</li><li><strong>목적지</strong>: <code>EDX:EAX</code>(상위:하위) — 항상 이 순서다. 64비트 값으로 합치려면 보통 다음과 같은 코드가 뒤따른다:</li></ul>
+<pre><code class="language-asm">  rdtsc
+  shl     rdx, 32
+  or      rax, rdx        ; rax = 64비트 타임스탬프</code></pre>
+<p>또는 32비트 코드에서는 스택에 각각 push해서 나중에 64비트 뺄셈(<code>sub</code>+<code>sbb</code>)으로 처리하기도 한다.</p>
+<ul><li><code>RDTSCP</code>(확장판, 오퍼랜드 없음)는 <code>EDX:EAX</code>에 더해 <strong><code>ECX</code>에 현재 CPU 코어를 식별하는 값(IA32_TSC_AUX)</strong>까지 반환하고, 무엇보다 <strong>이전 명령들이 다 끝난 뒤에(직렬화 보장) 읽는다</strong>는 차이가 있다 — <code>RDTSC</code>는 비순차 실행(out-of-order execution) 때문에 주변 명령과 순서가 뒤섞여 읽힐 수 있어, 정밀 측정을 할 때는 <code>RDTSCP</code>나 <code>CPUID</code>(직렬화 명령)를 앞뒤에 배치해 순서를 강제하는 경우가 많다.</li></ul>
+<h3>플래그 변화</h3>
+<p><code>RDTSC</code>는 <strong>EFLAGS를 바꾸지 않는다.</strong></p>
+<h3>스택/RIP 변화</h3>
+<p>직접적인 영향 없음. 사용자 모드에서 커널 개입 없이 즉시 실행된다(단, <code>CR4</code>의 <code>TSD</code> 비트가 설정되어 있고 CPL&gt;0이면 예외가 발생할 수도 있지만, 일반 애플리케이션 환경에서는 대부분 특권 없이 바로 실행 가능하다).</p>
+<h2>안티디버깅 관점에서의 의미 (핵심)</h2>
+<p><code>RDTSC</code>는 CPUID(REV-0086)와 함께 "패킹/안티분석" 단계에서 반드시 알아야 하는 대표적인 타이밍 기반 안티디버깅 명령이다. 핵심 아이디어는 단순하다:</p>
+<blockquote><p><strong>디버거로 브레이크포인트를 걸거나 한 줄씩(Step Into/Over) 실행하면, 그 사이에 실제 "벽시계 시간"과 "CPU 사이클"이 정상 실행 때보다 훨씬 더 많이 소비된다.</strong></p></blockquote>
+<p>이를 이용한 전형적인 안티디버깅 패턴:</p>
+<pre><code class="language-asm">rdtsc
+mov     esi, eax          ; 시작 타임스탬프(하위 32비트만 써도 충분한 경우가 많음)
+
+; --- 여기서 보호하려는 코드/체크 로직이 실행됨 ---
+
+rdtsc
+sub     eax, esi           ; 경과 사이클 수
+cmp     eax, 0x100000       ; 임계값(threshold)과 비교
+ja      debugger_detected    ; 너무 오래 걸렸다 -&gt; 디버거/싱글스텝 의심</code></pre>
+<ul><li><strong>정상 실행</strong>: 두 <code>rdtsc</code> 사이 코드가 몇십~몇백 사이클 만에 끝난다.</li><li><strong>디버거로 싱글스텝하며 관찰 중</strong>: 사람이 F7/F8을 누르는 사이의 실제 시간이 수백만 사이클 이상 걸리므로, 차이값이 임계값을 훌쩍 넘는다.</li><li><strong>브레이크포인트로 멈춰 있다가 재개</strong>: 마찬가지로 그 사이 경과 시간이 비정상적으로 커진다.</li></ul>
+<p><strong>CPUID와의 결합</strong>: <code>CPUID</code>는 가상화 환경에서 하이퍼바이저가 가로채 처리해야 하는 명령이라 실행 시간이 원래보다 오래 걸린다. 그래서 <code>rdtsc</code> → <code>cpuid</code> → <code>rdtsc</code> 순서로 감싸서 "이 CPUID 실행이 비정상적으로 느리면 VM 위에서 돌고 있다"고 판단하는 결합 기법도 흔하다(REV-0086 예제 4 참고). 이 경우 <code>RDTSC</code>는 시간 측정 도구, <code>CPUID</code>는 트랩을 유발하는 대상으로 역할이 나뉜다.</p>
+<p><strong>분석 시 대응</strong>: 이런 타이밍 체크를 우회하는 표준적인 방법들:</p>
+<ul><li>두 <code>rdtsc</code> 사이의 <code>cmp</code>/<code>jcc</code> 분기를 패치(무조건 "정상" 경로로 가도록 NOP 처리 또는 조건 반전)</li><li>디버거의 하드웨어 브레이크포인트를 최소화하고, 가능하면 소프트웨어 브레이크포인트(<code>INT3</code>) 대신 조건부 로깅으로 관찰</li><li>일부 고급 디버거/플러그인은 <code>RDTSC</code> 실행 결과 자체를 후킹해서 "항상 일정한 값 증가분"을 반환하도록 조작(타임 워핑)해 이 탐지를 무력화하기도 한다.</li></ul>
+<h2>컴파일러 패턴</h2>
+<p>일반 애플리케이션에서 <code>RDTSC</code>는 <strong>고정밀 프로파일링/벤치마킹</strong>(예: <code>__rdtsc()</code> 인트린식을 사용한 성능 측정 코드) 목적으로도 쓰인다. 안티디버깅 코드와 구분하는 기준은 대개 다음과 같다:</p>
+<ul><li>프로파일링 코드는 측정 결과를 로그/통계로 쓰고, 그 결과에 따라 프로그램의 "정상 동작 여부"를 바꾸지 않는다.</li><li>안티디버깅 코드는 측정 결과를 임계값과 비교해서 <strong>바로 분기(종료, 오동작 유도, 경로 변경)</strong>로 이어진다.</li></ul>
+<p><code>rdtsc</code> 직후 바로 <code>cmp</code>/임계값 비교 후 조건 분기가 이어진다면 안티디버깅일 가능성이 매우 높다.</p>
+<h2>IDA/Ghidra 디컴파일에서 보이는 방식</h2>
+<p><code>__rdtsc()</code> 인트린식 호출로 인식되어 <code>unsigned __int64 t1 = __rdtsc();</code> 형태로 깔끔하게 보이는 경우가 많다. 인식이 안 되면 <code>EDX:EAX</code> 합성 코드(<code>shl</code>+<code>or</code>)까지 포함해서 raw 어셈블리 스타일의 대입문으로 남는다. 두 번의 <code>__rdtsc()</code> 호출과 그 차이값을 비교하는 <code>if</code> 문이 바로 이어지면 안티디버깅 패턴으로 강하게 의심할 수 있다.</p>
+<h2>리버싱 관점에서의 의미</h2>
+<ul><li>타이밍 기반 안티디버깅은 정적 분석만으로는 우회 여부를 판단하기 어렵고, 실제로 동적 실행(디버거) 환경에서 값이 어떻게 변하는지 직접 관찰해야 확실히 알 수 있다.</li><li>코드 안에서 <code>rdtsc</code>가 등장하는 위치를 Xref로 전수 조사해두면, 나중에 "이 근처에서 디버거가 튕긴다"는 증상이 나왔을 때 바로 후보 지점을 좁힐 수 있다.</li><li>VM 탐지(REV-0086)와 디버거 탐지(RDTSC)는 종종 같은 "패키징/안티분석" 계층에 함께 배치되므로, 하나를 찾으면 근처에 다른 하나도 있는지 확인하는 습관이 유용하다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>rdtsc</code>(또는 <code>rdtscp</code>)를 봤다면 가장 먼저 확인할 것:</p>
+<ol><li><strong><code>rdtsc</code>가 몇 번 나오는가.</strong> 딱 한 번뿐이면 대개 프로파일링용, 두 번(전/후)이고 그 사이 값을 빼는 코드가 있으면 타이밍 안티디버깅 후보다.</li><li><strong>두 번째 <code>rdtsc</code> 이후 결과를 무엇과 비교하는지</strong> — 상수 임계값과 <code>cmp</code> 후 조건 분기로 이어지면 안티디버깅이 거의 확실하다.</li><li><strong>분기 목표가 "정상 종료"인지 "비정상 동작"인지</strong> — 그 블록에 <code>exit</code>, 이상한 값 리턴, 무한루프 등이 있는지 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<ol><li><code>rdtsc</code> 위치를 찾으면 그 앞뒤로 또 다른 <code>rdtsc</code>가 있는지(짝을 이루는지) 위아래를 훑어본다.</li><li>두 <code>rdtsc</code> 사이에 있는 코드(보호 대상 블록)가 무엇을 하는지 대략 파악한다 — 이게 "디버거가 느리게 만드는" 그 로직이다.</li><li>두 번째 <code>rdtsc</code> 직후의 <code>sub</code>(차이 계산), 그다음 <code>cmp</code>(임계값), 그다음 <code>ja</code>/<code>jg</code> 등 분기를 순서대로 읽는다.</li><li>임계값 상수를 적어두고, 분기 목표 블록을 확인해 "탐지됨" 처리가 무엇인지 파악한다.</li><li>실제 우회가 필요하면(교육/CTF 목적), 디버거에서 그 비교/분기 명령을 NOP 처리하거나 조건을 반전시켜 항상 "정상" 경로로 가도록 패치한다.</li><li>확신이 안 서면 정상 실행(디버거 없이)과 디버거로 브레이크포인트를 건 실행 두 경우에서 각각 <code>RCX</code>(또는 저장된 차이값)가 실제로 얼마나 다른지 로그를 찍어 비교한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>Alt+T</code>(텍스트 검색으로 <code>rdtsc</code> 시퀀스 전수 검색), <code>F5</code>(디컴파일 — <code>__rdtsc()</code> 인식 확인), 분기 명령 우클릭 → 패치 도구로 NOP 변환</li><li>x64dbg: 두 번째 <code>rdtsc</code> 직후의 <code>cmp</code>/<code>ja</code> 줄에 브레이크포인트(<code>F2</code>), <code>F9</code>로 실행 후 EAX(경과 사이클)와 임계값 비교, 분기 명령을 우클릭 → "Assemble"로 직접 패치</li><li>GDB/Pwndbg: <code>break *0x&lt;두번째_rdtsc_다음주소&gt;</code>, <code>info registers eax</code>로 경과 사이클 확인, <code>set $eax = 0</code>처럼 레지스터를 직접 조작해 임계값 비교를 무력화한 뒤 <code>continue</code>로 진행</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>RDTSC</code> 결과가 절대 시각(벽시계 시간)이라고 착각하는 것 — 실제로는 CPU 리셋 이후의 <strong>상대적 사이클 카운트</strong>이며, 절대 시각으로 변환하려면 CPU 주파수 정보가 추가로 필요하다.</li><li><code>EAX</code>만 보고 <code>EDX</code>(상위 32비트)를 무시하는 것 — 짧은 구간 측정에서는 하위 32비트만 봐도 충분한 경우가 많지만, 오래 실행되는 프로그램에서는 <code>EDX</code>까지 합쳐야 정확한 64비트 값이 나온다.</li><li>모든 <code>rdtsc</code> 사용을 안티디버깅으로 단정하는 것 — 정상적인 프로파일링/벤치마킹 코드에도 흔히 쓰인다. 결과를 어떻게 쓰는지(분기 여부)로 구분해야 한다.</li><li><code>RDTSC</code>와 <code>RDTSCP</code>를 완전히 같다고 보는 것 — <code>RDTSCP</code>는 코어 식별자(<code>ECX</code>)를 추가로 주고, 실행 순서 보장(직렬화) 특성이 다르다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>디버거로 스텝할 때마다 프로그램이 이상해진다면 → 코드 안에서 <code>rdtsc</code>를 검색(문자열이 아니라 명령어 검색, IDA에서 <code>Alt+T</code> 텍스트 검색 또는 시퀀스 검색)해서 타이밍 체크 위치를 특정한다.</li><li>두 <code>rdtsc</code> 사이의 임계값이 궁금하면 → <code>cmp</code>/<code>ja</code>/<code>jb</code> 등 비교 직후 상수를 확인한다.</li><li>우회가 필요하면 → 해당 분기 명령을 무조건 "정상" 경로로 가도록 패치하거나, 그 분기의 조건을 반전시킨다(교육/CTF 목적에 한함).</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 기본 타이밍 안티디버깅 패턴</strong></p>
+<pre><code class="language-asm">rdtsc
+mov     esi, eax           ; t1
+
+; 보호 대상 코드 블록
+
+rdtsc
+sub     eax, esi            ; 경과 사이클
+cmp     eax, 50000
+ja      debugger_detected</code></pre>
+<p><strong>예제 2 — 64비트 값으로 합쳐서 정밀 비교</strong></p>
+<pre><code class="language-asm">rdtsc
+shl     rdx, 32
+or      rax, rdx
+mov     r14, rax             ; t1 (64비트 전체)
+
+; 보호 대상 코드 블록
+
+rdtsc
+shl     rdx, 32
+or      rax, rdx
+sub     rax, r14
+cmp     rax, 1000000
+ja      timing_anomaly</code></pre>
+<p><strong>예제 3 — RDTSCP로 코어 이동/직렬화까지 고려한 정밀 측정</strong></p>
+<pre><code class="language-asm">rdtscp              ; edx:eax = tsc, ecx = 코어 식별자(IA32_TSC_AUX)
+mov     r15d, ecx     ; 코어 번호 저장 (코어가 바뀌면 TSC 값 비교가 무의미해질 수 있음)
+shl     rdx, 32
+or      rax, rdx</code></pre>
+<p><strong>예제 4 — 정상적인 프로파일링 용도 (안티디버깅 아님)</strong></p>
+<pre><code class="language-c">unsigned __int64 t1 = __rdtsc();
+do_work();
+unsigned __int64 t2 = __rdtsc();
+printf("elapsed cycles: %llu\n", t2 - t1);   // 조건 분기로 안 이어짐 -&gt; 순수 계측용</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0086-cpuid.html">rev-0086-cpuid.md</a> — CPUID: CPU 정보와 안티VM 단서 (타이밍 기반 VM/디버거 탐지에서 RDTSC와 결합되는 명령)</li><li><a href="rev-0071-call.html">rev-0071-call.md</a> — CALL: 함수 호출, 반환 주소, 인자 추적</li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>RDTSC</code>/<code>RDTSCP</code> 명령어 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "RDTSC—Read Time-Stamp Counter" 및 "RDTSCP—Read Time-Stamp Counter and Processor ID" 섹션 기준 (2026-09-08 검증).</li><li>Invariant TSC(고정 주파수 카운터) 특성: Intel SDM Volume 3B, "Time-Stamp Counter" 섹션 기준.</li><li>타이밍 기반 안티디버깅/안티VM 기법(RDTSC/CPUID 결합): 일반적인 악성코드 분석 및 안티디버깅 기법 관련 공개 리버싱 레퍼런스 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

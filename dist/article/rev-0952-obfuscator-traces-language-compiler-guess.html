@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Obfuscator 흔적으로 원본 언어/컴파일러 추정하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / packing</div>
+<article class="article-body">
+<h1>Obfuscator 흔적으로 원본 언어/컴파일러 추정하기</h1>
+<div class="article-meta"><span class="tag">packing</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">DIE</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>패킹/난독화가 걸려 있어 DIE의 컴파일러 자동 인식이 실패하더라도, 런타임 라이브러리 특유의 초기화 루틴 패턴, 예외 처리 구조, 문자열 스타일, 심볼 네이밍 규칙 같은 "언패킹 이후에도 남는 간접 단서"들을 조합하면 원본이 C/C++(MSVC/MinGW/GCC), Delphi, Go, Rust 중 어느 쪽으로 컴파일되었는지 상당히 좁혀서 추정할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>DIE로 컴파일러 자동 인식을 시도했는데 패킹 때문에 <code>Unknown compiler</code>만 나올 때</li><li>언패킹은 끝났지만(REV-0944~0946) 원본이 어떤 언어/컴파일러로 만들어졌는지 알아야 다음 분석 전략(예: C++ vtable 구조 가정, Go의 goroutine 구조 가정)을 세울 수 있을 때</li><li>함수 이름이 mangled(예: <code>_Z3fooi</code>, <code>?foo@@YAHH@Z</code>)되어 있어서 C++ 계열임은 알겠는데 정확히 어떤 컴파일러인지 궁금할 때</li><li>CTF 문제 바이너리가 특이하게 생겨서(예: 굉장히 큰 파일 크기에 런타임 관련 심볼이 많음) Go나 Rust로 짜인 것 아닌가 의심될 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 원본 언어/컴파일러를 알아야 하는가</h3>
+<p>원본 언어를 알면 분석 전략이 크게 달라진다. C++로 컴파일된 바이너리는 vtable과 가상 함수 호출 패턴을 예상해야 하고, Go 바이너리는 goroutine 스케줄러와 자체 런타임 문자열 테이블을 예상해야 하며, Delphi 바이너리는 독자적인 문자열 표현 방식(길이 접두 문자열)과 VCL 프레임워크 흔적을 예상해야 한다. 패킹/난독화가 이런 단서 상당수를 지워버리지만, 완전히 지우기는 어렵다 — 언어/런타임 자체의 구조적 특징까지 지우려면 훨씬 정교한 처리가 필요하기 때문이다.</p>
+<h3>언패킹 후에도 남는 단서들</h3>
+<p><strong>1) 런타임 초기화 루틴 패턴</strong></p>
+<ul><li><strong>MSVC</strong>: <code>__scrt_common_main</code>, <code>_initterm</code>, <code>_CRT_INIT</code> 계열 함수 호출 순서. 언패킹 후 FLIRT 시그니처가 이 함수들을 인식하는 경우가 많다.</li><li><strong>MinGW/GCC</strong>: <code>__mingw_CRTStartup</code>, <code>_gnu_exception_handler</code> 같은 이름이나, MSVC와 다른 예외 처리 방식(SEH 대신 GCC 스타일의 언와인딩 테이블).</li><li><strong>Go</strong>: 실행 파일 크기가 유난히 크고(정적 링크로 런타임 전체 포함), <code>runtime.morestack</code>, <code>runtime.newproc</code> 같은 문자열이 심볼이 strip되어도 <code>.rodata</code>에 경로 문자열(<code>/usr/local/go/src/runtime/...</code>) 형태로 남아있는 경우가 흔하다.</li><li><strong>Rust</strong>: panic 메시지에 <code>src/main.rs</code>, <code>RUST_BACKTRACE</code> 같은 문자열, 또는 <code>core::panicking::panic</code> 관련 심볼.</li><li><strong>Delphi</strong>: 진입점 근처에 <code>System_초기화</code> 관련 특유의 코드 패턴, VCL 관련 클래스명 문자열(<code>TForm1</code>, <code>TApplication</code> 등)이 자주 남는다.</li></ul>
+<p><strong>2) 예외 처리 구조</strong></p>
+<ul><li>MSVC C++는 SEH(Structured Exception Handling) 기반 예외 테이블을 쓴다.</li><li>GCC/Clang 계열은 DWARF 기반 언와인딩 정보(<code>.eh_frame</code> 유사 구조, PE에서는 <code>.pdata</code>/<code>.xdata</code>)를 쓰는 경우가 많다.</li><li>이 차이는 언패킹된 PE의 예외 관련 디렉토리(Exception Directory)나 함수 프롤로그 패턴에서 드러난다.</li></ul>
+<p><strong>3) 심볼 네이밍(Name Mangling) 규칙</strong></p>
+<ul><li>C++ MSVC: <code>?funcName@ClassName@@QAEXXZ</code> 형태의 독자적 mangling</li><li>C++ Itanium ABI(GCC/Clang/MinGW): <code>_Z3fooi</code> 형태</li><li>이 mangling 규칙은 strip되지 않은 심볼이 하나라도 남아있으면(예외 처리 관련 RTTI 정보 등) 바로 컴파일러 계열을 확정해준다.</li></ul>
+<p><strong>4) 문자열 스타일</strong></p>
+<ul><li>Delphi/Pascal 계열: 문자열 앞에 길이 바이트/워드가 붙는 "길이 접두 문자열(length-prefixed string)" 구조를 쓰는 경우가 있어 일반 널 종단 문자열과 바이트 배치가 다르게 보인다.</li><li>Go: UTF-8 기반이며 문자열이 (포인터, 길이) 구조체 쌍으로 표현되어, 문자열 리터럴 접근 코드에 항상 길이 값이 함께 로드되는 패턴이 보인다.</li></ul>
+<h3>종합 판단 원칙</h3>
+<p>하나의 단서만으로 확정하지 말고 여러 단서를 겹쳐서 판단한다. 예를 들어 "파일 크기가 크다 + <code>.rodata</code>에 <code>runtime.</code> 접두 경로 문자열이 있다 + 심볼이 많다"가 함께 나오면 Go로 거의 확정할 수 있지만, 파일 크기만 크다고 Go로 단정하면 안 된다(정적 링크된 C/C++일 수도 있다, REV-0646 참고).</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>strings unpacked.exe</code>에서 <code>/usr/local/go/src/...</code> 또는 <code>GOROOT</code> 유사 경로 문자열 → Go</li><li><code>strings</code>에서 <code>panicked at</code>, <code>RUST_BACKTRACE</code>, <code>src/main.rs</code> → Rust</li><li>IDA에서 심볼이 <code>?Method@ClassA@@...</code> 형태 → MSVC C++</li><li>심볼이 <code>_ZN5ClassA6MethodEv</code> 형태 → GCC/Clang(Itanium ABI) C++</li><li>entry point 근처에 <code>TObject</code>, <code>TForm</code>, <code>System.@</code> 관련 흔적 → Delphi</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>언패킹이 끝난 파일에 대해 먼저 <code>strings unpacked.exe | grep -iE "go/src|rust|panic|delphi|borland"</code> 같은 간단한 필터링부터 돌려본다. 이 한 줄로 상당수의 경우 언어 계열이 바로 드러난다. 안 나오면 DIE로 재스캔(언패킹 후에는 컴파일러 인식이 성공하는 경우가 많다)하고, 그래도 안 되면 심볼 mangling 패턴을 직접 찾는다.</p>
+<h2>단계별 절차</h2>
+<ol><li>언패킹된 파일에 DIE를 다시 실행 — 언패킹 전에는 실패했던 컴파일러 인식이 성공하는 경우가 흔함</li><li><code>strings unpacked.exe</code>로 언어별 특징 문자열(경로, panic 메시지, 프레임워크 클래스명) 검색</li><li>IDA/Ghidra에서 strip되지 않은 심볼이 있다면 mangling 패턴 확인</li><li>entry point 근처 초기화 루틴 이름/패턴을 REV-0097~0099(ELF 기준이지만 PE도 유사한 CRT 초기화 개념)과 비교</li><li>예외 처리 디렉토리(PE의 <code>.pdata</code> 유무)와 구조 확인</li><li>여러 단서를 종합해서 언어/컴파일러 계열 결론</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li><code>strings unpacked.exe | grep -iE "go/src|rust|panic|delphi|borland|mingw"</code></li><li>DIE: <code>File → Open</code>으로 재스캔, 상단 배너의 Compiler 항목 확인</li><li>IDA: Functions 창에서 mangled 이름 검색, <code>Demangled name</code> 옵션 켜기(Options → Demangled names)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>DIE가 <code>Microsoft Visual C++</code>, <code>Borland Delphi</code>, <code>Go</code>처럼 구체적인 컴파일러를 표시하면 그대로 신뢰해도 좋다(언패킹 후에는 정확도가 높다).</li><li>mangled 심볼이 하나라도 발견되면 그 mangling 규칙만으로 C++ 컴파일러 계열(MSVC vs GCC/Clang)이 거의 확정된다.</li><li><code>runtime.</code> 접두 문자열이 다수 발견되면 Go로 거의 확정 가능하다 — Go는 정적 링크가 기본이라 런타임 소스 경로 문자열이 바이너리 안에 대량으로 남는다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>파일 크기가 크다는 이유만으로 Go/Rust라고 단정하는 것 — 정적 링크된 C/C++(REV-0646)도 크기가 클 수 있다.</li><li>패킹되어 있다고 해서 언어 추정 자체를 포기하는 것 — 언패킹 후에는 대부분의 단서가 복원된다.</li><li>하나의 문자열만 보고 확정하는 것 — 여러 단서를 겹쳐서 판단해야 오판을 줄인다.</li><li>C++ mangled 이름을 보고도 demangle하지 않고 그대로 읽으려 시도하는 것 — IDA의 Demangled names 옵션이나 <code>c++filt</code>(리눅스/WSL) 같은 도구로 변환해서 읽는 것이 훨씬 빠르다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>원본이 .NET일 가능성이 있다면 → REV-0136 .NET EXE인지 Native EXE인지 구분</li><li>정적 링크 때문에 함수가 너무 많아 헷갈린다면 → REV-0646 정적 링킹된 ELF 분석 접근법(개념은 PE에도 유사하게 적용)</li><li>언패킹 자체가 아직 안 끝났다면 → REV-0944 OEP 수동 추적 절차 심화</li><li>패킹/난독화 여부 판단부터 다시 하고 싶다면 → REV-0953 5분 판단 절차</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">$ strings unpacked.exe | grep -i "go/src"
+c:/go/src/runtime/proc.go
+c:/go/src/runtime/panic.go
+
+$ strings unpacked.exe | grep -i "runtime\."
+runtime.morestack
+runtime.newproc
+runtime.gopanic</code></pre>
+<p>이 세 가지 단서(Go 소스 경로, <code>runtime.</code> 접두 심볼, 비정상적으로 큰 파일 크기)가 함께 나오면 원본이 Go로 컴파일되었다고 높은 확신으로 결론지을 수 있다. 이후 분석에서는 Go 특유의 문자열 표현(포인터+길이 쌍)과 goroutine 스케줄링 구조를 염두에 두고 진행한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0646-statically-linked-elf-analysis.html">REV-0646 — 정적 링킹된(Statically Linked) ELF 분석 접근법</a></li><li><a href="rev-0942-commercial-protector-realistic-approach.html">REV-0942 — 상용 프로텍터(VMProtect/Themida)를 만났을 때 현실적인 대응</a></li><li><a href="rev-0944-manual-oep-tracing-advanced.html">REV-0944 — 패킹된 바이너리에서 OEP를 수동으로 추적하는 절차 심화</a></li><li><a href="rev-0136-dotnet-vs-native.html">REV-0136 — .NET EXE인지 Native EXE인지 구분</a></li><li><a href="rev-0953-packing-obfuscation-5min-triage.html">REV-0953 — 패킹/난독화 여부를 실전에서 5분 안에 판단하는 절차</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Go 바이너리의 정적 링크 특성과 <code>runtime.</code> 접두 심볼/소스 경로 잔존 현상은 Go 공식 문서(build 및 런타임 패키지 설명) 및 다수의 공개 Go 바이너리 리버싱 자료에서 공통적으로 확인되는 내용을 기준으로 정리했다.</li><li>MSVC와 Itanium ABI(GCC/Clang)의 C++ 이름 맹글링 규칙 차이는 각 컴파일러 공식 문서(Microsoft C++ ABI 문서, Itanium C++ ABI 명세)를 기준으로 확인했다(2026-09-09 검증).</li><li>Delphi/Pascal의 길이 접두 문자열 구조는 Embarcadero(Delphi) 공식 문서의 문자열 타입 설명을 참고했다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

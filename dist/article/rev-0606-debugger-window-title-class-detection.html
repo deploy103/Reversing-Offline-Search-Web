@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>디버거 창 제목/클래스명 때문에 탐지당할 때 대응 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>디버거 창 제목/클래스명 때문에 탐지당할 때 대응</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span><span class="tag">TitanHide</span><span class="tag">ScyllaHide</span></div>
+<h2>한 줄 요약</h2>
+<p>프로그램이 <code>FindWindowA</code>/<code>FindWindowW</code>나 <code>EnumWindows</code>+<code>GetClassName</code>/<code>GetWindowText</code> 조합으로 "OLLYDBG", "WinDbgFrameClass", "x64dbg" 같은 알려진 디버거 창 클래스명·제목을 찾아서 탐지하는 것이므로, 해당 API 호출 직후의 조건 분기를 IDA로 찾아 패치하거나 TitanHide/ScyllaHide로 디버거 창 자체를 창 목록 열거 결과에서 숨기면 우회된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>정상 실행하면 잘 되던 프로그램이 x64dbg/OllyDbg/IDA로 열어서 실행하면 조용히 종료되거나 다르게 동작할 때</li><li>Import 목록에 <code>FindWindowA</code>, <code>FindWindowExA</code>, <code>EnumWindows</code>, <code>GetClassNameA</code>, <code>GetWindowTextA</code> 같은 창 관련 API가 보일 때</li><li>문자열 창(Strings)에 <code>OLLYDBG</code>, <code>WinDbgFrameClass</code>, <code>Zeta Debugger</code>, <code>x64dbg</code>, <code>ID</code>(Immunity Debugger) 같은 디버거 이름 문자열이 보일 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Windows의 모든 GUI 프로그램은 창을 만들 때 "창 클래스"를 등록한다. 디버거도 예외가 아니어서, 예를 들어 OllyDbg는 메인 창의 클래스명이 항상 <code>"OLLYDBG"</code>로 고정되어 있다. 악성코드나 상용 프로텍터는 이 사실을 이용해 다음 두 API 중 하나로 실행 중인 디버거를 찾는다.</p>
+<ul><li><code>HWND FindWindowA(LPCSTR lpClassName, LPCSTR lpWindowName);</code> — 클래스명 또는 창 제목이 일치하는 최상위 창의 핸들을 찾는다. 찾으면 0이 아닌 핸들을, 없으면 <code>NULL</code>을 반환한다. <code>hnd = FindWindowA("OLLYDBG", NULL);</code>처럼 클래스명만 주고 제목은 <code>NULL</code>로 넘기는 패턴이 흔하다.</li><li><code>BOOL EnumWindows(WNDENUMPROC lpEnumFunc, LPARAM lParam);</code> — 현재 떠 있는 모든 최상위 창을 순회하며 콜백 함수를 호출한다. 콜백 안에서 <code>GetClassNameA</code>/<code>GetWindowTextA</code>로 각 창의 클래스명과 제목을 읽어와 블랙리스트 문자열과 비교하는 방식이다.</li></ul>
+<p>실제로 자주 검사되는 클래스명 블랙리스트는 대략 다음과 같다.</p>
+<pre><code class="language-text">OLLYDBG, WinDbgFrameClass, Zeta Debugger, Rock Debugger,
+ObsidianGUI, Qt5QWindowIcon, ID, ntdll.dll, SunAwtFrame</code></pre>
+<p>여기서 <code>Qt5QWindowIcon</code>은 x64dbg 같은 Qt 기반 프로그램이 공통으로 쓰는 매우 범용적인 클래스명이라, 이 값 하나만으로 판단하면 다른 정상 Qt 프로그램까지 오탐될 수 있다. 그래서 정교한 검사는 클래스명과 함께 창 제목("x64dbg", "x32dbg", "IDA - " 등)까지 같이 대조한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA의 Imports 탭에 <code>FindWindowA</code>/<code>FindWindowW</code>/<code>FindWindowExA</code>, 또는 <code>EnumWindows</code>와 <code>GetClassNameA</code>/<code>GetWindowTextA</code>가 한 세트로 존재</li><li>Strings 창(<code>Shift+F12</code>)에 <code>OLLYDBG</code>, <code>WinDbgFrameClass</code>, <code>x64dbg</code> 같은 문자열이 있고, 그 문자열에 대한 xref를 따라가면 위 API 호출 근처로 연결됨</li><li><code>FindWindowA</code> 호출 직후 반환값(<code>EAX</code>/<code>RAX</code>)을 <code>TEST</code>/<code>CMP</code>로 검사한 뒤 <code>JNZ</code>(0이 아니면 = 발견됨)로 종료 루틴이나 다른 코드 경로로 분기</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>IDA에서 Imports 탭을 열어 <code>FindWindowA</code>/<code>FindWindowW</code>/<code>EnumWindows</code>가 있는지 확인한다.</li><li>있다면 해당 함수 이름을 더블클릭해서 이동한 뒤 <code>X</code>(교차 참조 보기)로 실제로 이 함수를 호출하는 코드 위치를 모두 찾는다.</li><li>각 호출 지점 바로 뒤의 조건 분기(<code>TEST EAX, EAX</code> / <code>JNZ</code>, <code>CMP EAX, 0</code> / <code>JE</code> 등)를 확인해, "발견 시 어디로 튀는지"를 파악한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 정적으로 검사 지점 찾기</strong></p>
+<ul><li>IDA Imports 탭에서 <code>FindWindowA</code>를 찾아 더블클릭 → <code>X</code> 키로 xref 목록을 연다.</li><li>호출 직전에 클래스명 문자열을 스택/레지스터로 넘기는 부분(<code>push offset aOllydbg</code> 또는 <code>lea rcx, aOllydbg</code>)을 확인하면 어떤 문자열을 찾는지 바로 알 수 있다.</li></ul>
+<p><strong>2) 동적으로 확인하기</strong></p>
+<ul><li>x64dbg로 대상을 로드하고, <code>FindWindowA</code>에 브레이크포인트를 건다(Imports 창에서 우클릭 → "Set Breakpoint" 또는 심볼 검색 후 <code>F2</code>).</li><li>프로그램을 실행(<code>F9</code>)해서 브레이크가 걸리면, 인자(x64는 <code>RCX</code>가 클래스명 포인터)를 덤프 창에서 문자열로 확인한다.</li><li><code>RET</code>까지 실행(<code>Ctrl+F9</code> 또는 함수 끝까지 <code>F8</code> 반복)해서 반환값(<code>EAX</code>)이 0인지 아닌지 본다. 실제 디버거로 실행 중이므로 대부분 0이 아닌 값(핸들)이 나와서 탐지 로직이 발동하는 것을 직접 확인할 수 있다.</li></ul>
+<p><strong>3) 즉시 우회(1회성 패치)</strong></p>
+<ul><li>반환값 검사 직후의 조건 분기 명령어(예: <code>JNZ</code>)를 IDA/x64dbg에서 반대 분기(<code>JMP</code>로 강제) 또는 <code>NOP</code>으로 패치해 탐지 로직이 항상 "디버거 없음" 경로를 타도록 만든다.</li><li>이 방법은 검사 지점이 하나뿐일 때만 유효하며, 같은 검사가 여러 곳에 흩어져 있으면 매번 반복해야 한다.</li></ul>
+<p><strong>4) 재사용 가능한 우회(창 자체를 숨기기)</strong></p>
+<ul><li>x64dbg 플러그인인 <strong>ScyllaHide</strong>를 설치하면 <code>NtUserFindWindowEx</code>(<code>FindWindowA/W</code> 내부에서 사용)와 <code>NtUserBuildHwndList</code>(<code>EnumWindows</code> 내부에서 사용) 후킹 옵션이 있다. 이 옵션들을 켜면 대상 프로세스 입장에서는 디버거 창이 아예 목록에 나타나지 않아, 검사 지점을 하나하나 패치할 필요가 없다.</li><li>더 강력하게는 커널 드라이버 방식인 <strong>TitanHide</strong>를 사용한다. 서비스로 드라이버를 등록/시작한 뒤 <code>TitanHideGUI.exe</code>를 실행하고, 대상 PID를 입력한 다음 "창 클래스/캡션 숨김" 관련 항목을 체크하고 "Hide"를 누르면 커널 레벨에서 해당 프로세스에 한해 디버거 창을 숨겨준다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>Shift+F12</code>(Strings 창), <code>X</code>(교차 참조), 더블클릭(정의로 이동)</li><li>x64dbg: Imports 창에서 함수 우클릭 → Set Breakpoint, <code>F9</code>(실행), <code>F8</code>(스텝 오버), <code>Ctrl+F9</code>(함수 반환까지 실행)</li><li>TitanHide: 드라이버 서비스 등록 → <code>TitanHideGUI.exe</code> 실행 → PID 입력 → 항목 체크 → Hide</li><li>ScyllaHide: x64dbg 플러그인 메뉴에서 옵션 설정 → 디버거 창 클래스/캡션 숨김 활성화</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>FindWindowA</code> 반환값이 <code>0x00000000</code>이면 해당 클래스명/제목의 창을 찾지 못한 것이므로 탐지 로직은 "디버거 없음"으로 판단하고 정상 진행한다.</li><li>0이 아닌 값(예: <code>0x000A047C</code> 같은 핸들)이 나오면 해당 창이 실제로 열려 있다는 뜻이며, 이 값을 기준으로 종료 분기가 타게 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>Qt5QWindowIcon</code>처럼 범용적인 클래스명 검사까지 다 무력화하려다가, 정작 진짜 탐지 지점(구체적인 창 제목 비교)을 놓치는 경우가 있다. 반드시 xref로 실제 비교되는 문자열 상수를 같이 확인해야 한다.</li><li>검사 지점을 패치했다고 안심했다가, 같은 검사가 다른 함수에도 중복으로 들어있어서(특히 상용 프로텍터는 여러 곳에 분산 삽입) 다시 걸리는 경우가 흔하다. 문자열 xref를 끝까지 다 확인해야 한다.</li><li>ScyllaHide/TitanHide의 옵션을 무작정 전부 켜면 디버거 자체의 안정성이 떨어지거나 다른 정상 동작(예: 실제 예외 처리)까지 왜곡될 수 있다. 필요한 항목만 최소로 켜는 것이 좋다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>창 검사와 별개로 <code>IsDebuggerPresent</code>도 같이 걸리는 것 같다면 → REV-0130을 확인한다.</li><li><code>CheckRemoteDebuggerPresent</code>나 PEB의 <code>BeingDebugged</code> 필드 검사가 섞여 있다면 → REV-0131, REV-0132를 확인한다.</li><li>창 검사는 통과했는데 하드웨어 브레이크포인트가 갑자기 사라진다면 → REV-0607을 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p>IDA에서 다음과 같은 의사코드를 확인했다고 하자.</p>
+<pre><code class="language-c">if ( FindWindowA("OLLYDBG", 0) )
+{
+    ExitProcess(0);
+}</code></pre>
+<p>x64dbg로 <code>FindWindowA</code>에 브레이크를 걸고 실행하면, <code>RCX</code>에 <code>"OLLYDBG"</code> 문자열 포인터가 들어있는 것을 확인할 수 있다(실제 이 프로그램을 OllyDbg로 열지 않았다면 반환값은 0이라 정상 통과한다). x64dbg 자체를 감지하려는 최신 검사라면 클래스명 대신 창 제목에 <code>"x64dbg"</code> 또는 <code>"x32dbg"</code> 문자열을 비교하는 형태로 바뀌어 있을 수 있으니, Strings 창에서 <code>"x64dbg"</code>도 함께 검색해보는 것이 좋다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0130-isdebuggerpresent.html">REV-0130 — IsDebuggerPresent 안티디버깅 식별</a></li><li><a href="rev-0131-checkremotedebuggerpresent.html">REV-0131 — CheckRemoteDebuggerPresent 식별</a></li><li><a href="rev-0132-peb-beingdebugged.html">REV-0132 — PEB BeingDebugged 검사 이해</a></li><li><a href="rev-0607-hardware-breakpoint-disappears.html">REV-0607 — 하드웨어 브레이크포인트가 갑자기 사라질 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>FindWindow</code>/<code>EnumWindows</code>를 이용한 디버거 창 클래스명 탐지는 al-khaser 등 공개 안티디버깅 예제 프로젝트와 다수의 악성코드 분석 자료에서 반복적으로 확인되는 패턴이다.</li><li>OllyDbg의 창 클래스명이 <code>"OLLYDBG"</code>로 고정되어 있다는 사실과 <code>FindWindow</code> 기반 탐지 코드 패턴은 공개된 안티디버깅 기법 정리 자료(al-khaser, Checkpoint Evasion Techniques 문서 등) 기준이다.</li><li>ScyllaHide가 <code>NtUserFindWindowEx</code>/<code>NtUserBuildHwndList</code>를 후킹해 창 열거/검색 결과에서 디버거 창을 숨기는 기능을 제공한다는 점, TitanHide가 커널 드라이버로 유사한 은닉을 제공한다는 점은 ScyllaHide/TitanHide 공식 GitHub 저장소 및 문서(x64dbg/ScyllaHide, mrexodia/TitanHide) 기준이다(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

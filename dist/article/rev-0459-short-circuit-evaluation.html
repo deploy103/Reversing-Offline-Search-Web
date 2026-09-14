@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>여러 조건(&amp;&amp;, ||)이 단축 평가로 컴파일되는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>여러 조건(&amp;&amp;, ||)이 단축 평가로 컴파일되는 패턴</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>C/C++의 <code>&amp;&amp;</code>와 <code>||</code>는 (비트 연산 <code>&amp;</code>/<code>|</code>와 달리) 왼쪽 피연산자만으로 결과가 확정되면 오른쪽 피연산자를 아예 평가하지 않는 "단축 평가(short-circuit evaluation)"가 언어 규칙으로 보장되며, 이는 어셈블리에서 하나의 <code>AND</code>/<code>OR</code> 비트 연산이 아니라 <strong>조건부 분기(<code>jcc</code>)의 연쇄</strong>로 컴파일된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>if (a &amp;&amp; b)</code> 같은 코드가 왜 <code>and</code> 명령 하나가 아니라 <code>cmp</code>+<code>jcc</code>가 두 번 연달아 나오는지 궁금할 때</li><li><code>if (ptr != NULL &amp;&amp; ptr-&gt;value &gt; 0)</code> 처럼 앞 조건이 뒤 조건의 안전을 보장해주는 패턴에서, 뒤 조건에 해당하는 함수 호출이 특정 경로에서만 실행되는(호출 자체가 아예 없는 명령어 경로가 있는) 이유를 알고 싶을 때</li><li>디버거로 실행했는데 <code>||</code>의 두 번째 함수가 호출 안 되는 게 버그처럼 보여서 원인을 찾을 때</li><li>여러 조건이 어떻게 컴파일되는지 보고 소스의 조건 개수와 순서를 역으로 추정하고 싶을 때(CTF 검증 로직 분석)</li></ul>
+<h2>핵심 개념</h2>
+<h3>단축 평가란 무엇인가</h3>
+<p><code>a &amp;&amp; b</code>는 다음과 같은 규칙으로 평가된다:</p>
+<ol><li><code>a</code>를 평가한다.</li><li><code>a</code>가 거짓(0)이면 <code>b</code>는 <strong>평가하지 않고</strong> 전체 결과를 거짓으로 확정한다.</li><li><code>a</code>가 참(0이 아님)이면 그때만 <code>b</code>를 평가하고, <code>b</code>의 참/거짓이 곧 전체 결과가 된다.</li></ol>
+<p><code>a || b</code>는 반대로:</p>
+<ol><li><code>a</code>가 참이면 <code>b</code>를 평가하지 않고 전체를 참으로 확정한다.</li><li><code>a</code>가 거짓일 때만 <code>b</code>를 평가한다.</li></ol>
+<p>이 순서와 "평가하지 않음"은 C/C++ 표준이 <strong>명시적으로 보장</strong>하는 동작이다. 그냥 최적화 힌트가 아니라 프로그램의 의미(semantics) 그 자체다. 그래서 <code>b</code>에 함수 호출이나 부작용(side effect)이 있으면, 컴파일러는 반드시 이 순서를 지켜야 하고 <code>b</code>를 아예 실행하지 않는 코드 경로를 만들어야 한다.</p>
+<h3>왜 AND/OR 명령이 아니라 분기 체인인가</h3>
+<p>비트 연산 <code>&amp;</code>/<code>|</code>(어셈블리 <code>AND</code>/<code>OR</code>)는 두 값을 <strong>항상 둘 다 계산</strong>한 다음 비트 단위로 합친다. 하지만 단축 평가는 "둘째 값을 계산 안 할 수도 있다"는 게 핵심이므로, 이를 표현하려면 필연적으로 <strong>분기(jump)</strong>가 필요하다. 그래서 <code>if (a &amp;&amp; b) { body }</code>는 전형적으로 다음과 같이 컴파일된다:</p>
+<pre><code class="language-asm">; if (a &amp;&amp; b) { body }
+    &lt;a 평가&gt;
+    jcc_a_false   L_else     ; a가 거짓이면 b를 건너뛰고 바로 else/end로
+    &lt;b 평가&gt;
+    jcc_b_false   L_else     ; a는 참이었지만 b가 거짓이면 else/end로
+L_then:
+    &lt;body&gt;
+L_else:</code></pre>
+<p><code>||</code>의 경우는 방향이 반대다:</p>
+<pre><code class="language-asm">; if (a || b) { body }
+    &lt;a 평가&gt;
+    jcc_a_true    L_then      ; a가 참이면 곧바로 body로 (b는 평가 안 함)
+    &lt;b 평가&gt;
+    jcc_b_false   L_else
+L_then:
+    &lt;body&gt;
+L_else:</code></pre>
+<p>핵심은 각 조건마다 <strong>자신만의 <code>cmp</code>+<code>jcc</code> 블록</strong>이 있고, 앞 조건이 이미 결과를 확정지으면 뒤 조건의 <code>cmp</code>/<code>call</code>은 <strong>CPU가 그 명령어 자체를 아예 실행하지 않는다</strong>는 점이다. 정적 디스어셈블리에는 뒤 조건의 명령어들이 코드로 존재하지만(바이트로 존재), 특정 실행 경로에서는 그 명령어들에 도달하지 않는다.</p>
+<h3>컴파일러가 분기 없이 처리하는 경우 (예외)</h3>
+<p>피연산자에 부작용이 전혀 없다는 것을 컴파일러가 증명할 수 있으면(순수 비교식만 있는 경우), <code>-O2</code> 이상에서는 성능을 위해 분기를 없애고 <strong>SETcc + 비트 AND/OR</strong>로 바꿔버리는 경우가 있다.</p>
+<pre><code class="language-c">if (x &gt; 0 &amp;&amp; x &lt; 10) { ... }</code></pre>
+<pre><code class="language-asm">; 분기 없는 최적화 버전 (부작용 없는 순수 비교라서 가능)
+    cmp   edi, 1
+    setg  al                ; x &gt; 0
+    cmp   edi, 10
+    setl  cl                ; x &lt; 10
+    and   al, cl              ; 두 결과를 AND로 합침 — 이제야 AND 명령 등장
+    test  al, al
+    jz    L_else</code></pre>
+<p>또는 부호 없는 비교로 범위 검사 하나로 합치는 최적화도 흔하다(<code>x-1 &lt; 9</code>가 <code>x&gt;0 &amp;&amp; x&lt;10</code>과 같음을 이용, REV-0456의 unsigned trick과 동일한 발상).</p>
+<pre><code class="language-asm">    lea   eax, [edi-1]
+    cmp   eax, 8
+    jae   L_else              ; (x-1) unsigned &gt;= 9 이면 범위 밖</code></pre>
+<p><strong>하지만 이건 어디까지나 "결과가 같음을 증명할 수 있을 때"의 최적화</strong>다. 오른쪽 피연산자에 함수 호출, 메모리 역참조(포인터 dereference), 배열 접근처럼 크래시를 유발할 수 있는 부작용이 있다면 컴파일러는 절대 이 최적화를 적용하지 못한다 — 반드시 분기로 단축 평가를 실제로 지켜야 한다.</p>
+<h3>null 체크 관용구와의 연관성</h3>
+<p><code>if (ptr != NULL &amp;&amp; ptr-&gt;value &gt; 0)</code>은 단축 평가가 실제로 <strong>안전성 보장</strong>에 쓰이는 가장 흔한 예다. <code>ptr</code>이 NULL이면 <code>&amp;&amp;</code>의 왼쪽에서 이미 거짓이 확정되므로 오른쪽의 <code>ptr-&gt;value</code>(포인터 역참조)는 절대 평가되지 않아 NULL dereference 크래시를 피한다. 이 관용구를 어셈블리에서 보면:</p>
+<pre><code class="language-asm">    test  rdi, rdi            ; ptr != NULL 체크
+    jz    L_false               ; NULL이면 바로 실패 — 아래 mov는 실행 안 됨
+    mov   eax, [rdi+8]         ; ptr-&gt;value (ptr이 NULL이 아님이 보장된 뒤에만 실행)
+    test  eax, eax
+    jle   L_false</code></pre>
+<h3>평가 순서는 항상 왼쪽에서 오른쪽</h3>
+<p>C/C++ 표준은 <code>&amp;&amp;</code>, <code>||</code>의 평가 순서를 왼쪽→오른쪽으로 고정한다. 그래서 여러 조건이 체인으로 연결된 코드(<code>a &amp;&amp; b &amp;&amp; c</code>)에서 <strong>가장 먼저 나오는 <code>cmp</code>/<code>jcc</code> 블록이 소스에서 가장 왼쪽에 있던 조건</strong>이라고 신뢰하고 읽을 수 있다. 이는 리버싱에서 조건의 순서를 역추적할 때 유용한 규칙이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>한 <code>if</code> 안에 <code>cmp</code>+<code>jcc</code> 쌍이 여러 개 연속으로 나오고, 각 쌍의 실패 목적지가 모두 같은 라벨(else/실패 지점)로 모인다 → <code>&amp;&amp;</code> 체인</li><li>여러 <code>cmp</code>+<code>jcc</code> 쌍의 <strong>성공</strong> 목적지가 모두 같은 라벨(then/성공 지점)로 모인다 → <code>||</code> 체인</li><li>함수 호출(<code>call</code>)이 바로 앞의 분기 실패/성공 여부에 따라 도달하지 못할 수 있는 위치에 있다 → 오른쪽 피연산자가 함수 호출인 단축 평가</li><li><code>and</code>/<code>or</code> 비트 명령과 <code>setcc</code>가 함께 나오면서 분기가 없다 → 부작용 없는 순수 비교식이 branchless로 최적화된 경우</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>연속된 <code>cmp</code>+<code>jcc</code> 블록들의 목적지가 전부 같은 곳(성공 또는 실패)으로 모이는지 확인해 <code>&amp;&amp;</code>인지 <code>||</code>인지 구분한다.</li><li>각 블록이 왼쪽부터 순서대로 소스의 조건 순서와 대응한다고 가정하고 읽는다.</li><li>뒤쪽 조건에 함수 호출이나 메모리 접근이 있다면, 앞쪽 조건이 그것을 안전하게 만들어주는 가드 역할을 하는지(NULL 체크 등) 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 실패/성공 목적지 라벨 확인</strong> 디스어셈블리에서 여러 <code>jcc</code>의 목적지 주소를 모두 적어보고 같은 곳으로 모이는지 확인한다. IDA에서는 그래프 뷰가 이를 시각적으로 명확하게 보여준다.</p>
+<p><strong>2) <code>&amp;&amp;</code>/<code>||</code> 판별</strong></p>
+<ul><li>모든 <code>jcc</code>가 "조건 거짓 시" 같은 라벨로 모이면 <code>&amp;&amp;</code></li><li>모든 <code>jcc</code>가 "조건 참 시" 같은 라벨로 모이면 <code>||</code></li><li>두 종류가 섞여 있으면 <code>a &amp;&amp; b || c</code>처럼 우선순위가 섞인 복합식이니 연산자 우선순위(<code>&amp;&amp;</code>가 <code>||</code>보다 높음)를 적용해 괄호를 상상하며 재구성한다.</li></ul>
+<p><strong>3) 각 조건을 C로 역번역</strong> 각 <code>cmp</code>+<code>jcc</code> 블록을 REV-0060/0069/0070 규칙으로 하나씩 C 비교식으로 옮긴다.</p>
+<p><strong>4) 함수 호출이 조건부로 실행되는지 확인</strong> 디버거로 두 가지 입력(앞 조건 참/거짓)을 각각 넣어 실행해보고, 뒤 조건의 <code>call</code>에 실제로 도달하는지 브레이크포인트로 검증한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>Space</code>(그래프 뷰)에서 여러 조건 블록의 화살표가 어디로 모이는지 한눈에 확인, <code>F5</code>로 디컴파일해서 <code>&amp;&amp;</code>/<code>||</code> 복원 결과와 교차검증</li><li>x64dbg/GDB: 각 <code>cmp</code> 명령에 브레이크포인트를 걸고 조건별로 실제 도달 여부 확인(<code>bp</code> 여러 개, 또는 GDB <code>b *addr1</code>, <code>b *addr2</code>)</li><li>GDB: <code>condition &lt;bpnum&gt; &lt;expr&gt;</code>로 특정 조건에서만 멈추게 설정해서 어느 분기가 타는지 관찰</li></ul>
+<h2>출력 해석</h2>
+<ul><li>앞 조건에서 실패로 빠지고 뒤 조건의 코드에 아예 도달하지 않는다 → 정상적인 단축 평가 동작이다. 버그가 아니다.</li><li><code>and</code>/<code>or</code> 명령과 <code>setcc</code>만 있고 분기가 전혀 없다 → 컴파일러가 부작용 없음을 증명해서 branchless로 바꾼 경우이며, 이때는 사실 두 조건이 항상 둘 다 평가된다(원래 단축 평가의 "안 하는" 특성은 없어졌지만 결과는 동일).</li><li>디컴파일러가 <code>if (a &amp;&amp; b)</code>처럼 깔끔하게 합쳐서 보여주면 이는 여러 <code>jcc</code> 블록을 분석해 논리식으로 재구성한 결과다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>||</code>의 두 번째 함수가 항상 호출될 것이라 가정하고 디버거에서 브레이크포인트가 안 걸려서 "버그다"라고 오판하는 것 — 첫 조건이 참이면 단축 평가로 인해 원래 호출되지 않는 게 정상이다.</li><li>여러 <code>jcc</code> 목적지가 섞여 있는데도 무조건 전부 <code>&amp;&amp;</code>이거나 전부 <code>||</code>라고 성급히 판단하는 것 — 복합식(<code>a &amp;&amp; b || c</code>)일 가능성을 항상 열어두고 각 목적지를 하나씩 추적해야 한다.</li><li><code>and</code>/<code>or</code> 비트 명령이 보인다고 무조건 "이건 분기 없는 최적화다"라고 단정하는 것 — 정말로 <code>&amp;</code>/<code>|</code> 비트 연산자가 소스에 그대로 쓰였을 수도 있으므로 문맥(피연산자가 boolean처럼 0/1로 제한되는지)을 함께 봐야 한다.</li><li>조건 순서를 오른쪽부터 읽는 것 — C/C++는 왼쪽에서 오른쪽 평가가 보장되므로, 첫 번째로 나오는 <code>cmp</code>/<code>jcc</code>가 항상 소스에서 가장 왼쪽 조건이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>목적지 라벨이 헷갈리면 → IDA 그래프 뷰에서 시각적으로 화살표를 따라가며 정리한다.</li><li>뒤 조건이 실제로 실행되는지 확실히 하고 싶으면 → 디버거로 두 가지 다른 입력을 넣어 각각 실행해보고 <code>call</code> 도달 여부를 직접 확인한다.</li><li>분기가 하나도 없는데 논리 연산자가 있었을 것 같다면 → REV-0075(CMOVcc), REV-0076(SETcc)의 branchless 패턴을 참고해서 <code>and</code>/<code>or</code>/<code>setcc</code> 조합을 재해석한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — <code>&amp;&amp;</code>에 함수 호출이 있는 경우 (단축 평가로 실제로 안 불릴 수 있음)</strong></p>
+<pre><code class="language-c">if (ptr != NULL &amp;&amp; validate(ptr)) { ok(); }</code></pre>
+<pre><code class="language-asm">    test  rdi, rdi
+    jz    L_fail                ; ptr==NULL이면 validate() 호출 자체가 안 됨
+    call  validate
+    test  eax, eax
+    jz    L_fail
+    call  ok
+L_fail:</code></pre>
+<p><strong>예제 2 — <code>||</code>, 성공 목적지가 하나로 모임</strong></p>
+<pre><code class="language-c">if (is_admin(user) || is_owner(user)) { grant(); }</code></pre>
+<pre><code class="language-asm">    mov   rdi, user
+    call  is_admin
+    test  eax, eax
+    jnz   L_grant                ; is_admin이 참이면 is_owner는 호출 안 됨
+    mov   rdi, user
+    call  is_owner
+    test  eax, eax
+    jz    L_deny
+L_grant:
+    call  grant
+L_deny:</code></pre>
+<p><strong>예제 3 — 부작용 없는 순수 비교식, branchless로 최적화</strong></p>
+<pre><code class="language-c">if (x &gt; 0 &amp;&amp; x &lt; 100) result = 1; else result = 0;</code></pre>
+<pre><code class="language-asm">    lea   eax, [edi-1]
+    cmp   eax, 98
+    setbe al                   ; (x-1) unsigned &lt;= 98  &lt;=&gt;  0 &lt; x &lt; 100
+    movzx eax, al                ; result = 0 또는 1, 분기 없음</code></pre>
+<p><strong>예제 4 — 복합식 <code>a &amp;&amp; b || c</code></strong></p>
+<pre><code class="language-c">if ((a &amp;&amp; b) || c) { body(); }</code></pre>
+<pre><code class="language-asm">    ; a
+    test  edi, edi
+    jz    L_check_c            ; a 거짓이면 c 확인으로
+    ; b
+    test  esi, esi
+    jnz   L_then                 ; a &amp;&amp; b 둘 다 참이면 바로 실행
+L_check_c:
+    ; c
+    test  edx, edx
+    jz    L_end                  ; c까지 거짓이면 완전히 실패
+L_then:
+    call  body
+L_end:</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li><li><a href="rev-0069-jg-jge-jl-jle.html">REV-0069 — JG JGE JL JLE: Signed 비교 분기</a></li><li><a href="rev-0070-ja-jae-jb-jbe.html">REV-0070 — JA JAE JB JBE: Unsigned 비교 분기</a></li><li><a href="rev-0075-cmovcc.html">REV-0075 — CMOVcc: 분기 없는 조건부 이동</a></li><li><a href="rev-0076-setcc.html">REV-0076 — SETcc: 조건 결과를 0 또는 1로 만들기</a></li><li><a href="rev-0456-array-bounds-check-pattern.html">REV-0456 — 배열 경계 체크가 어셈블리에 나타나는 패턴</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>&amp;&amp;</code>, <code>||</code>의 단축 평가와 왼쪽→오른쪽 평가 순서 보장: ISO/IEC 9899 (C 표준) 6.5.13/6.5.14 및 ISO/IEC 14882 (C++ 표준) 해당 논리 연산자 절 기준.</li><li>SETcc/조건부 분기를 이용한 branchless 부울 연산 최적화: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2, "SETcc" 섹션 및 GCC/LLVM 최적화 문서 기준. (2026-09-08 검증)</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

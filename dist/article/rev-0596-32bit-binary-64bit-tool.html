@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>32비트 바이너리를 64비트 도구로 열어서 이상해질 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>32비트 바이너리를 64비트 도구로 열어서 이상해질 때</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>32비트(PE32) 바이너리를 64비트 전용 도구(예: <code>x64dbg.exe</code>)로 열면 로드 자체가 거부되거나 레지스터/스택 해석이 완전히 어긋나므로, 파일을 열기 전에 PE Optional Header의 Magic 값과 COFF Header의 Machine 필드로 비트수를 먼저 확인하고 그에 맞는 32비트 전용 도구(<code>x32dbg.exe</code>)를 쓰는 것이 해결책이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>x64dbg.exe</code>에 32비트 실행 파일을 드래그했는데 "This is not a valid win64 application" 같은 오류가 뜨며 로드가 안 될 때</li><li>디스어셈블리에 <code>RAX</code>/<code>RBX</code> 같은 64비트 레지스터가 보이는데 원래 32비트 프로그램이어야 할 것 같아 헷갈릴 때</li><li>IDA에서 연 바이너리의 스택 인자 오프셋이나 호출 규약이 예상과 다르게 보일 때</li><li>어떤 실행 파일이 32비트인지 64비트인지부터 확실히 확인하는 방법이 필요할 때</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>디버거를 열기 전에 Detect It Easy(DIE)나 PE-bear로 파일을 먼저 스캔한다. DIE 상단의 "CPU" 필드에 <code>80386</code>이면 32비트, <code>AMD64</code>면 64비트다. 이 한 단계를 건너뛰고 바로 x64dbg를 실행하는 것이 가장 흔한 실수의 원인이다.</p>
+<h2>핵심 개념</h2>
+<p>PE 파일이 32비트인지 64비트인지는 파일을 열어봐야 짐작할 수 있는 게 아니라 헤더에 명시적으로 기록되어 있다.</p>
+<ul><li><strong>COFF File Header의 <code>Machine</code> 필드</strong>: <code>IMAGE_FILE_MACHINE_I386</code> = <code>0x14C</code>(32비트), <code>IMAGE_FILE_MACHINE_AMD64</code> = <code>0x8664</code>(64비트).</li><li><strong>Optional Header의 <code>Magic</code> 필드</strong>: <code>0x10B</code>이면 <code>PE32</code>(32비트), <code>0x20B</code>이면 <code>PE32+</code>(64비트). <code>PE32+</code>에서는 <code>ImageBase</code>, <code>SizeOfStackReserve</code> 같은 필드가 8바이트로 확장되고, <code>BaseOfData</code> 필드 자체가 없어진다.</li></ul>
+<p>이 두 값이 같은 파일 안에서 항상 일치해야 정상이다(32비트인데 Machine은 AMD64인 식으로 섞이면 손상되었거나 위조된 파일이다 — 이 경우는 REV-0592를 참고).</p>
+<p>x64dbg 프로젝트는 사실 하나의 실행 파일이 아니라 <code>x32dbg.exe</code>(32비트 프로세스 디버깅 전용)와 <code>x64dbg.exe</code>(64비트 프로세스 디버깅 전용) 두 개의 별도 바이너리로 배포되며, 둘을 자동으로 골라주는 런처 <code>x96dbg.exe</code>도 함께 제공된다. 32비트 디버거 프로세스는 64비트 프로세스의 메모리를 온전히 읽을 수 없고, 반대로 64비트 디버거 프로세스는 32비트 대상 프로세스를 시작하거나 그 컨텍스트(레지스터 세트, 스택 프레임)를 올바르게 해석할 수 없다. 이는 Windows 디버깅 API(<code>DebugActiveProcess</code>, <code>WaitForDebugEvent</code> 등)가 디버거와 대상 프로세스의 비트수가 같을 것을 전제로 동작하기 때문이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>x64dbg.exe</code>에 32비트 EXE를 직접 열려고 하면 "Failed to load module" 또는 "This is not a valid win64 application"류의 오류 메시지가 뜨고 실행이 시작되지 않는다.</li><li>반대로 <code>x32dbg.exe</code>에 64비트 EXE를 열면 비슷하게 거부되거나, 실행은 되어도 명령어가 깨져 보이거나 주소가 잘려 표시된다.</li><li>IDA에서 32비트 바이너리를 열었는데 디컴파일된 함수 인자가 <code>a1, a2, a3, a4</code>처럼 레지스터 기반(x64 fastcall 패턴)으로 나온다면 아키텍처를 착각하고 있을 가능성이 있다 — 32비트는 기본적으로 스택 기반 <code>stdcall</code>/<code>cdecl</code>이다.</li><li>Task Manager에서 실행 중인 프로세스 이름 옆에 <code>*32</code> 표시가 붙어 있다면 그 프로세스는 64비트 Windows 위에서 도는 32비트 프로세스(WOW64)라는 뜻이다.</li></ul>
+<h2>단계별 절차</h2>
+<ol><li><strong>비트수 확인</strong>: PE-bear로 파일을 열고 좌측 "DOS/COFF/Optional Header" 트리에서 <code>Machine</code>과 <code>Magic</code> 값을 확인한다. 또는 DIE로 열어 상단 요약의 CPU 항목을 본다.</li><li><strong>정적 분석 도구 선택</strong>: IDA는 32비트/64비트 파일을 모두 자동 인식하므로 크게 문제되지 않지만, 열린 후 상단 상태 표시줄이나 <code>File &gt; Produce file &gt; ...</code> 메뉴 대신 그냥 좌측 Functions 창 옆 "metapc" 표기와 함께 뜨는 아키텍처 안내를 한 번 확인한다.</li><li><strong>동적 분석 도구 선택</strong>: 32비트면 <code>x32dbg.exe</code>, 64비트면 <code>x64dbg.exe</code>를 실행한다. 둘 중 뭘 써야 할지 모르겠으면 <code>x96dbg.exe</code>(통합 런처)로 파일을 열면 알아서 올바른 쪽으로 넘겨준다.</li><li><strong>레지스터 이름 확인</strong>: 32비트 분석 중에는 <code>EAX</code>/<code>EBX</code>/<code>ESP</code>/<code>EIP</code>, 64비트 분석 중에는 <code>RAX</code>/<code>RBX</code>/<code>RSP</code>/<code>RIP</code>가 보여야 정상이다. 디버거 Registers 창에 예상과 다른 크기의 레지스터가 보이면 애초에 잘못된 디버거로 붙은 것이다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>DIE: 파일을 드래그 앤 드롭 → 상단 "CPU" 필드 확인</li><li>PE-bear: 좌측 트리 → <code>FILE_HEADER</code> → <code>Machine</code>, <code>OPTIONAL_HEADER</code> → <code>Magic</code></li><li>x64dbg/x32dbg: 실행 파일 자체를 잘못 선택했을 때는 File → Close, 올바른 비트수 실행 파일(x32dbg.exe / x64dbg.exe)을 다시 실행 후 File → Open으로 대상 로드</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>Machine = 0x14C</code>, <code>Magic = 0x10B</code> → 32비트(PE32), <code>x32dbg</code> 사용</li><li><code>Machine = 0x8664</code>, <code>Magic = 0x20B</code> → 64비트(PE32+), <code>x64dbg</code> 사용</li><li>두 값이 서로 모순되면(예: Machine은 AMD64인데 Magic은 PE32) 헤더가 손상/위조된 것이므로 REV-0592(PE 헤더 조작 대응)를 먼저 확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>x64dbg가 "더 최신이고 상위 호환"일 거라고 생각해서 32비트 파일도 x64dbg로 열려고 시도하는 것 — 실제로는 완전히 별개의 프로세스 아키텍처를 다루는 별도 프로그램이다.</li><li>IDA에서 파일을 열 때 뜨는 "Load new file" 대화상자에서 잘못된 프로세서 타입을 수동으로 선택하는 것 — 특별한 이유가 없다면 자동 감지된 기본값(대개 <code>metapc</code>)을 그대로 둔다.</li><li>32비트 프로그램의 함수 인자를 x64 호출 규약(<code>RCX</code>/<code>RDX</code>/<code>R8</code>/<code>R9</code>) 기준으로 찾으려 하는 것 — 32비트는 REV-0123(stdcall/cdecl/fastcall/thiscall)을 따른다.</li><li>Wow64로 실행되는 32비트 프로세스를 다룰 때 비트수를 한 번 더 헷갈리는 것 — 이 경우는 REV-0597을 별도로 참고한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>32비트 프로세스인데 64비트 Windows에서 실행되어 후킹/디버깅이 이상하게 꼬인다면 → REV-0597(Wow64 환경 API 후킹/분석)을 확인한다.</li><li>Machine/Magic 값 자체가 서로 안 맞거나 이상한 값이라면 → REV-0592(PE 헤더 조작)를 확인한다.</li><li>호출 규약과 스택/레지스터 인자 위치가 헷갈린다면 → REV-0122, REV-0123, REV-0124를 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p>PE-bear로 어떤 <code>crackme.exe</code>를 열었더니 다음과 같이 표시되었다.</p>
+<pre><code class="language-text">FILE_HEADER.Machine        = 0x014C   (IMAGE_FILE_MACHINE_I386)
+OPTIONAL_HEADER.Magic      = 0x010B   (PE32)</code></pre>
+<p>이 값을 보고 32비트로 판단했으므로 <code>x32dbg.exe</code>를 실행해 파일을 열었고, Registers 창에는 정상적으로 <code>EAX</code>, <code>EBX</code>, <code>ESP</code>, <code>EIP</code>가 표시되었다. 만약 이 파일을 <code>x64dbg.exe</code>로 열려 했다면 로드 단계에서 바로 오류가 나서 아무 분석도 시작할 수 없었을 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0597-wow64-api-hooking-issues.html">REV-0597 — Wow64 환경에서 API 후킹/분석이 꼬일 때</a></li><li><a href="rev-0592-pe-header-corruption-parsing.html">REV-0592 — PE 헤더가 조작되어 도구가 잘못 파싱할 때</a></li><li><a href="rev-0122-ms-x64-calling-convention.html">REV-0122 — Microsoft x64 Calling Convention</a></li><li><a href="rev-0123-x86-calling-conventions.html">REV-0123 — Windows x86 stdcall cdecl fastcall thiscall</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>PE Optional Header <code>Magic</code>(<code>0x10B</code>/<code>0x20B</code>) 및 COFF <code>Machine</code>(<code>0x14C</code>/<code>0x8664</code>) 값의 의미는 Microsoft PE/COFF 공식 스펙 기준이다.</li><li>x64dbg가 <code>x32dbg.exe</code>/<code>x64dbg.exe</code> 두 개의 별도 바이너리로 배포되며 비트수가 맞는 대상만 디버깅할 수 있다는 사실은 x64dbg 공식 문서(help.x64dbg.com) 기준이다.</li><li>2026-09-08 기준 서술.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>길이 검증부터 역추적하는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>길이 검증부터 역추적하는 법</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>CTF flag 검증 바이너리를 처음 열었을 때 가장 먼저 찾아야 할 것은 복잡한 암호/해시 알고리즘이 아니라 <strong><code>strlen(input) == N</code> 형태의 길이 검증</strong>이다. 이건 함수 전체에서 가장 읽기 쉬운 비교문이면서, 진짜 알고리즘이 다루는 "미지의 바이트 수"를 알고리즘을 읽기도 전에 알려주는 최고의 시작점이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디컴파일된 <code>check()</code> 함수가 너무 길고 복잡해서 어디서부터 읽어야 할지 막막할 때</li><li>flag의 정확한 길이를 모르는 상태에서 브루트포스(REV-0219) 여부를 판단해야 할 때</li><li>"Correct!"/"Wrong flag" 같은 성공/실패 메시지는 찾았는데, 그 메시지로 이어지는 진짜 검증 로직이 어디서 시작하는지 못 찾았을 때</li><li>알고리즘 전체를 다 이해하지 않고도 문제의 "진짜 크기"(미지 바이트 수)를 먼저 가늠하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>거의 모든 CTF 체크 함수는 다음 순서로 구성된다:</p>
+<ol><li><strong>길이 게이트</strong> — <code>strlen(input) != N</code> 이면 즉시 실패</li><li><strong>접두사/접미사 게이트</strong> — <code>flag{</code>로 시작하는지, <code>}</code>로 끝나는지 확인</li><li><strong>문자셋 게이트</strong> (있을 수도 없을 수도 있음) — 각 문자가 특정 범위(숫자만, hex만 등)인지 확인</li><li><strong>진짜 알고리즘</strong> — 나머지 미지 바이트에 대해 XOR/치환/해시/암호화 등을 수행하고 결과를 비교</li></ol>
+<p>1~3번 게이트는 전형적으로 한 줄짜리 비교문이라서 디스어셈블리만 봐도 5분 안에 파악된다. 반면 4번은 문제의 핵심이라 이해하는 데 오래 걸린다. <strong>순서를 바꿔서, 쉬운 게이트부터 전부 찾아낸 다음 어려운 부분에 시간을 투자하는 것</strong>이 효율적인 리버싱 전략이다. 이걸 "게이트 인벤토리(gate inventory)"라고 부르자.</p>
+<p>길이 게이트가 중요한 이유는 단순히 "빨리 찾아서"가 아니다. 길이 N, 접두사 길이 P, 접미사 길이 S를 알아내면 <strong>진짜 미지 바이트 수는 <code>N - P - S</code></strong> 로 확정된다. 이 숫자 하나가 REV-0219(브루트포스 가능성 계산)의 지수(exponent)를 결정하고, 문제가 몇 시간짜리인지 며칠짜리인지를 가른다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>함수 맨 앞부분에서 <code>call strlen</code> 직후 <code>cmp eax, imm</code> / <code>jnz</code></li><li><code>if ( strlen(s) != 24 )</code> 같은 디컴파일 결과가 함수 최상단에 위치</li><li><code>memcmp(input, "flag{", 5)</code> 처럼 고정 문자열과 비교하는 짧은 <code>memcmp</code>/<code>strncmp</code> 호출</li><li><code>input[len-1] != '}'</code> 처럼 배열의 마지막 인덱스만 비교하는 단일 조건문</li><li>성공 메시지로 가는 경로 바로 앞에 있는 거대한 <code>for</code>/<code>while</code> 루프 (이게 4번 "진짜 알고리즘")</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>IDA에서 <code>Shift+F12</code>(Strings 창)를 열어 <code>Correct</code>, <code>Wrong</code>, <code>Access granted</code>, <code>flag</code> 같은 키워드로 필터링해서 성공/실패 메시지 문자열을 찾는다. Ghidra라면 <code>Window → Defined Strings</code> 메뉴에서 같은 작업을 한다. 문자열을 찾으면 그 문자열 위에서 IDA는 <code>Ctrl+X</code>(Ghidra는 우클릭 → <code>Show References To</code>)를 눌러서 그 문자열을 사용하는 함수로 바로 이동한다. 이제 이 함수가 체크 로직이 있는 함수다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 체크 함수 진입점 찾기</strong></p>
+<p>위에서 설명한 대로 문자열 xref를 따라가면 <code>printf("Correct!\n")</code> 같은 호출이 있는 위치에 도착한다. 이 호출 직전의 분기(<code>jnz</code>/<code>jz</code>)가 "최종 통과/실패 플래그"를 결정한 조건이다. 하지만 이건 대개 여러 게이트를 통과한 최종 결과이지, 길이 검증 자체는 아니다.</p>
+<p><strong>2) 함수 최상단으로 거슬러 올라가기</strong></p>
+<p>체크 함수의 시작 부분(IDA에서 함수 이름 더블클릭 후 맨 위로 스크롤, 또는 그래프 뷰에서 진입 노드 확인)을 본다. 대부분의 구현에서 <strong>가장 먼저 실행되는 검증이 길이 체크</strong>다. 다음과 같은 패턴을 찾는다:</p>
+<pre><code class="language-asm">mov     rcx, [rbp+input]
+call    strlen
+cmp     eax, 18h        ; 0x18 = 24 decimal
+jnz     fail_label</code></pre>
+<p>여기서 <code>18h</code>는 16진수이므로 <code>1*16 + 8 = 24</code>, 즉 flag 전체 길이가 24바이트라는 뜻이다. IDA에서 이 즉시값(<code>18h</code>)을 클릭하고 <code>H</code> 키를 누르면 10진수/16진수 표기가 토글되어 암산 없이 바로 확인할 수 있다.</p>
+<p>주의할 점 하나: 최적화가 걸린 바이너리에서는 컴파일러가 <code>call strlen</code>을 아예 생략하고 널 바이트를 찾는 짧은 루프(<code>cmp byte [rax+rcx], 0</code> / <code>jne</code> 반복)로 직접 풀어써버리는 경우가 있다. 이 경우 "strlen 호출"이라는 눈에 보이는 단서 자체가 없으므로, 함수 맨 앞부분에 있는 아주 짧고 단순한 바이트 스캔 루프도 길이 계산의 일부일 수 있다는 걸 염두에 두고 살펴봐야 한다. 또한 <code>strlen</code>은 널 종료 문자를 세지 않는다는 점도 기억해야 한다 — 만약 검증 로직이 <code>strlen</code> 대신 고정 크기 버퍼(<code>char input[25]</code>처럼 널 바이트 자리까지 포함한 크기)를 기준으로 길이를 비교한다면, 실제 flag 길이는 버퍼 크기보다 1 작을 수 있으니 어느 쪽 기준인지 반드시 구분해야 한다.</p>
+<p><strong>3) 접두사/접미사 게이트 찾기</strong></p>
+<p>길이 체크 바로 다음 블록들을 확인한다. <code>memcmp</code>/<code>strncmp</code>로 고정 문자열과 비교하거나, 배열의 특정 인덱스 하나만 리터럴과 비교하는 짧은 조건문이 있다면 그게 접두사/접미사 게이트다.</p>
+<p><strong>4) 모든 fail 경로 나열하기(게이트 인벤토리)</strong></p>
+<p><code>fail_label</code>로 점프하는 모든 <code>jnz</code>/<code>jz</code>를 IDA 그래프 뷰에서 확인한다(<code>Esc</code>로 이전 위치로 돌아가고, 분기 화살표를 눈으로 따라가거나 <code>Ctrl+Enter</code>로 커서 아래 주소로 점프). 각 분기 조건을 표로 정리하면, "쉬운 게이트"와 "진짜 알고리즘 게이트"가 명확히 분리된다.</p>
+<p><strong>5) 미지 바이트 수 확정</strong></p>
+<p><code>전체 길이 N - 접두사 길이 P - 접미사 길이 S = 미지 바이트 수</code>를 계산한다. 이 숫자가 다음 단계(브루트포스 판단, 알고리즘 역산 등)의 기준이 된다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>Shift+F12</code> (Strings 창), <code>Ctrl+X</code> (커서 위치 xref 목록), <code>H</code> (숫자 진법 토글), <code>Esc</code>/<code>Ctrl+Enter</code> (이동 히스토리 전/후)</li><li>Ghidra: <code>Window → Defined Strings</code>, 우클릭 <code>Show References To</code>, <code>Window → Decompiler</code></li><li>Python으로 16진수 즉시값 빠르게 변환: <code>print(int("18", 16))</code> → <code>24</code></li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>strlen</code> 호출 뒤 비교값이 <code>N</code>이면 flag 전체 길이는 정확히 N바이트다. <code>jle</code>/<code>jge</code> 등 부등호 비교라면 "최소/최대 길이"만 제한하는 것이므로 정확한 길이가 아직 미정임에 주의한다.</li><li><code>memcmp(input, "flag{", 5)</code>가 있으면 앞 5바이트는 완전히 고정되어 있으므로 브루트포스/알고리즘 분석 대상에서 제외해도 된다.</li><li>마지막 바이트 하나만 검사하는 <code>input[N-1] == '}'</code>는 접미사 게이트로, 보통 1바이트만 줄여준다.</li><li>길이 게이트가 하나가 아니라 <strong>여러 개</strong>(예: <code>if (len &lt; 10) return 0; ... if (len &gt; 40) return 0;</code>)로 나뉘어 있는 경우도 있다. 이때는 두 범위의 교집합이 실제 허용 길이 범위이며, 그 안에서 다시 정확히 하나의 값만 통과시키는 <code>==</code> 비교가 별도로 더 있는지 반드시 확인해야 한다 — 범위 체크만 보고 "길이가 10~40 사이 아무 값이나 된다"고 성급히 결론 내리면 뒤에 숨어 있는 진짜 길이 게이트를 놓치게 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>main()</code>부터 위에서 아래로 순서대로 읽으면서 진짜 알고리즘의 복잡한 루프에 먼저 빠져드는 것 — 5~10분만 투자해서 게이트 인벤토리부터 만들면 전체 그림이 먼저 보인다.</li><li>길이 게이트를 찾고 바로 만족해서 접두사/접미사 게이트를 놓치는 것 — 접두사/접미사가 있으면 미지 바이트 수가 실제로는 훨씬 작아서 브루트포스 난이도가 크게 달라진다.</li><li><code>cmp eax, 18h</code>를 10진수 18로 착각하는 것 — 어셈블리 리터럴은 기본적으로 16진수 표기이므로 반드시 <code>H</code> 키나 계산기로 변환해서 확인한다.</li><li>부등호 비교(<code>jle</code>, <code>jge</code>)를 등호 비교로 착각해서 길이를 확정으로 잘못 판단하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>미지 바이트 수를 확정했다면 → <a href="rev-0219-bruteforce-feasibility.html">rev-0219-bruteforce-feasibility.md</a>에서 그 길이와 문자셋으로 브루트포스가 현실적인지 계산한다.</li><li>접두사/접미사처럼 "이미 아는 값"을 이용해서 탐색 범위를 더 줄이고 싶다면 → <a href="rev-0223-known-plaintext-narrowing.html">rev-0223-known-plaintext-narrowing.md</a> 참고.</li><li>게이트를 다 걷어냈는데도 진짜 알고리즘이 XOR 루프처럼 단순하다면 → <a href="rev-0199-xor-loop-inversion.html">rev-0199-xor-loop-inversion.md</a>(XOR 루프 역산 패턴) 참고.</li><li>진짜 알고리즘을 통째로 파이썬으로 옮겨서 정방향/역방향 계산을 자동화하고 싶다면 → <a href="rev-0222-reimplement-in-python.html">rev-0222-reimplement-in-python.md</a> 참고.</li></ul>
+<h2>미니 예제</h2>
+<p>IDA에서 다음과 같은 디컴파일 결과를 봤다고 하자:</p>
+<pre><code class="language-c">int check(char *input) {
+    if (strlen(input) != 24) return 0;             // 길이 게이트: 24바이트
+    if (memcmp(input, "flag{", 5) != 0) return 0;  // 접두사 게이트: 5바이트 고정
+    if (input[23] != '}') return 0;                // 접미사 게이트: 1바이트 고정
+    // ... 이하 200줄짜리 진짜 알고리즘이 input[5..22]에만 작동 ...
+}</code></pre>
+<p>여기서 게이트 인벤토리를 정리하면:</p>
+<ul><li>전체 길이: 24바이트</li><li>알려진 바이트: 접두사 5 + 접미사 1 = 6바이트</li><li><strong>진짜 미지 바이트 수: 24 - 6 = 18바이트</strong></li></ul>
+<p>이 18이라는 숫자를 200줄짜리 알고리즘을 단 한 줄도 읽지 않고 얻어냈다는 게 핵심이다. 이 차이가 얼마나 큰지 감을 잡으려면, 인쇄 가능 아스키 문자셋(95종)을 가정했을 때:</p>
+<ul><li>24바이트 전체를 브루트포스: 95^24 ≈ 2.92×10^47</li><li>18바이트만 브루트포스: 95^18 ≈ 3.97×10^35</li></ul>
+<p>95^24 ÷ 95^18 = 95^6 ≈ 7.35×10^11배 차이다. 즉 접두사/접미사 게이트를 찾아내는 것만으로 브루트포스 난이도를 <strong>7,350억 배</strong> 줄인 셈이다(구체적인 실현 가능성 판단은 <a href="rev-0219-bruteforce-feasibility.html">rev-0219-bruteforce-feasibility.md</a>에서 이어서 다룬다). 물론 18바이트도 여전히 브루트포스로는 불가능한 수준이므로, 다음 단계는 진짜 알고리즘이 역산 가능한지(REV-0221) 판단하는 것이다.</p>
+<p><strong>심화 예제 — 게이트 인벤토리를 코드로 자동화하는 완결된 스크립트</strong></p>
+<p>디컴파일 결과를 눈으로 읽고 손으로 계산하는 대신, 게이트 정보를 파이썬 딕셔너리로 정리해두면 "미지 바이트 수"와 "브루트포스 난이도 절감 배수"를 자동으로 계산할 수 있다.</p>
+<pre><code class="language-python">def analyze_gates(total_length: int, prefix: str, suffix: str, charset_size: int) -&gt; dict:
+    # ↑ 전체 길이, 접두사 문자열, 접미사 문자열, 문자셋 크기를 받아서
+    #   게이트 인벤토리 분석 결과를 딕셔너리로 정리해 돌려주는 함수.
+    prefix_len = len(prefix)
+    # ↑ 접두사 문자열의 길이를 구한다(예: "flag{" -&gt; 5).
+    suffix_len = len(suffix)
+    # ↑ 접미사 문자열의 길이를 구한다(예: "}" -&gt; 1).
+    unknown_len = total_length - prefix_len - suffix_len
+    # ↑ 전체 길이에서 이미 알고 있는 부분(접두사+접미사)을 빼서
+    #   실제로 미지인 바이트 수를 구한다. 이 문서의 핵심 공식이다.
+
+    full_keyspace = charset_size ** total_length
+    # ↑ 게이트를 하나도 활용하지 않고 전체 길이를 통째로 브루트포스할 때의 공간.
+    reduced_keyspace = charset_size ** unknown_len
+    # ↑ 게이트로 좁힌 뒤, 미지 바이트만 브루트포스할 때의 공간.
+
+    return {
+        "unknown_len": unknown_len,
+        # ↑ 결과 딕셔너리에 미지 바이트 수를 담는다.
+        "full_keyspace": full_keyspace,
+        # ↑ 게이트를 활용하지 않았을 때의 전체 탐색 공간.
+        "reduced_keyspace": reduced_keyspace,
+        # ↑ 게이트로 좁힌 뒤의 탐색 공간.
+        "reduction_factor": full_keyspace // reduced_keyspace,
+        # ↑ 게이트를 찾아낸 것만으로 탐색 공간이 몇 배 줄었는지 나타내는 값.
+    }
+    # ↑ 이렇게 만든 딕셔너리를 함수 호출자에게 돌려준다.
+
+if __name__ == "__main__":
+    # ↑ 이 파일을 직접 실행할 때만 아래 블록을 수행한다.
+    result = analyze_gates(
+        total_length=24,      # 이 문서 미니 예제와 동일: strlen(input) != 24
+        prefix="flag{",       # memcmp(input, "flag{", 5)
+        suffix="}",           # input[23] != '}'
+        charset_size=95,      # 인쇄 가능 아스키 문자 전체
+    )
+    # ↑ 위에서 정의한 함수에 미니 예제와 똑같은 값을 넣어 호출한다.
+
+    print("미지 바이트 수:", result["unknown_len"])
+    # ↑ 게이트를 다 걷어내고 남은, 진짜로 몰라서 풀어야 하는 바이트 수를 출력한다.
+    print("게이트 무시 시 탐색 공간:", result["full_keyspace"])
+    # ↑ 게이트 정보를 전혀 활용하지 않았다면 얼마나 큰 공간을 뒤져야 했는지 출력한다.
+    print("게이트 활용 시 탐색 공간:", result["reduced_keyspace"])
+    # ↑ 게이트 정보를 활용한 뒤 실제로 뒤져야 하는 공간을 출력한다.
+    print("탐색 공간 절감 배수:", result["reduction_factor"])
+    # ↑ 게이트를 찾아낸 것만으로 얼마나 배수로 문제가 쉬워졌는지 출력한다.</code></pre>
+<p>이 스크립트를 그대로 실행하면 다음과 같이 출력된다(직접 계산해서 검증한 값):</p>
+<pre><code>미지 바이트 수: 18
+게이트 무시 시 탐색 공간: 291989024338772703273075537557661533355712890625
+게이트 활용 시 탐색 공간: 397214318458218542224277496337890625
+탐색 공간 절감 배수: 735091890625</code></pre>
+<p>파이썬은 임의 정밀도 정수를 지원하므로, <code>95**24</code>처럼 매우 큰 숫자도 근사 없이 정확한 정수로 계산해서 보여준다. <code>735091890625</code>는 이 문서 본문에서 "95^6 ≈ 7.35×10^11배"라고 설명한 숫자와 정확히 같은 값이며, <code>95**6</code>을 직접 계산해도 동일하게 나온다는 것을 스스로 검증할 수 있다. 실전에서는 <code>total_length</code>, <code>prefix</code>, <code>suffix</code>, <code>charset_size</code> 네 값만 실제 바이너리에서 확인한 값으로 바꿔 넣으면, 어떤 문제에도 이 스크립트를 그대로 재사용해서 미지 바이트 수를 즉시 계산할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0219-bruteforce-feasibility.html">rev-0219-bruteforce-feasibility.md</a> — Brute Force가 가능한 입력 공간 계산</li><li><a href="rev-0223-known-plaintext-narrowing.html">rev-0223-known-plaintext-narrowing.md</a> — Known plaintext와 Flag 형식으로 조건 줄이기</li><li><a href="rev-0222-reimplement-in-python.html">rev-0222-reimplement-in-python.md</a> — 검증 루틴을 Python으로 그대로 재현하기</li><li><a href="rev-0196-strcmp-check-pattern.html">rev-0196-strcmp-check-pattern.md</a>, <a href="rev-0197-memcmp-check-pattern.html">rev-0197-memcmp-check-pattern.md</a> — strcmp/memcmp 체크 패턴 자체를 더 깊이 다룬 글</li></ul>
+<h2>출처/검증</h2>
+<ul><li>CTF 리버싱 문제에서 길이/접두사/접미사 게이트가 진짜 알고리즘보다 먼저 등장하는 관행: 다수의 CTF writeup에서 반복적으로 관찰되는 공통 패턴 (2026-09-08 기준 정리).</li><li>IDA Strings 창/xref 단축키: Hex-Rays IDA 공식 사용자 가이드 기준 동작 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

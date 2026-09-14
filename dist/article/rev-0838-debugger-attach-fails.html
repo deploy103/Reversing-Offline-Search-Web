@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>디버거가 프로세스에 attach가 안 될 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>디버거가 프로세스에 attach가 안 될 때</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>디버거가 실행 중인 프로세스에 attach하지 못하는 원인은 Windows/Linux 모두 결국 "권한 부족", "이미 다른 디버거가 그 자리를 차지함(self-debugging 포함)", "커널/컨테이너 보안 정책이 막음" 세 가지로 좁혀지며, 운영체제별로 확인 순서만 다를 뿐 진단 흐름은 동일하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>x64dbg로 File → Attach를 시도했는데 "Cannot open process, error code 5"가 뜨거나 대상이 목록에 아예 안 보일 때</li><li>GDB에서 <code>gdb -p PID</code>를 실행했는데 <code>ptrace: Operation not permitted.</code>가 뜰 때</li><li>attach는 됐다고 나오는데 대상 프로세스가 곧바로 종료돼버릴 때</li><li>Docker 컨테이너 안에서만 유독 attach가 실패할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>공통 원리 — 디버깅은 항상 권한 검사를 거친다</h3>
+<p>Windows는 <code>OpenProcess</code>가 충분한 접근 권한(<code>SeDebugPrivilege</code>)을 요구하고, Linux는 <code>ptrace(PTRACE_ATTACH, ...)</code>가 커널의 YAMA <code>ptrace_scope</code>/capability 검사를 거친다. 둘 다 "디버거 프로세스가 대상보다 낮은 권한이거나 커널 정책에 막히면" 실패한다.</p>
+<h3>Windows — SeDebugPrivilege 미상승</h3>
+<p>표준 사용자 권한으로 실행한 x64dbg/IDA는 <code>SeDebugPrivilege</code>를 활성화하지 못해 <code>OpenProcess</code>가 <code>ERROR_ACCESS_DENIED</code>(5)로 실패한다. 디버거를 "관리자 권한으로 실행"하면 대부분 해결되며, 자세한 진단은 REV-0598을 참고한다.</p>
+<h3>Windows — self-debugging(anti-attach)</h3>
+<p>대상 프로그램이 시작하자마자 자기 자신에게 <code>DebugActiveProcess</code>로 붙는 자식 프로세스를 만들면, Windows는 프로세스당 디버그 포트를 하나만 허용하므로 사람이 나중에 x64dbg로 attach하려 해도 실패한다. attach 자체가 실패하는지, attach 후 프로세스가 스스로 종료되는지(NtQueryInformationProcess 기반 탐지)를 구분해야 하며 자세한 사례는 REV-0583에서 다룬다.</p>
+<h3>Linux — YAMA ptrace_scope</h3>
+<p><code>/proc/sys/kernel/yama/ptrace_scope</code>가 기본값 <code>1</code>이면, 부모-자식 관계가 아닌 프로세스 간 <code>ptrace</code> attach가 커널 레벨에서 막힌다. GDB로 직접 <code>run</code>한 자식 프로세스에는 영향이 없지만, 이미 떠 있는 임의 프로세스에 <code>gdb -p PID</code>로 붙으려는 상황에서는 이 설정이 원인이 되는 경우가 흔하다. 자세한 진단은 REV-0692에서 다룬다.</p>
+<h3>Linux — Docker/컨테이너의 seccomp·capability 제한</h3>
+<p>컨테이너는 기본적으로 <code>SYS_PTRACE</code> capability와 <code>ptrace</code> 계열 syscall을 seccomp으로 차단하므로, 호스트에서는 되던 attach/run이 컨테이너 안에서는 항상 실패한다. <code>--cap-add=SYS_PTRACE</code>와 <code>--security-opt seccomp=unconfined</code>가 필요하며 자세한 절차는 REV-0715에서 다룬다.</p>
+<h3>Linux — ptrace는 프로세스당 하나만 허용</h3>
+<p>Windows의 디버그 포트와 마찬가지로, 리눅스도 한 프로세스는 동시에 하나의 tracer만 가질 수 있다. 이미 다른 GDB 세션이나 <code>strace</code>가 붙어 있으면 두 번째 attach는 <code>ptrace: Operation not permitted.</code> 또는 <code>already traced</code>류 메시지로 실패한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-text">Cannot open process, error code 5.</code></pre>
+<pre><code>$ gdb -p 1234
+Attaching to process 1234
+ptrace: Operation not permitted.</code></pre>
+<p>Process Explorer/<code>ps</code>에서 대상 프로세스가 시작 직후 자식 프로세스를 만드는지, 또는 이미 다른 디버거/<code>strace</code>가 그 PID를 잡고 있는지 확인하면 원인 범주를 좁힐 수 있다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>운영체제부터 나눈다. Windows라면 디버거를 관리자 권한으로 재실행한다. Linux라면 <code>cat /proc/sys/kernel/yama/ptrace_scope</code>와 컨테이너 여부(<code>cat /proc/1/cgroup</code>)부터 확인한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>Windows</strong></p>
+<ol><li>디버거를 종료하고 우클릭 → "관리자 권한으로 실행"으로 재시작.</li><li>Process Explorer로 대상 프로세스에 자식 프로세스가 생기는지 확인 → 있으면 self-debugging 의심(REV-0583).</li><li>x64dbg를 먼저 실행해 "File → Open File"로 처음부터 디버거 하위에서 실행해본다(자식이 디버그 포트를 선점하기 전에 x64dbg가 먼저 차지).</li></ol>
+<p><strong>Linux</strong></p>
+<ol><li><code>cat /proc/sys/kernel/yama/ptrace_scope</code> 확인 → <code>1</code> 이상이고 attach 방식이면 REV-0692 절차대로 완화.</li><li>컨테이너 안이라면 <code>docker inspect</code>로 <code>--cap-add=SYS_PTRACE</code>/seccomp 옵션 여부 확인(REV-0715).</li><li><code>ps aux</code>로 이미 다른 tracer가 붙어 있는지 확인, 있으면 그 프로세스를 먼저 종료.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">cat /proc/sys/kernel/yama/ptrace_scope
+docker inspect &lt;container&gt; | grep -i cap
+gdb -p PID</code></pre>
+<pre><code class="language-powershell">Start-Process x64dbg.exe -Verb RunAs</code></pre>
+<h2>출력 해석</h2>
+<p><code>error code 5</code>(Windows)는 권한 부족, <code>ptrace: Operation not permitted.</code>(Linux)는 YAMA/seccomp/capability 중 하나가 원인이다. attach는 성공했는데 프로세스가 바로 사라지면 권한 문제가 아니라 안티디버깅 탐지(REV-0583, REV-0841, REV-0842)를 의심해야 한다.</p>
+<h2>흔한 실수</h2>
+<ul><li>Windows 관리자 계정으로 로그인했다는 이유만으로 지금 켜진 디버거 프로세스도 자동으로 상승된 권한일 거라 착각하는 것.</li><li>Linux에서 <code>ptrace_scope</code>만 확인하고 컨테이너 seccomp 제한은 놓치는 것(또는 그 반대).</li><li>attach 실패와 attach 후 자살(self-terminate)을 구분하지 않고 같은 해결책만 반복 시도하는 것.</li><li>이미 다른 디버거/<code>strace</code>가 대상을 잡고 있다는 사실을 확인하지 않는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>Windows 권한 문제 상세 진단이 필요하다면 → REV-0598 관리자 권한이 없어서 디버깅이 막힐 때</li><li>Windows self-debugging/anti-attach가 의심된다면 → REV-0583 x64dbg로 붙였는데 바로 종료(anti-attach)될 때</li><li>Linux ptrace_scope 문제라면 → REV-0692 GDB attach가 permission denied로 실패할 때(ptrace_scope)</li><li>Docker 컨테이너 안이라면 → REV-0715 Docker 컨테이너 안에서 gdb가 ptrace 권한 오류를 낼 때</li></ul>
+<h2>미니 예제</h2>
+<p>Linux에서 이미 실행 중인 서버 프로세스에 <code>gdb -p 1234</code>로 붙으려 했더니 <code>ptrace: Operation not permitted.</code>가 떴다. <code>cat /proc/sys/kernel/yama/ptrace_scope</code>가 <code>1</code>이었고, GDB는 그 프로세스의 부모가 아니었다. <code>echo 0 | sudo tee /proc/sys/kernel/yama/ptrace_scope</code>로 임시 완화한 뒤 다시 시도하니 정상적으로 attach됐다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0598-admin-privilege-debugging-blocked.html">REV-0598 — 관리자 권한이 없어서 디버깅이 막힐 때</a></li><li><a href="rev-0583-x64dbg-anti-attach-terminates.html">REV-0583 — x64dbg로 붙였는데 바로 종료(anti-attach)될 때</a></li><li><a href="rev-0692-gdb-attach-permission-denied-ptrace-scope.html">REV-0692 — GDB attach가 permission denied로 실패할 때(ptrace_scope)</a></li><li><a href="rev-0715-docker-gdb-ptrace-permission-denied.html">REV-0715 — Docker 컨테이너 안에서 gdb가 ptrace 권한 오류를 낼 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Windows <code>OpenProcess</code>/<code>SeDebugPrivilege</code>와 디버그 포트 단일 소유 정책: Microsoft Win32 API 공식 문서 기준.</li><li>Linux YAMA LSM의 <code>ptrace_scope</code>와 <code>ptrace</code> 단일 tracer 제한: Linux 커널 문서(<code>Documentation/admin-guide/LSM/Yama.rst</code>) 및 <code>ptrace(2)</code> man page 기준(2026-09-09 검증).</li><li>Docker의 기본 seccomp 프로파일과 <code>SYS_PTRACE</code> capability 제한: Docker 공식 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

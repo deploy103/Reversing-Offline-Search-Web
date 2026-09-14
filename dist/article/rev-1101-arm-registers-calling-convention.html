@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ARM/ARM64 레지스터와 호출 규약 기초 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / other-targets</div>
+<article class="article-body">
+<h1>ARM/ARM64 레지스터와 호출 규약 기초</h1>
+<div class="article-meta"><span class="tag">other-targets</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">android</span><span class="tag">ELF</span><span class="tag">Ghidra</span><span class="tag">IDA</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>ARM(32비트, AAPCS)은 처음 네 개의 정수 인자를 <code>R0</code>~<code>R3</code>에, ARM64(AAPCS64)는 처음 여덟 개를 <code>X0</code>~<code>X7</code>에 담아 전달하며, 함수 복귀 주소는 x86처럼 스택에 자동으로 push되는 것이 아니라 <code>BL</code>/<code>BLX</code> 명령이 실행되는 순간 링크 레지스터(ARM <code>LR</code>=R14, ARM64 <code>X30</code>)에 저장된다는 점이 x86 CALL/스택 기반 인자 전달과 가장 크게 다르다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Ghidra/IDA로 ARM 바이너리를 열었는데 함수 시작 부분에 <code>PUSH {R4, R5, LR}</code> 같은 명령이 보이고 인자가 어디 있는지 모를 때</li><li><code>main</code> 함수 진입부에서 스택 대신 <code>R0</code>, <code>R1</code> 레지스터 값을 봐야 한다는 걸 알았지만 몇 번째 인자가 어느 레지스터인지 헷갈릴 때</li><li>GDB(<code>gdb-multiarch</code>)로 ARM 바이너리를 디버깅하며 <code>info registers</code>를 쳤는데 x86의 <code>RSP</code>/<code>RIP</code> 감각으로 레지스터를 못 찾을 때</li><li>함수 반환 명령이 <code>RET</code> 대신 <code>BX LR</code>이나 <code>POP {..., PC}</code>로 되어 있어서 당황할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>레지스터 세트 개요</h3>
+<p>ARM(AArch32, 32비트)은 범용 레지스터 16개(<code>R0</code>~<code>R15</code>)를 갖는다. 이 중 몇 개는 특수 역할이 고정되어 있다.</p>
+<ul><li><code>R0</code>~<code>R3</code> (별칭 <code>a1</code>~<code>a4</code>): 함수 인자 전달용, 반환값은 <code>R0</code></li><li><code>R4</code>~<code>R11</code>: 콜리 세이브(callee-saved) 일반 레지스터</li><li><code>R12</code> (<code>IP</code>): 스크래치 레지스터(intra-procedure call)</li><li><code>R13</code> (<code>SP</code>): 스택 포인터</li><li><code>R14</code> (<code>LR</code>): 링크 레지스터, 복귀 주소 저장</li><li><code>R15</code> (<code>PC</code>): 프로그램 카운터</li></ul>
+<p>ARM64(AArch64, 64비트)는 범용 레지스터가 31개(<code>X0</code>~<code>X30</code>)로 늘어나고, 32비트 뷰는 같은 레지스터의 하위 32비트를 가리키는 <code>W0</code>~<code>W30</code>으로 접근한다.</p>
+<ul><li><code>X0</code>~<code>X7</code>: 함수 인자 전달용(부동소수점/SIMD는 별도로 <code>V0</code>~<code>V7</code>), 반환값은 <code>X0</code>(128비트 반환 시 <code>X0:X1</code>)</li><li><code>X8</code>: 큰 구조체(16바이트 초과)를 값으로 반환할 때 결과를 쓸 메모리 주소를 담는 간접 결과 레지스터</li><li><code>X9</code>~<code>X15</code>: 콜러 세이브(caller-saved) 스크래치</li><li><code>X16</code>, <code>X17</code> (<code>IP0</code>, <code>IP1</code>): 링커/PLT 스텁이 임시로 쓰는 인트라프로시저 호출 스크래치 레지스터</li><li><code>X19</code>~<code>X28</code>: 콜리 세이브(callee-saved)</li><li><code>X29</code> (<code>FP</code>): 프레임 포인터</li><li><code>X30</code> (<code>LR</code>): 링크 레지스터</li><li><code>SP</code>: 별도의 스택 포인터 레지스터(범용 레지스터 번호에 포함되지 않음)</li></ul>
+<h3>x86과의 결정적 차이 — 인자 전달</h3>
+<p>x86(SysV AMD64, REV-0106)은 처음 여섯 개 정수 인자를 <code>RDI, RSI, RDX, RCX, R8, R9</code>에 담고, Windows x64(REV-0122)는 <code>RCX, RDX, R8, R9</code>를 쓴다. ARM 계열도 "레지스터로 인자를 전달한다"는 큰 그림은 같지만 구체적 레지스터 이름과 개수가 다르다: ARM32는 4개(<code>R0</code>-<code>R3</code>), ARM64는 8개(<code>X0</code>-<code>X7</code>)까지 레지스터로 전달하고 그 이상은 스택으로 넘어간다. 64비트 타입(예: <code>long long</code>)은 ARM32에서 두 개의 연속된 레지스터 쌍(<code>R0</code>/<code>R1</code> 등)을 차지한다.</p>
+<h3>x86과의 결정적 차이 — CALL/RET vs BL/BX</h3>
+<p>x86의 <code>CALL</code>(REV-0071)은 반환 주소를 스택에 push한 뒤 점프하고, <code>RET</code>(REV-0072)은 스택에서 그 주소를 pop해 되돌아간다. ARM은 스택을 쓰지 않고 전용 레지스터를 쓴다.</p>
+<ul><li>함수 호출: <code>BL &lt;주소&gt;</code>(Branch with Link)가 실행되면, 현재 명령어 다음 주소가 자동으로 <code>LR</code>(ARM32) 또는 <code>X30</code>(ARM64)에 저장되고 지정된 주소로 분기한다.</li><li>함수 복귀: 리프 함수(다른 함수를 호출하지 않는 함수)는 그냥 <code>BX LR</code>(ARM32) 또는 <code>RET</code>(ARM64, 내부적으로 <code>X30</code>을 사용하는 특수 분기)로 복귀한다.</li><li>논리프 함수(다른 함수를 호출하는 함수)는 진입부에서 <code>LR</code>/<code>X30</code>을 스택에 저장해두지 않으면, 안에서 다시 <code>BL</code>을 호출하는 순간 <code>LR</code>이 덮어써져 원래 복귀 주소를 잃어버린다. 그래서 논리프 함수의 프롤로그에는 거의 항상 <code>LR</code>/<code>X30</code>을 저장하는 코드가 있다.</li></ul>
+<pre><code class="language-asm">; ARM32 예 - 논리프 함수 프롤로그/에필로그
+PUSH {R4, LR}      ; LR을 스택에 저장(다른 함수 호출에 대비)
+...
+BL   sub_func       ; 호출 - LR이 여기서 갱신됨
+...
+POP  {R4, PC}       ; 저장해둔 LR 값을 PC에 직접 복원 = 복귀</code></pre>
+<pre><code class="language-asm">; ARM64 예
+STP  X29, X30, [SP, #-16]!   ; 프레임 포인터, LR(X30)을 함께 저장
+MOV  X29, SP
+BL   sub_func
+LDP  X29, X30, [SP], #16     ; 복원
+RET                          ; X30 주소로 복귀</code></pre>
+<h3>프레임 포인터 관례</h3>
+<p>ARM64는 <code>X29</code>가 관례적으로 프레임 포인터(FP) 역할을 하며, <code>X30</code>(LR)과 함께 <code>STP</code>/<code>LDP</code>(pair 저장/로드) 명령으로 짝지어 스택에 저장되는 패턴이 매우 흔하다. ARM32는 <code>R11</code>(또는 <code>R7</code>, ABI/컴파일러에 따라 다름)이 프레임 포인터로 쓰이기도 하지만 최적화 빌드에서는 생략되는 경우가 많다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>함수 진입부에 <code>PUSH {..., LR}</code>(ARM32) 또는 <code>STP X29, X30, [SP, #-N]!</code>(ARM64)가 보임</li><li>함수 인자로 보이는 값이 스택이 아니라 <code>R0</code>, <code>R1</code>, <code>X0</code>, <code>X1</code> 레지스터에서 곧바로 쓰임</li><li><code>CALL</code> 대신 <code>BL</code>, <code>RET</code> 대신 <code>BX LR</code> 또는 단독 <code>RET</code>가 보임</li><li>Ghidra/IDA 디스어셈블리 상단에 아키텍처가 <code>ARM</code> 또는 <code>AARCH64</code>로 표시됨</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>Ghidra/IDA에서 함수를 열었을 때 파라미터 개수가 4개(또는 8개) 이하라면 레지스터 이름(<code>R0</code>~<code>R3</code> 또는 <code>X0</code>~<code>X7</code>)만 보고도 몇 번째 인자인지 바로 알 수 있다는 점을 기억하고, 함수 진입부의 <code>PUSH</code>/<code>STP</code>에 <code>LR</code>/<code>X30</code>이 포함되어 있는지부터 확인해 리프 함수인지 판단한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>바이너리 아키텍처가 ARM32인지 ARM64인지 먼저 확인(REV-1104 참고)</li><li>함수 진입부(<code>PUSH</code>/<code>STP</code>)에서 <code>LR</code>/<code>X30</code>이 저장되는지 확인 — 저장되면 논리프 함수, 저장 안 되면 리프 함수</li><li>함수 인자 개수를 확인하고 ARM32는 <code>R0</code>부터, ARM64는 <code>X0</code>부터 순서대로 대응</li><li>4개(ARM32)/8개(ARM64)를 넘는 인자가 있으면 스택(<code>[SP, #N]</code>)에서 나머지를 찾음</li><li>함수 반환 직전에 <code>R0</code>/<code>X0</code>에 쓰인 마지막 값이 반환값임을 확인</li><li>GDB(<code>gdb-multiarch</code>)로 실제 실행 중이면 <code>info registers</code>로 <code>r0-r3</code>/<code>x0-x7</code>, <code>lr</code>/<code>x30</code> 값을 직접 확인해 정적 분석과 대조</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash"># gdb-multiarch에서 ARM 레지스터 확인
+(gdb) info registers
+(gdb) p $r0        # ARM32
+(gdb) p $x0        # ARM64
+(gdb) p $lr         # 링크 레지스터 (ARM32)
+(gdb) p $x30        # 링크 레지스터 (ARM64)
+
+# 디스어셈블에서 BL/RET 위치만 빠르게 찾기
+objdump -d chall | grep -E "bl |bx lr|ret"</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>PUSH {R4, R5, LR}</code> → 이 함수는 <code>R4</code>, <code>R5</code>를 보존해야 하고(콜리 세이브 레지스터 사용) 내부에서 다른 함수를 호출한다(<code>LR</code> 저장).</li><li><code>MOV R0, #0</code> 다음 <code>POP {..., PC}</code> → 반환값 0을 <code>R0</code>에 넣고 저장해뒀던 복귀 주소를 <code>PC</code>에 직접 복원해 복귀하는 것 — x86의 <code>MOV EAX, 0; RET</code>와 동일한 의미.</li><li>ARM64에서 <code>STP X29, X30, [SP, #-32]!</code> → 프레임 포인터와 링크 레지스터를 스택에 한 번에 저장하며 스택을 32바이트 확보(<code>!</code>는 사전 인덱싱 후 SP 갱신).</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>x86 습관대로 스택에서 인자를 찾으려는 것 — ARM/ARM64는 처음 몇 개 인자가 항상 레지스터에 있다.</li><li><code>BL</code>을 보고 x86 <code>CALL</code>처럼 "스택에 복귀 주소가 쌓였겠지"라고 가정하는 것 — ARM은 레지스터(<code>LR</code>/<code>X30</code>)에 저장한다.</li><li>리프 함수(내부에서 <code>BL</code>을 쓰지 않는 짧은 함수)에서 <code>LR</code>이 스택에 저장되지 않는 것을 보고 "버그"라고 오해하는 것 — 저장할 필요가 없으므로 정상이다.</li><li>ARM32와 ARM64의 레지스터 이름을 혼동하는 것(<code>R0</code>-<code>R3</code> vs <code>X0</code>-<code>X7</code>, 개수와 접두문자가 다름).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>x86 SysV/Windows 호출 규약과 정확히 비교하고 싶다면 → REV-0106 SysV AMD64 Calling Convention, REV-0122 Microsoft x64 Calling Convention</li><li>반환 명령/CALL 명령 자체의 x86 의미가 헷갈리면 → REV-0071 CALL, REV-0072 RET</li><li>어셈블리가 16비트 Thumb 명령으로 보여서 레지스터 목록이 안 맞는 것 같으면 → REV-1102 ARM Thumb 모드가 무엇이고 왜 헷갈리는지</li><li>Ghidra/IDA에서 이 아키텍처로 처음 불러오는 법 자체가 궁금하면 → REV-1104 Ghidra/IDA에서 ARM 바이너리 아키텍처 설정하기</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-asm">; ARM32: int add3(int a, int b, int c) 형태의 함수
+add3:
+    PUSH {LR}          ; 리프가 아니라고 가정, LR 보존
+    ADD  R0, R0, R1     ; a + b, R0에 결과
+    ADD  R0, R0, R2     ; + c
+    POP  {PC}          ; 저장해둔 복귀 주소로 바로 복귀</code></pre>
+<pre><code class="language-asm">; ARM64: 동일 로직
+add3:
+    ADD  W0, W0, W1
+    ADD  W0, W0, W2
+    RET</code></pre>
+<p>ARM64 쪽은 세 인자를 더하기만 하고 다른 함수를 호출하지 않는 완전한 리프 함수라서 <code>X30</code>을 저장할 필요조차 없다 — <code>RET</code> 한 줄로 바로 복귀한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0106-sysv-amd64-calling-convention.html">REV-0106 — SysV AMD64 Calling Convention</a></li><li><a href="rev-0122-ms-x64-calling-convention.html">REV-0122 — Microsoft x64 Calling Convention</a></li><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li><li><a href="rev-0072-ret.html">REV-0072 — RET: 함수 반환과 스택 변화</a></li><li><a href="rev-1102-arm-thumb-mode.html">REV-1102 — ARM Thumb 모드가 무엇이고 왜 헷갈리는지</a></li><li><a href="rev-1104-ghidra-ida-arm-arch-setup.html">REV-1104 — Ghidra/IDA에서 ARM 바이너리 아키텍처 설정하기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>ARM32 레지스터 역할(<code>R0</code>-<code>R3</code> 인자, <code>R12</code> IP, <code>R13</code> SP, <code>R14</code> LR, <code>R15</code> PC)과 인자 전달 규칙: ARM-software/abi-aa 공식 저장소 AAPCS32 명세 (https://github.com/ARM-software/abi-aa/blob/main/aapcs32/aapcs32.rst) 기준 확인(2026-09-10).</li><li>ARM64 레지스터 역할(<code>X0</code>-<code>X7</code> 인자, <code>X8</code> 간접 결과, <code>X16</code>/<code>X17</code> IP0/IP1, <code>X29</code> FP, <code>X30</code> LR)과 8개 인자 규칙: ARM-software/abi-aa 공식 저장소 AAPCS64 명세 (https://github.com/ARM-software/abi-aa/blob/main/aapcs64/aapcs64.rst) 및 공식 PDF(Procedure Call Standard for the Arm 64-bit Architecture) 기준.</li><li><code>BL</code>이 링크 레지스터에 복귀 주소를 저장하고 <code>BX</code>/<code>RET</code>으로 복귀하는 동작, 논리프 함수의 <code>LR</code> 저장 관례: ARM 공식 문서 및 다수 ARM 어셈블리 튜토리얼(Azeria Labs 등) 교차 확인.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

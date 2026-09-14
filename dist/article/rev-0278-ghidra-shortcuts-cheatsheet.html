@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghidra 핵심 단축키 치트시트 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / tools</div>
+<article class="article-body">
+<h1>Ghidra 핵심 단축키 치트시트</h1>
+<div class="article-meta"><span class="tag">tools</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>Ghidra는 파일을 열면 디스어셈블리와 디컴파일(Decompile) 창이 항상 같이 떠 있는 구조라 IDA의 F5 같은 "전환용" 키가 따로 없고, 대신 <code>G</code>(Go To), <code>L</code>(Rename), <code>Ctrl+L</code>(Retype), <code>X</code>(xref), <code>Alt+←/→</code>(뒤로/앞으로 이동) 같은 탐색·편집 단축키를 손에 익히는 것이 핵심이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Ghidra 단축키를 표로 한눈에 보고 싶을 때</li><li>변수 이름을 바꾸는 키(L)와 타입을 바꾸는 키(Ctrl+L)가 헷갈릴 때</li><li>IDA는 써봤는데 Ghidra 단축키 체계가 달라서 헷갈릴 때</li><li>Decompile 창과 Listing(디스어셈블리) 창을 오가며 빠르게 분석하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Ghidra의 화면은 기본적으로 여러 창(Listing, Decompile, Symbol Tree, Program Trees 등)이 동시에 배치되어 있다. IDA처럼 "F5를 눌러야 디컴파일 창이 뜨는" 구조가 아니라, <strong>함수를 클릭하면 Decompile 창 내용이 자동으로 갱신</strong>된다. 그래서 Ghidra 단축키는 "화면 전환"보다는 "지금 선택된 항목에 무엇을 할지"에 집중되어 있다.</p>
+<p>또 하나 중요한 특징은, Ghidra의 거의 모든 단축키는 <strong>메뉴 항목 위에 마우스를 올리고 <code>F4</code>를 누르면 직접 재지정(Set Key Binding)할 수 있다</strong>는 점이다. 즉 이 표는 "기본값" 기준이며, 실습 환경에 따라 달라질 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>아래 표는 Listing(디스어셈블리)/Decompile 창에서 자주 쓰는 기본 단축키다.</p>
+<table><thead><tr><th>단축키</th><th>동작</th><th>어디서 쓰나</th></tr></thead><tbody><tr><td><code>G</code></td><td>Go To — 주소/함수 이름으로 바로 이동</td><td>주소나 함수명을 알고 있을 때</td></tr><tr><td><code>L</code></td><td>Rename — 변수/라벨/함수 이름 바꾸기</td><td>Decompile/Listing에서 이름 선택 후</td></tr><tr><td><code>Ctrl+L</code></td><td>Retype — 변수의 데이터 타입 바꾸기</td><td>타입을 수동으로 지정할 때</td></tr><tr><td><code>X</code></td><td>Cross-references — 이 항목을 참조하는 곳 목록</td><td>함수/변수/문자열이 어디서 쓰이는지 볼 때</td></tr><tr><td><code>D</code></td><td>Disassemble — 선택 영역을 코드로 재해석</td><td>Undefined 바이트를 코드로 바꿀 때</td></tr><tr><td><code>C</code></td><td>Clear Code Bytes — 코드/데이터 정의 해제</td><td>잘못 정의된 영역을 되돌릴 때</td></tr><tr><td><code>T</code></td><td>Data — 선택 영역을 데이터로 정의</td><td>코드가 아니라 데이터로 재해석할 때</td></tr><tr><td><code>Y</code></td><td>Repeat Define Data — 이전과 같은 데이터 타입 반복 정의</td><td>배열/구조체를 연속 정의할 때</td></tr><tr><td><code>Ctrl+E</code></td><td>Toggle Decompiler panel</td><td>Decompile 창을 껐다 켰다 할 때</td></tr><tr><td><code>Ctrl+F</code></td><td>Decompile 창 안에서 텍스트 검색</td><td>변수/함수명을 빠르게 찾을 때</td></tr><tr><td><code>Ctrl+B</code></td><td>Add Bookmark</td><td>나중에 다시 볼 위치 표시</td></tr><tr><td><code>Alt+←</code></td><td>Previous location (뒤로 가기)</td><td>방금 보던 곳으로 되돌아갈 때</td></tr><tr><td><code>Alt+→</code></td><td>Next location (앞으로 가기)</td><td>되돌아간 걸 다시 앞으로</td></tr><tr><td><code>F4</code> (메뉴 위에서)</td><td>Set Key Binding — 단축키 재지정</td><td>단축키를 바꾸고 싶을 때</td></tr></tbody></table>
+<h2>가장 먼저 할 것</h2>
+<p>Ghidra에서 아무 함수나 더블클릭해서 Decompile 창이 뜨는 걸 확인한 뒤, <code>G</code>로 다른 주소로 이동해보고, 변수 하나를 골라 <code>L</code>로 이름을 바꿔본다. 그다음 <code>X</code>로 그 변수/함수의 참조를 확인하는 순서로 손에 익힌다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) G — Go To</strong></p>
+<p><code>G</code>를 누르면 주소(<code>0x00401234</code> 같은 형식) 또는 함수/라벨 이름을 입력해서 그 위치로 바로 이동할 수 있는 대화상자가 뜬다. 여러 개의 후보가 있으면 목록에서 선택한다.</p>
+<p><strong>2) L — Rename</strong></p>
+<p>Listing이나 Decompile 창에서 변수/함수/라벨을 클릭(또는 커서를 위치)한 뒤 <code>L</code>을 누르면 이름을 바로 편집할 수 있다. 이름을 바꾸면 함수 전체(디스어셈블리+디컴파일 양쪽)에 즉시 반영된다.</p>
+<p><strong>3) Ctrl+L — Retype</strong></p>
+<p>이름이 아니라 <strong>타입</strong>을 바꾸고 싶을 때 쓴다. 예를 들어 Ghidra가 <code>int</code>로 추론한 변수가 실제로는 <code>char *</code>라면, 변수를 선택하고 <code>Ctrl+L</code>을 눌러 올바른 타입을 지정한다.</p>
+<p><strong>4) X — Cross-references</strong></p>
+<p>함수, 전역 변수, 문자열 등에서 <code>X</code>를 누르면 "이 항목을 참조하는 곳"의 목록이 뜬다. IDA의 xref(X 단축키)와 개념·키가 동일해서 두 도구를 오가도 헷갈리지 않는다.</p>
+<p><strong>5) D/C/T/Y — 코드/데이터 재해석</strong></p>
+<p>바이너리의 특정 바이트 영역이 코드로 잘못 인식됐거나 반대로 데이터가 코드로 안 잡혀 있을 때 쓰는 키 묶음이다. <code>D</code>는 코드로, <code>T</code>는 데이터로 재정의하고, <code>C</code>는 정의를 지워 Undefined 상태로 되돌린다. <code>Y</code>는 방금 지정한 데이터 타입과 같은 것을 이어서 반복 적용할 때 편리하다(예: 구조체 배열을 연속으로 정의).</p>
+<p><strong>6) Ctrl+E / Ctrl+F — Decompile 창 다루기</strong></p>
+<p><code>Ctrl+E</code>로 Decompile 패널을 열고 닫을 수 있고, 그 안에서 <code>Ctrl+F</code>로 변수/함수 이름을 텍스트 검색할 수 있다.</p>
+<p><strong>7) Alt+←/→ — 이동 히스토리</strong></p>
+<p>브라우저의 뒤로가기/앞으로가기처럼, 여러 함수를 오가며 분석하다가 방금 보던 위치로 되돌아가고 싶을 때 쓴다.</p>
+<h2>명령어/단축키</h2>
+<table><thead><tr><th>단축키</th><th>기능</th></tr></thead><tbody><tr><td><code>G</code></td><td>Go To(주소/이름으로 이동)</td></tr><tr><td><code>L</code></td><td>Rename(이름 바꾸기)</td></tr><tr><td><code>Ctrl+L</code></td><td>Retype(타입 바꾸기)</td></tr><tr><td><code>X</code></td><td>Cross-references(참조 보기)</td></tr><tr><td><code>D</code></td><td>Disassemble(코드로 재해석)</td></tr><tr><td><code>C</code></td><td>Clear Code Bytes(정의 해제)</td></tr><tr><td><code>T</code></td><td>Data(데이터로 재해석)</td></tr><tr><td><code>Y</code></td><td>Repeat Define Data</td></tr><tr><td><code>Ctrl+E</code></td><td>Decompile 패널 토글</td></tr><tr><td><code>Ctrl+F</code></td><td>Decompile 창 내 검색</td></tr><tr><td><code>Ctrl+B</code></td><td>Bookmark 추가</td></tr><tr><td><code>Alt+←</code> / <code>Alt+→</code></td><td>이전/다음 위치 이동</td></tr></tbody></table>
+<h2>출력 해석</h2>
+<ul><li><code>L</code>로 이름을 바꾸면 해당 심볼이 파란색 등으로 강조되며, Symbol Tree 창에도 새 이름이 즉시 반영된다.</li><li><code>X</code>를 눌렀는데 목록이 비어 있으면 그 항목을 아무도 참조하지 않는다는 뜻 — 간접 호출(함수 포인터)로만 쓰이는 경우일 수 있다.</li><li><code>D</code>로 강제로 코드 재해석을 시도했는데 이상한 명령어가 잔뜩 나오면, 그 영역은 실제로는 데이터이거나 잘못된 오프셋에서 디스어셈블한 것이다 — <code>C</code>로 되돌리고 시작 위치를 다시 잡는다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>L</code>(rename)과 <code>Ctrl+L</code>(retype)을 헷갈려서 이름을 바꾸려다 타입 편집 창이 뜨는 걸 보고 당황하는 경우.</li><li>IDA의 <code>Y</code>(Set type)와 Ghidra의 <code>Y</code>(Repeat Define Data)가 전혀 다른 동작이라는 걸 모르고 혼동하는 경우 — 두 도구는 같은 문자키라도 기능이 다를 수 있다.</li><li><code>D</code>/<code>C</code>/<code>T</code>를 잘못된 범위에 적용해서 원래 잘 인식되어 있던 함수 경계를 망가뜨리는 경우 — 되돌리려면 <code>C</code>로 지운 뒤 자동 분석을 다시 돌리거나 수동으로 재정의해야 한다.</li><li>단축키가 이 표와 다르게 동작하면 자기 환경에서 커스터마이징되어 있을 가능성을 고려하지 않고 "Ghidra가 이상하다"고 오해하는 경우 — <code>F4</code>로 실제 바인딩을 확인한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>각 단축키가 실전에서 어떤 순서로 쓰이는지 감이 안 잡히면 → REV-0279(Ghidra 10분 실전 워크플로)에서 실제 예제로 확인한다.</li><li>Decompile 창 자체의 자세한 사용법은 → REV-0158(Ghidra Decompiler 창)을 참고한다.</li><li>xref의 자세한 활용은 → REV-0160(Ghidra xref)을 참고한다.</li><li>이름/타입 변경의 자세한 활용은 → REV-0161(Ghidra Rename/Retype)을 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p>Ghidra에서 함수 하나를 열어 정리하는 최소 흐름:</p>
+<pre><code class="language-text">1. Symbol Tree에서 함수 더블클릭 → Listing/Decompile 동시 갱신
+2. Decompile 창에서 의미 없는 변수(local_38 등) 클릭 → L → input_len 으로 rename
+3. 그 변수 위에서 Ctrl+L → 타입이 int인데 실제 uint라 확신되면 uint로 retype
+4. 이 함수 이름 위에서 X → 어디서 이 함수를 호출하는지 확인
+5. Alt+← 로 방금 보던 호출부에서 다시 원래 함수로 복귀</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0277-ghidra-install.html">REV-0277 — Ghidra 설치와 오프라인 준비</a></li><li><a href="rev-0279-ghidra-10min-workflow.html">REV-0279 — Ghidra 10분 실전 워크플로</a></li><li><a href="rev-0158-ghidra-decompiler-window.html">REV-0158 — Ghidra Decompiler 창 읽기</a></li><li><a href="rev-0160-ghidra-xref.html">REV-0160 — Ghidra XREF 따라가기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>표의 단축키(G, L, Ctrl+L, X, D, C, T, Y, Ctrl+E, Ctrl+F, Ctrl+B, Alt+←/→, F4)는 Ghidra 공식 소스 저장소(NationalSecurityAgency/ghidra)의 기본 액션 정의 및 다수의 공개 Ghidra 단축키 정리 자료(강의 자료, CTF wiki류)를 교차 확인해 정리했다(2026-09-08 검증).</li><li>Ghidra는 사용자가 모든 단축키를 자유롭게 재지정할 수 있는 구조이므로, 이 표는 처음 설치한 기본 상태를 기준으로 하며 실제 설치본에서 <code>F4</code>로 재확인하는 것을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Python Rotate 함수 템플릿 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / automation</div>
+<article class="article-body">
+<h1>Python Rotate 함수 템플릿</h1>
+<div class="article-meta"><span class="tag">automation</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>Python에는 <code>&lt;&lt;</code>/<code>&gt;&gt;</code> 시프트만 있고 CPU의 ROL/ROR 같은 회전 연산은 없으므로, <code>((x &lt;&lt; n) | (x &gt;&gt; (bits - n))) &amp; mask</code> 형태로 비트 폭을 명시한 회전 함수를 직접 만들어야 하며, 왼쪽 회전과 오른쪽 회전은 서로의 역함수라는 점을 이용해 역산한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리에 <code>rol</code>/<code>ror</code> 명령이 보이고, 그 결과를 검증 로직과 비교하는 코드를 역산해야 할 때</li><li>해시 함수(MD5, SHA류, 커스텀 체크섬)의 내부에서 회전 연산이 반복적으로 쓰이는 것을 볼 때</li><li>Python으로 회전을 구현했는데 비트 폭 마스킹을 빼먹어서 값이 예상보다 훨씬 커지는 버그를 만났을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>비트 회전(rotate)은 시프트(shift)와 달리 <strong>밀려나는 비트가 사라지지 않고 반대쪽 끝으로 다시 들어온다</strong>. 예를 들어 8비트 값 <code>10110001</code>을 왼쪽으로 2비트 회전(ROL)하면 <code>11000110</code>이 된다 — 왼쪽으로 밀려난 최상위 2비트(<code>10</code>)가 사라지지 않고 오른쪽 끝에 다시 붙는다.</p>
+<p>Python 정수는 고정 비트 폭이 없으므로 <code>x &lt;&lt; n</code>만 하면 비트가 그냥 계속 왼쪽으로 늘어날 뿐 "반대쪽으로 넘어오는" 동작이 자동으로 일어나지 않는다. 따라서 회전을 구현하려면 <strong>비트 폭(bits)을 명시하고, 두 방향의 시프트 결과를 OR로 합친 뒤 mask로 잘라내는</strong> 방식을 써야 한다.</p>
+<pre><code>ROL(x, n, bits) = ((x &lt;&lt; n) | (x &gt;&gt; (bits - n))) &amp; mask
+ROR(x, n, bits) = ((x &gt;&gt; n) | (x &lt;&lt; (bits - n))) &amp; mask</code></pre>
+<p>여기서 <code>mask = (1 &lt;&lt; bits) - 1</code>이다.</p>
+<p>가장 중요한 성질: <strong>ROL의 역연산은 같은 크기만큼의 ROR이고, 그 반대도 성립한다.</strong> 즉 코드에서 <code>rol eax, 5</code>를 봤다면, 그 결과를 원래 값으로 되돌리려면 파이썬에서 <code>ror(x, 5, 32)</code>를 적용하면 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">mov     eax, dword ptr [rdi]
+rol     eax, 7
+xor     eax, ebx</code></pre>
+<p>디컴파일 결과에서는 <code>_rotl(x, 7)</code>, <code>_rotr(x, 7)</code> (MSVC intrinsic) 또는 <code>(x &lt;&lt; 7) | (x &gt;&gt; 25)</code> 처럼 시프트 두 개가 OR로 묶인 형태로 나타나기도 한다 — 이 패턴을 보면 실제로는 32비트 회전을 컴파일러가 시프트 조합으로 풀어쓴 것임을 알아챌 수 있다(우변의 <code>25</code>는 <code>32 - 7</code>).</p>
+<h2>가장 먼저 할 것</h2>
+<p>회전 대상 레지스터의 <strong>비트 폭</strong>(<code>al</code>=8, <code>ax</code>=16, <code>eax</code>=32, <code>rax</code>=64)과 <strong>회전량(n)</strong>, <strong>방향(ROL/ROR)</strong>을 정확히 확인한다. 방향과 비트 폭이 틀리면 역산 결과가 완전히 다른 값이 된다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 범용 회전 함수 정의</strong></p>
+<pre><code class="language-python">def rol(x: int, n: int, bits: int = 32) -&gt; int:
+    """x를 bits 비트 폭에서 왼쪽으로 n비트 회전"""
+    mask = (1 &lt;&lt; bits) - 1
+    x &amp;= mask
+    n %= bits
+    return ((x &lt;&lt; n) | (x &gt;&gt; (bits - n))) &amp; mask
+
+
+def ror(x: int, n: int, bits: int = 32) -&gt; int:
+    """x를 bits 비트 폭에서 오른쪽으로 n비트 회전"""
+    mask = (1 &lt;&lt; bits) - 1
+    x &amp;= mask
+    n %= bits
+    return ((x &gt;&gt; n) | (x &lt;&lt; (bits - n))) &amp; mask</code></pre>
+<p><code>n %= bits</code>를 넣어두면 <code>n</code>이 비트 폭보다 크거나 0일 때(예: <code>n=32, bits=32</code>)도 <code>x &gt;&gt; (bits - n)</code>이 <code>x &gt;&gt; 0</code>이 되어 자기 자신과 OR되는 사고를 방지할 수 있다.</p>
+<p><strong>2) 동작 확인</strong></p>
+<pre><code class="language-python">&gt;&gt;&gt; hex(rol(0xB1, 2, 8))
+'0xc6'          # 10110001 -&gt; 11000110
+&gt;&gt;&gt; ror(rol(0xB1, 2, 8), 2, 8) == 0xB1
+True            # ROL 다음 같은 양만큼 ROR하면 원래 값으로 복귀</code></pre>
+<p><strong>3) 어셈블리의 rol/ror를 그대로 역산</strong> <code>rol eax, 7</code> 다음 그 값을 정답과 비교하는 코드를 만났다면, 정답을 반대 방향(ROR)으로 같은 양만큼 돌리면 원본 입력이 나온다.</p>
+<pre><code class="language-python">expected = 0xC3A5F001
+original = ror(expected, 7, 32)
+print(hex(original))</code></pre>
+<p><strong>4) 여러 바이트에 걸쳐 반복 적용 (해시류 패턴)</strong></p>
+<pre><code class="language-python">data = [0x11, 0x22, 0x33, 0x44]
+rotated = [rol(b, 3, 8) for b in data]
+restored = [ror(b, 3, 8) for b in rotated]
+assert restored == data</code></pre>
+<p><strong>5) 32비트 곱셈/덧셈과 함께 쓰이는 경우 (해시 함수 스타일)</strong></p>
+<pre><code class="language-python">def mix(x: int) -&gt; int:
+    x = (x * 0x9E3779B1) &amp; 0xFFFFFFFF   # 32비트 마스킹 필수 (REV-0264 참고)
+    x = rol(x, 13, 32)
+    return x</code></pre>
+<p>곱셈/덧셈 뒤에 반드시 <code>&amp; 0xFFFFFFFF</code>로 마스킹해야 회전 함수에 넘기는 <code>x</code>가 올바른 32비트 범위 안에 있게 된다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>rol</code>/<code>ror</code> 명령 위에서 <code>?</code>(계산기) 또는 직접 오퍼랜드 값을 확인. MSVC 컴파일 결과에서는 <code>_rotl</code>/<code>_rotr</code>/<code>_rotl64</code>/<code>_rotr64</code> 함수 호출로 보일 수 있음</li><li>x64dbg: 레지스터 값 변경 전/후를 Watch로 비교하며 회전량(즉시값 오퍼랜드)을 그대로 기록</li><li>Python: 위 <code>rol</code>/<code>ror</code> 함수를 별도 파일(<code>rotate.py</code>)로 저장해 재사용</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>rol</code>로 암호화된 값을 역산할 때 방향을 반대로(즉 <code>rol</code>을 다시 <code>rol</code>로) 적용하면 전혀 다른 값이 나온다 — 반드시 반대 방향 함수를 써야 한다.</li><li>결과가 예상 범위를 벗어난 큰 수로 나온다면 <code>bits</code> 인자를 실제 레지스터 폭과 다르게 넣은 것이다. <code>eax</code>인데 <code>bits=64</code>로 착각하는 실수가 흔하다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Python <code>x &lt;&lt; n</code>만 쓰고 반대편에서 넘어오는 비트(<code>x &gt;&gt; (bits - n)</code>)를 OR로 합치지 않아서, 사실상 회전이 아니라 그냥 시프트가 되어버리는 것.</li><li>회전 후 <code>&amp; mask</code>를 빼먹어서 비트 폭을 초과한 값이 그대로 다음 연산에 전달되는 것 — Python 정수가 무한히 커질 수 있다는 특성 때문에 조용히 틀린 값으로 계속 진행되어 디버깅이 어려워진다.</li><li><code>n</code>이 음수이거나 <code>bits</code>보다 큰 경우를 처리하지 않아서 <code>x &gt;&gt; (bits - n)</code>에서 음수 시프트 오류(<code>ValueError: negative shift count</code>)가 나는 것 — <code>n %= bits</code>로 항상 정규화해야 한다.</li><li>ROL과 ROR을 반대로 구현해놓고 역산 방향도 반대로 적용해서, 두 번 잘못 계산했는데 우연히 얼추 맞는 것처럼 보이는(사실은 완전히 틀린) 값을 만드는 것 — 항상 <code>rol(ror(x, n, bits), n, bits) == x</code> 같은 자체 검증 코드를 먼저 돌려본다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>회전 앞뒤로 XOR이 섞여 있으면 → REV-0262 (XOR 역산 템플릿)와 순서를 정확히 맞춰(마지막에 적용된 연산부터 거꾸로) 함께 역산.</li><li>곱셈/덧셈까지 섞인 해시 패턴이면 → REV-0264 (32비트 Overflow 재현)에서 마스킹 규칙을 반드시 함께 적용.</li><li>어셈블리에서 ROL/ROR 명령 자체의 오퍼랜드 해석이 헷갈리면 → 관련 알고리즘 패턴 글에서 상세 예제 확인.</li></ul>
+<h2>미니 예제</h2>
+<p><code>check(x) = rol(x, 5, 32) ^ 0xCAFEBABE</code>가 <code>0x9F3C21A0</code>과 같아야 통과하는 검증 함수를 역산해보자.</p>
+<pre><code class="language-python">def rol(x, n, bits=32):
+    mask = (1 &lt;&lt; bits) - 1
+    x &amp;= mask
+    n %= bits
+    return ((x &lt;&lt; n) | (x &gt;&gt; (bits - n))) &amp; mask
+
+def ror(x, n, bits=32):
+    mask = (1 &lt;&lt; bits) - 1
+    x &amp;= mask
+    n %= bits
+    return ((x &gt;&gt; n) | (x &lt;&lt; (bits - n))) &amp; mask
+
+target = 0x9F3C21A0
+after_xor_removed = target ^ 0xCAFEBABE   # XOR은 자기 역원이므로 그대로 다시 XOR
+original = ror(after_xor_removed, 5, 32)  # rol의 역은 같은 양만큼의 ror
+print(hex(original))</code></pre>
+<p>이렇게 "마지막에 적용된 연산부터 역순으로" 하나씩 풀어나가는 것이 회전+XOR 조합 검증 로직을 역산하는 표준 절차다.</p>
+<h3>실전 예제 2 — 회전과 "덧셈"이 함께 섞인 검증 로직 역산하기</h3>
+<p>이번엔 XOR 대신 <strong>덧셈</strong>이 회전과 함께 쓰이는 경우를 다뤄본다. <code>check2(x) = rol(x, 11, 32) + 0xDEADBEEF (mod 2^32)</code>가 목표값 <code>0x12345678</code>이 되어야 통과하는 검증 함수라고 하자. 덧셈의 역연산은 뺄셈이라는 점만 빼면, 역산 절차는 앞의 예제와 동일하다.</p>
+<pre><code class="language-python">def rol(x: int, n: int, bits: int = 32) -&gt; int:
+    # x를 bits 비트 폭에서 왼쪽으로 n비트 회전
+    mask = (1 &lt;&lt; bits) - 1
+    x &amp;= mask
+    n %= bits
+    return ((x &lt;&lt; n) | (x &gt;&gt; (bits - n))) &amp; mask
+
+
+def ror(x: int, n: int, bits: int = 32) -&gt; int:
+    # x를 bits 비트 폭에서 오른쪽으로 n비트 회전 (rol의 역연산)
+    mask = (1 &lt;&lt; bits) - 1
+    x &amp;= mask
+    n %= bits
+    return ((x &gt;&gt; n) | (x &lt;&lt; (bits - n))) &amp; mask
+
+
+MASK32 = 0xFFFFFFFF
+
+
+def check2(x: int) -&gt; int:
+    # 원본 검증 로직: 32비트 왼쪽 회전 11비트 후, 상수를 더하고 32비트로 마스킹
+    return (rol(x, 11, 32) + 0xDEADBEEF) &amp; MASK32
+
+
+target = 0x12345678   # 검증을 통과하려면 check2(x)가 반드시 이 값이 되어야 한다
+
+# 1) 마지막에 적용된 연산(덧셈)부터 역순으로 되돌린다 -&gt; 덧셈의 역연산은 뺄셈
+step1 = (target - 0xDEADBEEF) &amp; MASK32    # 뺄셈 후 다시 32비트로 마스킹(음수 방지)
+print("덧셈을 되돌린 중간값:", hex(step1))
+
+# 2) 그 앞에 적용된 연산(rol 11비트)을 되돌린다 -&gt; rol의 역연산은 같은 양만큼의 ror
+original = ror(step1, 11, 32)
+print("역산으로 복구한 원본 x:", hex(original))   # 0xf12670d2
+
+# 3) 검증: 복구한 x를 다시 정방향(check2)으로 계산해서 target과 정확히 같은지 확인
+recomputed = check2(original)
+print("정방향으로 재계산한 값:", hex(recomputed))   # 0x12345678
+assert recomputed == target, "역산이 잘못됐다면 여기서 AssertionError가 발생한다"
+print("역산 성공: 정방향 재계산 값이 target과 정확히 일치함")</code></pre>
+<p>회전 앞뒤에 XOR가 아니라 덧셈이 오더라도 원칙은 똑같다 — <strong>마지막에 적용된 연산의 역연산을 먼저 적용하고, 그 앞의 연산을 순서대로 거슬러 올라가면</strong> 된다. 여기서는 "덧셈 -&gt; 뺄셈", "rol(11) -&gt; ror(11)" 순으로 두 단계를 거꾸로 밟아 <code>0xf12670d2</code>라는 원본 값을 정확히 복구했고, 이 값을 다시 정방향으로 계산하면 정확히 <code>target</code>(<code>0x12345678</code>)이 나온다는 것으로 역산이 맞았음을 검증했다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0262-python-xor-template.html">REV-0262 — Python XOR 역산 템플릿</a></li><li><a href="rev-0264-python-32bit-overflow.html">REV-0264 — Python 32비트 Overflow 재현</a></li><li><a href="rev-0258-python-number-conversion-cheatsheet.html">REV-0258 — 리버싱용 Python 숫자 변환 치트시트</a></li><li>../algorithms/rev-0201-rotate-transform.md</li></ul>
+<h2>출처/검증</h2>
+<ul><li>ROL/ROR 명령의 정의와 비트 이동 방식은 Intel 64 and IA-32 Architectures Software Developer's Manual의 ROL/ROR 명령 설명 기준(2026-09-08 확인). Python 비트 연산자(<code>&lt;&lt;</code>, <code>&gt;&gt;</code>, <code>|</code>, <code>&amp;</code>) 동작은 Python 공식 언어 레퍼런스 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

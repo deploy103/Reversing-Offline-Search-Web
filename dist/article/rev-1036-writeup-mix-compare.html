@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Write-up] mix-compare · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / writeup</div>
+<article class="article-body">
+<h1>[Write-up] mix-compare</h1>
+<div class="article-meta"><span class="tag">writeup</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>"mix-compare"(Bronze 1)의 공개 write-up은 찾지 못했지만, 이름 자체가 "여러 비교 방식이 섞여 있다"는 것을 직접적으로 암시하므로, 하나의 검증 로직이 아니라 <code>strcmp</code>/<code>memcmp</code>/문자별 루프/산술 비교 등 서로 다른 비교 수단이 함께 쓰인 문제로 접근하는 것이 합리적인 출발점이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA/Ghidra로 <code>main</code>을 열었는데 비교 관련 함수(<code>strcmp</code>, <code>memcmp</code>)와 직접 짠 for 루프 비교가 동시에 보여서 어느 것부터 봐야 할지 헷갈릴 때</li><li>Bronze 1이라 쉬울 거라 생각했는데 조건문이 예상보다 많이 섞여 있어서 전체 로직을 한 번에 이해하기 어려울 때</li><li>"mix"라는 이름 때문에 무슨 암호화가 섞인 문제인지, 단순히 비교 방식이 여러 개인 문제인지 구분이 안 될 때</li></ul>
+<h2>핵심 개념</h2>
+<p>검색 결과 "mix-compare"라는 정확한 이름의 드림핵 문제를 다룬 외부 write-up은 확인되지 않았다. 다만 드림핵 커뮤니티 포럼에는 "Breakpoint Oracle"과 "Compare Oracle" 취약점을 다루는 글이 존재하는데, 이는 검증 로직이 여러 단계로 나뉘어 있을 때 각 단계에서 브레이크포인트를 걸어 어디까지 맞았는지(Oracle) 알아낼 수 있다는 리버싱 문제 설계상의 약점을 설명하는 내용이다. "mix-compare"라는 이름과 방향성이 겹치는 주제이지만, 이 글이 "mix-compare" 문제 자체를 설명하는 것은 아니므로 직접적인 정답 정보로 사용할 수 없다.</p>
+<p>이름에서 유추할 수 있는 합리적인 가정은 다음과 같다.</p>
+<ul><li>"mix"는 여러 종류의 비교 연산(문자열 비교, 정수 비교, 비트 연산 비교 등)이 한 프로그램 안에 섞여 있다는 뜻으로 해석할 수 있다.</li><li>"compare"는 그 자체로 조건 분기(<code>cmp</code>, <code>test</code> 이후 <code>jz</code>/<code>jnz</code>)가 핵심이라는 것을 알려준다.</li><li>이런 유형의 문제는 보통 입력 문자열의 각 부분(앞 4바이트는 <code>strcmp</code>, 뒤 4바이트는 산술 연산 등)을 다른 방식으로 검증하도록 짜여 있어서, 코드 전체를 한 번에 이해하려 하지 말고 비교가 일어나는 지점마다 하나씩 분리해서 분석하는 것이 효율적이다.</li><li>만약 검증 로직이 앞서 언급한 Breakpoint Oracle 취약점을 그대로 갖고 있다면, 정답을 몰라도 각 비교 지점에 브레이크포인트를 걸고 입력을 한 글자씩 바꿔가며 "다음 비교까지 도달하는지"를 관찰하는 것만으로 답을 한 글자씩 알아낼 수도 있다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>main</code> 또는 검증 함수 내부에 <code>strcmp</code>/<code>memcmp</code> 호출과 직접 작성된 비교 루프(<code>for</code>+<code>cmp</code>)가 혼재</li><li>입력 문자열의 서로 다른 구간마다 다른 종류의 조건 분기가 나타남</li><li>조건을 하나 통과할 때마다 다음 비교로 넘어가는 것이 코드 흐름에서 뚜렷하게 보임(Breakpoint Oracle에 취약한 구조일 가능성)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>main</code>(또는 진입점 근처의 검증 함수)에서 사용되는 모든 비교 관련 호출과 분기를 먼저 나열한다. 몇 종류의 비교가 있는지, 입력의 어느 구간을 대상으로 하는지부터 표로 정리하면 "mix"된 로직을 분리해서 볼 수 있다.</p>
+<h2>단계별 절차</h2>
+<ol><li>IDA/Ghidra에서 <code>main</code>과 하위 함수의 모든 <code>cmp</code>/<code>test</code>/<code>strcmp</code>/<code>memcmp</code> 호출을 나열</li><li>각 비교가 입력 문자열의 어느 바이트 구간을 대상으로 하는지 표로 정리</li><li>가장 앞쪽 비교부터 x64dbg로 브레이크포인트를 걸고 입력을 바꿔가며 어디까지 통과하는지 관찰(Compare Oracle 방식)</li><li>통과 조건을 하나씩 확정해가며 전체 입력을 재구성</li><li>마지막 비교까지 통과하는 입력으로 최종 실행해 플래그 확인</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">IDA: Alt+T(텍스트 검색)으로 cmp/test 인스트럭션 검색은 직접 지원 안 되므로 그래프 뷰(Space)로 분기 구조 확인
+x64dbg: Ctrl+G(주소 이동) → F2(브레이크포인트) → F9(Run) → 레지스터/스택 창에서 비교 대상 확인</code></pre>
+<h2>출력 해석</h2>
+<p>브레이크포인트를 각 비교 지점에 걸었을 때, 어떤 입력에서 다음 비교까지 도달하고 어떤 입력에서 그 자리에서 멈추는지를 기록해두면 정답을 한 조각씩 좁혀나갈 수 있다. 이것이 "Compare Oracle"이라 불리는 정보 노출 패턴이다.</p>
+<h2>흔한 실수</h2>
+<ul><li>여러 비교 방식이 섞여 있다는 것을 모르고 첫 번째 비교(<code>strcmp</code>)만 통과시키면 끝이라고 생각하는 것</li><li>Breakpoint Oracle 방식으로 답을 좁혀나가는 대신 무작정 완전한 로직 역산을 시도해 시간을 오래 쓰는 것</li><li>입력 구간별로 다른 검증이 적용된다는 것을 놓치고 하나의 통일된 알고리즘으로 착각하는 것</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>비교 종류별 패턴 자체가 헷갈리면 → REV-0196 strcmp 기반 Flag 검증 패턴, REV-0197 memcmp 기반 Flag 검증 패턴, REV-0198 문자별 for 루프 검증 패턴</li><li>여러 알고리즘이 순서대로 이어지는 문제 전체 전략이 궁금하면 → REV-0911 여러 알고리즘이 순차적으로 합성된 문제 풀어내기</li><li>x64dbg 브레이크포인트 조작이 서툴다면 → REV-0281 x64dbg 핵심 단축키와 명령 치트시트</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">// 이름에서 유추한 예시 구조(실제 코드 아님)
+if (strcmp(buf, "ABCD") != 0) fail();      // 앞 4바이트: 문자열 비교
+if ((buf[4] ^ buf[5]) != 0x11) fail();     // 뒤쪽: 비트 연산 비교
+if (atoi(buf + 6) != 1234) fail();         // 마지막: 정수 비교</code></pre>
+<p>이 예제는 "mix"라는 이름에서 유추한 가상의 구조이며, 실제 "mix-compare" 바이너리의 코드가 아니다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0196-strcmp-check-pattern.html">REV-0196 — strcmp 기반 Flag 검증 패턴</a></li><li><a href="rev-0197-memcmp-check-pattern.html">REV-0197 — memcmp 기반 Flag 검증 패턴</a></li><li><a href="rev-0198-char-by-char-loop-pattern.html">REV-0198 — 문자별 for 루프 검증 패턴</a></li><li><a href="rev-0911-chained-algorithm-composition.html">REV-0911 — 여러 알고리즘이 순차적으로 합성된 문제 풀어내기</a></li><li><a href="rev-0281-x64dbg-shortcuts-cheatsheet.html">REV-0281 — x64dbg 핵심 단축키와 명령 치트시트</a></li><li>[REV-1037 — [Write-up] ezmix](rev-1037-writeup-ezmix.html)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>WebSearch로 "dreamhack mix-compare writeup 리버싱"을 검색했으나 이 문제의 공개 write-up은 찾지 못했다(2026-09-10 검증).</li><li>검색 중 확인된 드림핵 커뮤니티 글("열심히 만든 리버싱 문제를 날먹으로부터 지키는 방법")은 Breakpoint Oracle/Compare Oracle 취약점을 다루는 별도의 일반론 글이며, "mix-compare" 문제 자체를 설명하지 않는다는 점을 명시한다.</li><li>본문의 비교 로직 구조 추정은 문제명에서 착안한 가설이며 실제 바이너리 분석 결과가 아니다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

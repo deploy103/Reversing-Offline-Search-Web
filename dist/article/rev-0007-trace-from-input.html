@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>입력 함수부터 역추적하는 방법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>입력 함수부터 역추적하는 방법</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>결과 문자열도, <code>strcmp</code>도 못 찾겠으면 <strong>입력을 받는 함수(scanf/gets/read/cin) 호출 직후로 가서, 입력이 저장된 변수를 IDA의 xref 또는 Ghidra의 "Uses" 기능으로 순방향 추적</strong>하면 검증 로직에 도달한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><a href="rev-0006-finding-check-function.html">rev-0006-finding-check-function.md</a>의 문자열/strcmp 경로가 둘 다 막혔을 때(문자열이 암호화됐거나, strcmp 대신 자체 비교 루프를 쓴 경우)</li><li>입력을 어디서 받는지는 알겠는데 그 값이 이후에 어떻게 쓰이는지 놓치고 있을 때</li><li>함수가 너무 많아서 위에서 아래로 읽는 것 말고는 방법이 없어 보일 때</li></ul>
+<h2>핵심 개념</h2>
+<p>문자열 xref나 strcmp xref로 검증 로직을 바로 찾는 게 이상적이지만, 다음과 같은 경우엔 그 방법이 안 먹힌다.</p>
+<ul><li>결과 메시지가 서버로 전송되거나 화면에 그래픽으로 그려져서 "문자열 상수"가 아예 없는 경우.</li><li>정답 비교를 <code>strcmp</code> 같은 라이브러리 함수 없이 <code>for</code> 루프 + <code>if (a[i] != b[i])</code>로 직접 짠 경우(디스어셈블리에는 반복되는 <code>cmp</code>/<code>jne</code> 패턴만 보임).</li><li>문자열이 XOR나 다른 방식으로 암호화되어 있어서 IDA Strings 창에 안 잡히는 경우.</li></ul>
+<p>이럴 때 유일하게 확실한 길은 <strong>데이터 흐름을 순방향으로 추적</strong>하는 것이다: "사용자가 입력한 값이 저장되는 변수/버퍼"를 기준으로, 그 변수가 다음에 어디서 읽히는지(read)를 계속 따라가면, 결국 그 값을 가지고 뭔가 판단하는 지점(비교, 분기)에 도달할 수밖에 없다 — 입력을 아예 안 쓰는 프로그램이 아닌 이상 반드시 어딘가에서 쓰인다.</p>
+<p>이 방법은 시간이 조금 더 걸리지만 <strong>가장 확실하다</strong>. 문자열이나 strcmp에 의존하지 않기 때문에 난독화된 문제에서도 통한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>scanf("%d", &amp;v1);</code> 또는 <code>scanf("%s", buf);</code> 뒤에 바로 결과 출력이 없고, 여러 함수 호출이 이어진다.</li><li>입력 버퍼(<code>buf</code>, <code>input</code>, <code>s1</code> 같은 이름 또는 <code>[rsp+20h]</code> 같은 스택 오프셋)가 다음 함수의 인자로 그대로 전달된다.</li><li>반복문 안에서 입력 버퍼의 각 바이트에 접근하는 인덱스 연산(<code>buf[i]</code>, <code>*(input + i)</code>)이 보인다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>IDA Imports 탭에서 <code>scanf</code>(Windows는 <code>scanf</code>/<code>scanf_s</code>, Linux는 <code>__isoc99_scanf</code>로 표시될 수 있다) 또는 <code>gets</code>, <code>fgets</code>, <code>read</code>를 찾고, <strong>X</strong>(xref)로 호출 위치로 이동한다. 여러 곳에서 호출되면 <code>main</code> 근처, 또는 프로그램 시작 직후 위치를 우선한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 입력 함수 호출 지점 찾기</strong></p>
+<ul><li>IDA Imports 탭 → <code>scanf</code> 계열 더블클릭 → <code>X</code>로 xref → 호출 위치로 이동.</li><li>없으면 Ctrl+P 함수 목록에서 <code>main</code>을 열고 위에서부터 훑으며 입력 관련 함수 호출을 찾는다.</li></ul>
+<p><strong>2) 입력이 저장되는 변수 확인</strong> F5로 디컴파일했을 때 다음과 같은 형태가 보일 것이다.</p>
+<pre><code class="language-c">char input[64];
+scanf("%s", input);</code></pre>
+<p>여기서 <code>input</code>이 우리가 추적할 변수다. IDA 디컴파일 창에서 <code>input</code>을 클릭하면 노란색/회색으로 이 변수가 쓰이는 다른 위치들이 하이라이트된다 — 이게 가장 빠른 1차 확인 방법이다.</p>
+<p><strong>3) 변수를 순방향으로 따라가기</strong> 디컴파일 창에서 하이라이트된 다음 사용처로 이동한다(코드를 아래로 스크롤하며 하이라이트된 줄을 찾거나, 어셈블리 뷰에서는 해당 스택 오프셋을 담은 레지스터의 다음 사용을 찾는다).</p>
+<ul><li><code>input</code>이 그대로 다른 함수의 인자로 들어가면(<code>check(input)</code>) → 그 함수로 더블클릭해서 들어간다.</li><li><code>input</code>이 반복문 안에서 한 바이트씩 처리되면(<code>input[i]</code>) → 그 반복문이 무엇을 계산하는지 읽는다(합계? XOR? 변환?).</li><li><code>input</code>이 전역 변수에 복사되면 → 그 전역 변수를 다시 같은 방식으로 추적한다(전역 변수를 더블클릭하면 Ghidra/IDA가 이 변수의 모든 참조 위치를 보여준다).</li></ul>
+<p><strong>4) 어셈블리 레벨에서 추적해야 할 때</strong> 디컴파일이 변수를 제대로 못 잡아서(최적화, 포인터 연산) 소스 레벨 추적이 끊기면, 어셈블리로 내려가서 레지스터를 추적한다. 예를 들어 <code>lea rax, [rbp-40h]</code>로 입력 버퍼의 주소를 <code>rax</code>에 로드했다면, 그 이후 코드에서 <code>rax</code>(또는 <code>rax</code>가 복사된 다른 레지스터)가 어떻게 쓰이는지 한 줄씩 따라간다. IDA에서는 레지스터 이름을 더블클릭하면 다음/이전 사용처로 이동하는 데 도움이 되는 하이라이트가 켜진다.</p>
+<p><strong>5) 도착 지점 확인</strong> 몇 단계 함수 호출을 따라가다 보면 결국 비교 연산(<code>cmp</code>, <code>test</code>) 뒤에 조건 분기(<code>je</code>/<code>jne</code>)가 나오는 지점, 또는 반복문이 끝난 뒤 최종 결과를 판단하는 지점에 도달한다. 여기가 실질적인 검증 로직이다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 디컴파일 창에서 변수 클릭(같은 변수 하이라이트), <code>X</code>(xref), <code>Ctrl+X</code>(디컴파일 창에서도 xref 가능한 버전 존재), <code>N</code>(변수/함수 리네임으로 추적 표시)</li><li>Ghidra: 디컴파일 창에서 변수 우클릭 → <code>References → Show References to Address</code></li><li>GDB(동적으로 확인하고 싶을 때): <code>watch *(char*)input_addr</code> — 이 메모리 주소를 누가 읽거나 쓰면 멈춘다(하드웨어 워치포인트, 정확히는 write watchpoint가 기본이며 read는 <code>rwatch</code> 사용)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>변수 하이라이트에서 사용처가 딱 1~2곳뿐이면 추적이 쉽다. 사용처가 10곳 넘게 흩어져 있으면 전역 변수이거나 여러 함수에서 공유하는 버퍼일 가능성이 높다 — 이럴 때는 <code>main</code>에서 호출 순서대로 함수를 따라가는 게 더 명확할 수 있다.</li><li><code>watch</code> 워치포인트가 걸리면 GDB가 "이 주소를 방금 어떤 명령어가 건드렸다"는 걸 알려준다. <code>bt</code>(backtrace)로 어떤 함수 안에서 발생했는지 바로 확인 가능.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>변수 하나만 따라가다가 그 값이 복사되어 다른 이름의 변수로 바뀌는 순간을 놓치는 것 — 복사/캐스팅되면 새 변수 이름도 계속 추적해야 한다.</li><li>포인터와 포인터가 가리키는 값을 혼동하는 것 — <code>input</code>(주소)과 <code>*input</code>(그 주소의 내용)은 다르다.</li><li>전역 변수 추적 시 프로그램 어디서든(다른 함수에서도) 값이 바뀔 수 있다는 걸 잊고 한 함수 안에서만 찾는 것.</li><li>이 방법이 오래 걸린다고 중간에 포기하고 다시 문자열 검색으로 돌아갔다가 또 포기하는 식으로 왔다갔다만 하는 것 — 한 방법을 정하면 최소 몇 분은 진득하게 따라가 본다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>그래도 검증 로직을 못 찾겠다 → <a href="rev-0015-five-minute-checklist.html">rev-0015-five-minute-checklist.md</a></li><li>안티디버깅 때문에 동적으로 확인이 안 된다 → <a href="rev-0005-static-vs-dynamic.html">rev-0005-static-vs-dynamic.md</a></li><li>디컴파일이 신뢰가 안 간다 → <a href="rev-0011-when-to-trust-asm.html">rev-0011-when-to-trust-asm.md</a></li><li>찾은 로직을 기록/정리하는 법 → <a href="rev-0014-reversing-notes.html">rev-0014-reversing-notes.md</a></li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">int main() {
+    char input[32];
+    scanf("%s", input);
+    int r = transform(input);
+    if (r == 0x1A2B)
+        puts("Correct!");
+    else
+        puts("Wrong!");
+}</code></pre>
+<ol><li><code>scanf</code> xref로 이 코드에 도착.</li><li><code>input</code>을 클릭 → 다음 사용처가 <code>transform(input)</code> 호출임을 확인.</li><li><code>transform</code>으로 더블클릭해서 들어감 → 내부에서 각 바이트를 XOR하고 합산하는 반복문을 발견.</li><li>반복문을 다 읽고 나오면 리턴값 <code>r</code>이 <code>main</code>으로 돌아와 <code>0x1A2B</code>와 비교됨을 확인 — 이제 <code>transform</code> 로직을 역산하면 <code>input</code>의 조건을 구할 수 있다.</li></ol>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0006-finding-check-function.html">rev-0006-finding-check-function.md</a></li><li><a href="rev-0008-trace-from-strings.html">rev-0008-trace-from-strings.md</a></li><li><a href="rev-0013-record-constants-first.html">rev-0013-record-constants-first.md</a></li><li><a href="rev-0017-recover-logic-before-solver.html">rev-0017-recover-logic-before-solver.md</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>데이터 흐름 추적(use-def chain) 개념: 컴파일러/정적분석 일반 이론(데이터 흐름 분석) 기준 서술 (2026-09-08 검증).</li><li>IDA/Ghidra 변수 하이라이트·xref 기능: 각 공식 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

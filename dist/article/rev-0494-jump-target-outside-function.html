@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>어셈블리 점프 목표 주소가 함수 바깥을 가리킬 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>어셈블리 점프 목표 주소가 함수 바깥을 가리킬 때</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>함수 끝부분에서 <code>JMP</code>가 그 함수 범위 밖(다른 함수의 시작 주소나 중간)으로 뛰는 코드는 대부분 버그나 오분석이 아니라 컴파일러의 <strong>꼬리 호출 최적화(Tail Call Optimization, TCO)</strong>이며, "마지막으로 다른 함수를 호출하고 그 함수의 반환값을 그대로 자신의 반환값으로 쓸 것"이므로 <code>CALL</code>+<code>RET</code> 대신 <code>JMP</code> 하나로 대체해서 스택 프레임을 아낀 것이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA에서 함수의 마지막 명령이 <code>RET</code>이 아니라 <code>JMP other_func</code>로 끝나 있을 때</li><li>Ghidra에서 어떤 함수가 "Thunk Function"으로 표시되거나, 함수 코드가 다른 함수 코드 영역과 겹치는 것처럼 보일 때</li><li>디스어셈블리에서 <code>JMP</code>의 목표 주소가 현재 보고 있는 함수의 시작-끝 범위를 완전히 벗어난 곳(다른 함수 이름)을 가리킬 때</li><li>여러 함수가 뒷부분 코드(에필로그, 공통 처리 루틴)를 공유하는 것처럼 보일 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>꼬리 호출(Tail Call)이란</h3>
+<p>함수 <code>A</code>의 <strong>마지막으로 실행되는 문장</strong>이 다른 함수 <code>B</code>를 호출하고, <code>A</code>가 그 호출 결과를 그대로 반환하는 경우를 "꼬리 호출"이라 한다.</p>
+<pre><code class="language-c">int A(int x) {
+    // ... 처리 ...
+    return B(x);   // A의 마지막 동작이 B 호출 -&gt; 꼬리 호출
+}</code></pre>
+<p>이 경우 <code>A</code>는 <code>B(x)</code>가 반환된 뒤 아무것도 더 할 게 없다. <code>B</code>가 반환하면 <code>A</code>도 곧바로 반환할 것이기 때문에, 컴파일러는 다음과 같이 최적화할 수 있다:</p>
+<ol><li><code>A</code>의 스택 프레임(지역 변수 공간)을 미리 정리한다(<code>leave</code> 또는 <code>add rsp, N</code>).</li><li><code>A</code>로 돌아올 반환 주소를 그대로 스택에 남겨둔 채(<code>CALL</code>로 새로 push하지 않고), <code>B</code>로 <strong><code>JMP</code>한다</strong>.</li><li><code>B</code>는 자신이 끝나면 스택 맨 위의 반환 주소(원래 <code>A</code>를 호출했던 곳의 주소)로 직접 <code>RET</code>한다 — <code>A</code>를 거치지 않고 바로.</li></ol>
+<p>결과적으로 <code>A</code>의 스택 프레임이 통째로 생략되어 <strong>재귀 호출이 스택을 무한정 소비하지 않게</strong> 되거나(꼬리 재귀 최적화), 일반적인 경우에도 함수 호출 하나(스택 프레임 하나)를 아끼는 효과가 있다.</p>
+<h3>왜 CALL이 아니라 JMP인가</h3>
+<p><code>CALL</code>은 반환 주소를 새로 스택에 push하지만, <code>JMP</code>는 스택을 전혀 건드리지 않는다. 꼬리 호출에서는 "이미 스택에 있는 반환 주소(A를 호출한 곳)"를 그대로 재사용하면 되므로, 새로 반환 주소를 쌓을 필요가 없다 — 그래서 <code>JMP</code>를 쓴다. 이게 REV-0071(CALL)에서 언급한 "JMP는 스택에 아무것도 남기지 않는다"는 성질을 정확히 활용한 사례다.</p>
+<h3>IDA/Ghidra가 이걸 어떻게 다루는가</h3>
+<ul><li><strong>IDA</strong>: 함수의 마지막이 <code>JMP other_func</code>로 끝나면, 함수 목록에서 이 함수의 범위가 그 <code>JMP</code> 명령까지로 표시되고 <code>RET</code>가 없다. <code>other_func</code>로 더블클릭해서 이동하면 완전히 별개의 함수로 정의되어 있는 경우가 많다. 때로는 "Function Chunk"(함수가 여러 조각으로 나뉘어 표시되는 기능)로 인해 진짜 함수 경계가 헷갈릴 수 있다.</li><li><strong>Ghidra</strong>: 아예 함수 전체가 <code>JMP</code> 한 줄로만 구성된 경우 "Thunk Function"(위임 함수)으로 자동 인식해서, 함수 목록에 원래 함수 이름 대신 <code>thunk_FUNCNAME</code> 같은 형태로 표시하고 실제로는 대상 함수로 바로 연결해서 보여주기도 한다.</li><li>두 도구 모두 F5(디컴파일) 결과에서는 꼬리 호출을 <code>return B(x);</code> 형태로 비교적 깔끔하게 재구성해주는 경우가 많다 — 어셈블리 원문에서만 <code>JMP</code>로 보이고, 디컴파일 결과는 오히려 이해하기 쉬울 수 있다.</li></ul>
+<h3>흔히 헷갈리는 다른 상황과의 구분</h3>
+<ul><li><strong>일반 조건 분기(<code>Jcc</code>)로 함수 안의 다른 블록으로 가는 것</strong>: 이건 함수 범위 "안"에서의 정상적인 분기이므로 이 문서의 대상이 아니다. 목표 주소가 함수 시작-끝 범위 <strong>밖</strong>일 때만 이 패턴을 의심한다.</li><li><strong>점프 테이블을 통한 간접 JMP(switch문)</strong>: 이것도 함수 내부의 여러 케이스 블록으로 가는 것이라 보통 함수 범위 안에 있다(REV-0441 참고). 범위 밖의 다른 함수로 가는 이 문서의 패턴과 다르다.</li><li><strong>PLT(Procedure Linkage Table) 스텁</strong>: Linux ELF에서 외부 라이브러리 함수를 부를 때, <code>PLT</code> 안의 작은 스텁 함수는 <code>jmp qword ptr [GOT 슬롯]</code>으로 끝난다. 이것도 넓게 보면 "함수처럼 보이는 것이 JMP로 끝나서 다른 곳(실제 라이브러리 함수)으로 간다"는 점에서 비슷한 현상이며, 로더가 GOT를 채워야 실제 목적지가 확정된다(REV-0100 참고).</li><li><strong>난독화/패킹에 의한 의도적 흐름 조작</strong>: 정상적인 컴파일러 출력이 아니라 난독화 도구가 일부러 함수 경계를 흐트러뜨리는 경우도 있으나, 훨씬 드물고 다른 정황(문자열 암호화, 안티디버깅 등)과 함께 나타나는 경우가 많다. 우선 꼬리 호출부터 의심하는 게 합리적이다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">funcA:
+    push    rbp
+    mov     rbp, rsp
+    ; ... 처리 ...
+    mov     ecx, eax        ; funcB의 인자를 세팅
+    pop     rbp               ; 스택 프레임 정리 (leave 대신 수동으로)
+    jmp     funcB              ; call funcB + ret 대신 이렇게 끝남 -&gt; 꼬리 호출</code></pre>
+<p>IDA 함수 목록에서 <code>funcA</code>의 끝 주소가 이 <code>jmp</code> 명령이고, <code>funcA</code> 안에 <code>retn</code>이 아예 없다.</p>
+<h2>가장 먼저 할 것</h2>
+<p><code>JMP</code>의 목표가 함수 범위 밖이라고 판단되면, 먼저 그 목표 주소가 <strong>독립적인 함수의 시작 지점</strong>인지 확인한다(IDA에서 목표 주소가 어떤 함수의 첫 명령인지). 맞다면 꼬리 호출일 가능성이 매우 높다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) JMP 직전 코드로 스택 프레임 정리 여부 확인</strong></p>
+<p><code>JMP</code> 바로 앞에 <code>leave</code>, <code>pop rbp</code>, <code>add rsp, N</code> 같은 스택 정리 코드가 있는지 본다. 있으면 "이 함수는 자기 볼일을 다 보고 나가는 것"이라는 신호다.</p>
+<p><strong>2) JMP 목표가 다른 함수의 진짜 시작인지 확인</strong></p>
+<p>목표 주소로 이동해서 그 주소가 어떤 함수의 첫 명령(보통 <code>push rbp</code> 등 프롤로그 시작)인지 확인한다. 맞으면 꼬리 호출이다.</p>
+<p><strong>3) 디컴파일 결과로 교차 검증</strong></p>
+<p>IDA/Ghidra의 F5 결과가 <code>return other_func(...);</code> 형태로 나오면 꼬리 호출로 확정할 수 있다.</p>
+<p><strong>4) 디버거로 실제 반환 위치 확인</strong></p>
+<p>동적으로 확인하고 싶다면, <code>funcA</code>를 호출한 지점에 브레이크포인트를 걸고 <code>funcA</code> 진입 시점의 반환 주소(스택 맨 위)를 기록해둔 뒤, <code>JMP funcB</code>를 넘어가서 <code>funcB</code>가 최종적으로 <code>RET</code>할 때 어디로 돌아가는지 확인한다 — 처음 기록해둔 <code>funcA</code>의 반환 주소와 같다면 꼬리 호출이 확정된다.</p>
+<p><strong>5) Thunk/PLT와 구분</strong></p>
+<p>함수 전체가 <code>JMP</code> 단 한 줄뿐이고 다른 처리가 전혀 없다면(스택 정리할 것도 없는 경우), Thunk 함수나 PLT 스텁일 가능성도 함께 고려한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 함수 목록(<code>Functions</code> 창)에서 함수 끝 주소 확인, <code>Ctrl+E</code>(함수 청크/경계 관련 정보), <code>X</code>(Xrefs to)로 이 함수를 부르는 곳 확인</li><li>Ghidra: 함수 우클릭 → "Function Graph"로 흐름 확인, Thunk 함수는 심볼 트리에 별도 아이콘으로 표시됨</li><li>x64dbg/GDB: <code>JMP</code> 실행 후 <code>RSP</code>에 남아있는 반환 주소를 확인(<code>x/gx $rsp</code>)해서 원래 호출자로 이어지는지 검증</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>JMP</code> 목표가 다른 함수의 시작이고 그 직전에 스택 정리 코드가 있으면 → 꼬리 호출로 확정.</li><li><code>JMP</code> 목표가 같은 함수 안의 라벨(주소가 함수 범위 내부)이면 → 이건 그냥 일반적인 루프/분기이지 이 문서의 대상이 아니다.</li><li>Ghidra가 함수를 "Thunk Function"으로 분류했으면 → 대체로 함수 전체가 다른 함수로의 단순 위임(꼬리 호출의 극단적 형태 또는 PLT류)이라는 뜻이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>함수 끝의 <code>JMP</code>를 보고 "역공학 도구가 함수 경계를 잘못 잡았다"고 단정해서 수동으로 억지로 이어붙이려는 것 — 실제로는 컴파일러가 의도적으로 만든 정상적인 꼬리 호출 최적화인 경우가 대부분이다.</li><li>꼬리 호출된 함수(<code>funcB</code>)를 분석할 때 "누가 이 함수를 불렀는지"를 <code>CALL</code> xref만으로 찾으려는 것 — 꼬리 호출은 <code>CALL</code>이 아니라 <code>JMP</code>이므로, IDA의 일반적인 "Xrefs to" 목록에 <code>JMP</code>로 인한 참조도 함께 나오는지 확인해야 한다(대부분 나오지만 필터 설정에 따라 놓칠 수 있음).</li><li>재귀 함수에서 꼬리 재귀 최적화가 적용된 경우, 디스어셈블리에 반복되는 <code>CALL</code>이 안 보여서 "재귀가 없는 함수"라고 오해하는 것 — 실제로는 <code>JMP</code>로 자기 자신을 다시 가리켜서(자기 자신의 시작 주소로 점프) 사실상 반복문처럼 동작하는 재귀다.</li><li>디버거로 <code>Step Over</code>(F8)를 눌렀는데 <code>JMP</code>가 다른 함수로 가버려서 "Step Over가 안 먹힌다"고 오해하는 것 — <code>Step Over</code>는 <code>CALL</code>에서만 "함수 끝까지 실행 후 다음 줄"로 동작하도록 설계되어 있고, <code>JMP</code>는 그냥 무조건 분기이므로 Step Over/Step Into 구분 없이 항상 그 목표로 이동하는 게 정상이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>꼬리 호출인지 확신이 안 서면 → 디버거로 실제 반환 주소를 추적해서 최종적으로 원래 호출자에게 돌아가는지 검증.</li><li>PLT/Thunk와 헷갈리면 → 목표 함수가 임포트된 외부 라이브러리 함수인지(Imports 탭) 먼저 확인.</li><li>점프 테이블(switch문)과 헷갈리면 → REV-0441 참고, 이쪽은 함수 "내부"의 여러 케이스로 가는 것이라 범위를 벗어나지 않는다.</li><li>CALL/RET/JMP의 기본 동작 자체가 헷갈리면 → REV-0071(CALL), REV-0072(RET), REV-0066(JMP) 복습.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 전형적인 꼬리 호출</strong></p>
+<pre><code class="language-c">int wrapper(int x) {
+    return real_impl(x + 1);
+}</code></pre>
+<pre><code class="language-asm">wrapper:
+    lea     edi, [rdi+1]     ; x+1 계산 (인자 준비)
+    jmp     real_impl          ; call real_impl + ret 대신 그냥 jmp
+                                  ; real_impl이 끝나면 wrapper를 호출한 곳으로 바로 돌아감</code></pre>
+<p><strong>예제 2 — 꼬리 재귀가 반복문처럼 보이는 경우</strong></p>
+<pre><code class="language-c">int sum_tail(int n, int acc) {
+    if (n == 0) return acc;
+    return sum_tail(n - 1, acc + n);
+}</code></pre>
+<pre><code class="language-asm">sum_tail:
+    test    ecx, ecx
+    jz      base_case
+    add     edx, ecx
+    dec     ecx
+    jmp     sum_tail        ; 재귀 호출이지만 CALL이 아니라 JMP -&gt; 사실상 반복문
+base_case:
+    mov     eax, edx
+    ret</code></pre>
+<p><strong>예제 3 — PLT 스텁과의 비교 (Linux ELF)</strong></p>
+<pre><code class="language-asm">; PLT 스텁 - 이것도 함수 전체가 JMP 하나
+printf@plt:
+    jmp     qword ptr [rip+GOT_printf]   ; GOT를 통해 실제 libc printf로 점프</code></pre>
+<p>이건 꼬리 호출이 아니라 동적 링킹 매커니즘이지만, "함수가 JMP 하나로 끝나서 밖으로 나간다"는 겉모습이 비슷해서 함께 알아두면 구분에 도움이 된다.</p>
+<p><strong>예제 4 — IDA에서 확인하는 절차 예시</strong></p>
+<pre><code class="language-text">1) funcA의 마지막 명령: jmp funcB
+2) funcB로 더블클릭 이동 -&gt; funcB가 독립된 함수로 정의돼 있고 push rbp로 시작함 확인
+3) F5로 funcA 디컴파일 -&gt; "return funcB(a1);" 형태로 나오면 꼬리 호출 확정</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li><li><a href="rev-0072-ret.html">REV-0072 — RET: 함수 반환과 스택 변화</a></li><li><a href="rev-0066-jmp.html">REV-0066 — JMP: 무조건 분기</a></li><li><a href="rev-0441-switch-jump-table.html">REV-0441 — Switch문 점프 테이블(Jump Table) 완전 분석</a></li><li><a href="rev-0495-no-call-due-to-inlining.html">REV-0495 — 인라인된 함수 때문에 CALL이 하나도 없는 함수를 만났을 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>꼬리 호출 최적화(Tail Call Optimization)의 컴파일러 구현 개념: GCC 공식 문서(<code>-foptimize-sibling-calls</code>) 및 LLVM 공식 문서(Tail Call Optimization) 기준 (2026-09-08 검증).</li><li><code>JMP</code>가 스택을 건드리지 않는다는 성질과 <code>CALL</code>/<code>RET</code>의 대응 관계: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "JMP" 및 "CALL/RET" 섹션 기준.</li><li>IDA의 Function Chunk, Ghidra의 Thunk Function 개념: Hex-Rays IDA 공식 문서 및 Ghidra 공식 문서(Thunk Functions) 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

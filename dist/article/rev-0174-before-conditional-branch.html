@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>조건 분기 직전에 무엇을 봐야 하는가 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>조건 분기 직전에 무엇을 봐야 하는가</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>조건 분기(<code>Jcc</code>, 예: <code>je</code>/<code>jne</code>/<code>jg</code>/<code>jl</code>) 직전에는 반드시 그 위에 있는 <code>cmp</code>나 <code>test</code> 명령이 무엇을 비교했는지, 그리고 그 결과로 어떤 플래그(ZF, SF, OF, CF)가 세팅됐는지를 확인해야 하며, 디버거의 플래그 창(x64dbg) 또는 <code>info registers</code>(GDB)로 이 값을 직접 보면 "왜 이 분기로 갔는지"를 추측이 아니라 확인으로 알 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA에서 <code>cmp eax, 0Ah</code> 다음에 <code>jg loc_401250</code>가 나오는데, 왜 이쪽으로 분기했는지 손으로 계산하기 귀찮거나 헷갈릴 때</li><li><code>jg</code>(signed 초과)와 <code>ja</code>(unsigned 초과)처럼 비슷해 보이는 조건 분기가 실제로 다른 결과를 낼 때 그 이유를 확인하고 싶을 때</li><li>크랙미(crackme)의 시리얼 검증 로직에서 "이 분기만 반대로 가면 통과할 것 같다"는 지점을 실행 중 정확히 찾고 싶을 때</li><li>x64dbg 플래그 창의 ZF, CF, SF, OF, PF 체크박스가 각각 무슨 뜻인지 모를 때</li><li>GDB <code>info registers</code>의 <code>eflags</code> 줄에 나오는 <code>[ ZF PF ]</code> 같은 표기를 어떻게 읽어야 할지 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 CMP/TEST와 Jcc를 항상 같이 봐야 하는가</h3>
+<p>x86/x64에서 조건 분기(<code>Jcc</code> 계열)는 스스로 값을 비교하지 않는다. <strong>직전에 실행된 명령어가 남긴 플래그 레지스터(EFLAGS/RFLAGS)의 상태</strong>를 읽어서 분기 여부를 결정할 뿐이다. 대부분의 경우 그 "직전 명령어"는 <code>cmp</code>(REV-0060) 또는 <code>test</code>(REV-0059)이지만, 사실 플래그를 바꾸는 어떤 산술/논리 명령(<code>sub</code>, <code>add</code>, <code>and</code>, <code>or</code> 등)이든 그 직후의 <code>Jcc</code>에 영향을 줄 수 있다. 따라서 조건 분기를 이해하려면 <strong>그 분기 바로 위에서 가장 최근에 플래그를 변경한 명령어가 무엇인지</strong>부터 찾아야 한다.</p>
+<h3>CMP가 세팅하는 플래그</h3>
+<p><code>cmp a, b</code>는 내부적으로 <code>a - b</code>를 계산하되 결과를 저장하지 않고 플래그만 남긴다(REV-0060 참고). 이때 세팅되는 주요 플래그:</p>
+<ul><li><strong>ZF(Zero Flag)</strong>: 결과가 0이면 1 (즉 <code>a == b</code>)</li><li><strong>SF(Sign Flag)</strong>: 결과의 최상위 비트(부호 비트)</li><li><strong>CF(Carry Flag)</strong>: unsigned 뺄셈에서 빌림(borrow)이 발생했는가 (<code>a &lt; b</code>, unsigned 기준)</li><li><strong>OF(Overflow Flag)</strong>: signed 뺄셈에서 오버플로우가 발생했는가</li></ul>
+<h3>TEST가 세팅하는 플래그</h3>
+<p><code>test a, b</code>는 <code>a AND b</code>를 계산하되 결과를 저장하지 않고 플래그만 남긴다(REV-0059 참고). 흔히 <code>test eax, eax</code>처럼 자기 자신과 AND해서 "이 값이 0인가, 음수인가"만 빠르게 확인하는 용도로 쓰인다. 이때 CF와 OF는 항상 0으로 세팅되고, ZF와 SF만 의미 있게 쓰인다.</p>
+<h3>Jcc가 어떤 플래그 조합을 보는지 (REV-0088 요약)</h3>
+<ul><li><code>JE</code>/<code>JZ</code> — ZF=1이면 분기 (같음/0)</li><li><code>JNE</code>/<code>JNZ</code> — ZF=0이면 분기 (다름/0아님)</li><li><code>JG</code>/<code>JNLE</code> (signed 초과) — ZF=0 그리고 SF=OF</li><li><code>JL</code>/<code>JNGE</code> (signed 미만) — SF≠OF</li><li><code>JGE</code>/<code>JNL</code> (signed 이상) — SF=OF</li><li><code>JLE</code>/<code>JNG</code> (signed 이하) — ZF=1 또는 SF≠OF</li><li><code>JA</code>/<code>JNBE</code> (unsigned 초과) — CF=0 그리고 ZF=0</li><li><code>JB</code>/<code>JNAE</code> (unsigned 미만) — CF=1</li><li><code>JAE</code>/<code>JNB</code> (unsigned 이상) — CF=0</li><li><code>JBE</code>/<code>JNA</code> (unsigned 이하) — CF=1 또는 ZF=1</li></ul>
+<p>signed 비교(<code>jg</code>/<code>jl</code> 계열)와 unsigned 비교(<code>ja</code>/<code>jb</code> 계열)가 <strong>같은 CMP 결과</strong>를 보고도 다르게 판단할 수 있다는 것이 리버싱에서 자주 헷갈리는 지점이다 — 자세한 진리표와 예시는 REV-0088을 참고한다.</p>
+<h3>실행 중 직접 확인하는 절차</h3>
+<p>정적으로 손 계산하는 대신, 디버거로 다음을 그대로 확인하면 훨씬 빠르고 정확하다.</p>
+<ol><li><code>Jcc</code> 명령어 주소, 또는 그 직전 <code>cmp</code>/<code>test</code> 명령어 주소에 브레이크포인트를 건다(REV-0169).</li><li>실행을 멈춘 시점에 비교 대상 값(레지스터 또는 메모리)의 실제 값을 확인한다(REV-0172).</li><li>플래그 창(x64dbg) 또는 <code>info registers</code>의 eflags(GDB)에서 ZF/SF/OF/CF의 실제 상태를 확인한다.</li><li>한 스텝(F7/F8 또는 <code>si</code>) 더 진행해서 실제로 분기했는지(RIP가 점프 대상으로 이동했는지) 아니면 분기하지 않고 다음 줄로 넘어갔는지 확인한다.</li></ol>
+<h3>분기 결과를 직접 바꿔서 실험하기 (플래그 강제 조작)</h3>
+<p>디버거는 플래그 값을 실행 중 수동으로 바꿀 수 있게 해준다. x64dbg의 플래그 창에서 체크박스를 클릭하면 즉시 그 플래그 비트가 뒤집히고, 다음 <code>Jcc</code>가 다르게 동작하는지 바로 실험해볼 수 있다. GDB에서는 <code>set $eflags = ...</code> 또는 개별 비트를 조작하는 방식으로 가능하다(Pwndbg에서는 <code>set $zf = 1</code> 같은 편의 명령을 제공하기도 한다). 이는 "이 분기만 반대로 가면 어떻게 되는지" 크랙미 분석에서 매우 실용적인 확인 방법이다 — 실제 패치 없이도 그 자리에서 분기 결과를 테스트해볼 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>어셈블리에서 <code>cmp</code>/<code>test</code> 바로 다음 줄에 <code>j</code>로 시작하는 명령어(<code>je</code>, <code>jne</code>, <code>jg</code>, <code>ja</code> 등)가 오는 패턴이 조건 분기의 표준 형태다.</li><li>x64dbg 플래그 창에서 체크된 플래그는 보통 초록/강조색으로 표시되고, 체크 해제된 플래그는 회색으로 표시된다.</li><li>x64dbg 디스어셈블리 창에서 분기 명령어 줄에 실제로 분기할지 여부를 미리 화살표나 하이라이트로 암시해주는 경우가 있다(정지 상태에서 다음 실행될 경로를 표시).</li><li>GDB <code>info registers</code>의 <code>eflags</code> 줄: <code>eflags   0x246   [ PF ZF IF ]</code> — 대괄호 안에 나열된 이름이 현재 1로 세팅된 플래그들이다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>분기 명령어(<code>Jcc</code>) 바로 위에서 가장 가까운 <code>cmp</code>/<code>test</code>(또는 플래그를 바꾸는 다른 산술 명령)를 찾는다.</li><li>그 명령어가 signed 계열 분기(<code>jg</code>,<code>jl</code>,<code>jge</code>,<code>jle</code>)를 위한 것인지, unsigned 계열(<code>ja</code>,<code>jb</code>,<code>jae</code>,<code>jbe</code>)을 위한 것인지 확인한다(REV-0088).</li><li><code>cmp</code>/<code>test</code> 명령어 주소에 브레이크포인트를 걸고 비교 대상 값을 실제로 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>x64dbg</strong></p>
+<ol><li>IDA/Ghidra에서 분석하려는 <code>Jcc</code> 명령어와 그 직전 <code>cmp</code>/<code>test</code>를 확인하고 주소를 메모한다.</li><li>x64dbg에서 그 <code>cmp</code>/<code>test</code> 명령어 줄을 클릭하고 <code>F2</code>로 브레이크포인트를 건다.</li><li><code>F9</code>로 실행해서 그 지점까지 도달시킨다.</li><li>레지스터 창에서 비교 대상 값(예: EAX, 또는 메모리 오퍼랜드가 가리키는 값)을 확인한다.</li><li><code>F7</code>(또는 <code>F8</code>, CALL이 아니므로 동일)로 한 스텝 진행해서 <code>cmp</code>/<code>test</code>를 실행시킨다.</li><li>플래그 창에서 ZF, SF, OF, CF의 현재 값을 확인한다.</li><li>다시 한 스텝 진행해서 <code>Jcc</code>가 실제로 분기하는지, RIP가 어디로 이동하는지 확인한다.</li><li>(선택) 결과를 바꿔서 실험하고 싶다면, <code>Jcc</code> 실행 전에 플래그 창에서 관련 플래그 체크박스를 클릭해 값을 뒤집어 보고 분기가 달라지는지 확인한다.</li></ol>
+<p><strong>GDB / Pwndbg</strong></p>
+<ol><li><code>cmp</code>/<code>test</code> 명령어 주소에 브레이크포인트를 건다:</li></ol>
+<pre><code>   break *0x401230</code></pre>
+<ol><li><code>run</code>으로 실행한다.</li><li>비교 대상 레지스터/메모리 값을 확인한다:</li></ol>
+<pre><code>   p $eax
+   p/x $eax</code></pre>
+<ol><li>한 스텝 진행해서 <code>cmp</code>/<code>test</code>를 실행시킨다:</li></ol>
+<pre><code>   si</code></pre>
+<ol><li>플래그 상태를 확인한다:</li></ol>
+<pre><code>   info registers eflags</code></pre>
+<p>또는 전체 레지스터에서 <code>eflags</code> 줄을 확인한다(<code>info registers</code>). Pwndbg를 쓰면 정지할 때마다 <code>context</code> 화면 상단에 플래그가 항상 표시된다.</p>
+<ol><li>한 스텝 더 진행해서 실제 분기 여부를 확인한다:</li></ol>
+<pre><code>   si
+   p $pc</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: 플래그 창(기본 표시, ZF/CF/SF/OF/PF 체크박스), <code>F2</code>(브레이크포인트), <code>F9</code>(실행), <code>F7</code>/<code>F8</code>(스텝), 플래그 체크박스 직접 클릭(값 강제 변경)</li><li>GDB/Pwndbg: <code>break *&lt;주소&gt;</code>, <code>si</code>(명령어 단위 스텝), <code>info registers eflags</code>(또는 <code>info registers</code>), <code>p $eflags</code>, <code>set $eflags = ...</code>(플래그 강제 변경), Pwndbg <code>context</code>(플래그 자동 상시 표시)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>x64dbg 플래그 창에서 ZF가 체크되어 있으면 직전 <code>cmp</code>/<code>test</code> 결과가 0(같음)이었다는 뜻이다.</li><li>GDB <code>info registers eflags</code> 출력에서 <code>[ CF PF ZF ]</code>처럼 나열된 이름이 현재 1인 플래그들이다 — 나열되지 않은 플래그(SF, OF 등)는 0이다.</li><li>한 스텝 더 진행했을 때 RIP(또는 x64dbg의 현재 실행 화살표)가 <code>Jcc</code>의 목적지 주소로 이동했다면 분기가 "일어난(taken)" 것이고, 그냥 다음 줄로 넘어갔다면 분기가 "안 일어난(not taken)" 것이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>Jcc</code> 바로 위 줄이 <code>cmp</code>/<code>test</code>가 아닌 경우(예: 중간에 다른 명령이 끼어 있거나, 플래그와 무관한 <code>mov</code>가 있는 경우) 무작정 그 직전 줄을 비교 대상으로 착각하는 것 — <code>mov</code>는 플래그를 바꾸지 않으므로, 플래그를 실제로 바꾼 가장 가까운 명령을 찾아야 한다.</li><li>signed 분기(<code>jg</code>)와 unsigned 분기(<code>ja</code>)를 같은 것으로 취급해서, CMP 결과가 같으니 분기 결과도 같을 거라 착각하는 것 — 음수가 낀 비교에서는 결과가 정반대로 나올 수 있다(REV-0088 예시 참고).</li><li><code>test eax, eax</code> 다음의 <code>jns</code>/<code>js</code>(부호 분기)를 보고 뭘 비교하는지 모르겠다며 당황하는 것 — <code>test eax, eax</code>는 사실상 "eax가 0인가, 음수인가"만 확인하는 관용구다.</li><li>플래그를 실행 전에 미리 보려고 <code>Jcc</code> 명령어 자체에 브레이크포인트를 걸어놓고, 그 명령어가 실행되기 <strong>전</strong> 플래그를 보고 있다는 걸 착각하지 않는 것 — 브레이크포인트에서 멈춘 시점은 "그 명령어가 아직 실행되지 않은" 상태이므로, <code>cmp</code>/<code>test</code>가 이미 실행된 뒤(그 다음 스텝)의 플래그를 봐야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>플래그 값과 예상 분기 결과가 안 맞는다면 → CMP/TEST의 오퍼랜드 순서(<code>cmp a, b</code>는 <code>a-b</code>이지 <code>b-a</code>가 아니다)를 다시 확인한다.</li><li>signed/unsigned를 헷갈렸다면 → REV-0088의 진리표와 대조하며 CF/OF/SF/ZF를 하나씩 다시 짚는다.</li><li>CMP/TEST가 안 보이고 다른 산술 명령(<code>sub</code>, <code>dec</code>, <code>and</code>) 직후 바로 Jcc가 온다면 → 그 산술 명령의 결과가 곧 비교 결과라는 뜻이니 그 명령어의 플래그 영향을 확인한다.</li><li>실험적으로 분기를 반대로 만들고 싶다면 → 플래그 값을 디버거에서 직접 뒤집어서(x64dbg 체크박스, GDB <code>set $eflags</code>) 그 자리에서 검증한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>x64dbg — signed 비교 분기 확인</strong></p>
+<pre><code class="language-asm">cmp     eax, 0Ah      ; eax와 10 비교
+jg      loc_401250     ; eax &gt; 10 (signed) 이면 분기</code></pre>
+<p><code>cmp</code> 줄에 <code>F2</code> → <code>F9</code>로 도달 → 레지스터 창에서 EAX 확인(예: <code>0xFFFFFFFF</code>, 즉 -1) → <code>F7</code>로 <code>cmp</code> 실행 → 플래그 창 확인: SF=1, OF=0 (SF≠OF이므로 <code>jl</code> 조건이지 <code>jg</code> 조건이 아님) → <code>F7</code>로 <code>jg</code> 실행 → 실제로 분기 안 하고 다음 줄로 넘어가는 것을 확인.</p>
+<p><strong>GDB/Pwndbg — 플래그를 직접 읽어 분기 예측</strong></p>
+<pre><code>(gdb) break *0x401230
+(gdb) run
+(gdb) p/x $eax
+$1 = 0xffffffff
+(gdb) si
+(gdb) info registers eflags
+eflags   0x287   [ CF SF IF ]</code></pre>
+<p>SF가 세팅되어 있고 OF는 없으므로 SF≠OF → <code>jg</code>는 분기하지 않고 <code>jl</code>은 분기한다. 실제로 <code>si</code>를 한 번 더 실행해서 <code>$pc</code>(RIP)가 어디로 이동하는지 확인하면 검증된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0169-what-is-a-breakpoint.html">REV-0169 — Breakpoint가 무엇이고 어디에 걸어야 하는가</a></li><li><a href="rev-0172-tracing-registers.html">REV-0172 — 레지스터 값을 실행 중 추적하는 법</a></li><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li><li><a href="rev-0059-test.html">REV-0059 — TEST: 값을 바꾸지 않는 AND 비교</a></li><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>CMP/TEST가 세팅하는 플래그(ZF, SF, CF, OF)와 각 Jcc의 플래그 조건: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "CMP—Compare Two Operands", "TEST—Logical Compare", Volume 1 "EFLAGS Register" 섹션 기준.</li><li>x64dbg 플래그 창(체크박스로 직접 값 변경 가능) 동작: x64dbg 공식 문서(Debugging, Flags) 기준.</li><li>GDB <code>info registers eflags</code> 출력 형식과 <code>$eflags</code> 조작: GNU GDB 공식 매뉴얼 "Registers" 챕터 기준.</li><li>2026-09-08 검증.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

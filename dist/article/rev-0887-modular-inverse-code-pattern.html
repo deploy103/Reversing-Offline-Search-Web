@@ -1,0 +1,201 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>모듈러 역원(Modular Inverse)이 코드에 나타나는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>모듈러 역원(Modular Inverse)이 코드에 나타나는 패턴</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>"나눗셈처럼 보이는데 실제로는 곱셈으로 구현된" 연산, 또는 두 변수가 몫과 나머지를 주고받으며 값을 스왑하는 루프(<code>gcd</code> 계산과 겉보기에 똑같은 구조)를 만났다면, 그건 나머지를 취하는 세계에서 "나누기"에 해당하는 <strong>모듈러 역원(modular inverse)</strong>을 구하는 코드일 가능성이 크다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>RSA 관련 코드(REV-0886)에서 개인 지수 <code>d</code>를 계산하는 부분을 찾다가, <code>e</code>와 <code>φ(n)</code>을 입력받아 이상한 루프를 도는 함수를 만났을 때</li><li>Affine 암호(<code>y = (a*x + b) mod m</code> 형태)의 복호화 함수인데, <code>/a</code>(나눗셈)가 아니라 <code>* a_inv</code>(곱셈)로 되어 있어서 이해가 안 될 때</li><li>두 개의 변수가 계속 자리를 바꾸면서(<code>t0, t1 = t1, t0 - q*t1</code> 같은 패턴) 결국 하나가 0이 될 때까지 도는 루프를 봤는데, 단순 GCD 계산이라기엔 결과를 다른 곳에 저장하는 부분이 이상할 때</li><li><code>pow(a, m - 2, m)</code> 형태의 거듭제곱 호출을 발견했는데 왜 지수가 <code>m - 2</code>인지 이해가 안 될 때</li><li>해시나 체크섬 검증 함수에서 "곱셈의 역"을 이용해 원래 값을 복원하려는 듯한 코드가 있을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>"나머지 세계"에는 나눗셈이 없다</h3>
+<p>일반적인 정수 나눗셈 <code>10 / 3</code>은 문제없이 계산되지만, 모듈러 연산의 세계(<code>mod m</code>)에서는 나눗셈이라는 연산 자체가 정의되어 있지 않다. 대신 "곱했을 때 1이 되는 짝(paired inverse)"을 찾아서 나눗셈 대신 곱셈을 쓴다. 즉, 정수 <code>a</code>에 대해 <code>a * a_inv ≡ 1 (mod m)</code>을 만족하는 <code>a_inv</code>를 모듈러 역원이라 부르고, <code>b / a mod m</code>이 필요하면 실제로는 <code>b * a_inv mod m</code>을 계산한다. 이 개념이 CTF에 등장하는 이유는 명확하다. RSA의 개인 지수 <code>d</code>가 바로 <code>e</code>의 모듈러 역원(<code>e * d ≡ 1 mod φ(n)</code>)이고, Affine 암호의 복호화 계수도 곱셈 계수 <code>a</code>의 모듈러 역원이며, 체크섬/해시 역산에서도 곱셈 단계를 되돌리려면 역원이 필요하다.</p>
+<h3>코드 패턴 1 — 확장 유클리드 호제법(Extended Euclidean Algorithm)</h3>
+<p>모듈러 역원은 항상 존재하는 게 아니라 <code>gcd(a, m) = 1</code>(서로소)일 때만 존재한다. 이걸 확인하면서 동시에 역원까지 구하는 표준 알고리즘이 확장 유클리드 호제법이다. 일반 GCD 계산과 거의 똑같이 생겼지만, <strong>계수를 추가로 추적한다</strong>는 게 결정적 차이다.</p>
+<pre><code class="language-c">// 확장 유클리드 호제법 — 일반 gcd와 겉보기엔 비슷하지만 s, t를 같이 추적한다
+int64_t ext_gcd(int64_t a, int64_t b, int64_t *x, int64_t *y) {
+    if (b == 0) {
+        *x = 1;
+        *y = 0;
+        return a;
+    }
+    int64_t x1, y1;
+    int64_t g = ext_gcd(b, a % b, &amp;x1, &amp;y1);
+    *x = y1;
+    *y = x1 - (a / b) * y1;
+    return g;
+}
+
+int64_t modinv(int64_t a, int64_t m) {
+    int64_t x, y;
+    int64_t g = ext_gcd(a, m, &amp;x, &amp;y);
+    if (g != 1) return -1;              // 역원이 존재하지 않음
+    return ((x % m) + m) % m;           // 음수가 나올 수 있으므로 보정
+}</code></pre>
+<p>반복문(비재귀) 버전은 다음처럼 두 쌍의 변수가 나란히 갱신되는 형태로 나타난다.</p>
+<pre><code class="language-c">int64_t modinv_iter(int64_t a, int64_t m) {
+    int64_t old_r = a, r = m;
+    int64_t old_s = 1, s = 0;
+    while (r != 0) {
+        int64_t q = old_r / r;
+        int64_t tmp_r = old_r - q * r; old_r = r; r = tmp_r;
+        int64_t tmp_s = old_s - q * s; old_s = s; s = tmp_s;
+    }
+    return ((old_s % m) + m) % m;
+}</code></pre>
+<p>디스어셈블리에서 이 패턴을 알아보는 핵심은 <strong>몫(<code>q = old_r / r</code>)을 계산한 뒤, 그 몫으로 두 쌍의 변수(<code>r</code>/<code>s</code>)를 동시에 갱신하며 서로 자리를 바꾼다</strong>는 점이다. 단순 GCD 계산이라면 <code>r</code>, <code>old_r</code>만 갱신되고 끝나지만, 모듈러 역원 계산은 <code>s</code>, <code>old_s</code>(때로는 <code>t</code>, <code>old_t</code>까지 세 쌍)도 똑같은 몫으로 나란히 갱신된다. 이 "여분의 변수 쌍"이 있는지가 GCD와 modinv를 구분하는 가장 확실한 단서다.</p>
+<h3>코드 패턴 2 — 페르마의 소정리를 이용한 지름길</h3>
+<p>모듈러스 <code>m</code>이 소수라면 확장 유클리드 없이 훨씬 간단한 방법이 있다. 페르마의 소정리에 따르면 소수 <code>p</code>와 <code>p</code>로 나누어떨어지지 않는 <code>a</code>에 대해 <code>a^(p-1) ≡ 1 (mod p)</code>이므로, 양변에 <code>a^-1</code>을 곱하면 <code>a^(p-2) ≡ a^-1 (mod p)</code>가 성립한다. 즉 <strong>모듈러 역원을 모듈러 거듭제곱(REV-0886)으로 계산</strong>할 수 있다.</p>
+<pre><code class="language-python">a_inv = pow(a, m - 2, m)   # m이 소수일 때만 성립</code></pre>
+<p>이 패턴은 코드에서 지수 자리에 <code>모듈러스 - 2</code>가 들어가는 형태로 나타난다. IDA/Ghidra 디컴파일에서 <code>mod_pow(a, m - 2, m)</code> 같은 호출을 보면, 이건 나눗셈이 아니라 역원을 구하고 있다는 뜻이다. 다만 이 방법은 <code>m</code>이 소수일 때만 유효하다 — RSA의 모듈러스 <code>n = p*q</code>는 합성수이므로 <code>φ(n)</code>을 모듈러스로 쓸 때는 이 지름길을 쓸 수 없고 반드시 확장 유클리드를 써야 한다(왜냐하면 <code>φ(n)</code>은 소수가 아니기 때문).</p>
+<h3>어디서 이 패턴을 만나게 되는가</h3>
+<ul><li><strong>RSA 개인키 생성</strong>: <code>d = modinv(e, φ(n))</code> — RSA 관련 문제에서 서버 쪽 키 생성 루틴을 리버싱할 때 등장(REV-0886 참고)</li><li><strong>Affine 암호 복호화</strong>: <code>y = (a*x + b) mod 26</code>으로 암호화했다면 복호화는 <code>x = a_inv * (y - b) mod 26</code>. 여기서 <code>a_inv</code>는 26과 서로소인 <code>a</code>에 대한 모듈러 역원</li><li><strong>해시/체크섬 역산</strong>: <code>h = h * k mod m</code> 형태로 값을 누적하는 해시 함수를 역으로 풀 때, 각 단계를 되돌리려면 <code>k</code>의 모듈러 역원이 필요</li><li><strong>선형 합동 생성기(LCG, REV-0891) 역추적</strong>: LCG의 이전 상태를 구할 때도 곱셈 계수의 역원이 필요한 경우가 있음</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>GCD 계산처럼 보이는 루프인데 변수 쌍이 두 개(<code>r</code>/<code>old_r</code>, <code>s</code>/<code>old_s</code>) 이상 나란히 갱신됨</li><li>함수 이름이나 근처 변수명에 <code>inv</code>, <code>modinv</code>, <code>inverse</code>가 남아있음(strip 안 된 경우)</li><li>지수 자리에 <code>mod - 2</code> 같은 계산식이 들어간 모듈러 거듭제곱 호출</li><li>나눗셈 연산자가 있어야 할 자리에 곱셈과 나머지 연산만 있음</li><li>결과값에 대해 <code>((x % m) + m) % m</code>처럼 음수를 보정하는 코드가 붙어있음(확장 유클리드는 중간에 음수 계수가 나올 수 있기 때문)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>루프 안에서 몫(<code>/</code>)을 구한 뒤 그 몫으로 <strong>두 쌍 이상의 변수</strong>를 동시에 갱신하고 있는지부터 확인한다. 한 쌍만 갱신되면 순수 GCD, 두 쌍 이상이면 확장 유클리드(모듈러 역원)로 거의 확정할 수 있다. 지수 거듭제곱 형태라면 지수가 <code>모듈러스 - 2</code>인지 바로 확인한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>의심되는 함수의 입력 인자 두 개(<code>a</code>, <code>m</code>)를 확인 — 순서와 의미(어떤 게 나눌 대상이고 어떤 게 모듈러스인지) 파악</li><li>루프 내부에서 몫을 계산하는 위치를 찾고, 그 몫으로 몇 개의 변수 쌍이 갱신되는지 셈</li><li>변수 쌍이 하나뿐이면 REV-0209(CRC)나 REV-0219(브루트포스 판단)처럼 단순 GCD/공약수 계산일 수 있으니 다른 문맥을 더 확인</li><li>두 쌍 이상이면 확장 유클리드로 확정하고, 최종적으로 반환되는 변수(<code>old_s</code> 또는 <code>x</code>)가 결과임을 확인</li><li>결과에 음수 보정(<code>+ m) % m</code>)이 있는지 확인 — 있으면 확실히 모듈러 역원 계산 함수</li><li>파이썬의 <code>pow(a, -1, m)</code>(Python 3.8+) 또는 직접 구현한 <code>modinv</code>로 같은 입력을 넣어 값이 일치하는지 검증(REV-0222)</li><li>이 역원이 실제로 어디에 쓰이는지(RSA 키 생성? Affine 복호화?) 호출자 함수를 따라가며 최종 목적 확인</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python"># 파이썬 3.8 이상은 내장 pow로 바로 모듈러 역원 계산 가능
+a_inv = pow(a, -1, m)
+
+# 직접 구현 (검증용)
+def modinv(a, m):
+    g, x, _ = ext_gcd(a, m)
+    if g != 1:
+        raise ValueError("역원이 존재하지 않음 (gcd != 1)")
+    return x % m
+
+def ext_gcd(a, b):
+    old_r, r = a, b
+    old_s, s = 1, 0
+    old_t, t = 0, 1
+    while r != 0:
+        q = old_r // r
+        old_r, r = r, old_r - q * r
+        old_s, s = s, old_s - q * s
+        old_t, t = t, old_t - q * t
+    return old_r, old_s, old_t   # gcd, x, y</code></pre>
+<p>IDA: 재귀 함수라면 콜 그래프(<code>Ctrl+X</code>로 xref 확인)에서 자기 자신을 호출하는지 먼저 체크. Ghidra: Function Graph 뷰에서 루프 안 변수 갱신 순서를 시각적으로 추적.</p>
+<h2>출력 해석</h2>
+<ul><li><code>ext_gcd</code>의 첫 반환값(<code>gcd</code>)이 1이 아니면 애초에 역원이 존재하지 않는다는 뜻 — 코드에 이 경우를 처리하는 에러 분기가 있는지 확인한다.</li><li><code>modinv(a, m) * a % m</code>을 계산했을 때 1이 나오지 않으면, <code>a</code>와 <code>m</code>을 반대로 넣었거나 부호 보정을 빠뜨린 것이다.</li><li>RSA 개인 지수 <code>d</code>를 구했다면, <code>pow(pow(m, e, n), d, n) == m</code>으로 왕복 검증하는 것이 가장 확실하다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>확장 유클리드 결과를 그냥 반환해서 음수가 그대로 나오는 것 — 반드시 <code>((x % m) + m) % m</code>으로 양수 범위에 맞춰야 한다.</li><li><code>gcd(a, m) != 1</code>인 경우(역원이 없는 경우)를 확인하지 않고 아무 값이나 역원인 것처럼 사용하는 것.</li><li>페르마 소정리 지름길(<code>pow(a, m-2, m)</code>)을 합성수 모듈러스에 그대로 적용하는 것 — <code>m</code>이 소수가 아니면 이 공식 자체가 성립하지 않는다.</li><li>RSA 문맥에서 <code>modinv(e, n)</code>을 계산해버리는 것 — 실제로는 <code>modinv(e, φ(n))</code>이어야 한다. 모듈러스를 <code>n</code>과 <code>φ(n)</code> 중 무엇으로 쓰는지 반드시 구분해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>이 역원이 RSA 개인 지수 계산에 쓰이는 맥락이라면 → REV-0886 RSA 개념과 간단한 모듈러 거듭제곱 인식하기</li><li>나눗셈 없이 곱셈만으로 구성된 변환이 애초에 역산 가능한 구조인지 헷갈리면 → REV-0221 역연산 가능한 알고리즘 판단법</li><li>뽑아낸 알고리즘을 파이썬으로 재현하는 절차가 기억 안 나면 → REV-0222 검증 루틴을 Python으로 그대로 재현하기</li><li>변환이 단순 덧셈/뺄셈 상수 기반이라 모듈러 역원까지 갈 필요가 없는 경우인지 먼저 확인하려면 → REV-0200 ADD SUB 상수 기반 문자 변환</li></ul>
+<h2>미니 예제</h2>
+<p>어떤 Affine 암호 복호화 함수를 IDA로 열었더니 다음과 같은 디컴파일 결과가 나왔다고 하자.</p>
+<pre><code class="language-c">int decrypt_char(int y, int a, int b) {
+    int a_inv = compute_modinv(a, 26);        // 왜 나눗셈이 아니라 함수 호출이지?
+    int x = ((y - b) * a_inv) % 26;
+    if (x &lt; 0) x += 26;
+    return x;
+}</code></pre>
+<p><code>compute_modinv</code>를 따라가 보니 앞서 설명한 확장 유클리드 형태(몫으로 두 쌍의 변수를 갱신)였다면, 이 함수는 <code>x = a^-1 * (y - b) mod 26</code> 공식을 그대로 구현한 Affine 암호 복호화다. 파이썬으로 검증한다.</p>
+<pre><code class="language-python">def ext_gcd(a, b):
+    old_r, r = a, b
+    old_s, s = 1, 0
+    while r != 0:
+        q = old_r // r
+        old_r, r = r, old_r - q * r
+        old_s, s = s, old_s - q * s
+    return old_r, old_s
+
+def modinv(a, m):
+    g, x = ext_gcd(a, m)
+    assert g == 1, "역원 없음"
+    return x % m
+
+a, b = 5, 8
+a_inv = modinv(a, 26)          # a=5, m=26 -&gt; a_inv = 21
+assert (a * a_inv) % 26 == 1   # 검증
+
+def decrypt_char(y):
+    return ((y - b) * a_inv) % 26
+
+# 암호문 y=3 (문자 'D')이 있었다면
+print(decrypt_char(3))   # 원래 평문 인덱스 복원</code></pre>
+<p><code>(a * a_inv) % 26 == 1</code>이 성립함을 확인했으므로, 이 역원 값을 그대로 복호화 루프에 대입하면 평문을 복원할 수 있다.</p>
+<h3>실행 가능한 전체 스크립트 — 세 가지 방법으로 같은 모듈러 역원을 구해 서로 대조하기</h3>
+<p>모듈러스가 소수일 때는 "확장 유클리드", "페르마 소정리 지름길", "파이썬 내장 <code>pow(a, -1, m)</code>" 세 가지 방법이 모두 같은 답을 내야 한다. 아래 스크립트는 이 세 방법을 모두 구현해서 실제로 같은 값이 나오는지 직접 비교한다. CTF에서 큰 소수 모듈러스(예: <code>1000000007</code>처럼 문제에 자주 등장하는 값)를 만났을 때 그대로 쓸 수 있는 템플릿이다.</p>
+<pre><code class="language-python"># -*- coding: utf-8 -*-
+
+def ext_gcd(a, b):
+    """확장 유클리드 호제법. a*x + b*y = gcd(a, b) 를 만족하는 (gcd, x)를 반환한다."""
+    old_r, r = a, b     # old_r, r 쌍: 몫과 나머지를 계속 주고받는 값
+    old_s, s = 1, 0      # old_s, s 쌍: a에 대한 계수를 함께 추적(이게 있어야 역원까지 나온다)
+    while r != 0:                       # 나머지가 0이 될 때까지 반복(일반 GCD 루프와 형태는 같음)
+        q = old_r // r                  # 몫 계산 (// 는 파이썬의 정수 나눗셈 연산자)
+        old_r, r = r, old_r - q * r      # r 쌍을 몫으로 갱신하며 자리 교체
+        old_s, s = s, old_s - q * s      # s 쌍도 "같은 몫"으로 나란히 갱신 — 이게 GCD와의 차이점
+    return old_r, old_s                  # old_r = gcd(a, b), old_s = a의 계수(x)
+
+def modinv_egcd(a: int, m: int) -&gt; int:
+    """방법 1: 확장 유클리드 호제법으로 모듈러 역원 계산 (합성수 모듈러스에도 항상 적용 가능)."""
+    g, x = ext_gcd(a, m)
+    assert g == 1, "gcd(a, m) != 1 이라 역원이 존재하지 않음"
+    return x % m   # 음수가 나올 수 있으므로 % m으로 0 이상 범위로 보정
+
+def modinv_fermat(a: int, p: int) -&gt; int:
+    """방법 2: 페르마의 소정리 지름길. p가 소수일 때만 성립한다."""
+    return pow(a, p - 2, p)   # a^(p-2) mod p == a^-1 mod p (p가 소수일 때)
+
+# --- 큰 소수 모듈러스로 세 가지 방법을 비교 ---
+p = 1_000_000_007       # CTF/경쟁 프로그래밍에서 자주 쓰이는 유명한 소수
+a = 123456789            # 역원을 구하고 싶은 임의의 정수
+
+inv_egcd  = modinv_egcd(a, p)          # 방법 1: 확장 유클리드
+inv_fermat = modinv_fermat(a, p)        # 방법 2: 페르마 소정리 지름길
+inv_builtin = pow(a, -1, p)             # 방법 3: 파이썬 3.8+ 내장 pow(음수 지수)
+
+print("방법1 (확장 유클리드):", inv_egcd)
+print("방법2 (페르마 소정리):", inv_fermat)
+print("방법3 (파이썬 내장)   :", inv_builtin)
+
+# 세 값이 모두 같은지, 그리고 실제로 a와 곱하면 1이 되는지 검증
+print("세 방법 결과가 모두 같은가?", inv_egcd == inv_fermat == inv_builtin)
+print("a * 역원 mod p 검증:", (a * inv_egcd) % p, (a * inv_fermat) % p, (a * inv_builtin) % p)</code></pre>
+<p>이 스크립트를 그대로 실행하면 다음과 같은 결과가 나온다.</p>
+<pre><code class="language-text">방법1 (확장 유클리드): 18633540
+방법2 (페르마 소정리): 18633540
+방법3 (파이썬 내장)   : 18633540
+세 방법 결과가 모두 같은가? True
+a * 역원 mod p 검증: 1 1 1</code></pre>
+<p>세 방법이 정확히 같은 값(<code>18633540</code>)을 내놓았고, 그 값을 <code>a</code>와 곱해 <code>p</code>로 나눈 나머지가 정확히 <code>1</code>이 나왔다 — 이것이 모듈러 역원의 정의 그 자체를 코드로 재확인한 것이다. 리버싱 중 만난 함수가 확장 유클리드(재귀/반복 어느 형태든)로 보이면, 굳이 그 복잡한 재귀 구조를 한 줄씩 다 해석하지 않고도 이 스크립트의 <code>modinv_egcd</code> 하나로 똑같은 결과를 얻을 수 있다. 다만 모듈러스가 소수가 아니라고 확인되면(RSA의 <code>φ(n)</code>처럼) 방법 2(페르마 소정리)는 쓸 수 없고 반드시 방법 1을 써야 한다는 점을 기억해야 한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0886-rsa-modular-exponentiation-recognition.html">REV-0886 — RSA 개념과 간단한 모듈러 거듭제곱 인식하기</a></li><li><a href="rev-0890-caesar-cipher-variants.html">REV-0890 — 시저 암호(Caesar Cipher) 변형 알아보기</a></li><li><a href="rev-0221-is-it-invertible.html">REV-0221 — 역연산 가능한 알고리즘 판단법</a></li><li><a href="rev-0222-reimplement-in-python.html">REV-0222 — 검증 루틴을 Python으로 그대로 재현하기</a></li><li><a href="rev-0200-add-sub-constant-transform.html">REV-0200 — ADD SUB 상수 기반 문자 변환</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>확장 유클리드 호제법과 모듈러 역원의 존재 조건(<code>gcd(a, m) = 1</code>): Donald E. Knuth, *The Art of Computer Programming, Vol. 2: Seminumerical Algorithms*, 4.5.2절 기준 (2026-09-09 검증).</li><li>페르마의 소정리를 이용한 모듈러 역원 계산(<code>a^(p-2) mod p</code>)의 성립 조건(모듈러스가 소수일 것): 표준 정수론 교재(페르마 소정리) 및 RFC 8017(PKCS #1) 배경 설명 기준 (2026-09-09 검증).</li><li>파이썬 <code>pow(a, -1, m)</code> 내장 지원(3.8+): Python 공식 문서 <code>pow()</code> 함수 설명 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

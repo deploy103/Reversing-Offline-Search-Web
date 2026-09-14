@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>커스텀 패커(자체 제작 패커) 알아보는 단서 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / packing</div>
+<article class="article-body">
+<h1>커스텀 패커(자체 제작 패커) 알아보는 단서</h1>
+<div class="article-meta"><span class="tag">packing</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">x64dbg</span><span class="tag">DIE</span><span class="tag">PE-bear</span></div>
+<h2>한 줄 요약</h2>
+<p>DIE/PEiD 계열 도구가 알려진 패커 시그니처를 전혀 찾지 못하고 <code>Unknown</code>만 표시하는데도 엔트로피가 높고 import가 적다면, 이는 CTF 출제자나 malware 제작자가 직접 만든 커스텀 패커일 가능성이 높으며, 이 경우 "시그니처로 정체를 찾기"를 포기하고 스텁 코드를 처음부터 직접 읽는 접근으로 전환해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>REV-0224의 체크리스트(높은 엔트로피, 적은 import, 이상한 섹션)는 다 만족하는데 DIE가 알려진 패커 이름을 하나도 대지 못할 때</li><li>entry point 코드가 UPX/ASPack 스타일의 흔한 <code>pushad</code> 패턴과 다르게 생겼을 때</li><li>CTF 문제 설명이나 파일명에 "packed", "protected" 같은 힌트가 있는데 알려진 패커 도구로는 아무것도 안 나올 때</li><li>자작 CTF 문제에서 출제자가 직접 만든 간단한 XOR 기반 압축/암호화 로더를 만났을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 커스텀 패커가 존재하는가</h3>
+<p>상용 패커(UPX, ASPack 등)는 이미 시그니처가 잘 알려져 있어서 자동 탐지 도구로 몇 초 만에 식별된다. CTF 출제자나 malware 제작자가 "패킹 여부까지 스스로 알아채는 능력"을 시험하고 싶다면, 알려진 패커 대신 직접 짠 간단한 로더 코드를 쓰는 경우가 많다. 보통 다음과 같은 형태를 띤다.</p>
+<ul><li>원본 코드/데이터를 파일 내 어딘가(추가 섹션, 오버레이 영역, 리소스)에 XOR, RC4, 단순 치환 등 가벼운 알고리즘으로 암호화해서 저장</li><li>entry point에 짧은 복호화 루프를 두고, 복호화 후 메모리에 쓰고 그 위치로 점프</li><li>상용 패커만큼 정교한 안티 디버깅/안티 덤프는 없는 경우가 대부분(출제자가 시간을 그렇게까지 들이지 않기 때문)</li></ul>
+<h3>커스텀 패커를 알아보는 단서</h3>
+<ol><li><strong>DIE가 <code>Unknown</code>이라고 나오는데 엔트로피는 특정 섹션에서 확실히 높다.</strong> 이는 "알려진 패턴은 아니지만 뭔가 압축/암호화된 데이터가 있다"는 강한 신호다(REV-0228).</li><li><strong>entry point 코드가 매우 짧고 단순한 루프 하나로만 되어 있다.</strong> 상용 패커의 스텁은 재배치 처리, 여러 압축 알고리즘 분기 등으로 코드가 길지만, 커스텀 로더는 보통 "루프 돌면서 XOR" 수준으로 짧다.</li><li><strong>섹션이 표준 이름 그대로인 경우가 많다.</strong> 커스텀 패커 제작자는 굳이 섹션 이름을 바꾸는 것까지 신경 쓰지 않는 경우가 흔해서 <code>.text</code>, <code>.data</code>처럼 정상 이름을 유지하면서도 내용은 암호화되어 있을 수 있다.</li><li><strong>오버레이(파일 끝, PE 헤더가 선언한 크기를 넘어서는 추가 데이터)에 원본이 숨어 있는 경우도 흔하다.</strong> PE-bear의 "Overlay" 탭이나 <code>file</code> 명령으로 실제 파일 크기와 헤더가 선언한 크기를 비교해보면 차이가 드러난다.</li></ol>
+<h3>접근 전략</h3>
+<p>상용 패커와 달리 시그니처 매칭이 불가능하므로, 다음 순서로 직접 코드를 읽는다.</p>
+<ol><li>entry point부터 디스어셈블리를 처음부터 끝까지 손으로 읽는다(코드가 짧으므로 부담이 적다).</li><li>반복되는 루프를 찾아 무엇을 반복하는지 파악한다(<code>xor</code>, <code>add</code>, <code>rol</code> 등 단순 연산이 흔함).</li><li>루프가 읽고 쓰는 메모리 영역의 시작/끝 주소를 확인한다.</li><li>루프가 끝난 뒤 어디로 점프하는지(또는 <code>call</code>하는지) 확인한다 — 그 주소가 사실상 OEP다.</li><li>x64dbg로 실제 실행시켜서 루프 종료 시점의 메모리 내용을 직접 눈으로 확인(Dump 창에서 해당 영역을 보면 복호화된 코드가 보여야 정상이다).</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>DIE 결과가 <code>PE32/PE64</code> 정보만 있고 Packer 항목이 비어있거나 <code>Unknown</code></li><li>특정 섹션의 엔트로피가 7.0 이상(REV-0228 기준)</li><li>entry point 코드가 10~30줄 내외의 짧은 루프</li><li>import가 <code>LoadLibraryA</code>, <code>GetProcAddress</code>, <code>VirtualAlloc</code>/<code>VirtualProtect</code> 몇 개뿐(REV-0229)</li><li>파일 끝에 헤더가 선언한 크기를 넘는 추가 데이터(오버레이)가 존재</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>DIE에서 <code>Unknown</code>이 나왔다고 포기하지 말고, 엔트로피 그래프(DIE의 엔트로피 탭 또는 별도 엔트로피 시각화 도구)로 어느 섹션/오프셋이 의심스러운지부터 확인한다. 그 다음 x64dbg로 entry point를 열어 코드 길이와 반복 구조를 직접 눈으로 훑어본다.</p>
+<h2>단계별 절차</h2>
+<ol><li>DIE로 <code>Unknown</code> 확인, 엔트로피 탭에서 의심 구간 특정</li><li>PE-bear로 오버레이 유무 확인(파일 크기 vs 헤더 선언 크기)</li><li>x64dbg로 entry point 코드 전체를 손으로 읽기(짧으므로 전체 파악 가능)</li><li>반복 루프의 입력(어디를 읽는지)과 출력(어디에 쓰는지) 주소 범위 기록</li><li>루프 종료 후 점프/콜 대상 주소 확인 — OEP 후보</li><li>해당 주소에 브레이크포인트, 실행 후 Dump 창에서 복호화된 메모리 확인</li><li>정상적인 코드로 보이면 Scylla 등으로 덤프, IAT 확인(있다면 REV-0945, 없다면 애초에 정상 import를 갖고 있을 수도 있음)</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>DIE: 엔트로피 탭(우클릭 또는 하단 탭에서 확인)</li><li>PE-bear: <code>Overlay</code> 탭, 섹션 크기/RVA 비교</li><li>x64dbg: <code>F7</code>(Step Into)로 루프 내부 명령 하나씩 확인, Dump 창(<code>Ctrl+G</code>로 특정 주소 이동)으로 복호화 결과 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>루프 안에서 <code>xor byte ptr [esi], key</code> 형태의 명령이 반복되면 단순 XOR 복호화다. <code>key</code> 값을 레지스터/스택에서 확인하면 정적으로도 복호화 스크립트를 짤 수 있다.</li><li>Dump 창에서 루프 진행에 따라 바이트 값이 눈에 띄게 "그럴듯한 기계어 패턴"(<code>55 8b ec</code> 같은 흔한 프롤로그 바이트)으로 바뀌어 가는 것이 보이면 정상적으로 복호화가 진행 중인 것이다.</li><li>루프 종료 후 점프 대상이 코드 섹션 시작 근처의 낮은 주소라면 OEP일 가능성이 높다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>DIE가 <code>Unknown</code>이라고 하면 "패킹이 아니다"라고 오판하는 것. 시그니처 DB에 없을 뿐 실제로는 커스텀 로더가 있는 경우가 많다.</li><li>커스텀 패커도 상용 패커만큼 복잡할 것이라 지레짐작하고 시도조차 안 하는 것. 실제로는 CTF 자작 패커는 코드가 매우 짧아서 손으로 읽는 것이 오히려 더 빠른 경우가 많다.</li><li>오버레이 데이터의 존재를 놓치고 파일 안의 표준 섹션만 살펴보는 것.</li><li>XOR 키를 정적으로 찾지 않고 매번 동적 실행으로만 복호화 결과를 확인하는 것 — 키를 한 번 찾으면 Python 스크립트로 자동 복호화(REV-0948 참고)하는 것이 훨씬 빠르다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>문자열이 특히 암호화되어 있다면 → REV-0948 문자열 암호화/복호화 루틴 알아보고 자동 복호화하기</li><li>언패킹 후 import가 이상하다면 → REV-0945/REV-0946 IAT 복구 개념</li><li>사실 알고 보니 잘 알려진 상용 프로텍터의 변형/커스터마이즈였다면 → REV-0942 상용 프로텍터를 만났을 때 현실적인 대응</li><li>애초에 패킹 여부부터 다시 확인하고 싶다면 → REV-0224 패킹된 바이너리인지 의심하는 기준</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">entry point (총 18줄):
+  push esi
+  mov esi, 0x00405000      ; 암호화된 데이터 시작
+  mov ecx, 0x00001000      ; 길이
+  mov dl, 0x5A              ; XOR key
+decrypt_loop:
+  xor byte ptr [esi], dl
+  inc esi
+  loop decrypt_loop
+  pop esi
+  jmp 0x00401000            ; 복호화된 코드로 점프 (OEP)</code></pre>
+<p>이 정도로 짧은 루프라면 x64dbg 디스어셈블리 창에서 스크롤 한 번으로 전체를 파악할 수 있다. key(<code>0x5A</code>)와 범위(<code>0x00405000</code>~<code>+0x1000</code>)를 확인했다면 Python으로 동일한 XOR을 적용해 정적으로도 복호화된 덤프를 만들 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0224-packing-indicators.html">REV-0224 — 패킹된 바이너리인지 의심하는 기준</a></li><li><a href="rev-0228-high-entropy-sections.html">REV-0228 — Entropy가 높은 Section의 의미</a></li><li><a href="rev-0229-few-imports.html">REV-0229 — Import가 거의 없는 PE를 봤을 때</a></li><li><a href="rev-0948-string-decryption-automation.html">REV-0948 — 문자열 암호화/복호화 루틴 알아보고 자동 복호화하기</a></li><li><a href="rev-0944-manual-oep-tracing-advanced.html">REV-0944 — 패킹된 바이너리에서 OEP를 수동으로 추적하는 절차 심화</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>커스텀/자작 패커에서 흔히 쓰이는 XOR 기반 단순 로더 패턴은 다수의 공개 CTF 라이트업(pwnable/rev 트랙)에서 반복적으로 확인되는 구조를 기준으로 정리했다.</li><li>PE 오버레이 데이터 확인 방법(파일 크기 vs 헤더 선언 크기 비교)은 PE-bear 공식 문서 및 일반적인 PE 포맷 분석 자료를 참고했다(2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

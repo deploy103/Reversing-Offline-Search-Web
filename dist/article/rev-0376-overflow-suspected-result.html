@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>계산 결과가 예상보다 훨씬 크거나 작을 때(오버플로 의심) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>계산 결과가 예상보다 훨씬 크거나 작을 때(오버플로 의심)</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>계산 결과가 상식적으로 말이 안 될 만큼 크거나 작다면, 그 값이 담긴 레지스터/변수의 <strong>비트폭을 넘어서는 계산</strong>을 했기 때문일 가능성이 높으며, 초과분은 그냥 버려지고 남은 비트만 결과로 남는 "랩어라운드(wraparound)"가 일어난 것이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>두 값을 더했는데 결과가 오히려 원래 값보다 작아졌을 때</li><li>곱셈 결과가 자료형이 담을 수 있는 범위를 훌쩍 넘어서, 전혀 다른(때로는 음수인) 값으로 나올 때</li><li>반복문 카운터가 특정 큰 값 근처에서 갑자기 0이나 아주 작은 값으로 튈 때</li><li>CTF 문제에서 "정수 오버플로를 유발해서 체크를 우회하라"는 힌트가 있을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>CPU의 레지스터는 정해진 비트 수(8/16/32/64비트)만 저장할 수 있다. 계산 결과가 그 비트 수로 표현 가능한 범위를 넘어서면, 넘친 비트는 그냥 사라지고 <strong>남은 하위 비트만 결과로 남는다</strong>. 이걸 오버플로(overflow, signed 관점) 또는 랩어라운드/wraparound(unsigned 관점)라고 부른다.</p>
+<p><strong>32비트 unsigned 덧셈 예시</strong>: <code>0xFFFFFFFF + 1</code>을 계산하면 수학적으로는 <code>0x100000000</code>이지만, 32비트 레지스터는 33번째 비트를 저장할 공간이 없다. 그래서 결과는 하위 32비트만 남은 <code>0x00000000</code> = <code>0</code>이 된다. "큰 값 두 개를 더했는데 결과가 0이 나왔다"는 현상은 대부분 이 패턴이다.</p>
+<p><strong>32비트 signed 곱셈 예시</strong>: <code>50000 * 50000 = 2,500,000,000</code>인데, 32비트 signed <code>int</code>가 표현 가능한 최댓값은 <code>2,147,483,647</code>(<code>0x7FFFFFFF</code>)이다. <code>2,500,000,000</code>은 이 범위를 넘으므로 32비트 결과 레지스터에는 하위 32비트 <code>0x9502F900</code>만 남고, 이걸 signed로 해석하면 <code>2,500,000,000 - 4,294,967,296 = -1,794,967,296</code>이라는, 애초에 두 양수를 곱했는데 음수가 나오는 결과가 된다.</p>
+<p><strong>FNV 해시류 상수에서도 자주 등장</strong>: 예를 들어 FNV-1a 32비트 해시의 곱셈 상수 <code>16777619</code>(<code>0x01000193</code>)를 반복 곱셈하면서 32비트로 계속 잘라내는 것도 의도된 오버플로 활용이다. 즉 오버플로가 항상 "버그"인 것은 아니고, 해시 함수나 체크섬처럼 <strong>의도적으로 랩어라운드를 이용하는 정상 로직</strong>일 수도 있다는 점을 함께 기억해야 한다.</p>
+<p><strong>CPU가 오버플로를 감지하는 방법</strong>: x86/x64는 산술 연산 뒤에 두 개의 플래그로 오버플로를 알려준다.</p>
+<ul><li><strong>CF(Carry Flag)</strong>: unsigned 관점에서 "자리올림/자리내림이 발생했다"는 표시. <code>add</code>/<code>sub</code> 뒤에 <code>jc</code>/<code>jnc</code>(또는 <code>jb</code>/<code>jae</code>)로 확인 가능.</li><li><strong>OF(Overflow Flag)</strong>: signed 관점에서 "부호 있는 값의 범위를 벗어났다"는 표시. <code>jo</code>/<code>jno</code>로 확인 가능.</li></ul>
+<p>같은 연산이라도 CF와 OF는 서로 다른 조건에서 세팅되므로, 어떤 플래그를 검사하는 분기인지에 따라 "unsigned 오버플로를 체크하는 코드"인지 "signed 오버플로를 체크하는 코드"인지 구분할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>add</code>/<code>imul</code>/<code>shl</code> 직후에 <code>jo</code>, <code>jno</code>, <code>jc</code>, <code>jnb</code> 같은 플래그 분기 명령어가 붙어 있는 경우 — 컴파일러나 개발자가 오버플로를 의식적으로 체크하고 있다는 신호</li><li>디컴파일 결과에서 곱셈/덧셈 결과 변수가 나중에 원래 값보다 훨씬 작아 보이는 경우</li><li>반복문 카운터를 <code>unsigned char</code>나 <code>unsigned short</code> 같은 작은 타입으로 선언해서, 255나 65535를 넘으면 다시 0으로 돌아가는 경우</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>결과가 이상한 그 연산의 <strong>피연산자 크기(비트폭)와 결과를 담는 변수의 크기</strong>부터 확인한다. 특히 두 개의 32비트 값을 곱하는데 결과를 32비트에 담고 있다면 오버플로 가능성을 최우선으로 의심한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 계산을 비트폭 그대로 재현</strong> 결과가 이상한 연산을 파이썬으로 실제 비트폭에 맞춰 재현해본다.</p>
+<pre><code class="language-python">&gt;&gt;&gt; a, b = 50000, 50000
+&gt;&gt;&gt; (a * b) &amp; 0xFFFFFFFF          # 32비트로 잘라낸 실제 결과(unsigned 해석)
+1500000000
+&gt;&gt;&gt; v = (a * b) &amp; 0xFFFFFFFF
+&gt;&gt;&gt; v - 0x100000000 if v &amp; 0x80000000 else v   # signed로 재해석</code></pre>
+<p>* 참고: 위 예시는 계산 편의를 위한 것이며, 실제 값은 곱셈 규모에 따라 달라지므로 항상 실제 피연산자로 다시 계산해야 한다.</p>
+<p><strong>2) 어셈블리에서 결과를 받는 레지스터 크기 확인</strong> <code>imul eax, ebx</code>처럼 32비트 레지스터끼리 곱해서 32비트 레지스터(<code>eax</code>)에만 결과를 담는지, 아니면 <code>imul</code>의 확장 형태로 64비트(<code>edx:eax</code>)까지 결과를 받는지 확인한다. 32비트만 받는다면 상위 비트는 그냥 버려진다.</p>
+<p><strong>3) 오버플로 체크 플래그 분기 여부 확인</strong> 연산 직후 <code>jo</code>/<code>jno</code>(signed) 또는 <code>jc</code>/<code>jnc</code>(unsigned) 분기가 있는지 본다. 있다면 원래 코드가 오버플로를 이미 감지해서 처리하고 있다는 뜻이고, 없다면 오버플로가 체크되지 않은 채로 흘러간다는 뜻이라 취약점 후보가 된다.</p>
+<p><strong>4) 의도된 랩어라운드인지 버그인지 문맥으로 판단</strong> 해시/체크섬/난수 생성 로직이라면 랩어라운드가 정상 설계일 수 있다. 반면 "입력 길이 합산" "잔액 계산" 같은 로직에서 체크 없이 오버플로가 발생한다면 이는 버그 또는 의도적으로 파고들 수 있는 취약점이다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">GDB:    p/x $eax                # 오버플로 후 실제 남은 비트 확인
+GDB:    p $eflags                # 플래그 레지스터 전체 확인(OF/CF 포함)
+어셈블리: jo / jno               # signed 오버플로 분기
+어셈블리: jc / jnc (jb/jae)      # unsigned 캐리(오버플로) 분기
+Python: (a * b) &amp; 0xFFFFFFFF     # 32비트 unsigned 랩어라운드 재현
+Python: (a * b) &amp; 0xFFFFFFFFFFFFFFFF  # 64비트 랩어라운드 재현</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>p $eflags</code>에서 <code>OF</code>가 세팅돼 있으면 마지막 signed 연산이 표현 범위를 넘었다는 뜻이다.</li><li>파이썬으로 재현한 마스킹 결과(<code>&amp; 0xFFFFFFFF</code> 등)가 프로그램이 실제로 보여준 값과 일치한다면, 그 연산이 정확히 그 비트폭에서 랩어라운드된 것이 확인된 것이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>오버플로를 "버그"로만 생각하고 해시/체크섬 로직에서도 무조건 문제로 지적하는 것 — 의도된 설계일 수 있다.</li><li>파이썬으로 재현할 때 비트 마스크(<code>&amp; 0xFFFFFFFF</code>)를 빼먹어서, 파이썬의 임의 정밀도 정수 때문에 실제 프로그램과 다른 결과를 얻는 것.</li><li>CF와 OF를 혼동해서 signed 코드에서 unsigned 오버플로 체크(<code>jc</code>)만 찾거나 그 반대로 찾는 것.</li><li>곱셈 결과가 원래 피연산자보다 훨씬 커야 정상인 상황에서, 오버플로로 오히려 작아진 결과를 "정상적으로 계산됐다"고 그냥 받아들이는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>애초에 값이 왜 음수로 보이는지부터 헷갈리면 REV-0375 문서로 이동.</li><li>오버플로/wraparound의 원리 자체(수학적 정의, 비트별 마스크)를 더 깊이 보고 싶으면 REV-0027 문서로 이동.</li><li>컴파일러가 나눗셈이나 나머지 연산을 곱셈+시프트로 바꾸는 최적화 패턴 때문에 상수가 이상해 보이면 REV-0385 문서로 이동.</li></ul>
+<h2>미니 예제</h2>
+<p>다음 C 코드가 있다고 하자.</p>
+<pre><code class="language-c">unsigned int total_size(unsigned char count, unsigned int item_size)
+{
+    return count * item_size;   // count는 최대 255, item_size는 큰 값일 수 있음
+}</code></pre>
+<p><code>count = 255</code>, <code>item_size = 20000000</code>이면 수학적으로는 <code>5,100,000,000</code>이지만 <code>unsigned int</code>(32비트)에 담기면 <code>5,100,000,000 &amp; 0xFFFFFFFF = 805,032,704</code>가 남는다. 만약 이 함수의 리턴값을 <code>malloc</code>의 크기 인자로 넘긴다면, 개발자가 기대한 것보다 훨씬 작은 버퍼가 할당되는데도 호출하는 쪽은 <code>count</code>개의 <code>item_size</code> 크기 블록을 다 쓸 수 있다고 착각해서 힙 오버플로가 발생하는, 전형적인 "정수 오버플로 → 버퍼 오버플로" 연쇄 취약점 패턴이 된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0027-integer-overflow.html">REV-0027 — 정수 Overflow와 Wraparound</a></li><li><a href="rev-0375-value-suddenly-negative.html">REV-0375 — 값이 갑자기 음수로 보일 때 부호 확인하는 법</a></li><li><a href="rev-0385-compiler-constant-differs.html">REV-0385 — 같은 소스인데 컴파일러마다 상수 값이 다르게 보일 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>CF/OF 플래그 세팅 조건과 오버플로 감지 명령어(<code>JO</code>, <code>JC</code> 등): Intel 64 and IA-32 Architectures Software Developer's Manual, Vol.1, "RFLAGS" 및 Vol.2 "Jcc" 섹션 기준 (2026-09-09 검증).</li><li>정수 오버플로가 버퍼 오버플로로 이어지는 패턴: CWE-190(Integer Overflow or Wraparound) 및 CWE-680(Integer Overflow to Buffer Overflow) 공식 설명 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

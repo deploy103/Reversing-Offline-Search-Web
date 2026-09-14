@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MOVAPD와 MOVUPD: Double Precision SIMD 이동 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>MOVAPD와 MOVUPD: Double Precision SIMD 이동</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>MOVAPD</code>/<code>MOVUPD</code>는 <a href="rev-0386-movaps.html">MOVAPS</a>/<a href="rev-0387-movups.html">MOVUPS</a>와 동일한 128비트 이동 명령이지만, 데이터를 4개의 32비트 float가 아니라 <strong>2개의 64비트 double-precision float</strong>로 해석한다는 의미상의 표기 차이만 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>double</code> 배열/구조체를 다루는 코드가 <code>movapd</code>/<code>movupd</code>로 컴파일된 것을 보고 <code>movaps</code>/<code>movups</code>와 뭐가 다른지 궁금할 때</li><li><code>PS</code>와 <code>PD</code> 접미사가 SIMD 명령어 이름에 계속 붙는데 그 규칙을 정리하고 싶을 때</li><li>double 연산이 많은 함수(수치 계산, 그래픽, 물리 연산 등)를 분석할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>PS와 PD의 차이 — 해석의 차이일 뿐, 비트는 동일</h3>
+<p>SSE/SSE2 명령 이름의 접미사는 "128비트를 몇 개, 몇 바이트짜리 값으로 나눠 해석할 것인가"를 나타낸다:</p>
+<ul><li><code>PS</code> (Packed Single-precision): 128비트 = 32비트 float × 4개</li><li><code>PD</code> (Packed Double-precision): 128비트 = 64비트 float × 2개</li><li><code>SS</code> (Scalar Single): 128비트 중 맨 아래 32비트 하나만 사용</li><li><code>SD</code> (Scalar Double): 128비트 중 맨 아래 64비트 하나만 사용</li></ul>
+<p><strong>중요한 사실</strong>: <code>MOVAPS</code>와 <code>MOVAPD</code>는 CPU 내부적으로 옮기는 비트 자체는 완전히 동일한 128비트 통짜 복사다. 차이는 오직 어떤 명령 인코딩(opcode)을 쓰느냐인데, 이는 역사적으로 SSE(단정도, <code>PS</code> 계열이 먼저 도입)와 SSE2(배정도, <code>PD</code> 계열 추가) 확장이 분리되어 생긴 것이다. 즉 값을 실제로 계산(덧셈, 곱셈 등)하지 않고 그냥 옮기기만 하는 <code>MOV</code> 계열에서는 <code>PS</code>/<code>PD</code> 구분이 사실상 "이 데이터가 float 배열인지 double 배열인지"에 대한 컴파일러의 힌트일 뿐, 동작은 같다.</p>
+<h3>Intel 문법</h3>
+<pre><code>MOVAPD xmm_dest, xmm/m128_src   ; 정렬 필요 (16바이트), 안 맞으면 #GP
+MOVUPD xmm_dest, xmm/m128_src   ; 정렬 불필요</code></pre>
+<p>오퍼랜드 규칙, 방향(첫 번째=목적지), 정렬 요구사항(<code>A</code>=Aligned/예외 발생, <code>U</code>=Unaligned/항상 동작)은 <code>PS</code> 계열과 완전히 동일하다.</p>
+<h3>플래그, 스택/RSP/RIP 변화</h3>
+<p><code>MOVAPS</code>/<code>MOVUPS</code>와 동일하게 EFLAGS를 건드리지 않으며 스택/RIP에 직접 영향이 없다.</p>
+<h3>컴파일러 패턴</h3>
+<p><code>double</code> 타입 배열이나 구조체를 다루는 코드가 자동 벡터화되면 <code>MOVAPD</code>(정렬 보장 시)나 <code>MOVUPD</code>(정렬 미보장 시)가 생성된다. 원리는 <code>MOVAPS</code>/<code>MOVUPS</code> 문서(REV-0386, REV-0387)와 동일하며, 값의 개수만 4개에서 2개로 줄어든다(64비트씩이므로).</p>
+<h3>IDA/Ghidra 디컴파일</h3>
+<p><code>double</code> 변수/배열 대입으로 정리되며, <code>float</code> 버전과 마찬가지로 구조체 복사나 벡터화 루프의 일부로 나타난다.</p>
+<h3>스칼라 double 이동과의 관계 — MOVSD</h3>
+<p>값 하나짜리 <code>double</code> 변수를 옮길 때는 <code>MOVAPD</code>/<code>MOVUPD</code>(128비트, double 2개) 대신 <strong><code>MOVSD</code>(Move Scalar Double, 64비트 하나만 이동)</strong> 가 더 흔하게 쓰인다. 함수 인자/반환값으로 <code>double</code> 하나만 오가는 코드(<code>double f(double x)</code>)에서는 <code>movsd</code>가 표준이고, <code>MOVAPD</code>/<code>MOVUPD</code>는 배열이나 구조체처럼 <strong>double이 2개 이상 나란히 있는 블록을 한 번에 옮길 때</strong> 주로 등장한다. 두 명령을 같은 함수 안에서 같이 볼 수 있으므로, 오퍼랜드가 배열/구조체 포인터인지 단일 변수인지로 어느 쪽이 쓰였는지 짐작할 수 있다.</p>
+<h3>크래시 진단 시 PS와 PD를 구분해야 하는 이유</h3>
+<p><code>MOVAPD</code>도 <code>MOVAPS</code>와 마찬가지로 정렬이 안 맞으면 #GP 예외를 낸다. 크래시 덤프를 볼 때 명령어가 <code>movapd</code>인지 <code>movaps</code>인지는 예외 원인 진단에는 차이가 없지만(둘 다 16바이트 정렬 요구), <strong>그 메모리가 원래 어떤 타입의 배열이었는지(float[4]인지 double[2]인지)를 파악하는 데는 이 접미사가 유일한 단서</strong>가 되는 경우가 많다. 스택 덤프에서 값을 재해석할 때 이 점을 놓치면 완전히 엉뚱한 숫자로 잘못 읽게 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>movapd xmm0, [rax]</code> — double 2개짜리 정렬된 블록 이동</li><li><code>movupd xmm1, [rdx+8]</code> — 정렬 미보장 double 블록 이동</li><li><code>movapd</code>/<code>movupd</code> 뒤에 <code>addpd</code>/<code>mulpd</code>가 이어지면 double 배열 벡터 연산</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>접미사가 <code>PD</code>임을 확인해 대상 데이터가 (float가 아니라) double 2개짜리임을 인지한다.</li><li><code>A</code>(Aligned)인지 <code>U</code>(Unaligned)인지로 정렬 보장 여부를 판단한다(<a href="rev-0386-movaps.html">REV-0386</a>/<a href="rev-0387-movups.html">REV-0387</a>와 같은 논리).</li><li>뒤따르는 산술 SIMD 명령(<code>addpd</code>, <code>mulpd</code>, <code>subpd</code>) 유무로 순수 이동인지 계산인지 구분한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) double 배열 복사 인식</strong></p>
+<pre><code class="language-asm">movapd xmm0, [rsi]     ; double[2] 로드
+movapd [rdi], xmm0      ; double[2] 저장</code></pre>
+<p><strong>2) 정렬 여부 확인</strong> 소스/목적지 주소가 스택 지역 변수(정렬 보장)인지 임의 포인터(정렬 미보장)인지 확인해 왜 <code>A</code>/<code>U</code> 중 하나가 선택됐는지 판단한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg/GDB의 XMM 레지스터 뷰에서 double 2개로 해석된 값을 직접 확인 (GDB: <code>p $xmm0.v2_double</code>).</li><li>IDA F5 디컴파일에서 <code>double</code> 배열/구조체 대입 형태로 확인.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>x64dbg XMM 패널에서 값 표시 형식을 "double"로 바꾸면 2개의 64비트 실수 값을 바로 읽을 수 있다.</li><li>GDB <code>p/x $xmm0.uint64</code>로 원시 64비트 두 덩어리를 16진수로 볼 수도 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>PS</code>와 <code>PD</code>가 서로 다른 하드웨어 이동 경로를 쓴다고 착각하는 것 — <code>MOV</code> 계열에서는 옮기는 비트 자체는 동일하고, 접미사는 값 해석에 대한 표기일 뿐이다(단, 계산 명령인 <code>ADDPS</code>/<code>ADDPD</code>는 실제로 다르게 계산한다는 점은 주의).</li><li>double 배열인데 <code>PS</code> 명령으로 착각해서 값을 4개의 float로 잘못 해석하는 것 — <code>PD</code>는 반드시 2개의 64비트 값으로 나눠 읽어야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>값이 이상한 float로 보인다면 → <code>PS</code>가 아니라 <code>PD</code> 명령인지 다시 확인하고 64비트 단위로 재해석.</li><li>정렬 크래시가 의심되면 → <a href="rev-0386-movaps.html">REV-0386</a>의 정렬 확인 절차를 그대로 적용(주소 % 16 == 0 여부).</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — double 2개 구조체 복사</strong></p>
+<pre><code class="language-c">typedef struct { double x, y; } Point2D;
+Point2D a = b;</code></pre>
+<pre><code class="language-asm">movapd xmm0, [rdx]
+movapd [rcx], xmm0</code></pre>
+<p><strong>예제 2 — 정렬 미보장 double 배열 복사</strong></p>
+<pre><code class="language-c">double *src = get_unaligned_ptr();
+memcpy(dst, src, 16);</code></pre>
+<pre><code class="language-asm">movupd xmm0, [rax]
+movupd [rdi], xmm0</code></pre>
+<p><strong>예제 3 — double 벡터 연산의 일부</strong></p>
+<pre><code class="language-asm">movapd xmm0, [rsi+rcx*8]
+addpd  xmm0, xmm1
+movapd [rdi+rcx*8], xmm0</code></pre>
+<p><strong>예제 4 — 단일 double 변수는 MOVSD로, 배열은 MOVAPD로</strong></p>
+<pre><code class="language-c">double scale(double x, double factor) { return x * factor; } // 인자 1개: movsd
+Point2D pts[2];  // double 4개: movapd/movupd로 블록 이동 가능</code></pre>
+<pre><code class="language-asm">; 단일 값 인자 전달은 보통 movsd로 처리됨 (본 문서 범위 밖, 참고용)
+movsd  xmm0, xmm0</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0386-movaps.html">REV-0386 — MOVAPS: 정렬된 XMM 레지스터 이동</a></li><li><a href="rev-0387-movups.html">REV-0387 — MOVUPS: 비정렬 XMM 레지스터 이동</a></li><li><a href="rev-0389-movdqa-movdqu.html">REV-0389 — MOVDQA와 MOVDQU: 정수 XMM 이동</a></li><li><a href="rev-0390-addps-addss.html">REV-0390 — ADDPS와 ADDSS: SIMD 병렬/단일 덧셈</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>MOVAPD</code>/<code>MOVUPD</code> 명령어 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A/2B, "MOVAPD—Move Aligned Packed Double-Precision Floating-Point Values" / "MOVUPD" 섹션 기준 (2026-09-08 검증).</li><li>SSE/SSE2 접미사 규칙(PS/PD/SS/SD): Intel SDM Volume 1, "SSE2 Extensions" 챕터 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XADD: 교환하며 더하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>XADD: 교환하며 더하기</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>XADD dst, src</code>는 "목적지의 원래 값을 소스에 백업해 두고, 목적지에는 두 값의 합을 저장"하는 명령으로, 앞에 <code>LOCK</code> 프리픽스를 붙인 <code>lock xadd</code>는 멀티스레드 환경에서 카운터를 원자적으로 증가/감소시키는(atomic fetch-and-add) 표준적인 방법이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>lock xadd</code>라는 낯선 조합을 디스어셈블리에서 만났을 때</li><li>C++ <code>std::atomic&lt;int&gt;</code>의 <code>fetch_add</code>, <code>shared_ptr</code>의 참조 카운트 증가, Win32 <code>InterlockedExchangeAdd</code>가 실제로 어떤 어셈블리로 컴파일되는지 궁금할 때</li><li>멀티스레드 프로그램을 리버싱하다가 락 없이(lock-free) 카운터를 갱신하는 코드를 발견했을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>XADD가 실제로 하는 일</h3>
+<p><code>XADD dst, src</code>는 다음을 원자적이지 않은(prefix 없는) 상태에서도 하나의 명령으로 수행한다.</p>
+<pre><code>TEMP = SRC + DEST
+SRC  = DEST      ; src에는 "더하기 전" dst의 원래 값이 남는다
+DEST = TEMP       ; dst에는 두 값의 합이 저장된다</code></pre>
+<p>이름 그대로 "교환(eXchange)"과 "덧셈(ADD)"이 합쳐진 동작이다. 실행 후 <code>dst</code>에는 새로운 합계가, <code>src</code>(반드시 레지스터여야 함)에는 연산 전 <code>dst</code>의 원래 값이 남는다.</p>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>XADD r/m8,  r8
+XADD r/m16, r16
+XADD r/m32, r32
+XADD r/m64, r64</code></pre>
+<p>목적지(dst)는 레지스터 또는 메모리, 소스(src)는 반드시 레지스터여야 한다(즉시값이나 메모리는 소스로 올 수 없다). 실무에서는 dst가 메모리(공유 변수), src가 "더할 값이자 결과를 돌려받을 레지스터"인 경우가 압도적으로 많다.</p>
+<h3>방향과 원자성</h3>
+<p><code>XADD</code> 자체는 <code>LOCK</code> 프리픽스 없이 쓰이면 일반 명령과 마찬가지로 원자적이지 않다. 하지만 이 명령이 나온다는 것 자체가 "이전 값을 알아야 하는 덧셈"이라는 특수한 목적을 시사하므로, 실제 멀티스레드 코드에서는 거의 항상 <code>lock xadd</code> 형태로 등장한다. <code>LOCK</code>이 어떻게 원자성을 보장하는지는 <a href="rev-0432-lock-prefix.html">REV-0432 — LOCK 프리픽스</a>에서 다룬다.</p>
+<h3>플래그 변화</h3>
+<p><code>XADD</code>는 <code>ADD</code>와 동일하게 CF, OF, SF, ZF, AF, PF를 계산 결과(합계)에 맞춰 갱신한다.</p>
+<h3>스택/RSP/RIP 변화</h3>
+<p>스택에는 영향이 없다. <code>RIP</code>는 다음 명령으로 이동한다.</p>
+<h3>컴파일러/라이브러리가 만드는 전형적 패턴</h3>
+<ul><li>C++11 <code>std::atomic&lt;T&gt;::fetch_add(n)</code> (T가 정수형일 때)</li><li>Windows API <code>InterlockedExchangeAdd</code>, <code>_InterlockedExchangeAdd</code> 인트린식</li><li><code>shared_ptr</code>/COM 객체의 <code>AddRef</code>/<code>Release</code> 참조 카운트 증가·감소 (감소는 <code>xadd</code>에 음수를 더하는 형태로도 자주 구현됨)</li><li>락 없는(lock-free) 통계 카운터, 시퀀스 번호 발급기</li></ul>
+<h3>IDA/Ghidra 디컴파일에서 보이는 모습</h3>
+<p>IDA는 <code>_InterlockedExchangeAdd(&amp;counter, 1)</code> 같은 인트린식 함수 호출 형태로 정리해서 보여주는 경우가 많다. 인식하지 못하면 <code>iVar1 = *counter; *counter = iVar1 + 1;</code>처럼 원자성이 드러나지 않는 일반 코드로 잘못 단순화되어 보일 수 있으므로, 원문 디스어셈블리에서 <code>lock xadd</code>가 있는지 반드시 대조해야 한다.</p>
+<h3>리버싱에서의 의미</h3>
+<p><code>lock xadd</code>는 이 코드가 멀티스레드를 고려한 동기화 코드라는 것을 알려주는 신호다. 특히 <code>AddRef</code>/<code>Release</code> 스타일의 참조 카운팅 객체를 식별할 때, 또는 경쟁 조건(race condition)이 있는지 분석할 때 이 명령의 위치를 먼저 찾아두면 스레드 안전성 관련 로직의 경계를 빠르게 파악할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>lock xadd dword ptr [rdi], eax</code> — <code>[rdi]</code>가 가리키는 공유 카운터에 <code>eax</code>를 원자적으로 더하고, 더하기 전 원래 값이 <code>eax</code>에 남음</li><li><code>xadd</code>가 함수 이름 없이 <code>mov ecx, 1</code> / <code>lock xadd [rbx], ecx</code> 형태로 함께 등장하면 참조 카운트 증가(<code>AddRef</code>류)일 가능성이 높음</li><li>음수 즉시값(<code>mov ecx, -1</code>)과 함께 쓰이면 참조 카운트 감소(<code>Release</code>류)일 가능성</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>LOCK</code> 프리픽스가 붙어 있는지 확인한다 — 붙어 있으면 원자적 연산, 없으면 단일 스레드 전제의 일반 코드일 가능성이 있다(드묾).</li><li><code>src</code> 레지스터가 명령 실행 후 어떻게 쓰이는지 본다 — 그 값(연산 전 dst)을 버리면 단순 증가 카운터, 계속 쓰면 "이전 값 기반 로직"(예: 시퀀스 번호 발급)일 가능성이 있다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 원자적 증가(참조 카운트) 패턴 인식</strong></p>
+<pre><code class="language-asm">mov  eax, 1
+lock xadd dword ptr [rdi], eax    ; [rdi] += 1 (원자적), eax = 이전 값</code></pre>
+<p>→ <code>int old = InterlockedExchangeAdd(&amp;counter, 1);</code> 형태로 해석한다.</p>
+<p><strong>2) 감소 패턴 인식</strong></p>
+<pre><code class="language-asm">mov  eax, 0FFFFFFFFh   ; -1
+lock xadd dword ptr [rdi], eax
+cmp  eax, 1              ; 이전 값이 1이었다면(감소 후 0이 됨) 마지막 참조 -&gt; 해제 로직
+je   free_object</code></pre>
+<p>→ <code>shared_ptr</code>의 <code>Release()</code> 구현에서 자주 보이는, "카운트를 감소시키고 이전 값이 1이었으면(즉 방금 0이 됐으면) 객체를 파괴"하는 전형적인 패턴이다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: F5 디컴파일 시 <code>_InterlockedExchangeAdd</code> 인트린식으로 표시되는지 확인</li><li>x64dbg/GDB: <code>lock xadd</code> 명령에 브레이크포인트를 걸고 F7/stepi로 실행 전후 메모리 값과 레지스터 값을 비교</li></ul>
+<h2>출력 해석</h2>
+<ul><li>실행 후 <code>src</code> 레지스터 값 = 연산 <strong>전</strong> <code>dst</code>의 원래 값. <code>dst</code>(메모리) = 연산 <strong>후</strong> 합계.</li><li><code>lock xadd</code> 뒤에 그 <code>src</code>(이전 값)를 다시 비교하는 코드가 있다면, "카운트가 0이 됐는지/한계에 도달했는지"를 판별하는 로직일 가능성이 높다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>XADD</code>를 그냥 <code>ADD</code> 두 번(더하기+저장)과 같다고 생각해서 <code>src</code>에 이전 값이 남는다는 사실을 놓치는 것.</li><li><code>LOCK</code> 프리픽스 없이 <code>xadd</code> 단독으로도 항상 원자적이라고 착각하는 것 — 원자성은 <code>LOCK</code> 프리픽스가 보장한다.</li><li>참조 카운트 감소 코드에서 <code>cmp eax, 1</code>을 "카운트가 1인지" 검사한다고 오해하는 것 — 정확히는 <strong>감소하기 전</strong> 값이 1이었는지(즉 감소 후 0이 됐는지)를 검사하는 것이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>LOCK</code> 프리픽스의 동작 원리 자체가 궁금하면 → <a href="rev-0432-lock-prefix.html">REV-0432 — LOCK 프리픽스</a>로 이동.</li><li>조건부 갱신(비교 후 교환)이 필요한 코드라면 → <a href="rev-0431-cmpxchg.html">REV-0431 — CMPXCHG</a>로 이동.</li><li>단순 값 교환만 하는 코드라면 → <a href="rev-0043-xchg.html">REV-0043 — XCHG</a>로 이동.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 원자적 카운터 증가</strong></p>
+<pre><code class="language-c">std::atomic&lt;int&gt; counter;
+int old = counter.fetch_add(1);</code></pre>
+<pre><code class="language-asm">mov  eax, 1
+lock xadd dword ptr [counter], eax
+; eax = 증가 전 값</code></pre>
+<p><strong>예제 2 — 참조 카운트 감소 후 마지막 참조 검사</strong></p>
+<pre><code class="language-c">if (InterlockedExchangeAdd(&amp;refcount, -1) == 1) {
+    delete this;
+}</code></pre>
+<pre><code class="language-asm">mov  eax, 0FFFFFFFFh
+lock xadd dword ptr [rdi+refcount_offset], eax
+cmp  eax, 1
+je   destroy_object</code></pre>
+<p><strong>예제 3 — LOCK 없이 쓰인 XADD (단일 스레드 전제 코드, 드문 경우)</strong></p>
+<pre><code class="language-asm">mov  eax, 5
+xadd dword ptr [rsi], eax   ; lock 없음: 이 스레드 문맥 안에서만 원자적</code></pre>
+<p>이런 코드는 애초에 공유되지 않는 지역 데이터거나, 컴파일러가 특정 상황에서 <code>lock</code> 없이도 안전하다고 판단한 경우다. 발견하면 왜 <code>lock</code>이 빠졌는지(진짜 단일 스레드 전용인지) 문맥을 반드시 확인해야 한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0043-xchg.html">REV-0043 — XCHG: 두 값 교환</a></li><li><a href="rev-0047-add.html">REV-0047 — ADD: 덧셈과 플래그</a></li><li><a href="rev-0431-cmpxchg.html">REV-0431 — CMPXCHG: 비교 후 교환(원자적 연산 개념)</a></li><li><a href="rev-0432-lock-prefix.html">REV-0432 — LOCK 프리픽스와 원자적 연산 개념</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>XADD</code> 연산 정의(TEMP=SRC+DEST; SRC=DEST; DEST=TEMP)와 Flags Affected: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "XADD—Exchange and Add" 섹션 기준 (2026-09-08 검증).</li><li><code>std::atomic::fetch_add</code>, <code>InterlockedExchangeAdd</code>가 <code>lock xadd</code>로 컴파일되는 관례: C++ 표준 라이브러리 구현체 및 Microsoft Learn "Interlocked Variable Access" 공식 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

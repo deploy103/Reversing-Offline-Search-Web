@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>문자열이 깨져 보일 때 인코딩부터 의심하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>문자열이 깨져 보일 때 인코딩부터 의심하기</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">HxD</span></div>
+<h2>한 줄 요약</h2>
+<p>문자열이 깨져 보이는 건 대부분 문자열 자체가 손상된 게 아니라, <strong>바이트를 잘못된 인코딩(문자 집합)으로 해석</strong>했기 때문이며, 특히 각 문자 사이에 <code>00</code> 바이트가 하나씩 끼어 있다면 그건 깨진 게 아니라 UTF-16(wide char) 문자열을 8비트 텍스트로 착각해서 보고 있는 것이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>strings</code> 명령이나 IDA의 문자열 뷰(View &gt; Open subviews &gt; Strings)에서 한글/특수문자가 물음표(<code>?</code>)나 네모(``)로 보일 때</li><li>문자열 바이트를 헥스로 봤더니 <code>48 00 65 00 6C 00 6C 00 6F 00</code>처럼 문자마다 <code>00</code>이 하나씩 끼어 있을 때</li><li>리소스 섹션이나 <code>.rdata</code>에서 뽑은 한글 문자열이 UTF-8로 열어도 텍스트 에디터에서 깨질 때</li><li>같은 프로그램인데 Windows용 문자열과 Linux용 문자열이 바이트 배열은 비슷한데 해석 결과가 다를 때</li></ul>
+<h2>핵심 개념</h2>
+<p>문자열은 결국 바이트의 나열일 뿐이고, 그 바이트를 "어떤 문자로 읽을지"를 정하는 규칙이 인코딩이다. 같은 바이트 시퀀스라도 인코딩을 잘못 고르면 완전히 다른(또는 깨진) 글자가 나온다.</p>
+<p><strong>대표적인 인코딩과 특징</strong>:</p>
+<ul><li><strong>ASCII</strong>: 1바이트당 1글자, 영문/숫자/기호만(0x00~0x7F). 한글은 표현 불가.</li><li><strong>UTF-8</strong>: 가변 길이(1~4바이트). 영문은 ASCII와 동일한 1바이트, 한글은 보통 3바이트(예: <code>한</code> = <code>EC 95 88</code>). 리눅스/웹에서 사실상 표준.</li><li><strong>UTF-16(LE)</strong>: 고정 2바이트(또는 서로게이트 쌍이면 4바이트) 단위. Windows API(<code>WCHAR</code>, <code>wchar_t</code>)의 기본 문자열 형식. 영문 <code>H</code>도 <code>48 00</code>처럼 항상 2바이트로 저장되기 때문에, 이걸 그냥 ASCII 텍스트 뷰어로 열면 <strong>글자 사이마다 <code>00</code>이 낀 것처럼 보이거나, 짝수 바이트만 읽는 도구는 <code>H</code>, <code>e</code>, <code>l</code>, <code>l</code>, <code>o</code>를 제대로 뽑아내지만 홀수 바이트를 기준으로 읽는 도구는 완전히 다른 글자를 뽑아낸다.</strong></li><li><strong>EUC-KR / CP949(MS949)</strong>: 옛 Windows 한글 프로그램에서 흔히 쓰던 완성형 한글 인코딩. 2바이트로 한글 한 글자를 표현하지만 UTF-8과는 바이트 값 자체가 다르다.</li></ul>
+<p><strong>구체적 숫자 예시</strong>: 한글 <code>"안녕"</code>을 세 가지 인코딩으로 저장하면 완전히 다른 바이트가 나온다.</p>
+<ul><li>UTF-8: <code>EC 95 88 EB 85 95</code> (6바이트)</li><li>UTF-16LE: <code>48 C5 55 B1</code> (4바이트, 문자당 2바이트)</li><li>CP949(EUC-KR): <code>BE C8 B3 E7</code> (4바이트, 문자당 2바이트지만 UTF-16과 값이 다름)</li></ul>
+<p>이 셋은 전혀 다른 바이트 나열이다. 그러니 리소스에서 뽑은 바이트가 <code>BE C8 B3 E7</code>인데 이걸 UTF-8로 디코딩하려 하면 당연히 깨진다 — 애초에 UTF-8로 인코딩된 바이트가 아니기 때문이다. <strong>문자열이 깨졌다는 건 바이트가 손상됐다는 뜻이 아니라, 디코더가 원본 인코딩을 잘못 추측했다는 뜻</strong>인 경우가 압도적으로 많다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>strings</code> 기본 옵션으로는 UTF-16 문자열이 거의 안 잡히거나, 영문 부분만 한 글자씩 끊겨서 나옴</li><li>IDA가 문자열을 <code>C string</code>으로 인식했는데 실제로는 wide string이라 뒤에 이상한 문자가 덧붙어 보임</li><li>한글이 포함된 리소스 문자열을 UTF-8 텍스트 에디터로 열면 한글 자리에 깨진 특수문자(예: <code>占쏙옙</code>)가 나타남 — 이건 CP949 바이트를 UTF-8로 잘못 디코딩했을 때 나오는 전형적인 패턴이다</li><li>헥스 덤프에서 문자 사이마다 <code>00</code>이 규칙적으로 반복됨(UTF-16LE 신호)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문자열 바이트를 헥스로 먼저 확인한다. 문자 사이에 <code>00</code>이 규칙적으로 끼어 있으면 UTF-16이다. 그게 아니고 한글처럼 보이는 2바이트 조합이 반복되면 UTF-8인지 CP949인지 구분해야 한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 헥스 패턴으로 인코딩 후보 좁히기</strong> <code>00</code>이 문자마다 하나씩 끼어 있으면 UTF-16LE(리틀 엔디안이므로 낮은 바이트가 먼저 나옴), 안 끼어 있으면 ASCII/UTF-8/CP949 계열이다.</p>
+<p><strong>2) IDA/Ghidra에서 문자열 타입 강제 지정</strong> IDA에서 데이터 위에 커서를 놓고 <code>Alt+A</code>(또는 우클릭 &gt; Data &gt; Strings)로 문자열 타입을 바꿔본다. <code>C-style ASCII string</code>으로 안 보이면 <code>Unicode string(UTF-16)</code>로 바꿔서 다시 확인한다. Ghidra는 데이터 위에서 우클릭 &gt; Data &gt; TerminatedCString / TerminatedUnicodeString(변환 후 재분석)으로 전환한다.</p>
+<p><strong>3) 도구로 강제 디코딩해서 비교</strong></p>
+<pre><code class="language-bash"># UTF-16LE로 뽑기
+strings -e l target.bin
+# 그냥 ASCII로 뽑기 (비교용)
+strings target.bin</code></pre>
+<p><strong>4) Python으로 여러 인코딩을 직접 시도</strong></p>
+<pre><code class="language-python">data = bytes.fromhex("bec8b3e7")
+for enc in ["utf-8", "utf-16le", "cp949", "euc-kr"]:
+    try:
+        print(enc, "-&gt;", data.decode(enc))
+    except UnicodeDecodeError:
+        print(enc, "-&gt; 디코딩 실패")</code></pre>
+<p>CP949로 시도했을 때만 예외 없이 깔끔한 한글이 나오면 원본 인코딩이 CP949였다는 뜻이다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">strings -e l file       # 리틀 엔디안 UTF-16 문자열 추출
+strings -e b file       # 빅 엔디안 UTF-16 문자열 추출
+IDA: 데이터 위에서 Alt+A  # 문자열 타입(ASCII/Unicode) 전환
+Ghidra: 우클릭 &gt; Data &gt; TerminatedUnicodeString
+Python: data.decode("cp949"), data.decode("utf-16le")
+HxD: 하단 상태바에서 "코드 페이지" 변경하여 즉시 미리보기</code></pre>
+<h2>출력 해석</h2>
+<ul><li>Python <code>decode()</code>가 <code>UnicodeDecodeError</code> 없이 성공했다고 해서 무조건 정답은 아니다 — 우연히 다른 인코딩으로도 유효한 바이트 시퀀스가 될 수 있으므로, 나온 텍스트가 실제로 말이 되는 한글/문맥인지 눈으로 확인해야 한다.</li><li>CP949 바이트를 UTF-8로 잘못 디코딩하면 특정 특수문자가 반복되는 패턴(예: 물음표 다이아몬드)이 나오는데, 이는 "디코더가 원본 인코딩을 잘못 짚었다"는 강한 신호다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Windows API(<code>MessageBoxW</code>, <code>lstrlenW</code> 등 <code>W</code> 접미사 함수) 근처의 문자열을 무조건 ASCII로 보고 넘어가는 것 — <code>W</code> 계열 API는 UTF-16 문자열을 기대한다.</li><li>문자열이 안 보인다고 바로 "패킹/암호화됐다"고 단정하는 것 — 실제로는 단순히 wide string이라 기본 <code>strings</code>에 안 잡히는 경우가 많다.</li><li>CP949와 UTF-8을 혼동해서 옛날 한국 Windows 프로그램의 리소스를 UTF-8 전용 도구로만 열어보고 "깨졌다"고 결론 내리는 것.</li><li>문자열 끝의 널 종료(<code>\x00</code>)를 UTF-16에서는 2바이트(<code>00 00</code>)로 확인해야 하는데 1바이트만 보고 문자열 길이를 잘못 계산하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>문자열이 애초에 메모리/파일에 어떻게 저장되는지 원리부터 다시 보고 싶으면 REV-0036 문서로 이동.</li><li>엔디안 개념 자체가 헷갈리면 REV-0023 문서로 이동.</li><li>인코딩 문제가 아니라 진짜 암호화/난독화가 의심되면 정적 분석 카테고리의 문자열 암호화 관련 글을 검색.</li></ul>
+<h2>미니 예제</h2>
+<p>IDA에서 다음과 같은 바이트가 보였다고 하자.</p>
+<pre><code>DB 08: 61 00 64 00 6D 00 69 00 6E 00 00 00</code></pre>
+<p>문자 사이마다 <code>00</code>이 껴 있으므로 UTF-16LE로 의심하고 2바이트씩 묶어 읽는다: <code>61 00</code>=<code>a</code>, <code>64 00</code>=<code>d</code>, <code>6D 00</code>=<code>m</code>, <code>69 00</code>=<code>i</code>, <code>6E 00</code>=<code>n</code>, <code>00 00</code>=문자열 종료. 합치면 <code>"admin"</code>이라는 wide string이다. 만약 이 바이트를 그냥 ASCII로 읽었다면 <code>a</code>, <code>\0</code>, <code>d</code>, <code>\0</code>, ... 처럼 문자마다 널 문자가 끼어 있는 것처럼 보여 도구에 따라 첫 글자 <code>a</code>만 뽑히고 나머지는 잘려나갔을 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0036-string-encoding.html">REV-0036 — 문자열이 메모리에 저장되는 방식 ASCII UTF-8 UTF-16</a></li><li><a href="rev-0023-endianness.html">REV-0023 — Little Endian과 Big Endian</a></li><li><a href="rev-0384-endianness-constant-mismatch.html">REV-0384 — 리틀 엔디안 값을 잘못 읽어서 상수 매칭이 안 될 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>UTF-8/UTF-16 인코딩 규칙: Unicode Standard, "UTF-8" 및 "UTF-16" 인코딩 방식 공식 정의 기준 (2026-09-09 검증).</li><li>Windows 문자열 API의 <code>A</code>/<code>W</code> 접미사와 wide char 사용 규칙: Microsoft Learn, "Unicode and Character Sets" 문서 기준.</li><li>CP949/EUC-KR 한글 완성형 인코딩 개요: IANA Character Sets 등록 정보 및 관용적 CTF 리버싱 자료 기준 개념 설명.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

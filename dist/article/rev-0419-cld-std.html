@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CLD와 STD: 방향 플래그와 문자열 명령 방향 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>CLD와 STD: 방향 플래그와 문자열 명령 방향</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>CLD</code>/<code>STD</code>는 방향 플래그(DF)를 각각 0/1로 설정해, 이후 실행되는 <code>MOVS</code>/<code>STOS</code>/<code>LODS</code>/<code>SCAS</code>/<code>CMPS</code> 같은 문자열 명령이 <code>ESI</code>/<code>EDI</code>(또는 <code>RSI</code>/<code>RDI</code>)를 매 반복마다 증가(정방향)시킬지 감소(역방향)시킬지를 결정한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>rep movsb</code>, <code>rep stosb</code> 같은 문자열 반복 명령 바로 앞에 <code>cld</code>가 붙어 있는 이유가 궁금할 때</li><li><code>std</code>가 나온 뒤 포인터 레지스터(<code>RSI</code>/<code>RDI</code>)가 감소하는 이유를 모를 때</li><li>함수가 끝난 뒤 다른 라이브러리 함수(memcpy 등)가 이상하게 동작하는데 원인이 DF 상태 같을 때</li><li>memmove의 backward copy(겹치는 영역 복사) 구현을 리버싱할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>DF가 무엇을 제어하는가</h3>
+<p><code>DF</code>(Direction Flag)는 EFLAGS의 10번 비트다. 문자열 처리 명령(<code>MOVS</code>, <code>STOS</code>, <code>LODS</code>, <code>SCAS</code>, <code>CMPS</code>, 그리고 이들에 <code>REP</code>류 접두사가 붙은 형태)이 실행될 때마다, 관련된 인덱스 레지스터(<code>ESI</code>/<code>EDI</code>, 64비트에서는 <code>RSI</code>/<code>RDI</code>)를 자동으로 증감시킨다.</p>
+<ul><li><code>DF = 0</code> (<code>CLD</code>로 설정): 매 반복마다 <strong>증가</strong> — 메모리 앞쪽에서 뒤쪽으로 진행(정방향).</li><li><code>DF = 1</code> (<code>STD</code>로 설정): 매 반복마다 <strong>감소</strong> — 메모리 뒤쪽에서 앞쪽으로 진행(역방향).</li></ul>
+<p>증감 크기는 오퍼랜드 크기에 따라 다르다 — 바이트 단위(<code>MOVSB</code>)면 ±1, 워드(<code>MOVSW</code>)면 ±2, 더블워드(<code>MOVSD</code>)면 ±4, 쿼드워드(<code>MOVSQ</code>)면 ±8.</p>
+<h3>CLD/STD 자체의 효과</h3>
+<ul><li><code>CLD</code>: <code>DF = 0</code>. <code>STD</code>: <code>DF = 1</code>. 오퍼랜드 없음.</li><li>이 둘은 <strong>DF 외의 다른 플래그를 전혀 건드리지 않는다</strong> (CF, ZF, SF, OF, PF, AF 모두 그대로).</li><li>범용 레지스터/메모리에 직접 영향 없음. 스택/RIP 변화도 없음(RIP는 1바이트만큼 증가).</li><li>이후에 실행되는 문자열 명령들의 "방향"만 결정한다는 점에서, 직접적인 효과보다는 <strong>후속 명령의 동작 방식을 설정</strong>하는 역할이다.</li></ul>
+<h3>왜 STD가 필요한가: 겹치는 메모리 복사</h3>
+<p><code>memcpy</code>는 원본과 대상이 겹치지 않는다고 가정하지만, <code>memmove</code>는 겹치는 경우도 안전하게 처리해야 한다. 대상 주소가 원본보다 <strong>뒤쪽</strong>에 있고 두 영역이 겹친다면, 앞에서부터 복사하면 아직 읽지 않은 원본 데이터를 미리 덮어써버리는 문제가 생긴다. 이럴 때 <strong>뒤에서부터</strong> 복사하면(<code>STD</code> + 끝 주소부터 시작) 안전하다.</p>
+<pre><code class="language-asm">; dest &gt; src 이고 겹치는 경우, 뒤에서부터 복사
+std
+lea  rdi, [dest+len-1]
+lea  rsi, [src+len-1]
+mov  rcx, len
+rep  movsb
+cld                    ; 반드시 원상복구!</code></pre>
+<h3>ABI 규약: 함수 경계에서는 항상 DF=0</h3>
+<p>Windows x64와 SysV AMD64 ABI 모두, <strong>함수 호출 시점과 반환 시점에 DF는 반드시 0(clear)이어야 한다</strong>는 규약이 있다. 즉 어떤 함수가 내부적으로 <code>STD</code>를 써서 역방향 복사를 했다면, 그 함수가 반환하기 전에 반드시 <code>CLD</code>로 DF를 원상복구해야 한다. 이걸 빠뜨리면 그 함수를 호출한 쪽이나 이후에 실행되는 CRT/라이브러리 함수(내부적으로 <code>rep movs</code>류를 쓰는 <code>memcpy</code> 등)가 방향을 착각해 메모리를 잘못된 방향으로 읽고 써서 크래시나 데이터 손상을 일으킬 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">cld
+mov  rdi, dest
+mov  rsi, src
+mov  rcx, len
+rep  movsb</code></pre>
+<pre><code class="language-asm">std
+lea  rdi, [dest+len-1]
+lea  rsi, [src+len-1]
+mov  rcx, len
+rep  movsb
+cld</code></pre>
+<p><code>REP</code> 계열 명령 바로 앞에 <code>CLD</code>나 <code>STD</code>가 붙어 있는 패턴이 전형적이다. 함수 시작부에 <code>CLD</code>만 있고 <code>STD</code>가 전혀 없다면 그 함수는 항상 정방향으로만 문자열 명령을 쓴다는 뜻이다.</p>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>CLD</code>인지 <code>STD</code>인지부터 확인해 이후 <code>REP</code> 블록이 정방향인지 역방향인지 판단한다.</li><li><code>STD</code>가 있다면 그 뒤 어딘가에 <code>CLD</code>로 복원하는 코드가 있는지 반드시 찾아본다 — 없다면 ABI 위반 버그이거나 의도적인 안티분석 트릭일 수 있다.</li><li><code>RDI</code>/<code>RSI</code> 초기값이 버퍼의 시작 주소인지 끝 주소(<code>+len-1</code>)인지 확인해 방향과 앞뒤가 맞는지 검증한다.</li></ol>
+<h2>단계별 절차</h2>
+<ol><li><code>CLD</code>/<code>STD</code> 위치를 찾는다.</li><li>뒤따르는 <code>MOV RDI, ...</code> / <code>MOV RSI, ...</code> / <code>LEA</code> 값이 버퍼의 시작인지 끝인지 확인한다 — <code>STD</code>인데 시작 주소를 쓰면 역방향으로 진행하면서 버퍼 밖으로 벗어나는 버그가 될 수 있다.</li><li><code>REP</code> 계열 명령(<code>REV-0080</code> 참고)이 몇 바이트/워드 단위로 반복되는지 <code>RCX</code> 초기값으로 확인한다.</li><li>함수 끝까지 <code>STD</code> 이후 <code>CLD</code>로 복원되는지 추적한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA/Ghidra: <code>rep movsb</code>와 <code>cld</code>가 함께 있으면 대개 <code>memcpy()</code> 호출로 인식/재구성되고, <code>std</code> + <code>rep movsb</code> + <code>cld</code> 조합은 역방향 복사 루프로 표시되거나 raw 명령으로 남는다.</li><li>GDB/x64dbg: EFLAGS 창에서 <code>DF</code> 비트(비트 10)를 직접 확인할 수 있다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>디버거 레지스터/플래그 창에서 <code>DF=1</code>로 표시되면 역방향 모드, <code>DF=0</code>이면 정방향 모드다.</li><li><code>RSI</code>/<code>RDI</code> 값을 반복(step) 실행하면서 관찰하면 실제로 증가하는지 감소하는지 눈으로 확인할 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>STD</code>를 "start"의 약자로 착각하는 것 — 실제로는 "Set Direction flag"다.</li><li>DF가 <code>ESI</code>/<code>EDI</code>의 증감 방향만 바꾼다는 것을 모르고, 루프 반복 횟수(<code>RCX</code>)나 비교 로직까지 바뀐다고 오해하는 것 — <code>RCX</code>는 여전히 매 반복 1씩 감소하며 0이 되면 멈춘다(REV-0080 참고). 바뀌는 건 오직 <code>RSI</code>/<code>RDI</code>의 증감 부호뿐이다.</li><li><code>STD</code> 이후 <code>CLD</code>로 복원하지 않아, 그 함수를 호출한 코드나 CRT 함수가 오작동하는 것을 디버깅할 때 원인을 못 찾는 것 — ABI가 DF=0을 요구한다는 사실 자체를 모르면 이 버그의 원인을 영영 못 찾는다.</li><li>정방향/역방향과 무관하게 항상 시작 주소를 버퍼의 맨 앞이라고 가정하는 것 — <code>STD</code> 모드에서는 반드시 끝 주소(<code>buf+len-1</code>)에서 시작해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>복사 결과가 뒤집혀 나오거나 깨진다면 <code>CLD</code>/<code>STD</code> 상태부터 확인한다.</li><li>함수 반환 이후 다른 코드가 이상 동작한다면, 이 함수 내부에 <code>STD</code>만 있고 <code>CLD</code> 복원이 없는지 확인한다.</li><li><code>RDI</code>/<code>RSI</code> 초기값이 방향(<code>DF</code>)과 앞뒤가 맞는지 재확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 정방향 복사 (memcpy 유사)</strong></p>
+<pre><code class="language-c">memcpy(dest, src, len);</code></pre>
+<pre><code class="language-asm">cld
+mov  rdi, dest
+mov  rsi, src
+mov  rcx, len
+rep  movsb</code></pre>
+<p><strong>예제 2 — 역방향 복사 (겹치는 memmove, dest &gt; src)</strong></p>
+<pre><code class="language-c">memmove(dest, src, len);  // dest가 src보다 뒤쪽이고 겹칠 때</code></pre>
+<pre><code class="language-asm">std
+lea  rdi, [dest+len-1]
+lea  rsi, [src+len-1]
+mov  rcx, len
+rep  movsb
+cld              ; ABI 요구사항: 함수 반환 전 DF 복원</code></pre>
+<p><strong>예제 3 — DF 상태를 몰라 헷갈리는 SCAS 방향</strong></p>
+<pre><code class="language-asm">std
+mov  rdi, buf_end
+mov  al, 0
+mov  rcx, len
+repne scasb        ; buf_end에서부터 거꾸로 0 바이트를 찾음
+cld</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0080-rep-prefix.html">REV-0080 — REP Prefix와 반복 문자열 명령</a></li><li><a href="rev-0081-movs.html">REV-0081 — MOVS MOVSB MOVSW MOVSD MOVSQ</a></li><li><a href="rev-0082-stos.html">REV-0082 — STOS STOSB STOSD STOSQ</a></li><li><a href="rev-0084-scas.html">REV-0084 — SCAS와 문자열 검색 패턴</a></li><li><a href="rev-0085-cmps.html">REV-0085 — CMPS와 문자열 비교 패턴</a></li><li><a href="rev-0046-pushf-popf.html">REV-0046 — PUSHF와 POPF: 플래그 저장과 복원</a></li><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>CLD/STD 명령어 동작 및 DF 정의: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "CLD—Clear Direction Flag" / "STD—Set Direction Flag" 섹션 기준 (2026-09-08 검증).</li><li>함수 경계에서 DF=0을 요구하는 ABI 규약: System V Application Binary Interface AMD64 Architecture Processor Supplement 및 Microsoft Learn x64 calling convention 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

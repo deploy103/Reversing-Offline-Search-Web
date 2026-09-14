@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GetAsyncKeyState로 키 입력을 검증에 쓰는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>GetAsyncKeyState로 키 입력을 검증에 쓰는 패턴</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>GetAsyncKeyState</code>는 텍스트박스에 입력하고 엔터를 누르는 방식이 아니라 키를 누르는 그 순간을 실시간으로 감지하는 API이므로, 크랙미가 이 함수를 쓰면 콘솔 입력 함수 대신 이 함수의 인자(가상 키 코드)와 반환값의 최상위 비트(<code>0x8000</code>)를 확인하는 방식으로 검증 로직을 추적해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA Imports 탭에 <code>GetAsyncKeyState</code>가 보일 때</li><li>프로그램이 입력창 없이 실행되고, 키를 누르는 즉시(엔터 없이) 반응하는 게임/크랙미를 분석할 때</li><li>반복문 안에서 <code>GetAsyncKeyState(0x41)</code>처럼 특정 가상 키 코드를 인자로 계속 호출하는 코드를 발견했을 때</li><li>디버거로는 잡히지 않는데(사람 입력에 의존) 프로그램이 특정 키 순서(예: 방향키 조합, 코나미 코드류)에만 반응하는 것 같을 때</li></ul>
+<h2>핵심 개념</h2>
+<p><code>GetAsyncKeyState</code>는 지정한 가상 키(virtual key)의 현재 상태를 즉시 조회하는 API로, 메시지 큐를 거치지 않기 때문에 폴링(주기적으로 반복 조회) 방식의 입력 처리에 자주 쓰인다.</p>
+<pre><code class="language-c">SHORT GetAsyncKeyState(int vKey);</code></pre>
+<ul><li><code>vKey</code>: 확인할 가상 키 코드(예: <code>'A'</code>=0x41, <code>VK_RETURN</code>=0x0D, <code>VK_ESCAPE</code>=0x1B, <code>VK_SHIFT</code>=0x10, <code>VK_F1</code>=0x70, <code>VK_LBUTTON</code>=0x01). 문자 키는 대문자 아스키 코드와 동일하다.</li><li>반환값(<code>SHORT</code>, 16비트)의 <strong>최상위 비트(0x8000)</strong>가 1이면 이 함수를 호출하는 바로 그 순간 해당 키가 눌려 있는 상태라는 뜻이다.</li><li>반환값의 <strong>최하위 비트(0x0001)</strong>가 1이면 이전 호출 이후 해당 키가 한 번이라도 눌렸다는 뜻이다(단, 이 비트는 일부 환경/버전에서 신뢰도가 낮아 실무에서는 최상위 비트 위주로 쓰인다).</li></ul>
+<p>일반적인 텍스트 입력(<code>ReadConsoleW</code>, <code>GetMessage</code>의 <code>WM_CHAR</code>)과 달리, <code>GetAsyncKeyState</code>는 키가 눌린 그 순간을 프로그램이 스스로 계속 물어봐야(폴링) 알 수 있다. 그래서 이 API를 쓰는 코드는 대개 <code>while</code> 루프 안에 <code>Sleep</code>을 짧게(예: 10~50ms) 주고 반복적으로 호출하는 형태를 띤다.</p>
+<p><strong>메시지 기반 입력과의 근본적 차이</strong>: 일반적인 GUI 프로그램은 <code>GetMessage</code>/<code>PeekMessage</code>로 메시지 큐에서 <code>WM_KEYDOWN</code>/<code>WM_KEYUP</code>/<code>WM_CHAR</code> 메시지를 꺼내 처리하며, 이 방식은 포커스가 있는 창에만 반응하고 시스템 메시지 처리 순서를 따른다. 반면 <code>GetAsyncKeyState</code>는 메시지 큐를 완전히 우회해 시스템 전역의 물리적 키보드 상태를 즉시 조회하므로, <strong>프로그램이 포커스를 잃은 상태(백그라운드)에서도 키 입력을 감지</strong>할 수 있다는 특징이 있다. 이 때문에 게임의 핫키 기능이나 화면 녹화 프로그램의 전역 단축키뿐 아니라, 일부 키로거성 악성코드에서도 이 API가 남용된다. 크랙미를 분석하다가 창이 비활성 상태인데도 반응하는 것 같다면 이 API가 쓰였을 가능성을 의심해볼 수 있다.</p>
+<p><strong>정밀도와 놓치는 입력</strong>: 폴링 주기(예: <code>Sleep(10)</code>)보다 짧게 키를 눌렀다 뗀 경우, 최상위 비트(0x8000)만 확인하는 코드는 그 입력을 놓칠 수 있다. 이런 이유로 실전 코드는 종종 최하위 비트(0x0001, "마지막 호출 이후 한 번이라도 눌렸음")도 함께 확인하거나, 폴링 주기를 매우 짧게(1~5ms) 설정한다. 분석 중 "분명히 키를 눌렀는데 반응이 없다"면 이 폴링 주기와 씨름하고 있는 것일 수 있으므로, 무작정 여러 번 빠르게 눌러보거나 키를 누른 채로 잠깐 유지해보는 것이 실전 팁이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>GetAsyncKeyState</code>를 호출한 뒤 반환값을 <code>and eax, 8000h</code>(또는 디컴파일에서 <code>&amp; 0x8000</code>)로 마스킹해서 "현재 눌림" 여부만 뽑아내는 코드</li><li>서로 다른 가상 키 코드 상수(<code>0x41</code>, <code>0x42</code>, <code>0x43</code>...)를 인자로 반복 호출하며 각각의 결과를 배열이나 전역 변수에 순서대로 기록하는 패턴 — 사용자가 누른 키 순서를 실시간으로 기록해 정답 배열과 비교하는 구조</li><li><code>while(1) { ...; Sleep(10); }</code> 형태의 무한 루프 안에 <code>GetAsyncKeyState</code> 호출이 들어있는 게임/이스터에그류 코드</li><li><code>GetAsyncKeyState(VK_LBUTTON)</code>(마우스 왼쪽 버튼, 0x01)처럼 마우스 상태를 확인하는 경우도 있는데, 이는 사람이 실제로 클릭하고 있는지(자동화 스크립트와 구분)를 판별하는 안티샌드박스 용도로도 쓰인다</li><li><code>GetKeyState</code>(메시지 기반, 폴링 아님)와 이름이 비슷해 혼동하기 쉬우므로 임포트 이름을 정확히 확인해야 한다</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>GetAsyncKeyState</code> 호출부의 인자(가상 키 코드)를 먼저 확인한다. 상수 값이 아니라 배열 인덱스나 변수로 되어 있다면, 이 함수가 "특정 키 하나"가 아니라 "여러 키를 순회하며 확인"하는 용도라는 뜻이므로 주변에 반복문과 비교 대상 배열이 있는지부터 찾는다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 정적 분석(IDA)</strong></p>
+<ul><li>Imports에서 <code>GetAsyncKeyState</code>를 찾아 <code>X</code>로 호출부를 나열한다.</li><li><code>F5</code> 디컴파일 결과에서 <code>if (GetAsyncKeyState(0x41) &amp; 0x8000)</code> 형태의 조건문을 찾고, 조건이 참일 때 어떤 변수가 바뀌는지 추적한다.</li><li>호출이 반복문 안에 있다면, 루프가 어떤 조건으로 끝나는지(예: 특정 키 개수를 다 확인했을 때, 또는 <code>VK_RETURN</code>이 눌렸을 때) 확인한다.</li><li>여러 가상 키 코드가 배열이나 스위치문으로 나열되어 있다면, 이 상수들을 순서대로 적어두면 그것이 곧 "정답 키 시퀀스"의 실마리가 될 수 있다.</li></ul>
+<p><strong>2) 동적 분석(x64dbg)</strong></p>
+<ul><li><code>bp GetAsyncKeyState</code>로 브레이크포인트를 걸고 실행한다. 폴링 루프 특성상 아무 키도 안 눌러도 계속 브레이크포인트가 걸릴 수 있으므로, 조건부 로그(우클릭 → Breakpoint → Edit → Log text에 <code>{ecx}</code> 또는 <code>{rcx}</code> 형식으로 인자 기록)를 걸어두고 <code>F9</code>로 흘려보내는 것이 효율적이다.</li><li>x86은 <code>[esp+4]</code>, x64는 <code>RCX</code>가 첫 번째 인자(<code>vKey</code>)이므로 이 값을 로그로 남겨 어떤 키들을 확인하는지 순서대로 기록한다.</li><li>반환값(<code>EAX</code>, 하위 16비트가 실제 <code>SHORT</code> 값)의 <code>0x8000</code> 비트가 언제 켜지는지 확인해 실제로 어느 키를 눌렀을 때 반응하는지 실험적으로 검증한다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp GetAsyncKeyState</code>, 브레이크포인트 우클릭 → Edit → Log text(예: <code>vKey={ecx}</code>), <code>F9</code>(계속 실행)</li><li>IDA: <code>X</code>(교차 참조), <code>F5</code>(디컴파일), <code>Shift+F12</code>(Strings, 정답 문자열이 별도로 있는지 확인)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>반환값이 0x0000이면 해당 키는 지금 안 눌려 있고 이전에도 안 눌렸다는 뜻이다.</li><li>반환값이 0x8000(또는 그 이상 비트가 섞인 음수 SHORT)이면 "지금 이 순간 눌려 있다"는 뜻이다.</li><li>반환값이 0x0001이면 "지금은 안 눌려 있지만 최근에 한 번 눌렸었다"는 뜻이며, 이 값에 의존하는 코드는 타이밍에 민감할 수 있다.</li><li>여러 키에 대해 이 값을 배열로 계속 기록하는 코드라면, 최종적으로 비교되는 정답 배열(전역 변수나 <code>.rdata</code>의 상수 배열)을 찾는 것이 목표가 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>GetAsyncKeyState</code>와 <code>GetKeyState</code>를 같은 함수로 착각하는 것 — <code>GetKeyState</code>는 마지막으로 처리된 메시지 기준의 상태를 반환하며 폴링용이 아니다. 임포트 이름을 반드시 정확히 구분해야 한다.</li><li>최상위 비트(0x8000)만 확인하지 않고 반환값 전체를 <code>if (ret)</code>처럼 참/거짓으로만 검사해서, 실제로는 항상 참인 것처럼 오해하는 것(반환값의 다른 비트가 0이 아닐 수도 있음에 유의).</li><li>폴링 루프이므로 x64dbg에서 무조건 브레이크포인트를 걸면 수백 번씩 멈춰서 분석이 매우 느려지는 것 — 로그만 남기고 자동으로 흘려보내는 조건부 브레이크포인트를 반드시 활용해야 한다.</li><li>정답 키 순서를 코드만 보고 유추하려다 실패하는 것 — 실제로 키를 눌러가며 반환값 변화를 실험하는 동적 분석이 정적 분석보다 훨씬 빠른 경우가 많다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>텍스트 입력 방식(엔터 기반)과 혼용되어 있다면 → REV-0577(Windows 콘솔 입출력 함수 추적하기) 참고</li><li>마우스 클릭 여부로 사람인지 자동화인지 구분하는 안티샌드박스 패턴이 함께 있다면 → REV-0573(Sleep 남용과 안티디버깅/안티샌드박스 기법) 참고</li><li>검증 결과가 클립보드나 다른 프로세스로 전달되는 구조라면 → REV-0579(Windows 클립보드를 이용한 데이터 전달 패턴 분석) 참고</li></ul>
+<h2>미니 예제</h2>
+<p>IDA 디컴파일 결과가 다음과 같다고 하자.</p>
+<pre><code class="language-c">int idx = 0;
+while (idx &lt; 4) {
+    if (GetAsyncKeyState(VK_UP) &amp; 0x8000) { seq[idx++] = 0; Sleep(150); }
+    else if (GetAsyncKeyState(VK_DOWN) &amp; 0x8000) { seq[idx++] = 1; Sleep(150); }
+    else if (GetAsyncKeyState(VK_LEFT) &amp; 0x8000) { seq[idx++] = 2; Sleep(150); }
+    else if (GetAsyncKeyState(VK_RIGHT) &amp; 0x8000) { seq[idx++] = 3; Sleep(150); }
+}
+if (memcmp(seq, answer, 4) == 0) { /* 성공 */ }</code></pre>
+<p>이 코드는 방향키 4개를 순서대로 눌러야 하는 미니 게임 형태의 검증이다. <code>Sleep(150)</code>은 같은 키 입력이 여러 번 중복 기록되는 것(디바운스)을 막기 위한 지연이다. <code>answer</code> 배열의 위치를 IDA에서 찾아 상수 4바이트를 확인하면 정답 방향키 순서를 바로 알 수 있고, x64dbg에서는 <code>answer</code> 배열 주소에 메모리 브레이크포인트를 걸어 값을 직접 읽어도 된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0577-console-io-readconsole-writeconsole.html">REV-0577 — Windows 콘솔 입출력 함수(ReadConsole/WriteConsole) 추적하기</a></li><li><a href="rev-0573-sleep-antidebug-antisandbox.html">REV-0573 — Sleep 남용과 안티디버깅/안티샌드박스 기법</a></li><li><a href="rev-0579-clipboard-data-transfer-pattern.html">REV-0579 — Windows 클립보드를 이용한 데이터 전달 패턴 분석</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>GetAsyncKeyState</code>의 함수 시그니처, 반환값 비트 의미(0x8000, 0x0001), 가상 키 코드 상수는 Microsoft Win32 API 공식 문서(Keyboard Input, Virtual-Key Codes) 기준이다.</li><li><code>GetKeyState</code>와의 차이(메시지 기반 vs 폴링 기반)는 동일 공식 문서의 Remarks 설명을 근거로 한다.</li><li>위 미니 예제 코드는 설명을 위해 구성한 예시이며 실제 특정 문제의 코드가 아니다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

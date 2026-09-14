@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>디버거별 레지스터/플래그 표시 명칭 대조표 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>디버거별 레지스터/플래그 표시 명칭 대조표</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">x64dbg</span><span class="tag">WinDbg</span></div>
+<h2>한 줄 요약</h2>
+<p>같은 x86/x64 EFLAGS/RFLAGS 레지스터라도 GDB는 "현재 세트(set)된 플래그 이름만" 대괄호 안에 나열하고, x64dbg는 각 플래그를 체크박스가 붙은 개별 행으로 보여주며, WinDbg는 "설정/해제 상태를 각각 다른 두 글자 약어"로 표시한다 — 셋 다 결국 같은 비트를 가리키지만 화면에 찍히는 문자열이 완전히 다르다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>GDB의 <code>eflags 0x246 [ PF ZF IF ]</code> 출력이 WinDbg의 <code>iopl=0 nv up ei pl zr na po nc</code>와 대응이 안 돼서 헷갈릴 때</li><li>WinDbg에서 <code>zr</code>, <code>pl</code>, <code>cy</code> 같은 두 글자 약어가 어떤 플래그의 어떤 상태를 뜻하는지 모를 때</li><li>x64dbg 레지스터 패널의 플래그 체크박스 이름이 어떤 EFLAGS 비트에 대응하는지 확인하고 싶을 때</li><li>툴 문서/CTF 라이트업을 넘나들며 같은 레지스터를 가리키는 다른 표기(RAX vs rax, EFLAGS vs Flags)를 통일해서 이해하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>범용 레지스터 이름 규칙</h3>
+<p>세 디버거 모두 레지스터 이름 자체는 인텔 공식 명칭(<code>RAX</code>/<code>EAX</code>/<code>AX</code>/<code>AL</code>, <code>RIP</code>/<code>EIP</code> 등)을 그대로 쓰지만 대소문자 관례가 다르다.</p>
+<table><thead><tr><th>항목</th><th>GDB</th><th>x64dbg</th><th>WinDbg</th></tr></thead><tbody><tr><td>표기 대소문자</td><td>소문자(<code>$rax</code>, <code>$rip</code>)</td><td>대문자(<code>RAX</code>, <code>RIP</code>)</td><td>소문자(<code>rax</code>, <code>rip</code>)</td></tr><tr><td>참조 접두사</td><td><code>$</code> 필요(<code>$rax</code>)</td><td>접두사 없음</td><td>접두사 없음, <code>@rax</code>(표현식 안에서)</td></tr><tr><td>플래그 레지스터 이름</td><td><code>$eflags</code>(x86)/<code>$eflags</code>(x64에서도 관례상 eflags로 표시)</td><td>Flags 패널(EFLAGS 하위 비트를 개별 표시)</td><td><code>efl</code> 레지스터</td></tr></tbody></table>
+<h3>플래그 대조표(EFLAGS/RFLAGS 공통 비트)</h3>
+<table><thead><tr><th>의미</th><th>비트 이름</th><th>GDB <code>info registers</code> 표시</th><th>x64dbg Flags 패널</th><th>WinDbg <code>r</code> 출력(세트/해제)</th></tr></thead><tbody><tr><td>캐리</td><td>CF</td><td><code>CF</code>(세트일 때만 표시)</td><td><code>CF</code> 체크박스</td><td><code>cy</code> / <code>nc</code></td></tr><tr><td>패리티</td><td>PF</td><td><code>PF</code></td><td><code>PF</code> 체크박스</td><td><code>pe</code> / <code>po</code></td></tr><tr><td>보조 캐리</td><td>AF</td><td><code>AF</code></td><td><code>AF</code> 체크박스</td><td><code>ac</code> / <code>na</code></td></tr><tr><td>제로</td><td>ZF</td><td><code>ZF</code></td><td><code>ZF</code> 체크박스</td><td><code>zr</code> / <code>nz</code></td></tr><tr><td>사인</td><td>SF</td><td><code>SF</code></td><td><code>SF</code> 체크박스</td><td><code>ng</code> / <code>pl</code></td></tr><tr><td>트랩</td><td>TF</td><td><code>TF</code></td><td><code>TF</code> 체크박스</td><td>(기본 <code>r</code> 출력에 보통 생략)</td></tr><tr><td>인터럽트 허용</td><td>IF</td><td><code>IF</code></td><td><code>IF</code> 체크박스</td><td><code>ei</code> / <code>di</code></td></tr><tr><td>방향</td><td>DF</td><td><code>DF</code></td><td><code>DF</code> 체크박스</td><td><code>dn</code> / <code>up</code></td></tr><tr><td>오버플로우</td><td>OF</td><td><code>OF</code></td><td><code>OF</code> 체크박스</td><td><code>ov</code> / <code>nv</code></td></tr></tbody></table>
+<h3>GDB 표시 방식의 특징</h3>
+<p>GDB의 <code>info registers</code>는 <code>eflags</code>를 <code>0x246 [ PF ZF IF ]</code>처럼 <strong>원시 16진수 값 + 현재 세트된 플래그 이름만 나열</strong>하는 방식이다. 세트되지 않은 플래그는 아예 나타나지 않으므로, "CF가 없다 = CF가 0이다"로 해석해야 한다.</p>
+<h3>x64dbg 표시 방식의 특징</h3>
+<p>x64dbg는 Registers 패널에 각 플래그를 별도의 행으로 나열하고 0/1 상태를 체크박스로 보여준다. 체크박스를 직접 더블클릭해서 값을 토글할 수도 있어, 조건 분기 결과를 즉석에서 실험해보고 싶을 때 편리하다.</p>
+<h3>WinDbg 표시 방식의 특징</h3>
+<p>WinDbg의 <code>r</code> 명령은 <code>iopl=0 nv up ei pl zr na po nc</code>처럼, 플래그마다 "세트일 때 약어"와 "해제일 때 약어"가 서로 다른 한 쌍으로 정의되어 있다. 즉 GDB처럼 세트된 것만 골라 보여주는 게 아니라 <strong>모든 플래그를 항상 어떤 상태로든 표시</strong>하며, 어느 약어가 나왔는지로 세트/해제를 구분해야 한다. <code>iopl=N</code>은 플래그가 아니라 I/O 권한 레벨(0~3) 값이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>같은 디버깅 세션 스크린샷이나 라이트업이라도 도구가 다르면 플래그 부분의 문자열이 완전히 다르게 보인다. <code>ZF</code>라는 이름 자체가 아예 안 보이고 <code>zr</code>/<code>nz</code>만 보이면 WinDbg 출력이고, 체크박스 목록이면 x64dbg, 대괄호 안에 세트된 것만 나열되어 있으면 GDB다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>지금 보고 있는 출력이 어느 디버거의 것인지부터 확인한 뒤, 위 대조표에서 같은 줄(같은 의미)을 찾아 비교한다. WinDbg 출력이라면 두 글자 약어 중 어느 쪽이 나왔는지부터 확인한다(예: <code>zr</code>이면 ZF=1, <code>nz</code>면 ZF=0).</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 지금 보는 화면이 어느 도구인지 확인</strong> 프롬프트 모양(<code>(gdb)</code>, x64dbg GUI 패널, <code>0:000&gt;</code> 형태의 WinDbg 프롬프트)으로 구분한다.</p>
+<p><strong>2) 확인하려는 플래그 하나를 정한다</strong> 예: 방금 <code>cmp</code> 이후 분기 예측에 필요한 ZF, SF, OF.</p>
+<p><strong>3) 대조표에서 같은 행을 찾는다</strong> 예: ZF 행 → GDB <code>ZF</code>(세트 시 표시), x64dbg <code>ZF</code> 체크박스, WinDbg <code>zr</code>(세트)/<code>nz</code>(해제).</p>
+<p><strong>4) 실제 값 읽기</strong></p>
+<pre><code class="language-gdb">(gdb) p/x $eflags</code></pre>
+<pre><code class="language-text">x64dbg: Registers 패널의 ZF 체크박스 상태 확인</code></pre>
+<pre><code class="language-text">WinDbg: r 명령 실행 후 출력 문자열에서 zr/nz 검색</code></pre>
+<p><strong>5) 조건부 분기(JE/JNE 등)와 연결해서 해석</strong> ZF=1(GDB <code>ZF</code> 표시, x64dbg 체크됨, WinDbg <code>zr</code>)이면 직전 <code>cmp</code>/<code>test</code>의 두 값이 같았다는 뜻이다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-gdb">info registers eflags     # GDB: 플래그 레지스터 확인
+p/x $eflags                # GDB: 16진수로 확인</code></pre>
+<pre><code class="language-text">Registers 패널            # x64dbg: 플래그 체크박스 확인/토글</code></pre>
+<pre><code class="language-text">r                          # WinDbg: 전체 레지스터+플래그 문자열 출력
+r efl                      # WinDbg: eflags 값만 확인</code></pre>
+<h2>출력 해석</h2>
+<ul><li>GDB: <code>eflags 0x246 [ PF ZF IF ]</code> → 0x246의 세트된 비트 중 이름이 붙은 것만 나열, 나머지(CF/AF/SF/TF/DF/OF)는 전부 0.</li><li>x64dbg: 체크된 플래그 행 = 1, 체크 안 된 행 = 0.</li><li>WinDbg: <code>nv up ei pl zr na po nc</code> → 순서대로 OF=0(<code>nv</code>), DF=0(<code>up</code>), IF=1(<code>ei</code>), SF=0(<code>pl</code>), ZF=1(<code>zr</code>), AF=0(<code>na</code>), PF=0(<code>po</code>), CF=0(<code>nc</code>).</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>WinDbg의 <code>pl</code>(Sign Flag 해제=Plus/양수)을 "PF(패리티)"와 혼동하는 것 — <code>pl</code>은 SF 관련 약어이고 패리티는 <code>pe</code>/<code>po</code>다.</li><li>GDB 출력에서 특정 플래그 이름이 안 보이는 것을 "그 플래그가 없다/지원 안 한다"로 오해하는 것 — 단순히 값이 0이라 생략된 것뿐이다.</li><li>x64dbg 체크박스를 실수로 더블클릭해 플래그 값을 바꿔버리고, 그 상태로 계속 실행해서 분기 결과가 의도와 다르게 나오는 것.</li><li>32비트 문서의 EFLAGS 설명과 64비트 RFLAGS를 완전히 동일하다고 가정하는 것 — 하위 32비트의 플래그 의미는 동일하지만 레지스터 이름과 폭이 다르다는 점은 구분해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>GDB에서 레지스터/플래그를 텍스트로 확인하는 기본 사용법이 궁금하면 → REV-0188 GDB info registers와 flags 확인.</li><li>세 디버거의 다른 명령들도 한 번에 대응해서 보고 싶다면 → REV-0813 디버거별 명령어 대응표(GDB vs x64dbg vs WinDbg).</li><li>x64dbg 표현식에서 플래그/레지스터를 조건식에 쓰는 법이 궁금하면 → REV-0806 x64dbg 표현식(Expression) 문법 빠른 참조.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">상황: cmp eax, ebx 실행 직후 eax == ebx였다.
+
+GDB      : info registers eflags → eflags 0x246 [ PF ZF IF ]  (ZF 표시됨 = 1)
+x64dbg   : Registers 패널에서 ZF 체크박스가 체크된 상태
+WinDbg   : r 실행 결과에 ...zr... 포함(nz가 아니라 zr)
+
+세 출력 모두 "ZF=1, 즉 두 값이 같았다"는 동일한 사실을 다르게 표시하고 있을 뿐이다.</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0813-debugger-command-mapping-table.html">REV-0813 — 디버거별 명령어 대응표(GDB vs x64dbg vs WinDbg)</a></li><li><a href="rev-0188-gdb-info-registers.html">REV-0188 — GDB info registers와 flags 확인</a></li><li><a href="rev-0806-x64dbg-expression-syntax-quickref.html">REV-0806 — x64dbg 표현식(Expression) 문법 빠른 참조</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>GDB <code>info registers</code>의 <code>eflags</code> 출력 형식(세트된 플래그 이름만 대괄호로 나열): GDB 공식 온라인 매뉴얼("Debugging with GDB") "Registers" 챕터 기준.</li><li>x64dbg Registers 패널의 플래그 체크박스 표시/토글 방식: x64dbg 공식 문서 및 GUI 레퍼런스 기준.</li><li>WinDbg <code>r</code> 명령의 플래그 세트/해제 약어 쌍(<code>ov</code>/<code>nv</code>, <code>dn</code>/<code>up</code>, <code>ei</code>/<code>di</code>, <code>ng</code>/<code>pl</code>, <code>zr</code>/<code>nz</code>, <code>ac</code>/<code>na</code>, <code>pe</code>/<code>po</code>, <code>cy</code>/<code>nc</code>)과 <code>iopl</code> 표시: Microsoft 공식 WinDbg 문서("r (Registers)") 기준 (2026-09-09 조사).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

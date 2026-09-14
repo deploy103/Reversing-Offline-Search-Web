@@ -1,0 +1,140 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tail Call이 CALL 대신 JMP로 보이는 이유 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>Tail Call이 CALL 대신 JMP로 보이는 이유</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>함수가 다른 함수(또는 자기 자신)를 호출한 뒤 <strong>그 결과를 그대로 리턴하기만 하고 더 이상 할 일이 없다면</strong>, 컴파일러는 굳이 새 스택 프레임을 쌓는 <code>CALL</code>을 쓰지 않고 현재 스택 프레임을 재사용한 채 <code>JMP</code>로 곧바로 넘어가는 꼬리 호출 최적화(Tail Call Optimization, TCO)를 적용할 수 있으며, 이 때문에 디스어셈블리에서 함수 호출처럼 보이는 지점에 <code>CALL</code>이 아니라 <code>JMP</code>가 나타난다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>함수의 마지막 부분에서 다른 함수(또는 자기 자신)로 넘어가는 코드가 <code>call</code>이 아니라 <code>jmp</code>로 되어 있어서 "이게 함수 호출이 맞나?" 혼란스러울 때</li><li>재귀 함수인데 GDB <code>bt</code>(REV-0355 참고)를 찍어보니 콜스택 깊이가 재귀 횟수만큼 쌓이지 않고 항상 한두 프레임뿐일 때</li><li>IDA/Ghidra가 함수 경계를 이상하게 표시하거나, 한 함수의 끝이 다른 함수의 시작과 이어져 있는 것처럼 보일 때</li><li><code>leave</code>/<code>pop rbp</code> 없이 곧바로 <code>jmp target_func</code>으로 끝나는 함수를 만났을 때</li><li>재귀로 작성된 함수(예: 팩토리얼, 리스트 순회)가 아무리 깊이 재귀해도 스택 오버플로우가 안 나는 이유가 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>일반 CALL과 무엇이 다른가</h3>
+<p>평범한 함수 호출은 (1) <code>CALL</code>로 리턴 주소를 push하고 대상 함수로 점프, (2) 대상 함수가 실행되고 <code>RET</code>으로 리턴 주소를 꺼내 원래 호출자로 복귀, (3) 호출자는 그 반환값을 가지고 <strong>추가 작업</strong>을 한 뒤 자신도 리턴한다. 그런데 다음처럼 호출자가 호출 결과를 받아서 아무 가공도 하지 않고 그대로 리턴만 한다면:</p>
+<pre><code class="language-c">int helper(int x) { return x * 2; }
+
+int caller(int x) {
+    return helper(x);   // helper의 결과를 그대로 리턴 (꼬리 호출)
+}</code></pre>
+<p>이 경우 <code>caller</code>는 <code>helper</code>가 끝난 뒤 자신이 할 일이 전혀 없다 — <code>helper</code>의 리턴값이 곧 <code>caller</code>의 리턴값이다. 이런 호출을 <strong>꼬리 위치(tail position)에 있는 호출</strong>, 줄여서 <strong>꼬리 호출(tail call)</strong>이라 부른다.</p>
+<h3>왜 JMP로 바뀌는가 — 스택 프레임 재사용</h3>
+<p>꼬리 호출에서는 <code>caller</code>의 스택 프레임이 <code>helper</code>가 실행되는 동안 더 이상 필요가 없다. <code>caller</code>가 <code>helper</code>의 리턴을 기다렸다가 다시 뭔가 하는 게 아니라, <code>helper</code>가 끝나면 그 결과가 곧 <code>caller</code>를 호출한 쪽(더 상위 호출자)에게 그대로 돌아가야 하기 때문이다. 그래서 컴파일러는 다음과 같이 최적화한다.</p>
+<ol><li><code>caller</code>의 스택 프레임을 미리 정리(에필로그를 먼저 실행)한다.</li><li><code>helper</code>를 <code>CALL</code>이 아니라 <code>JMP</code>로 호출한다 — 리턴 주소를 새로 push하지 않는다.</li><li>그 결과 <code>helper</code>가 <code>RET</code>을 실행하면, 스택에 남아있던 <strong>원래 <code>caller</code>를 호출한 쪽의 리턴 주소</strong>로 곧바로 복귀한다. <code>caller</code>를 거치지 않고 한 단계를 건너뛰는 셈이다.</li></ol>
+<pre><code class="language-asm">; -O0: 일반 CALL
+caller:
+    push    rbp
+    mov     rbp, rsp
+    mov     edi, [rbp+arg_x]
+    call    helper
+    leave
+    ret
+
+; -O2: 꼬리 호출 최적화(TCO) 적용
+caller:
+    jmp     helper           ; caller의 프레임을 만들지도 않고 곧바로 점프</code></pre>
+<p><code>-O2</code> 버전에서는 <code>caller</code>가 프롤로그조차 없다(할 일이 없으므로 스택 프레임이 필요 없다). <code>jmp helper</code>가 실행되면, <code>helper</code>는 자신이 <code>caller</code>가 아니라 <code>caller</code>를 호출한 쪽(<code>main</code> 등)에서 곧바로 불려온 것처럼 동작한다 — <code>helper</code>가 <code>ret</code>을 실행하면 스택 맨 위에 있는 리턴 주소(원래 <code>caller</code>를 호출했던 곳)로 바로 복귀한다.</p>
+<h3>꼬리 재귀 — 스택이 전혀 쌓이지 않는 재귀</h3>
+<p>꼬리 호출 최적화의 가장 인상적인 효과는 <strong>꼬리 재귀(tail recursion)</strong> 에서 나타난다. REV-0355에서 다룬 일반 재귀는 호출마다 스택 프레임이 계속 쌓이지만, 재귀 호출이 꼬리 위치에 있고 컴파일러가 TCO를 적용하면 재귀가 <strong>JMP로 변환되어 스택이 전혀 늘어나지 않는다.</strong></p>
+<pre><code class="language-c">int sum_tail(int n, int acc) {
+    if (n == 0) return acc;
+    return sum_tail(n - 1, acc + n);   // 꼬리 위치의 재귀 호출
+}</code></pre>
+<pre><code class="language-asm">; -O2: 꼬리 재귀가 루프로 변환됨
+sum_tail:
+    test    edi, edi
+    je      .done
+.loop:
+    add     esi, edi          ; acc += n
+    dec     edi                ; n--
+    jne     .loop              ; n != 0이면 반복 (사실상 재귀가 루프가 됨)
+.done:
+    mov     eax, esi
+    ret</code></pre>
+<p>이 결과는 사실상 <code>call</code>이나 <code>jmp</code>조차 남지 않고, <strong>재귀 자체가 평범한 루프(<code>loop</code>/<code>jne</code>)로 완전히 변환</strong>되어버린 예시다. 이것이 꼬리 재귀 최적화가 가장 강력하게 적용된 형태다. 컴파일러가 이 정도까지 변환하지 못하는 경우(디버그 빌드, 최적화 낮음, 또는 컴파일러가 패턴을 인식하지 못함)에는 <code>jmp self_function</code> 형태로만 남기도 하는데, 이 경우도 스택 프레임이 매번 재사용되므로 재귀 깊이와 무관하게 스택 사용량이 일정하게 유지된다.</p>
+<h3>어떤 조건에서 TCO가 적용되는가</h3>
+<ul><li>호출이 함수의 <strong>가장 마지막 동작</strong>이어야 하고, 그 결과를 그대로(추가 연산 없이) 리턴해야 한다. <code>return helper(x) + 1;</code>처럼 리턴 전에 추가 연산이 있으면 꼬리 위치가 아니므로 TCO가 적용되지 않는다.</li><li>호출자와 호출 대상의 <strong>호출 규약(calling convention)이 호환</strong>되어야 한다. 인자 개수나 전달 방식이 크게 다르면 스택 프레임을 그대로 재사용할 수 없어 TCO가 어려워진다.</li><li>컴파일러/최적화 옵션에 따라 다르다. GCC/Clang은 <code>-O2</code> 이상에서 대체로 적용하고, MSVC는 <code>/O2</code>에서 조건부로 적용하지만 GCC/Clang만큼 적극적이지 않은 경우가 있다. 디버그 빌드(<code>-O0</code>, <code>/Od</code>)에서는 디버깅 편의(정확한 콜스택 유지)를 위해 거의 적용되지 않는다.</li><li>C/C++ 표준은 TCO를 <strong>보장하지 않는다</strong> — 어디까지나 컴파일러의 선택적 최적화이며, 같은 소스라도 컴파일러/버전/옵션에 따라 적용 여부가 달라질 수 있다.</li></ul>
+<h3>다른 함수를 부르는 꼬리 호출 — Sibling Call</h3>
+<p>자기 자신이 아닌 <strong>다른</strong> 함수를 꼬리 위치에서 호출하는 경우를 특별히 "sibling call"이라 부르기도 한다. 위의 <code>caller</code> → <code>helper</code> 예시가 바로 이 경우다. 재귀가 아니어도 TCO는 똑같이 적용될 수 있다는 점이 중요하다 — "꼬리 호출 = 재귀 최적화"로만 좁게 이해하면 안 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>함수 끝부분(리턴 직전)에 <code>call</code>이 아니라 <code>jmp target</code>으로 다른 함수(또는 자기 자신)를 호출</li><li><code>jmp</code> 직전에 <code>leave</code>/<code>pop rbp</code> 같은 에필로그가 이미 실행되어 있거나, 애초에 그 함수에 프롤로그 자체가 없음(스택 프레임을 안 만듦)</li><li>IDA/Ghidra가 두 함수를 하나로 합쳐서 보여주거나, 함수 경계 인식에 실패해 경고를 표시(REV-0154 참고)</li><li>재귀로 짜인 것 같은 함수인데 GDB <code>bt</code>를 아무리 깊이 걸어도 콜스택이 한두 단계만 보임</li><li>재귀 호출이 아예 <code>cmp</code>/<code>jXX</code> 기반 루프로 완전히 바뀌어 있어서 원본이 재귀였다는 흔적조차 안 보임</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>함수 끝부분에서 예상치 못한 <code>jmp target</code>을 만나면, 먼저 그 직전에 스택 정리(에필로그)가 이미 끝났는지 확인한다. 에필로그가 끝난 뒤의 <code>jmp</code>라면 이는 거의 확실히 꼬리 호출 최적화이며, <code>target</code>을 "이 함수가 마지막으로 위임하는 실제 로직"으로 취급하고 그쪽을 계속 분석하면 된다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) jmp 직전 상태 확인</strong></p>
+<p><code>jmp target</code> 직전에 <code>leave</code>, <code>add rsp, N</code>, <code>pop</code> 계열 명령으로 스택 프레임이 이미 정리되어 있는지, 혹은 애초에 이 함수가 프레임을 만들지 않았는지 확인한다. 정리되어 있다면 리턴을 대신하는 점프(꼬리 호출)로 확정할 수 있다.</p>
+<p><strong>2) target이 자기 자신인지 다른 함수인지 구분</strong></p>
+<p><code>target</code>이 현재 함수 자신의 시작 주소면 꼬리 재귀(REV-0355와 연결해서 분석), 다른 함수의 주소면 sibling call이다. 어느 쪽이든 최종적으로 실행되는 로직은 <code>target</code>에 있다.</p>
+<p><strong>3) GDB로 콜스택 깊이 직접 확인</strong></p>
+<p>재귀로 의심되는 함수에 브레이크포인트를 걸고 여러 번 통과시키며 <code>bt</code>로 프레임 개수를 확인한다. 프레임 수가 늘지 않고 일정하다면 TCO가 적용된 것이다(REV-0355의 "정상 재귀는 프레임이 쌓인다"는 것과 대조해서 이해하면 확실하다).</p>
+<p><strong>4) target 함수를 이어서 분석</strong></p>
+<p><code>jmp</code>로 넘어간 <code>target</code> 함수를 열어, 원래 <code>caller</code>가 하려던 일의 실질적인 결과가 여기서 계산된다는 점을 염두에 두고 분석을 계속한다.</p>
+<p><strong>5) 디버거로 리턴 주소 확인해서 검증</strong></p>
+<p><code>target</code> 함수 진입 시점에 스택 맨 위(<code>[rsp]</code>)의 값을 확인하면, 그것이 <code>caller</code>가 아니라 <code>caller</code>를 호출했던 <strong>더 상위 함수의 리턴 주소</strong>라는 것을 직접 확인할 수 있다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">(gdb) break caller
+(gdb) run
+(gdb) x/i $pc              # 현재 명령이 jmp인지 call인지 확인
+(gdb) x/gx $rsp             # 스택 맨 위의 리턴 주소가 누구를 향하는지 확인
+(gdb) bt                    # 재귀 함수의 실제 콜스택 깊이 확인</code></pre>
+<p>IDA: 함수 경계가 이상하면 <code>Edit Function</code>(또는 P로 재분석)으로 함수 범위를 수동 재조정. Ghidra: Listing에서 <code>jmp</code> 타겟이 다른 함수의 시작 주소와 정확히 일치하는지 확인.</p>
+<h2>출력 해석</h2>
+<ul><li><code>jmp</code> 직전에 에필로그가 있었다면 이는 <code>call</code> + <code>ret</code>을 합친 것과 논리적으로 동일한 동작(리턴값이 그대로 전달됨)을 하는 것이지, 단순한 무조건 분기가 아니다.</li><li>재귀 함수의 콜스택이 항상 1~2단계로 고정되어 있다면 TCO가 적용된 것이 거의 확실하다 — 재귀 깊이만큼 스택이 안 쌓이므로 아무리 큰 입력값을 넣어도 스택 오버플로우가 나지 않는다(대신 무한 루프에 빠지면 영원히 끝나지 않는다).</li><li><code>jmp target</code>의 <code>target</code>이 함수 시작 주소가 아니라 함수 중간이라면 이는 꼬리 호출이 아니라 REV-0494(함수 경계 밖 점프)에서 다루는 다른 현상(점프 테이블, 코드 공유 등)일 수 있으니 혼동하지 않는다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>함수 끝의 <code>jmp</code>를 보고 "이건 함수 호출이 아니라 그냥 분기다"라고 오해해서 실제로는 함수를 호출하고 있다는 사실을 놓치는 것 — 리턴 주소를 스택에 새로 안 쌓을 뿐, 실질적으로는 여전히 다른 코드로 제어를 넘기고 그 결과를 그대로 전달하는 호출이다.</li><li>꼬리 호출 최적화가 항상 적용된다고 가정하는 것 — 디버그 빌드나 낮은 최적화 레벨에서는 논리적으로 꼬리 위치에 있는 호출도 그냥 평범한 <code>call</code> + <code>ret</code>으로 남는 경우가 많다.</li><li>재귀 함수가 스택 오버플로우를 안 일으켰다고 해서 "무한 재귀가 아니다"라고 안심하는 것 — TCO가 적용된 무한 재귀는 스택 오버플로우 대신 무한 루프(CPU 100% 점유, 응답 없음)로 나타난다.</li><li>꼬리 호출을 항상 재귀와 연관짓는 것 — 서로 다른 함수 사이의 sibling call에도 똑같이 적용되는 일반적인 최적화다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>재귀 함수의 일반적인 스택 누적 방식이 헷갈리면 → REV-0355 재귀 함수가 스택에서 어떻게 쌓이는지</li><li><code>JMP</code>와 <code>CALL</code> 각각의 정확한 스택/레지스터 동작이 궁금하면 → REV-0071 CALL: 함수 호출, 반환 주소, 인자 추적 / REV-0066 JMP: 무조건 분기</li><li><code>jmp</code> 타겟이 함수 경계 밖이거나 이상한 위치를 가리켜서 헷갈리면 → REV-0494 어셈블리 점프 목표 주소가 함수 바깥을 가리킬 때</li><li>IDA가 함수 경계를 잘못 잡는 문제 자체가 궁금하면 → REV-0154 IDA에서 함수 경계가 잘못 잡혔을 때</li><li>Debug/Release 빌드에 따라 이 최적화 적용 여부가 다른 이유가 궁금하면 → REV-0361 Debug 빌드와 Release 빌드의 어셈블리 차이</li></ul>
+<h2>미니 예제</h2>
+<p>연결 리스트를 꼬리 재귀로 순회하며 길이를 세는 함수를 보자.</p>
+<pre><code class="language-c">typedef struct Node { struct Node *next; } Node;
+
+int length_helper(Node *n, int acc) {
+    if (n == NULL) return acc;
+    return length_helper(n-&gt;next, acc + 1);   // 꼬리 위치의 재귀
+}</code></pre>
+<p><code>-O0</code> 빌드는 일반 재귀와 동일하게 <code>call</code>로 컴파일되어 호출마다 스택 프레임이 쌓인다(REV-0355 패턴 그대로). <code>-O2</code> 빌드는 다음처럼 완전히 루프로 바뀐다.</p>
+<pre><code class="language-asm">length_helper:
+    mov     eax, esi          ; acc를 반환값 레지스터로
+.loop:
+    test    rdi, rdi
+    je      .done
+    mov     rdi, [rdi]         ; n = n-&gt;next
+    inc     eax                 ; acc++
+    jmp     .loop
+.done:
+    ret</code></pre>
+<p><code>call</code>도 <code>jmp target_func</code> 형태의 함수 간 점프도 전혀 남지 않고, 재귀 자체가 통째로 <code>cmp</code>(<code>test</code>)+<code>jmp</code> 루프로 흡수된 것을 볼 수 있다. 만약 컴파일러가 이렇게까지 완전히 변환하지 못하는 더 복잡한 경우라면, 최소한 <code>jmp length_helper</code>(자기 자신) 형태로라도 남아 스택 프레임 재사용은 여전히 보장된다. 어느 쪽이든 결과는 같다 — 원본 소스의 재귀 호출 횟수와 무관하게 스택 사용량이 일정하다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0355-recursive-function-stack.html">REV-0355 — 재귀 함수가 스택에서 어떻게 쌓이는지</a></li><li><a href="rev-0357-function-inlining-code-flow.html">REV-0357 — 함수 인라인이 코드 흐름에 미치는 영향</a></li><li><a href="rev-0361-debug-vs-release-build-differences.html">REV-0361 — Debug 빌드와 Release 빌드의 어셈블리 차이</a></li><li><a href="rev-0037-optimization-weirdness.html">REV-0037 — 컴파일러 최적화가 디컴파일 결과를 이상하게 만드는 이유</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>꼬리 호출 최적화(Tail Call Optimization)와 스택 프레임 재사용 원리: GCC 공식 문서의 <code>-foptimize-sibling-calls</code> 설명 및 LLVM 공식 문서의 tail call 최적화 패스 설명 기준.</li><li>C/C++ 표준이 TCO를 보장하지 않는다는 점: ISO C/C++ 표준의 as-if rule 및 각 컴파일러 벤더 문서의 "구현 정의(implementation-defined) 최적화" 설명 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

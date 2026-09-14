@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>리버싱과 Crypto가 섞인 문제 구분하는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>리버싱과 Crypto가 섞인 문제 구분하는 법</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>리버싱 문제 안에서 256바이트짜리 상수 테이블, <code>0x9E3779B9</code> 같은 특정 매직 넘버, <code>openssl</code>/<code>gmp</code>/<code>mbedtls</code> 계열 함수 임포트, 또는 매우 큰 정수 연산이 보인다면 이는 커스텀 로직이 아니라 이미 알려진 암호/해시 알고리즘을 그대로 가져다 쓴 것이므로, 어셈블리를 한 줄씩 해석하는 대신 알고리즘 이름부터 특정해 알려진 구현과 역연산 방법을 찾는 것이 훨씬 빠르다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디컴파일 코드에 256개 원소짜리 배열이 있고 각 값이 규칙성 없이 흩어져 있어 손으로 분석하기 막막할 때</li><li>반복문 안에 시프트/XOR/덧셈이 여러 번 섞여 있는데 이게 커스텀 로직인지 알려진 알고리즘인지 판단이 안 될 때</li><li>Import 목록에 <code>openssl</code>, <code>libcrypto</code>, <code>libgmp</code>, <code>mbedtls</code> 계열 함수 이름이 보일 때</li><li>값 비교가 <code>strcmp</code>가 아니라 <code>mpz_cmp</code>, <code>BN_cmp</code> 같은 큰 정수 비교 함수로 되어 있을 때</li><li>REV-0221(역연산 가능한 알고리즘 판단법)을 적용했는데 도무지 역연산이 안 되어서 "이거 해시 아닌가"라는 의심이 들 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 구분이 중요한가</h3>
+<p>순수 리버싱 로직(XOR, 덧셈/뺄셈, 비트 회전 등)은 어셈블리를 그대로 읽고 손으로 역연산 공식을 세울 수 있다. 반면 표준 암호/해시 알고리즘(AES, RSA, SHA, CRC, TEA 등)은 코드가 훨씬 길고 복잡해 보이지만, 사실은 "이미 이름이 있는 알고리즘"이라는 것만 알아내면 손으로 분석할 필요 없이 Python <code>hashlib</code>, <code>pycryptodome</code>, 공개된 레퍼런스 구현을 그대로 가져다 쓰면 된다. 반대로 표준 알고리즘인 줄 모르고 어셈블리를 한 줄씩 손으로 해석하려 들면 몇 시간을 낭비할 수 있다.</p>
+<h3>표준 알고리즘임을 알아내는 방법</h3>
+<ol><li><strong>매직 넘버 검색</strong>: <code>0x9E3779B9</code>(TEA/XTEA 델타), <code>0x67452301</code>(MD5/SHA1 초기값), <code>0xEDB88320</code>(CRC-32 다항식), <code>0x811C9DC5</code>/<code>0x01000193</code>(FNV) 같은 고정 상수가 코드에 그대로 나오면 REV-0165(상수 검색)로 걸러낸다.</li><li><strong>테이블 크기와 모양</strong>: 256바이트 비선형 치환 테이블은 AES S-box 또는 유사 블록 암호의 전형적 형태다(REV-0211). CRC는 보통 256개짜리 미리 계산된 테이블을 갖는다(REV-0209).</li><li><strong>임포트/함수 이름</strong>: <code>openssl</code>, <code>libcrypto</code>, <code>libgmp</code>, <code>libsodium</code>, <code>mbedtls</code> 같은 라이브러리가 링크되어 있으면 이미 이름이 붙은 암호 API를 그대로 호출하는 것이므로 알고리즘 자체를 추측할 필요조차 없다.</li><li><strong>연산 규모</strong>: 32비트/64비트 레지스터 몇 개로 끝나는 게 아니라 임의 정밀도(big integer) 배열 연산이 나오면 RSA/ECC 계열을 의심한다.</li></ol>
+<h3>표준 vs 커스텀에 따라 전략이 갈린다</h3>
+<ul><li><strong>표준 알고리즘으로 확인됨</strong> → 정확한 파라미터(키, IV, 모드, 라운드 수)만 뽑아내고 Python 표준 라이브러리로 재구현해서 검증한다. 역연산을 손으로 유도하려 하지 않는다.</li><li><strong>표준 알고리즘의 변형(라운드 수 축소, S-box 변경 등)</strong> → 원본 알고리즘 구조는 그대로 이해하되, 변경된 부분만 실제 코드에서 뽑아내 대체한다.</li><li><strong>완전히 커스텀</strong> → REV-0221(역연산 가능 판단), REV-0219(브루트포스 가능성 계산)로 넘어가 기존 리버싱 절차를 그대로 적용한다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>디컴파일 코드에 <code>unsigned char sbox[256] = {0x63, 0x7C, 0x77, 0x7B, ...}</code> 같은 큰 배열 리터럴</li><li>함수 이름이나 임포트에 <code>MD5_Update</code>, <code>SHA256_Init</code>, <code>AES_encrypt</code>, <code>RSA_public_encrypt</code> 등이 그대로 보임(strip 안 된 경우)</li><li>반복문 카운터가 정확히 10, 12, 14 또는 16, 64 같은 익숙한 라운드 수로 고정됨</li><li>32비트 변수 4~8개를 묶어서 처리하는 패턴(MD5/SHA1의 상태 레지스터 A,B,C,D 패턴)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>디컴파일 코드에서 큰 상수(특히 8자리 이상 16진수)와 256바이트 배열을 REV-0165 방식으로 뽑아내 검색부터 한다. 동시에 Import 목록에 암호 라이브러리 함수가 있는지 확인한다. 둘 중 하나라도 걸리면 어셈블리를 더 읽기 전에 먼저 알고리즘 이름을 검색해서 표준 구현이 있는지 확인한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>Import 목록에서 <code>openssl</code>/<code>libcrypto</code>/<code>libgmp</code>/<code>mbedtls</code> 계열 함수 존재 확인</li><li>디컴파일 코드에서 8자리 이상 16진수 상수와 큰 배열 리터럴을 REV-0165 방식으로 뽑아 기록</li><li>뽑은 상수를 알려진 알고리즘 매직 넘버 목록(TEA, MD5, SHA, CRC, FNV)과 대조 (REV-0207, REV-0209, REV-0210)</li><li>256바이트 치환 테이블이 있으면 AES S-box와 대조 (REV-0211)</li><li>표준 알고리즘으로 확인되면 파라미터(키/IV/라운드 수/모드)만 코드에서 추출</li><li>Python으로 동일 알고리즘을 표준 라이브러리(<code>hashlib</code>, <code>pycryptodome</code>, <code>gmpy2</code>)로 재구현하고 추출한 파라미터를 그대로 넣어 결과를 원본과 대조</li><li>알고리즘을 특정하지 못했다면 REV-0221로 역연산 가능 여부를 판단하고 커스텀 로직으로 취급해 계속 분석</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash"># 임포트에서 암호 라이브러리 흔적 찾기
+nm ./chall | grep -iE 'ssl|crypto|gmp|mbedtls|sha|md5|aes|rsa'
+strings ./chall | grep -iE 'openssl|libcrypto|libgmp'</code></pre>
+<pre><code class="language-python"># Python으로 알려진 알고리즘 빠르게 검증
+import hashlib
+print(hashlib.sha256(b"test").hexdigest())</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>nm</code>/<code>strings</code>에서 암호 라이브러리 이름이 나오면 그 알고리즘은 100% 표준 구현이므로 커스텀 로직을 의심할 필요가 없다.</li><li>상수가 매직 넘버 목록과 정확히 일치하면 해당 알고리즘의 공개 스펙(라운드 함수, 초기값)을 그대로 신뢰하고 재구현하면 된다 — 어셈블리 한 줄씩 검증할 필요 없음.</li><li>상수가 매직 넘버와 비슷하지만 몇 바이트가 다르면 "표준 알고리즘의 변형"이므로 원본 스펙에서 그 부분만 코드값으로 치환한 재구현이 필요하다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>AES/SHA 같은 표준 알고리즘의 라운드 함수를 어셈블리로 한 줄씩 따라가며 손으로 재현하려는 것 — 알고리즘 이름만 확인되면 표준 라이브러리로 바로 재구현하는 게 압도적으로 빠르다.</li><li>매직 넘버 하나만 보고 성급하게 알고리즘을 단정한 뒤 파라미터 검증 없이 바로 솔버를 작성하는 것 — 반드시 원본과 결과를 대조 검증한다.</li><li>RSA 같은 공개키 암호를 XOR류 커스텀 로직으로 착각하고 역연산을 시도하는 것 — 큰 정수 연산과 모듈러 지수승이 보이면 공개키 암호를 의심한다.</li><li>커스텀 로직인데도 "뭔가 복잡해 보인다"는 이유만으로 표준 알고리즘이라 단정하고 존재하지 않는 라이브러리를 찾아 헤매는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>상수 검색 방법 자체가 기억 안 난다 → REV-0165 상수 검색으로 알고리즘 찾기</li><li>역연산 가능 여부 판단이 안 선다 → REV-0221 역연산 가능한 알고리즘 판단법</li><li>역연산이 안 되면 브루트포스 가능성부터 계산 → REV-0219 Brute Force가 가능한 입력 공간 계산</li><li>pwn 요소까지 섞여서 더 헷갈린다 → REV-0319 리버싱과 Pwnable이 섞인 문제 구분하는 법</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">unsigned int v[4] = { input0, input1, input2, input3 };
+unsigned int sum = 0;
+for (int i = 0; i &lt; 32; i++) {
+    sum += 0x9E3779B9;
+    v[0] += ((v[1] &lt;&lt; 4) + key[0]) ^ (v[1] + sum) ^ ((v[1] &gt;&gt; 5) + key[1]);
+    v[1] += ((v[0] &lt;&lt; 4) + key[2]) ^ (v[0] + sum) ^ ((v[0] &gt;&gt; 5) + key[3]);
+}</code></pre>
+<p><code>0x9E3779B9</code>가 32번 누적되고 <code>v[0]</code>, <code>v[1]</code> 두 변수가 시프트/XOR/덧셈으로 서로를 갱신하는 이 패턴은 커스텀 로직이 아니라 TEA(Tiny Encryption Algorithm)의 표준 라운드 함수 그대로다. REV-0210에서 다루는 상수·구조와 일치하므로, 이 코드를 손으로 분석하는 대신 TEA의 공개된 복호화 알고리즘을 Python으로 그대로 가져와 키만 바꿔 끼우면 된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0165-constant-search.html">REV-0165 — 상수 검색으로 알고리즘 찾기</a></li><li><a href="rev-0207-fnv1-fnv1a.html">REV-0207 — FNV-1과 FNV-1a 해시 패턴</a></li><li><a href="rev-0209-crc-fingerprints.html">REV-0209 — CRC 계열 알고리즘 흔적 찾기</a></li><li><a href="rev-0210-tea-xtea.html">REV-0210 — TEA와 XTEA 상수 패턴</a></li><li><a href="rev-0211-aes-fingerprints.html">REV-0211 — AES 테이블 또는 AES API 흔적 찾기</a></li><li><a href="rev-0221-is-it-invertible.html">REV-0221 — 역연산 가능한 알고리즘 판단법</a></li><li><a href="rev-0319-reversing-vs-pwnable.html">REV-0319 — 리버싱과 Pwnable이 섞인 문제 구분하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>TEA/XTEA 델타 상수 <code>0x9E3779B9</code>, AES S-box, CRC-32 다항식 <code>0xEDB88320</code>, MD5/SHA1 초기 상태값은 각 알고리즘의 공개 스펙 문서에서 반복 확인되는 값이며 본 위키 REV-0207~0211 시리즈와 동일 출처를 따른다.</li><li>Python <code>hashlib</code>, <code>pycryptodome</code>을 이용한 표준 알고리즘 재구현 방식: 각 라이브러리 공식 문서 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

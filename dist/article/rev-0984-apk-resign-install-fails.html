@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>APK 재서명 후 설치가 실패할 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dotnet-android</div>
+<article class="article-body">
+<h1>APK 재서명 후 설치가 실패할 때</h1>
+<div class="article-meta"><span class="tag">dotnet-android</span><span class="tag">기초</span><span class="tag">android</span><span class="tag">APK</span><span class="tag">apktool</span></div>
+<h2>한 줄 요약</h2>
+<p>apktool로 수정하고 재조립한 APK가 설치되지 않는다면, 재조립된 APK에 아예 서명이 없거나(<code>INSTALL_PARSE_FAILED_NO_CERTIFICATES</code>), 기존에 설치된 앱과 서명이 달라서 업데이트 설치가 거부되거나(<code>INSTALL_FAILED_UPDATE_INCOMPATIBLE</code>), APK 정렬(zipalign) 문제 중 하나가 원인이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>adb install rebuilt.apk</code>를 실행했더니 <code>INSTALL_PARSE_FAILED_NO_CERTIFICATES</code>가 뜰 때</li><li><code>INSTALL_FAILED_UPDATE_INCOMPATIBLE</code> 또는 서명 관련 문구가 뜰 때</li><li>재조립한 APK가 설치는 되는데 실행 시 이상 동작을 할 때</li><li>원본 앱이 이미 기기에 설치돼 있는 상태에서 수정판을 새로 설치하려 할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>안드로이드는 모든 APK가 디지털 서명되어 있어야만 설치를 허용한다. apktool의 <code>apktool b</code>(build)는 리소스와 코드를 다시 패키징만 할 뿐, 서명은 별도로 해줘야 하는 작업이다. 서명 없이 그냥 설치하려 하면 시스템이 인증서 자체가 없다는 이유로 설치를 거부한다.</p>
+<p>또한 안드로이드는 같은 패키지명(<code>applicationId</code>)을 가진 앱을 업데이트 설치할 때, 새 APK의 서명이 기존에 설치된 앱의 서명과 일치해야만 허용한다. apktool로 코드를 수정한 APK를 디버그 키로 새로 서명하면, 이 서명이 원본 앱(원래 개발사의 서명 키)과 다르기 때문에 기존 앱이 설치되어 있는 상태에서는 "업데이트 불가"로 거부된다. 이때는 먼저 기존 앱을 완전히 제거해야 한다.</p>
+<p>마지막으로 일부 안드로이드 버전/설정은 APK 내부 파일들이 4바이트 경계에 정렬(zipalign)되어 있어야 최적의 상태로 설치/실행되며, 정렬되지 않은 APK는 경고나 설치 실패로 이어질 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>adb install</code>이 <code>Failure [INSTALL_PARSE_FAILED_NO_CERTIFICATES]</code>를 출력한다.</li><li><code>adb install -r</code>이 <code>Failure [INSTALL_FAILED_UPDATE_INCOMPATIBLE: ... signatures do not match]</code>를 출력한다.</li><li><code>apksigner verify</code>가 서명 검증 실패를 보고한다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>apksigner sign</code> 명령을 실행했는지, 그 결과물을 설치하려는 것인지부터 확인한다. 재조립 직후(<code>apktool b</code>) 파일을 서명 없이 바로 설치하려 한 것이 가장 흔한 원인이다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>apktool b out -o rebuilt.apk</code>로 재조립된 파일이 있는지 확인한다.</li><li>디버그 키스토어(없다면 <code>keytool</code>로 새로 생성)를 이용해 <code>apksigner sign --ks debug.keystore rebuilt.apk</code>로 서명한다.</li><li><code>apksigner verify rebuilt.apk</code>로 서명이 정상 적용됐는지 확인한다.</li><li>기존에 같은 패키지명의 앱이 설치돼 있다면 <code>adb uninstall &lt;패키지명&gt;</code>으로 완전히 제거한다.</li><li><code>adb install rebuilt.apk</code>(재설치가 아니라 새로 설치)로 설치한다.</li><li>여전히 실패하면 <code>zipalign</code>을 먼저 적용한 뒤 서명하는 순서(정렬 → 서명, apksigner v2/v3 서명 방식 기준)를 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">apktool b out -o rebuilt.apk                                   # 재조립
+zipalign -v -p 4 rebuilt.apk aligned.apk                        # 정렬(서명 전, 도구/버전에 따라 순서 상이할 수 있음)
+apksigner sign --ks debug.keystore --ks-pass pass:android aligned.apk
+apksigner verify aligned.apk                                    # 서명 검증
+adb uninstall com.example.app                                    # 기존 앱 제거(서명 불일치 대비)
+adb install aligned.apk                                           # 새로 설치</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>INSTALL_PARSE_FAILED_NO_CERTIFICATES</code>는 인증서(서명) 자체가 없다는 뜻 — 서명 단계를 빠뜨렸다는 신호다.</li><li><code>INSTALL_FAILED_UPDATE_INCOMPATIBLE ... signatures do not match</code>는 기존 설치본과 서명이 다르다는 뜻 — 기존 앱을 지우고 새로 설치해야 한다.</li><li><code>apksigner verify</code> 성공 메시지가 뜨면 서명 자체는 유효하다는 뜻이므로, 설치 실패의 원인은 서명 불일치(기존 앱 존재) 쪽으로 좁혀진다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>apktool b</code> 직후 서명 없이 바로 설치를 시도하는 것.</li><li>기존 원본 앱을 지우지 않고 <code>adb install -r</code>(업데이트 설치)로 덮어쓰려는 것 — 서명이 다르면 반드시 실패한다.</li><li>서명은 했는데 정렬(zipalign) 순서를 헷갈려서 서명이 깨지는 것 — apksigner 서명 방식에 따라 정렬을 서명 전에 해야 하는지 확인해야 한다.</li><li>디버그 키스토어의 비밀번호(<code>android</code>가 기본값인 경우가 많음)를 잘못 입력해 서명 자체가 실패하는 것을 설치 문제로 착각하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>애초에 재조립 자체가 실패한다면 → REV-0981 smali 코드를 수정 후 재빌드가 실패할 때</li><li>adb 설치 명령 자체가 헷갈리면 → REV-0255 adb 기본 명령 치트시트</li><li>기기 연결이 안 되는 상태라면 → REV-0982 adb 기기 연결이 안 될 때(device not found)</li></ul>
+<h2>미니 예제</h2>
+<p><code>apktool b out -o rebuilt.apk</code>로 수정된 APK를 만든 뒤 곧바로 <code>adb install rebuilt.apk</code>를 실행했더니 <code>Failure [INSTALL_PARSE_FAILED_NO_CERTIFICATES]</code>가 떴다. <code>apksigner sign --ks debug.keystore --ks-pass pass:android rebuilt.apk</code>로 서명한 뒤 다시 설치하니, 이번에는 원본 앱이 이미 설치돼 있어 <code>INSTALL_FAILED_UPDATE_INCOMPATIBLE</code>이 떴다. <code>adb uninstall com.example.ctf</code>로 기존 앱을 지운 뒤 <code>adb install rebuilt.apk</code>를 실행하니 정상적으로 설치되었다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0981-smali-rebuild-fails.html">REV-0981 — smali 코드를 수정 후 재빌드가 실패할 때</a></li><li><a href="rev-0251-apktool-basics.html">REV-0251 — apktool 기본 사용법</a></li><li><a href="rev-0255-adb-cheatsheet.html">REV-0255 — adb 기본 명령 치트시트</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>APK 서명 요구사항 및 <code>INSTALL_PARSE_FAILED_NO_CERTIFICATES</code>/<code>INSTALL_FAILED_UPDATE_INCOMPATIBLE</code> 오류 코드: Android 공식 개발자 문서("Sign your app", <code>PackageManager</code> 설치 실패 코드) 기준으로 정리했다(2026-09-09 확인).</li><li><code>apksigner</code>/<code>zipalign</code> 사용 절차: Android 공식 빌드 도구 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

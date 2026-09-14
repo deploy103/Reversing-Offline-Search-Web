@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghidra/IDA에서 ARM 바이너리 아키텍처 설정하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / other-targets</div>
+<article class="article-body">
+<h1>Ghidra/IDA에서 ARM 바이너리 아키텍처 설정하기</h1>
+<div class="article-meta"><span class="tag">other-targets</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">android</span><span class="tag">ELF</span><span class="tag">Ghidra</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>ELF 헤더가 있는 정상적인 ARM 실행파일/공유 라이브러리는 대부분 Ghidra/IDA가 아키텍처를 자동으로 인식하지만, raw 펌웨어 덤프이거나 자동 인식이 틀렸을 때는 Ghidra는 Import 대화상자의 Language 드롭다운에서, IDA는 Load new file 대화상자의 Processor type에서 ARM 버전(v4t/v5t/v7/v8)과 엔디안, 그리고 필요하면 Thumb 여부까지 직접 지정해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Ghidra/IDA로 ARM 바이너리를 열었는데 함수가 거의 안 잡히거나 디스어셈블리가 전부 <code>??</code>/<code>invalid instruction</code>으로 나올 때</li><li>펌웨어에서 뽑아낸 raw 바이너리(ELF 헤더가 없는 순수 바이너리 덤프)를 분석해야 할 때</li><li>REV-1102에서 다룬 ARM/Thumb 모드 오판이 의심되어 특정 구간만 다시 디스어셈블해야 할 때</li><li>32비트 ARM인지 64비트 ARM64인지조차 확신이 안 설 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>자동 인식이 되는 경우와 안 되는 경우</h3>
+<p><code>.elf</code>나 안드로이드의 <code>.so</code>처럼 표준 ELF 헤더(<code>e_machine</code> 필드에 <code>EM_ARM</code> 또는 <code>EM_AARCH64</code> 값 포함)를 가진 파일은 Ghidra의 Importer와 IDA 모두 헤더를 읽어 아키텍처를 자동으로 맞춘다. 반면 헤더가 없는 raw 펌웨어 덤프(<code>.bin</code>)는 두 도구 모두 파일 포맷을 스스로 판단할 근거가 없으므로 사용자가 수동으로 CPU 종류, 엔디안, 시작 주소(base address)를 지정해야 한다.</p>
+<h3>Ghidra — Import 시 Language 선택</h3>
+<p>Ghidra는 파일을 열 때(Import) 나오는 대화상자에서 "Format"(예: Raw Binary, Executable and Linking Format)과 "Language" 두 항목을 지정한다. Language를 클릭하면 프로세서/버전/엔디안/컴파일러 조합 목록이 뜨는데, ARM 계열은 버전별로 세분화되어 있다.</p>
+<ul><li><code>ARM:LE:32:v4t</code> — ARMv4T(예: 오래된 임베디드 기기, Game Boy Advance 등), little endian</li><li><code>ARM:LE:32:v5t</code> — ARMv5T, little endian</li><li><code>ARM:LE:32:v7</code> — ARMv7 계열, little endian(가장 흔한 32비트 안드로이드 네이티브 라이브러리)</li><li><code>ARM:LE:64:v8A</code> — ARM64(AArch64) v8, little endian(64비트 안드로이드 네이티브 라이브러리, 최신 임베디드)</li><li>Cortex-M 계열 마이크로컨트롤러는 Thumb 전용이므로 Thumb 관련 옵션만 선택 가능한 경우가 많다.</li></ul>
+<p>어떤 버전인지 정확히 모르겠으면, 유력한 후보 몇 개로 각각 열어보고 Ghidra의 자동 분석(Auto Analysis) 후 함수가 더 많이 잡히고 디코딩 오류(빨간 글씨의 <code>??</code>)가 더 적은 쪽을 선택하는 것이 실전적인 방법이다. 한 번 특정 언어로 임포트한 뒤 다른 언어로 바꾸려 하면 "Language translation not supported" 오류가 나서 실패할 수 있으므로, 처음 임포트할 때 신중하게 고르거나 잘못되면 새로 임포트하는 것이 안전하다.</p>
+<h3>Ghidra — 특정 구간만 Thumb으로 재해석</h3>
+<p>자동 분석 중 일부 함수가 ARM/Thumb 모드를 잘못 판단해 깨진 디스어셈블리가 나오는 경우, Ghidra의 Listing 창에서 해당 주소를 우클릭하면 "Disassemble"과 "Disassemble (Thumb mode)" 같은 컨텍스트 메뉴 항목으로 강제로 다시 디스어셈블할 수 있다. 이는 REV-1102에서 설명한 "심볼 주소 LSB로 Thumb 여부 판단" 지식과 함께 쓰면 효과적이다.</p>
+<h3>IDA — Load new file 대화상자의 Processor type</h3>
+<p>IDA에서 File → Open으로 파일을 열면 "Load a new file" 대화상자가 뜨는데, 여기에 인식된 파일 포맷 목록과 함께 "Processor type" 드롭다운이 있다. ELF 헤더가 있으면 IDA가 자동으로 ARM Little-endian/ARM Big-endian 등을 선택해주지만, raw 바이너리를 강제로 "Binary File" 포맷으로 로드할 때는 이 드롭다운에서 사용자가 직접 ARM 계열을 선택해야 하고, 이때 "MANUAL LOAD" 옵션을 함께 켜면 세그먼트 시작 주소 등도 직접 지정할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Ghidra Listing 창에 빨간색 <code>??</code> 또는 <code>Bad Instruction</code>이 반복해서 나타남</li><li>Ghidra Functions 창에 함수가 거의 안 잡힘(자동 분석이 코드 경계를 못 찾음)</li><li>IDA에서 열자마자 Processor type이 <code>metapc</code>(x86)로 잘못 잡혀 있음(raw 바이너리를 잘못된 기본값으로 연 경우)</li><li>디스어셈블리 중간에 갑자기 명령어가 깨지기 시작하는 지점이 있음(ARM/Thumb 경계 오판)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>파일에 ELF 헤더가 있는지(<code>file ./chall.so</code> 결과에 <code>ELF 32-bit</code>/<code>ELF 64-bit</code>, <code>ARM</code>/<code>ARM aarch64</code> 등이 나오는지) 먼저 확인한다. 있다면 자동 인식을 믿고 열되 결과가 이상하면 버전(v7 vs v8, LE vs BE)만 다시 확인한다. 없다면(raw 덤프) 처음부터 Language/Processor type을 수동으로 골라야 한다는 것을 인지하고 시작한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>file ./target</code>으로 ELF 여부와 32/64비트, 아키텍처 문자열 확인</li><li>ELF가 있으면: Ghidra는 Import 시 Format을 "Executable and Linking Format (ELF)"로 두고 자동 인식된 Language를 그대로 신뢰, IDA도 자동 인식 결과를 우선 신뢰</li><li>ELF가 없으면(raw 펌웨어): Ghidra Import에서 Format을 "Raw Binary"로 바꾸고 Language에서 ARM 버전 후보를 하나씩 선택해 Auto Analysis 결과(함수 개수, Bad Instruction 개수)를 비교</li><li>IDA에서 raw 바이너리를 열 때는 "Binary File" 포맷 선택 후 Processor type에서 ARM 계열을 직접 지정, 필요하면 MANUAL LOAD로 로드 주소 지정</li><li>일부 구간만 디스어셈블리가 깨지면 REV-1102를 참고해 해당 함수 심볼 주소의 LSB를 확인하고, Ghidra는 우클릭 "Disassemble (Thumb mode)", IDA는 해당 위치에서 Alt+G(세그먼트 레지스터 값 변경, <code>T</code> 레지스터를 0/1로 설정)로 강제 재해석</li><li>32비트/64비트조차 불확실하면 <code>file</code> 결과의 <code>ELF 32-bit</code>/<code>ELF 64-bit</code> 표기 또는 레지스터 이름 패턴(디스어셈블리에 <code>X0</code>~<code>X30</code>이 보이면 확실히 ARM64)으로 최종 확인</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash"># 아키텍처/엔디안/32-64비트 빠르게 확인
+file ./target
+readelf -h ./target | grep -E "Class|Data|Machine"</code></pre>
+<p>Ghidra: File → Import File → Language 필드 클릭 → 필터 창에 <code>ARM</code> 입력 후 버전/엔디안 선택. Ghidra 특정 구간 재해석: Listing 창에서 우클릭 → Disassemble / Disassemble (Thumb mode). IDA: File → Open → Load new file 대화상자의 Processor type 드롭다운. IDA 특정 구간 재해석: 해당 주소에서 Edit → Segments → Change segment register value(단축키 <code>Alt+G</code>)로 <code>T</code> 레지스터를 0(ARM)/1(Thumb)로 설정.</p>
+<h2>출력 해석</h2>
+<p><code>readelf -h</code>의 <code>Machine:</code> 필드가 <code>ARM</code>이면 32비트 ARM, <code>AArch64</code>면 64비트 ARM64다. <code>Data:</code> 필드가 <code>2's complement, little endian</code>인지 <code>big endian</code>인지도 함께 확인해야 Ghidra/IDA에서 올바른 엔디안 옵션을 고를 수 있다(대부분의 안드로이드/임베디드 ARM은 little endian이지만 일부 네트워크 장비 펌웨어는 big endian인 경우도 있다).</p>
+<h2>흔한 실수</h2>
+<ul><li>ELF 헤더가 있는 파일인데도 자동 인식 결과를 무시하고 임의로 다른 버전을 선택해 오히려 분석을 망치는 것.</li><li>한 번 잘못된 Language/Processor type으로 임포트한 뒤 도구 내에서 언어만 바꾸려다 실패를 반복하는 것 — 처음부터 다시 Import/Open 하는 것이 더 빠르다.</li><li>Thumb 전용(Cortex-M) 펌웨어를 일반 ARM(32비트 명령어 지원) 언어로 열어 명령어가 전부 깨지는 것.</li><li>v7과 v8(64비트) 두 후보를 헷갈려서 완전히 다른 명령어 집합으로 여는 것 — 파일이 32비트 ELF인지 64비트 ELF인지부터 확인하면 방지 가능하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>ARM/Thumb 모드 개념 자체가 헷갈리면 → REV-1102 ARM Thumb 모드가 무엇이고 왜 헷갈리는지</li><li>레지스터 이름으로 32/64비트를 구분하는 법이 필요하면 → REV-1101 ARM/ARM64 레지스터와 호출 규약 기초</li><li>Ghidra/IDA 설치 자체가 안 되어 있다면 → REV-0277 Ghidra 설치와 오프라인 준비, REV-0274 IDA 설치와 오프라인 준비</li><li>ARM 바이너리를 실제로 실행해서 동적으로 검증하고 싶다면 → REV-1105 QEMU user-mode로 다른 아키텍처 바이너리 실행하기(qemu-arm/qemu-mips)</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ file libnative.so
+libnative.so: ELF 32-bit LSB shared object, ARM, EABI5 version 1 (SYSV), ...
+
+$ readelf -h libnative.so | grep -E "Class|Data|Machine"
+  Class:                             ELF32
+  Data:                              2's complement, little endian
+  Machine:                           ARM</code></pre>
+<p>이 결과라면 Ghidra Import에서 Language를 <code>ARM:LE:32:v7</code>(EABI5는 대체로 ARMv7 이상 툴체인에서 쓰임) 계열로, IDA에서는 Processor type을 ARM Little-endian(32비트)으로 선택하면 된다. 만약 <code>Machine: AArch64</code>였다면 64비트 ARM64용 언어(<code>ARM:LE:64:v8A</code>)를 선택해야 한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-1101-arm-registers-calling-convention.html">REV-1101 — ARM/ARM64 레지스터와 호출 규약 기초</a></li><li><a href="rev-1102-arm-thumb-mode.html">REV-1102 — ARM Thumb 모드가 무엇이고 왜 헷갈리는지</a></li><li><a href="rev-0277-ghidra-install.html">REV-0277 — Ghidra 설치와 오프라인 준비</a></li><li><a href="rev-0274-ida-install.html">REV-0274 — IDA 설치와 오프라인 준비</a></li><li><a href="rev-1105-qemu-user-mode-cross-arch.html">REV-1105 — QEMU user-mode로 다른 아키텍처 바이너리 실행하기(qemu-arm/qemu-mips)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Ghidra Import 대화상자의 Format/Language 선택, ARM 버전별 Language ID(<code>ARM:LE:32:v4t</code>, <code>ARM:LE:32:v7</code>, <code>ARM:LE:64:v8A</code> 등), raw 바이너리 시 수동 지정 필요성: NationalSecurityAgency/ghidra 저장소 ARM.ldefs (https://github.com/NationalSecurityAgency/ghidra/blob/master/Ghidra/Processors/ARM/data/languages/ARM.ldefs), Feabhas "Disassembling a Cortex-M raw binary file with Ghidra" 기준 확인(2026-09-10).</li><li>여러 후보 언어로 열어 함수 인식률/오류로 아키텍처를 추정하는 실전 접근법과 "Language translation not supported" 오류: ARM Community 포럼 "Reverse engineering ARM firmware: selecting an architecture" 스레드 및 관련 GitHub 이슈(NationalSecurityAgency/ghidra Discussions #9063) 기준.</li><li>IDA의 Load new file 대화상자에서 Processor type을 지정하는 절차는 Hex-Rays IDA 공식 문서 체계(Basic Usage/Supported Processors) 기준의 일반적으로 알려진 워크플로.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

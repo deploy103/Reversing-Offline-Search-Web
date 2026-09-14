@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>알고리즘을 복원했는데 출력이 원본과 안 맞을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>알고리즘을 복원했는데 출력이 원본과 안 맞을 때</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>재구현한 알고리즘의 최종 출력만 붙잡고 "왜 틀렸지"를 고민하면 끝이 없다 — 실제 바이너리를 디버거로 한 단계씩 실행하면서 <strong>중간값을 나란히 비교</strong>하면, 전체 로직 중 정확히 어느 연산 한 줄에서 처음 갈라지는지 몇 분 안에 좁힐 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>체크 함수를 파이썬(또는 다른 언어)으로 옮겨서 실행했는데 최종 결과가 바이너리의 기대값과 다를 때</li><li>결과가 완전히 랜덤하게 다른 게 아니라 "비슷한데 조금 다른" 느낌이라 어디서부터 봐야 할지 감이 안 잡힐 때</li><li>짧은 입력에서는 맞는데 긴 입력에서는 틀리는 등, 재현이 불안정할 때</li><li>REV-0922~REV-0930에서 다루는 구체적인 원인(엔디안, 오버플로, 패딩, 라운드 수, 상수 오독 등) 중 무엇이 문제인지 아직 특정하지 못했을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>알고리즘 복원 결과가 안 맞는 원인은 실무적으로 몇 가지 범주로 좁혀진다: (1) 자릿수/비트폭 처리 실수(오버플로 마스킹 누락), (2) 바이트 순서 실수(엔디안), (3) 데이터 전처리 누락(패딩), (4) 반복 횟수 실수(라운드 수), (5) 상수 자체를 잘못 옮겨적음, (6) 연산 순서나 방향을 반대로 구현(회전 방향, XOR 순서 등). 이 목록을 무작정 하나씩 의심하기보다, <strong>이진 탐색(bisection)</strong>으로 실제 코드와 재구현 코드가 "어느 지점까지는 일치하는지"부터 확인하는 게 압도적으로 빠르다.</p>
+<p>핵심 전략은 "최종 출력 비교"가 아니라 "<strong>중간 상태 비교</strong>"다. 원본 바이너리를 디버거(GDB, x64dbg)로 실행하면서 루프 안의 누산 변수(해시값, 카운터 등)를 매 반복 또는 몇 반복마다 찍어보고, 같은 입력으로 실행한 파이썬 재구현본에서도 동일한 시점에 값을 출력해서 나란히 놓고 비교한다. 두 로그가 일치하다가 갈라지는 지점이 곧 버그의 정확한 위치다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>파이썬 스크립트의 <code>print()</code> 출력과 알려진 정답(있다면)이 다름</li><li>짧은 테스트 문자열(<code>"test"</code>, <code>"AAAA"</code>)로는 맞는데 실제 목표 길이의 입력에서는 틀림 — 오버플로우나 라운드 수 문제를 강하게 시사</li><li>특정 바이트 위치에서만 반복적으로 틀림 — 인덱스 계산이나 엔디안 문제를 시사</li><li>완전히 랜덤해 보이는 출력 — 상수 하나를 잘못 옮겨적었을 가능성이 큼</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>바이너리를 디버거로 열고, 검증 루프에 브레이크포인트를 걸어 <strong>첫 반복이 끝난 직후</strong>의 누산 변수 값을 확인한다. 같은 입력을 파이썬 재구현본에 넣고 첫 반복 직후 값을 출력해서 비교한다. 여기서부터 이미 다르면 초기값이나 첫 연산 자체가 틀린 것이고, 여기까지는 같다면 다음 반복으로 이진 탐색을 계속한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 알려진 입력으로 두 실행을 나란히 준비</strong></p>
+<p>바이너리에는 GDB(<code>break check_func</code>, <code>run</code>)나 x64dbg로 브레이크포인트를 걸고, 파이썬에는 같은 입력으로 재구현 함수를 호출하는 스크립트를 준비한다.</p>
+<p><strong>2) 루프 안에 로그 지점 추가</strong></p>
+<p>원본 바이너리 쪽은 <code>dprintf</code> 또는 <code>commands</code>+<code>continue</code>로 매 반복 누산값을 출력하도록 만든다. 파이썬 쪽은 루프 안에 <code>print(i, hex(h))</code>를 추가한다.</p>
+<pre><code class="language-python">def check(input_bytes: bytes) -&gt; int:
+    h = 0
+    for i, b in enumerate(input_bytes):
+        h = (h * 33 + b) &amp; 0xFFFFFFFF
+        print(i, hex(h))   # 디버깅용 임시 로그
+    return h</code></pre>
+<p><strong>3) 두 로그를 diff</strong></p>
+<p>두 로그를 각각 텍스트 파일로 저장하고 <code>diff log_binary.txt log_python.txt</code>를 실행한다. 첫 번째로 다른 줄이 나오는 인덱스가 바로 문제 지점이다.</p>
+<p><strong>4) 해당 인덱스 주변 연산만 집중 분석</strong></p>
+<p>그 인덱스에서 수행되는 연산(곱셈 상수, 시프트 폭, 마스킹 여부 등)을 디스어셈블리와 파이썬 코드에서 한 줄씩 다시 대조한다. 이 시점에서 REV-0922~REV-0930 중 어느 원인에 해당하는지 특정할 수 있다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-gdb">break check_func
+run
+watch h_accumulator
+continue</code></pre>
+<pre><code class="language-python">diff = [(i, a, b) for i, (a, b) in enumerate(zip(log_bin, log_py)) if a != b]
+print(diff[0] if diff else "일치")</code></pre>
+<h2>출력 해석</h2>
+<ul><li>로그가 처음부터 끝까지 완전히 일치하는데 최종 반환값 비교(<code>==</code>)만 실패한다면, 비교 로직 자체(부호, 타입, 엔디안 변환)가 문제다.</li><li>로그가 특정 인덱스부터 갈라진다면, 그 인덱스에서 수행되는 연산을 오버플로·엔디안·라운드 수 관점에서 재검토한다.</li><li>로그가 아예 첫 줄부터 다르다면 초기값(시드, 초기 해시값) 자체를 잘못 옮겨 적었을 가능성이 크다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>최종 출력만 비교하고 "어디서부터 틀렸는지" 확인 없이 코드를 통째로 다시 짜는 것 — 시간만 오래 걸리고 같은 실수를 반복하기 쉽다.</li><li>짧고 간단한 입력으로만 테스트해서 "일단 맞는 것 같다"고 넘어가는 것 — 오버플로우나 라운드 수 문제는 입력이 길어져야 드러나는 경우가 많다.</li><li>디버거로 확인한 값과 파이썬 출력값의 진법(hex vs decimal)이 달라서 실제로는 같은데 다르다고 착각하는 것 — 항상 <code>hex()</code>로 통일해서 비교한다.</li><li>재구현 코드를 통째로 다시 작성해버려서, 방금까지 맞았던 부분까지 새로운 버그가 섞여 들어가는 것 — 문제 지점만 최소한으로 수정한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>값이 특정 바이트 수를 넘어가면서부터 틀린다면 → REV-0926 정수 오버플로를 빼먹어서 계산이 계속 안 맞을 때</li><li>4바이트/8바이트 단위로 값을 읽거나 합칠 때 순서가 의심된다면 → REV-0927 엔디안을 잘못 적용해서 해시 값이 안 맞을 때</li><li>입력 데이터를 그대로 쓰지 않고 사전 가공(길이 맞춤, 채움)이 있었다면 → REV-0928 패딩(Padding) 처리를 빼먹어서 결과가 어긋날 때</li><li>루프 반복 횟수 자체가 의심된다면 → REV-0929 라운드 수나 반복 횟수를 잘못 세어서 결과가 다를 때</li><li>상수 하나가 의심된다면 → REV-0930 상수 하나를 잘못 읽어서 전체 알고리즘이 안 맞을 때</li></ul>
+<h2>미니 예제</h2>
+<p>원본 바이너리가 <code>"AB"</code>를 입력하면 최종 해시로 <code>0x00668fc5</code>를 낸다고 하자. 파이썬 재구현본은 <code>0x0002ff17</code>을 낸다.</p>
+<p>로그를 찍어보니:</p>
+<pre><code>i=0: 바이너리 h=0x00000101   파이썬 h=0x00000101   (일치)
+i=1: 바이너리 h=0x00668fc5   파이썬 h=0x0002ff17   (불일치!)</code></pre>
+<p><code>i=0</code>까지는 일치하므로 초기값과 첫 바이트 처리는 맞다. <code>i=1</code>에서 갈라졌으므로 두 번째 반복에서 수행되는 연산(곱셈 상수, 시프트 폭)만 다시 대조하면 된다 — 실제로 확인해보니 파이썬 코드는 <code>h = h * 31 + b</code>였는데 바이너리는 <code>imul ecx, 101h</code> 즉 곱셈 상수가 <code>0x101</code>(257)이었다. 상수 하나가 원인이었던 사례다.</p>
+<h3>완전한 예제 스크립트 — 이진 탐색 디버깅을 코드로 그대로 실행해보기</h3>
+<p>GDB 없이도 이 워크플로우의 핵심(중간값을 나란히 비교해서 갈라지는 지점을 찾는 것)을 파이썬만으로 그대로 체험할 수 있다. 아래 스크립트는 "원본"(실제로는 곱셈 상수 <code>0x101</code>을 쓰는 함수)과 "재구현"(상수를 <code>31</code>로 잘못 옮긴 함수)을 나란히 실행하며 각 반복마다 값을 기록하고 비교한다.</p>
+<pre><code class="language-python">def original_check(s: bytes) -&gt; int:
+    """실제 바이너리가 하는 일이라고 가정한다. 곱셈 상수가 0x101(257)이다."""
+    h = 0
+    for c in s:
+        h = (h * 0x101 + c) &amp; 0xFFFFFFFF
+    return h
+
+
+def my_check_buggy(s: bytes) -&gt; int:
+    """파이썬으로 재구현했는데, 곱셈 상수를 0x101이 아니라 31로 잘못 옮겨적은 버전."""
+    h = 0
+    for c in s:
+        h = (h * 31 + c) &amp; 0xFFFFFFFF
+    return h
+
+
+def run_with_log(func, data: bytes):
+    """func을 한 바이트씩 실행하면서 매 반복 직후의 중간값을 리스트로 기록해서 돌려준다."""
+    h = 0
+    log = []
+    for c in data:
+        # func의 내부 연산을 그대로 흉내내되, 매 단계 값을 기록하기 위해 별도로 재구성한다.
+        # (실제로는 원본 바이너리는 GDB watch로, 재구현은 print()로 각각 값을 뽑아온다)
+        if func is original_check:
+            h = (h * 0x101 + c) &amp; 0xFFFFFFFF
+        else:
+            h = (h * 31 + c) &amp; 0xFFFFFFFF
+        log.append(h)
+    return log
+
+
+data = b"AB"   # 테스트에 쓸 알려진 입력
+
+log_original = run_with_log(original_check, data)   # "원본"의 반복별 중간값 로그
+log_mine = run_with_log(my_check_buggy, data)         # "재구현"의 반복별 중간값 로그
+
+print("원본 최종값:", hex(original_check(data)))
+print("재구현 최종값:", hex(my_check_buggy(data)))
+print()
+
+# 이진 탐색 디버깅의 핵심: 두 로그를 인덱스별로 나란히 비교해서 처음 갈라지는 지점을 찾는다
+first_mismatch = None
+for i, (a, b) in enumerate(zip(log_original, log_mine)):
+    status = "일치" if a == b else "불일치!"
+    print(f"i={i}: 원본={hex(a):10s} 재구현={hex(b):10s} {status}")
+    if a != b and first_mismatch is None:
+        first_mismatch = i
+
+if first_mismatch is not None:
+    print(f"\n첫 번째로 갈라지는 지점: i={first_mismatch}")
+    print("-&gt; 이 인덱스에서 수행되는 연산(곱셈 상수 등)을 디스어셈블리와 다시 대조해야 한다.")
+else:
+    print("\n모든 지점이 일치함 -&gt; 최종 반환값 비교 로직 자체를 의심해야 한다.")</code></pre>
+<p>실제로 실행한 결과:</p>
+<pre><code>원본 최종값: 0x4183
+재구현 최종값: 0x821
+
+i=0: 원본=0x41       재구현=0x41       일치
+i=1: 원본=0x4183     재구현=0x821      불일치!
+
+첫 번째로 갈라지는 지점: i=1
+-&gt; 이 인덱스에서 수행되는 연산(곱셈 상수 등)을 디스어셈블리와 다시 대조해야 한다.</code></pre>
+<p><code>i=0</code>(첫 번째 바이트 <code>'A'</code>, 아스키 코드 65 = 0x41)까지는 두 로그가 완전히 일치한다 — 이는 <code>h = 0*상수 + 'A' = 'A'</code>가 되어 곱셈 상수가 무엇이든 첫 반복에서는 영향이 없기 때문이다. <code>i=1</code>(두 번째 바이트 <code>'B'</code>)부터 값이 갈라지는데, 이는 이제야 곱셈 상수(<code>0x101</code> vs <code>31</code>)가 실제로 계산에 영향을 주기 시작했기 때문이다. 이렇게 로그를 나란히 찍어보면 "어디서부터 틀렸는지"를 감으로 추측하지 않고 정확한 인덱스로 특정할 수 있다 — 실제 GDB 세션에서도 <code>watch</code> 명령으로 이와 완전히 동일한 방식의 비교를 수행하면 된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0922-xor-key-partially-correct.html">REV-0922 — XOR 키를 구했는데 일부만 맞을 때</a></li><li><a href="rev-0926-integer-overflow-missed.html">REV-0926 — 정수 오버플로를 빼먹어서 계산이 계속 안 맞을 때</a></li><li><a href="rev-0927-endianness-hash-mismatch.html">REV-0927 — 엔디안을 잘못 적용해서 해시 값이 안 맞을 때</a></li><li><a href="rev-0930-wrong-constant-misread-checklist.html">REV-0930 — 상수 하나를 잘못 읽어서 전체 알고리즘이 안 맞을 때</a></li><li><a href="rev-0642-gdb-advanced-cheatsheet.html">REV-0642 — GDB 명령어 심화 치트시트(watch/catch/tbreak)</a></li><li><a href="rev-0222-reimplement-in-python.html">REV-0222 — 검증 루틴을 Python으로 그대로 재현하기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>디퍼렌셜 테스팅(중간값을 단계별로 비교해 divergence 지점을 좁히는 기법)은 일반적인 소프트웨어 디버깅/리버싱 실무에서 널리 쓰이는 방법론을 정리한 것 (2026-09-09 확인).</li><li>GDB <code>watch</code>/<code>dprintf</code> 사용법은 REV-0642 문서와 동일한 GDB 공식 매뉴얼 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

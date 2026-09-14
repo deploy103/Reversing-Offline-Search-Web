@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Step Over인데 함수 안으로 들어가 버릴 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>Step Over인데 함수 안으로 들어가 버릴 때</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>Step Over(x64dbg F8, GDB <code>next</code>)는 내부적으로 "CALL 명령 바로 다음 주소(리턴 지점)에 임시 브레이크포인트를 걸고 실행"하는 것과 같아서, 그 함수 내부에 이미 걸려 있는 다른 브레이크포인트를 만나거나, 예외가 발생하거나, 함수에 라인 정보가 아예 없거나, 재귀 호출로 같은 리턴 주소가 더 안쪽에서 먼저 걸리면 리턴 지점까지 못 가고 함수 내부에서 멈춘다 — 이는 오작동이 아니라 설계된 동작이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>x64dbg에서 F8(Step Over)을 눌렀는데 CPU 창이 <code>CALL</code> 대상 함수의 첫 명령어로 이동했을 때</li><li>GDB에서 <code>next</code>를 눌렀는데 라이브러리/재귀 함수 내부로 들어가 버린 것처럼 보일 때</li><li>Step Over 도중 상태 표시줄/콘솔에 예외나 브레이크포인트 관련 메시지가 함께 뜰 때</li><li>재귀 함수에서 Step Over를 반복했는데 예상보다 훨씬 이른 시점에 멈출 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Step Over의 실제 구현: "리턴 지점에 임시 브레이크포인트"</h3>
+<p>x64dbg와 GDB 모두 Step Over를 "그 CALL 다음 주소에 임시 브레이크포인트를 걸고 계속 실행"하는 방식으로 구현한다. 즉 Step Over도 결국 "실행 → 멈춤"의 반복이며, 다음 상황 중 하나라도 해당하면 리턴 지점보다 먼저 멈춘다.</p>
+<ol><li><strong>콜백/헬퍼 함수 내부에 이미 브레이크포인트가 걸려 있음</strong>: 예를 들어 이전에 <code>bp GetProcAddress</code>(x64dbg) 또는 <code>break malloc</code>(GDB)를 걸어뒀다면, 지금 Step Over 하려는 CALL이 내부적으로 그 함수를 호출할 때 그 브레이크포인트에서 먼저 멈춘다.</li><li><strong>호출된 함수 내부에서 예외 발생</strong>: 안티디버깅 루틴이 널 포인터 역참조 등으로 의도적으로 예외를 일으켜 SEH/시그널로 흐름을 바꾸는 경우, 디버거의 예외 처리 설정에 따라 first-chance 시점에 멈출 수 있다.</li><li><strong>디버그 정보가 아예 없는 함수 안에서 next를 쓴 경우(GDB)</strong>: 현재 멈춰 있는 프레임 자체에 라인 정보가 없으면 GDB의 <code>next</code>는 <code>step</code>과 똑같이 명령어 단위로 동작해버려, 마치 Step Into처럼 함수 안으로 들어가는 것처럼 보인다.</li><li><strong>재귀 함수에서의 리턴 주소 충돌</strong>: 재귀 호출은 같은 CALL 명령의 리턴 주소가 스택 여러 프레임에 반복해서 나타난다. Step Over가 건 임시 브레이크포인트는 "그 주소"만 보고 거는 것이라, 더 안쪽 재귀 프레임이 먼저 그 주소를 통과하면 바깥쪽으로 돌아오기 전에 먼저 멈춰서 "함수 안으로 계속 들어간다"는 착각을 준다.</li><li><strong>단축키 혼동</strong>: x64dbg 기본값은 F7=Step Into, F8=Step Over다. 다른 디버거 습관 때문에 실수로 F7을 누르는 경우도 실제로 흔하다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>CPU 창 주소가 CALL 대상 함수의 <strong>첫 명령어</strong>와 정확히 일치(진짜로 들어간 것)</li><li>Log/콘솔에 "Breakpoint at ..." 또는 "Access violation" 메시지가 함께 뜸</li><li>GDB에서 <code>next</code>를 눌렀는데 <code>Run till exit</code> 없이 그냥 다음 명령어 한 줄만 진행됨(라인 정보 없음 신호)</li><li>재귀 함수에서 <code>bt</code>/Call Stack을 보면 같은 함수가 여러 프레임 쌓여 있음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>멈춘 위치가 CALL 대상의 <strong>첫 번째 명령어</strong>인지, 아니면 함수 <strong>중간</strong>인지부터 확인한다. 첫 명령어면 브레이크포인트/단축키 혼동을, 중간이면 예외 발생이나 재귀 충돌을 의심한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>x64dbg: Breakpoints 탭에서 지금 멈춘 함수 범위 안에 다른 브레이크포인트가 있는지 확인 → 있으면 잠시 Disable 후 재시도.</li><li>GDB: <code>bt</code>로 콜스택 깊이를 확인해 재귀 중첩 여부를 판단.</li><li>x64dbg: Options → Preferences → Exceptions에서 first-chance 예외가 체크되어 있는지 확인.</li><li>재귀 충돌이 의심되면, Step Over 대신 <code>finish</code>(GDB) / <code>Ctrl+F9</code>(x64dbg, Execute till return)로 현재 프레임만 명확히 빠져나온다.</li><li>GDB에서 현재 프레임에 라인 정보가 없어 <code>next</code>가 <code>step</code>처럼 동작한다면, 그 구간은 <code>finish</code>로 통째로 벗어난다.</li><li>단축키가 헷갈린다면 툴바 아이콘을 직접 클릭해 Step Over를 실행해본다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">x64dbg: F8(Step Over), F7(Step Into), Ctrl+F9(Execute till return)</code></pre>
+<pre><code class="language-gdb">next
+step
+finish
+bt
+info breakpoints</code></pre>
+<h2>출력 해석</h2>
+<p>정확히 CALL 대상 첫 명령어에서 멈췄고 Log에 별다른 메시지가 없다면 십중팔구 단축키 혼동이다. "Breakpoint reached"류 메시지가 있으면 콜백 내부 브레이크포인트가 원인이고, 예외 코드가 찍혔다면 안티디버깅/SEH 가능성을 REV-0841과 함께 확인한다.</p>
+<h2>흔한 실수</h2>
+<ul><li>단축키를 확인하지 않고 무작정 디버거 버그로 단정하는 것.</li><li>콜백 내부에 걸어둔 브레이크포인트의 존재를 잊고 왜 멈추는지 헤매는 것.</li><li>재귀 함수에서 Step Over/next를 반복하며 "왜 계속 안으로 들어가지"라고 오해하는 것 — 실제로는 리턴 주소 충돌로 인한 정상 동작이다.</li><li>GDB에서 현재 프레임에 라인 정보가 없다는 것을 확인하지 않고 <code>next</code>만 반복하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>x64dbg에서만 겪는 상세 사례가 필요하다면 → REV-0625 x64dbg Step Over가 CALL 내부로 계속 들어갈 때</li><li>반대로 Step Into가 라이브러리에서 못 빠져나온다면 → REV-0836 Step Into가 라이브러리 내부로 계속 들어가서 못 나올 때</li><li>Step Into/Step Over 기본 개념이 헷갈린다면 → REV-0170 Step Into와 Step Over 차이</li><li>브레이크포인트 충돌이 자꾸 반복된다면 → REV-0835 브레이크포인트가 안 걸릴 때 확인할 것들</li></ul>
+<h2>미니 예제</h2>
+<p>x64dbg에서 <code>CALL sub_402000</code>을 F8로 넘기려 했는데 CPU 창이 <code>sub_402000</code>의 첫 명령어로 이동했다. 상태 표시줄에 "Access violation reading location 0x00000000"이 남아 있었는데, 이는 <code>IsDebuggerPresent</code> 우회를 확인하려고 프로그램이 일부러 널 포인터 역참조 예외를 일으킨 안티디버깅 루틴이었다. <code>Ctrl+F9</code>(Execute till return)로 함수를 완전히 빠져나온 뒤 분석을 이어갔다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0625-step-over-enters-call.html">REV-0625 — x64dbg Step Over가 CALL 내부로 계속 들어갈 때</a></li><li><a href="rev-0836-step-into-stuck-in-library.html">REV-0836 — Step Into가 라이브러리 내부로 계속 들어가서 못 나올 때</a></li><li><a href="rev-0170-step-into-vs-over.html">REV-0170 — Step Into와 Step Over 차이</a></li><li><a href="rev-0835-breakpoint-not-triggering.html">REV-0835 — 브레이크포인트가 안 걸릴 때 확인할 것들</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>x64dbg의 Step Over 구현(임시 브레이크포인트를 통한 리턴 지점 실행)과 예외 처리 설정: x64dbg 공식 문서 기준.</li><li>GDB의 <code>next</code>가 라인 정보 없는 프레임에서 <code>step</code>과 동일하게 동작하는 것, 재귀 호출 시 리턴 주소 기반 임시 브레이크포인트 동작: GDB 공식 매뉴얼("Continuing and Stepping" 챕터) 기준(2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

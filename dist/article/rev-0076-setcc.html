@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SETcc: 조건 결과를 0 또는 1로 만들기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>SETcc: 조건 결과를 0 또는 1로 만들기</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>SETcc</code>는 "조건(cc)이 참이면 목적지 1바이트에 1을, 거짓이면 0을 써넣는다"는 명령어다. 분기(jump)도 아니고 데이터 이동(<code>CMOVcc</code>)도 아니라, 비교 결과 자체를 숫자 <code>0</code>/<code>1</code>로 "확정"시키는 명령이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리에 <code>sete al</code>, <code>setg bl</code>, <code>seta cl</code> 같은 명령이 나오는데 무슨 뜻인지 모를 때</li><li><code>xor eax, eax</code> 다음에 <code>cmp</code>, 그다음 <code>sete al</code>이 연달아 나오는 패턴을 봤는데 왜 굳이 <code>xor</code>을 먼저 하는지 모를 때</li><li>C 함수가 <code>return a == b;</code>처럼 불리언을 반환하는데 그 어셈블리에 <code>jcc</code>(분기)가 하나도 없어서 이상할 때</li><li>"SETcc 뭐임", "sete al 뜻"처럼 처음 보는 명령어를 찾아볼 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>SETcc가 실제로 하는 일</h3>
+<p><code>SETcc dst</code>는 (이전 명령이 세팅해둔) 플래그를 검사해서:</p>
+<ul><li>조건이 <strong>참</strong>이면 → <code>dst</code>(8비트)에 <code>1</code>을 기록</li><li>조건이 <strong>거짓</strong>이면 → <code>dst</code>에 <code>0</code>을 기록</li></ul>
+<p><code>CMOVcc</code>와 결정적으로 다른 점: <code>CMOVcc</code>는 조건이 거짓이면 목적지를 안 건드리지만, <code>SETcc</code>는 조건이 거짓이어도 <strong>반드시 0을 써넣는다</strong> — 항상 결과가 확정된다.</p>
+<h3>이 cc 접미사 표는 Jcc/CMOVcc/SETcc 전부 공통</h3>
+<p>이 cc 접미사 표는 Jcc(<a href="rev-0067-je-jz.html">JE/JZ</a>, <a href="rev-0068-jne-jnz.html">JNE/JNZ</a>, <a href="rev-0069-jg-jge-jl-jle.html">JG/JGE/JL/JLE</a>, <a href="rev-0070-ja-jae-jb-jbe.html">JA/JAE/JB/JBE</a>), <a href="rev-0075-cmovcc.html">CMOVcc</a>, SETcc에서 전부 동일하게 적용된다 — 명령어의 "동작"만 다르고 "어떤 플래그 조합을 테스트하는가"는 완전히 같은 규칙이다.</p>
+<table><thead><tr><th>접미사</th><th>테스트하는 플래그 조건</th><th>의미</th></tr></thead><tbody><tr><td>E / Z</td><td>ZF = 1</td><td>equal / zero</td></tr><tr><td>NE / NZ</td><td>ZF = 0</td><td>not equal / not zero</td></tr><tr><td>G / NLE</td><td>ZF = 0 AND SF = OF</td><td>signed greater</td></tr><tr><td>GE / NL</td><td>SF = OF</td><td>signed greater or equal</td></tr><tr><td>L / NGE</td><td>SF ≠ OF</td><td>signed less</td></tr><tr><td>LE / NG</td><td>ZF = 1 OR SF ≠ OF</td><td>signed less or equal</td></tr><tr><td>A / NBE</td><td>CF = 0 AND ZF = 0</td><td>unsigned above</td></tr><tr><td>AE / NB / NC</td><td>CF = 0</td><td>unsigned above or equal</td></tr><tr><td>B / NAE / C</td><td>CF = 1</td><td>unsigned below</td></tr><tr><td>BE / NA</td><td>CF = 1 OR ZF = 1</td><td>unsigned below or equal</td></tr><tr><td>S</td><td>SF = 1</td><td>sign(negative)</td></tr><tr><td>NS</td><td>SF = 0</td><td>not sign</td></tr><tr><td>O</td><td>OF = 1</td><td>overflow</td></tr><tr><td>NO</td><td>OF = 0</td><td>no overflow</td></tr><tr><td>P / PE</td><td>PF = 1</td><td>parity even</td></tr><tr><td>NP / PO</td><td>PF = 0</td><td>parity odd</td></tr></tbody></table>
+<p>실제 mnemonic: <code>SETE</code>/<code>SETZ</code>, <code>SETNE</code>/<code>SETNZ</code>, <code>SETG</code>, <code>SETGE</code>, <code>SETL</code>, <code>SETLE</code>, <code>SETA</code>, <code>SETAE</code>, <code>SETB</code>, <code>SETBE</code>, <code>SETS</code>, <code>SETNS</code> 등 — 역시 <code>Jcc</code>/<code>CMOVcc</code>와 같은 접미사 규칙이다.</p>
+<p><strong>signed vs unsigned 주의</strong>: 같은 비트 패턴이 signed로는 음수, unsigned로는 아주 큰 양수로 해석될 수 있다(예: <code>0xFFFFFFFF</code>는 signed로 -1, unsigned로 4294967295). 그래서 <code>SETG</code>(signed greater)와 <code>SETA</code>(unsigned above)는 서로 다른 조건을 테스트하며, C에서 변수 타입이 <code>int</code>냐 <code>unsigned int</code>냐에 따라 컴파일러가 어느 쪽을 생성할지 갈린다. 상세 원리는 <a href="rev-0069-jg-jge-jl-jle.html">JG/JGE/JL/JLE</a>, <a href="rev-0070-ja-jae-jb-jbe.html">JA/JAE/JB/JBE</a> 참고.</p>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>SETcc r/m8</code></pre>
+<p>목적지는 <strong>오직 8비트 레지스터나 메모리 한 바이트</strong>만 가능하다(<code>AL</code>, <code>BL</code>, <code>CL</code>, <code>byte ptr [rbx]</code> 등). 16/32/64비트 형태는 없다 — 애초에 결과가 0 아니면 1이라 1바이트면 충분하기 때문이다.</p>
+<h3>레지스터/메모리 효과 — 상위 바이트 주의</h3>
+<p><code>sete al</code>은 <code>AL</code>(하위 1바이트)에만 0 또는 1을 쓴다. <code>RAX</code>/<code>EAX</code>의 나머지 상위 바이트는 <strong>전혀 건드리지 않는다</strong>(x86의 부분 레지스터 쓰기 특성). 그래서 <code>sete al</code> 뒤에 <code>eax</code>/<code>rax</code> 전체를 "0 아니면 1"인 값으로 쓰려면, 그 앞에 보통 <code>xor eax, eax</code>로 레지스터 전체를 미리 0으로 초기화해 둔다. <code>SETcc</code>가 보장하는 건 하위 바이트뿐이므로, 이 <code>xor + setcc</code> 조합은 매우 흔하고 알아볼 가치가 있는 관용구(idiom)다.</p>
+<h3>플래그</h3>
+<ul><li><strong>읽는 플래그</strong>: cc 접미사가 요구하는 플래그 조합(위 표) — 보통 앞의 <code>CMP</code>/<code>TEST</code>가 세팅.</li><li><strong>쓰는 플래그</strong>: 없다.</li></ul>
+<h3>스택/RIP 변화</h3>
+<p><code>CMOVcc</code>와 마찬가지로 제어 흐름을 전혀 바꾸지 않는다. RIP는 항상 다음 명령으로 진행하고, 스택도 건드리지 않는다. 분기가 없는 한 줄짜리 명령이다.</p>
+<h3>컴파일러가 SETcc를 쓰는 이유와 대표 패턴</h3>
+<p><code>SETcc</code>는 컴파일러가 C의 불리언 값 자체(비교 연산자의 "참/거짓 값")를 변수에 저장하거나 반환할 때 분기 없이 구현하는 표준 방법이다:</p>
+<pre><code class="language-c">int is_equal(int a, int b) {
+    return a == b;
+}</code></pre>
+<pre><code class="language-asm">xor     eax, eax      ; eax 전체(상위 바이트 포함)를 0으로 초기화
+cmp     edi, esi      ; a, b 비교
+sete    al             ; a == b 이면 al = 1, 아니면 al = 0 (eax 상위는 이미 xor로 0)
+ret</code></pre>
+<p><strong>핵심 구분 기준</strong>: <code>SETcc</code>는 비교의 "참/거짓 값 자체"가 필요할 때(변수에 저장, 반환값 등), <code>Jcc</code>는 비교 결과로 "분기"가 필요할 때(<code>if</code> 조건) 쓰인다는 걸 기억해두면 어셈블리를 읽을 때 훨씬 빨리 의도를 파악할 수 있다.</p>
+<p>또한 <code>SETcc</code>로 만든 0/1 값들을 이후 <code>AND</code>/<code>OR</code>/<code>TEST</code>로 조합하면, <code>a == b &amp;&amp; c &gt; d</code> 같은 복합 불리언 조건을 추가 분기 없이 계산할 수 있다 — 컴파일러가 이런 패턴도 자주 쓴다.</p>
+<h3>IDA/Ghidra 디컴파일에서 보이는 모습</h3>
+<p>디컴파일러는 대개 <code>xor</code>+<code>cmp</code>+<code>setcc</code> 시퀀스를 원래의 불리언 식(<code>return a == b;</code>)으로 깔끔하게 되돌려 보여주고, 그 내부 메커니즘(부분 레지스터 초기화 등)은 숨긴다. 디스어셈블리 원문에서 이 세 줄을 볼 때는 "서로 무관한 세 개의 명령"이 아니라 "하나의 불리언 값을 계산하는 하나의 묶음"으로 읽는 습관을 들이는 게 좋다.</p>
+<h3>리버싱 관점에서의 의미</h3>
+<p><code>xor reg,reg</code> → <code>cmp</code>/<code>test</code> → <code>setcc reg8</code> 시퀀스는 "이 함수가 불리언(참/거짓)을 계산/반환한다"는 매우 신뢰도 높은 지문(fingerprint)이다. 낯선 바이너리를 훑어볼 때 이 패턴만 보고도 디컴파일 없이 "검증 함수, 비교 함수(예: 커스텀 <code>strcmp</code>류, 라이선스/시리얼 검사 함수)"일 가능성을 빠르게 짚어낼 수 있다. 물론 <code>SETG</code>/<code>SETA</code> 같은 signed/unsigned 접미사 혼동 위험은 <code>Jcc</code>/<code>CMOVcc</code>와 동일하게 존재한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>sete al</code>, <code>setne al</code>, <code>setg bl</code>, <code>seta cl</code>, <code>setb dl</code> 등 8비트 레지스터/메모리 목적지</li><li>직전에 <code>xor reg, reg</code>(전체 레지스터 0 초기화) → <code>cmp</code>/<code>test</code> → <code>setcc reg8</code> 3단 콤보</li><li><code>SETcc</code> 뒤에 <code>and</code>/<code>or</code>/<code>test</code>로 다른 0/1 값과 결합되는 패턴(복합 불리언 조건)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>SETcc</code> 앞의 <code>CMP</code>/<code>TEST</code>가 무엇을 비교하는지 확인한다.</li><li>cc 접미사를 표에서 찾아 정확히 어떤 플래그 조합을 테스트하는지 확인한다(signed/unsigned 구분 필수).</li><li>그 앞에 <code>xor reg,reg</code>가 있는지 확인해서, 이후 코드가 8비트가 아니라 32/64비트 전체를 "0 또는 1" 값으로 쓰는지 판단한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) xor + cmp + setcc 삼단 콤보 인식</strong></p>
+<pre><code class="language-asm">xor     eax, eax
+cmp     edi, esi
+sete    al</code></pre>
+<p>이 세 줄 전체를 "<code>eax = (edi == esi) ? 1 : 0</code>" 한 문장으로 읽는다.</p>
+<p><strong>2) cc 접미사로 조건 확정</strong> <code>sete</code>는 E(ZF=1) 조건이므로 <code>edi == esi</code>일 때 1이다.</p>
+<p><strong>3) 이후 코드에서 이 값의 쓰임 추적</strong></p>
+<pre><code class="language-asm">sete    al
+test    al, al
+jz      not_equal</code></pre>
+<p>→ <code>SETcc</code>로 만든 불리언 값을 다시 <code>TEST</code>+<code>Jcc</code>로 검사해서 분기하는 패턴 — 결과값을 잠깐 저장해뒀다가 나중에 분기에 쓰는 경우다.</p>
+<p><strong>4) IDA/Ghidra 디컴파일과 대조</strong> 디컴파일 결과가 <code>return a == b;</code>처럼 단순 불리언 식으로 나오면, 실제로는 <code>xor+cmp+setcc</code> 3줄이 그 뒤에 숨어 있다는 걸 기억한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>SETcc</code> 명령 위에서 레지스터 창의 실행 전/후 값 비교, <code>F2</code>로 브레이크포인트.</li><li>x64dbg: 명령 라인 우클릭 → "Toggle Breakpoint", 레지스터 패널에서 <code>AL</code>/<code>EAX</code> 값 비교(하위 바이트만 바뀌는지 확인).</li><li>GDB/Pwndbg: <code>stepi</code>로 한 줄씩 실행하며 <code>p $al</code>, <code>p/x $eax</code>로 하위 바이트와 전체 레지스터 값을 따로 확인.</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>sete al</code> 실행 후 <code>al</code>이 <code>1</code>이면 직전 비교가 참이었다는 뜻, <code>0</code>이면 거짓.</li><li><code>eax</code> 상위 바이트에 이상한 값(0이 아닌 잔여값)이 남아 있다면 → 그 앞에 <code>xor eax,eax</code>가 없었거나 놓쳤을 가능성. <code>SETcc</code>는 하위 1바이트만 보장한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>SETcc</code>를 <code>Jcc</code>처럼 분기한다고 착각하는 것 — <code>SETcc</code>는 절대 분기하지 않고 바이트 하나만 기록한다.</li><li><code>xor eax,eax</code>가 왜 앞에 있는지 이해 못 하고 무시하는 것 — 이게 없으면 <code>eax</code> 상위 바이트에 이전 값이 남아있어 전체 레지스터를 "0/1 불리언"으로 쓸 수 없다는 걸 놓치면 값 추적이 틀어진다.</li><li><code>SETG</code>(signed)와 <code>SETA</code>(unsigned)를 같은 것으로 착각하는 것 — <a href="rev-0069-jg-jge-jl-jle.html">JG/JGE/JL/JLE</a>, <a href="rev-0070-ja-jae-jb-jbe.html">JA/JAE/JB/JBE</a>의 signed/unsigned 함정과 동일하게 적용된다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>레지스터 값에 이상한 상위 바이트가 남아있다면 → <code>xor reg,reg</code>가 있었는지 위쪽 코드를 다시 확인.</li><li>cc 접미사 뜻이 헷갈리면 → 위 표를 다시 확인하고 signed/unsigned부터 구분.</li><li><code>SETcc</code> 결과가 바로 안 쓰이는 것 같다면 → 스택/다른 레지스터에 잠깐 저장됐다가 나중에 <code>TEST</code>+<code>Jcc</code>나 <code>AND</code>/<code>OR</code>로 결합돼 쓰이는지 아래쪽 코드를 계속 따라간다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — is_equal(a, b)</strong></p>
+<pre><code class="language-c">int is_equal(int a, int b) { return a == b; }</code></pre>
+<pre><code class="language-asm">xor     eax, eax
+cmp     edi, esi
+sete    al
+ret</code></pre>
+<p><strong>예제 2 — signed 비교, SETG</strong></p>
+<pre><code class="language-c">int is_greater_signed(int a, int b) { return a &gt; b; }</code></pre>
+<pre><code class="language-asm">xor     eax, eax
+cmp     edi, esi
+setg    al             ; SF = OF 이고 ZF = 0 일 때 1
+ret</code></pre>
+<p><strong>예제 3 — unsigned 비교, 같은 C 한 줄이 타입만 바뀌면 SETA</strong></p>
+<pre><code class="language-c">int is_greater_unsigned(unsigned int a, unsigned int b) { return a &gt; b; }</code></pre>
+<pre><code class="language-asm">xor     eax, eax
+cmp     edi, esi
+seta    al             ; CF = 0 이고 ZF = 0 일 때 1 (signed의 setg와 다른 명령)
+ret</code></pre>
+<p><strong>예제 4 — 복합 불리언 (a == b &amp;&amp; c &gt; d)</strong></p>
+<pre><code class="language-c">int both(int a, int b, int c, int d) { return (a == b) &amp;&amp; (c &gt; d); }</code></pre>
+<pre><code class="language-asm">xor     eax, eax
+cmp     edi, esi
+sete    al              ; al = (a == b)
+xor     ecx, ecx
+cmp     edx, r8d
+setg    cl              ; cl = (c &gt; d)
+and     al, cl           ; 둘 다 참이어야 al = 1</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0075-cmovcc.html">CMOVcc: 분기 없는 조건부 이동</a> — 같은 cc 접미사, 분기 없이 값 자체를 옮김</li><li><a href="rev-0067-je-jz.html">JE/JZ: ZF가 1일 때 분기</a></li><li><a href="rev-0068-jne-jnz.html">JNE/JNZ: ZF가 0일 때 분기</a></li><li><a href="rev-0069-jg-jge-jl-jle.html">JG/JGE/JL/JLE: Signed 비교 분기</a></li><li><a href="rev-0070-ja-jae-jb-jbe.html">JA/JAE/JB/JBE: Unsigned 비교 분기</a></li><li><a href="rev-0066-jmp.html">JMP: 무조건 분기</a></li><li><a href="rev-0071-call.html">CALL: 함수 호출, 반환 주소, 인자 추적</a></li><li><a href="rev-0088-flags-overview.html">FLAGS 레지스터 개요</a></li><li>CMP: 값을 바꾸지 않는 SUB 비교 (예정)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>SETcc 동작 및 오퍼랜드 형식(8비트 전용): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "SETcc—Set Byte on Condition" 섹션 기준 (2026-09-08 검증).</li><li>x86 부분 레지스터 쓰기(상위 바이트 미변경) 특성 및 xor+setcc 관용구: 일반 x86 어셈블리/컴파일러 코드 생성 통념(SRC-GENERAL-ASM) 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

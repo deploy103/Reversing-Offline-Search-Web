@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinMain wWinMain DllMain 진입점 차이 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>WinMain wWinMain DllMain 진입점 차이</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>WinMain</code>/<code>wWinMain</code>/<code>DllMain</code>은 PE의 <code>AddressOfEntryPoint</code>가 실제로 가리키는 진짜 OS 진입점이 아니라, CRT 시작 함수(<code>WinMainCRTStartup</code> 등)나 Windows 로더가 준비를 마친 뒤 <strong>호출해주는</strong> 함수일 뿐이며, 셋의 시그니처와 호출 시점, 특히 <code>DllMain</code>이 로더 락(loader lock) 아래에서 실행된다는 제약을 구분해서 알아두면 IDA에서 진입점을 헤맬 일이 크게 줄어든다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA가 잡아준 진입점(Entry Point)이 <code>WinMain</code>이 아니라 알 수 없는 함수로 보여서 당황할 때</li><li><code>WinMain</code>과 <code>wWinMain</code>의 차이가 단순히 "유니코드냐 아니냐"인지 궁금할 때</li><li><code>DllMain</code>의 네 번째 인자, <code>fdwReason</code> 값(<code>DLL_PROCESS_ATTACH</code> 등)이 각각 언제 호출되는지 궁금할 때</li><li>DLL 안에서 <code>DllMain</code>이 다른 스레드를 만들거나 다른 DLL을 로드하려다가 멈추는(데드락) 이유를 이해하고 싶을 때</li><li>실제 EXE 진입점 코드에서 <code>GetCommandLine</code>, <code>GetStartupInfo</code> 호출이 왜 있는지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>진짜 진입점은 WinMain이 아니다</h3>
+<p>REV-0121에서 다룬 것처럼, PE의 <code>AddressOfEntryPoint</code>가 가리키는 실제 OS 진입점은 개발자가 작성하는 <code>WinMain</code>/<code>main</code>이 아니라, 컴파일러/CRT가 자동으로 붙이는 시작 함수다.</p>
+<table><thead><tr><th>개발자가 작성하는 함수</th><th>실제 OS 진입점(링커가 자동 지정)</th></tr></thead><tbody><tr><td><code>main</code></td><td><code>mainCRTStartup</code></td></tr><tr><td><code>wmain</code></td><td><code>wmainCRTStartup</code></td></tr><tr><td><code>WinMain</code></td><td><code>WinMainCRTStartup</code></td></tr><tr><td><code>wWinMain</code></td><td><code>wWinMainCRTStartup</code></td></tr></tbody></table>
+<p>이 CRT 시작 함수가 먼저 실행되면서 C 런타임 초기화(전역 변수 생성자 호출, 힙 초기화, 예외 처리기 등록 등)를 마친 뒤, <code>GetStartupInfoW</code>로 창 표시 방식 등의 정보를 얻고 <code>GetCommandLineW</code>로 명령줄 문자열을 가져와서 인자를 조립한 다음, 비로소 개발자가 작성한 <code>WinMain</code>을 호출한다. IDA에서 진입점으로 이동했는데 <code>main</code>/<code>WinMain</code>처럼 안 보이고 짧고 정형화된 코드가 보인다면 바로 이 CRT 시작 함수를 보고 있는 것이다 — 여기서 <code>call</code>되는 함수를 한 단계 더 따라가면 실제 <code>WinMain</code>이 나온다.</p>
+<h3>WinMain vs wWinMain: ANSI와 유니코드</h3>
+<pre><code class="language-c">int WINAPI WinMain(
+    HINSTANCE hInstance,      // 현재 모듈(자기 자신)의 인스턴스 핸들
+    HINSTANCE hPrevInstance,  // 항상 NULL (Win16 시절의 잔재, 무시해도 됨)
+    LPSTR     lpCmdLine,      // ANSI(단일 바이트) 명령줄 문자열, 실행 파일명 제외
+    int       nCmdShow        // ShowWindow에 넘길 창 표시 방식(SW_SHOW 등)
+);
+
+int WINAPI wWinMain(
+    HINSTANCE hInstance,
+    HINSTANCE hPrevInstance,
+    PWSTR     pCmdLine,       // 유니코드(UTF-16) 명령줄 문자열
+    int       nCmdShow
+);</code></pre>
+<p>차이는 오직 <code>lpCmdLine</code>/<code>pCmdLine</code>의 문자 인코딩뿐이다. <code>hInstance</code>는 REV-0135에서 다루는 것처럼 <code>GetModuleHandle(NULL)</code>로도 얻을 수 있는 값과 같은 개념 — 자기 자신의 모듈 베이스 주소다. <code>hPrevInstance</code>는 항상 <code>NULL</code>이므로 리버싱 시 이 인자에 의미를 두지 않아도 된다.</p>
+<h3>DllMain: 로더가 호출하는 콜백</h3>
+<pre><code class="language-c">BOOL WINAPI DllMain(
+    HINSTANCE hinstDLL,   // 이 DLL 자신의 모듈 핸들
+    DWORD     fdwReason,  // 왜 호출됐는지
+    LPVOID    lpvReserved // 동적/정적 로드 여부에 따라 의미가 다름
+);</code></pre>
+<p><code>fdwReason</code>은 다음 값 중 하나이며, DLL의 생명주기에서 여러 번 다른 시점에 호출된다.</p>
+<table><thead><tr><th>값</th><th>상수</th><th>호출 시점</th></tr></thead><tbody><tr><td>1</td><td><code>DLL_PROCESS_ATTACH</code></td><td>DLL이 프로세스에 처음 매핑될 때(로드 시) — 가장 중요, 초기화 코드가 여기 들어감</td></tr><tr><td>2</td><td><code>DLL_THREAD_ATTACH</code></td><td>프로세스 내에서 새 스레드가 생성될 때(단, 이미 로드된 후에 생성된 스레드에 한함)</td></tr><tr><td>3</td><td><code>DLL_THREAD_DETACH</code></td><td>스레드가 정상 종료될 때</td></tr><tr><td>0</td><td><code>DLL_PROCESS_DETACH</code></td><td>DLL이 프로세스에서 언로드될 때(<code>FreeLibrary</code> 또는 프로세스 종료)</td></tr></tbody></table>
+<h3>DllMain과 로더 락(Loader Lock): 초보자가 가장 자주 걸리는 함정</h3>
+<p><code>DllMain</code>은 <strong>로더 락</strong>이라는 전역 락을 쥔 상태에서 Windows 로더에 의해 호출된다. 이 락이 걸려 있는 동안 <code>DllMain</code> 안에서 다음과 같은 행동을 하면 데드락이나 정의되지 않은 동작이 발생할 수 있다.</p>
+<ul><li>다른 DLL을 새로 <code>LoadLibrary</code>하는 것(이미 로드된 DLL에 대한 <code>GetModuleHandle</code>은 대체로 안전)</li><li>새 스레드를 만들고 그 스레드가 끝나기를 <code>WaitForSingleObject</code> 등으로 기다리는 것</li><li>다른 스레드와 동기화 프리미티브로 통신하려는 것</li></ul>
+<p>이 제약 때문에 실무에서는 <code>DllMain</code>은 최소한의 초기화(전역 변수 세팅, 크리티컬 섹션 초기화 등)만 하고, 무거운 초기화는 별도의 명시적 초기화 함수나 <code>DLL_THREAD_ATTACH</code> 이후 시점으로 미루도록 권장된다. 리버싱 관점에서는, 악성코드의 <code>DllMain</code>이 유난히 복잡한 로직(네트워크 통신, 복호화 루프 등)을 직접 담고 있다면 "로더 락 문제를 감수하고서라도 여기서 바로 실행되게 만든 이유가 뭘까"를 생각해볼 가치가 있다 — 프로세스 인젝션(REV-0568) 시나리오에서 <code>DllMain</code>이 페이로드 실행 지점으로 쓰이는 경우가 흔하기 때문이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA에서 진입점으로 이동했을 때 <code>WinMain</code>이 아니라 <code>GetStartupInfoW</code>, <code>GetCommandLineW</code>를 호출하는 짧은 함수가 보임 — CRT 시작 함수</li><li>DLL을 IDA로 열었을 때, Export 여부와 무관하게 진입점 함수가 4개 인자(<code>hinstDLL</code>, <code>fdwReason</code>, <code>lpvReserved</code>, 그리고 반환형 <code>BOOL</code>)를 가진 형태로 보이면 <code>DllMain</code></li><li><code>fdwReason</code> 값에 따라 분기하는 <code>switch</code>/<code>cmp</code> 코드가 <code>DllMain</code> 초반에 있음 — 각 분기가 <code>DLL_PROCESS_ATTACH</code>(1) 등에 대응</li><li>x64dbg로 DLL 로드 순간에 브레이크포인트를 걸면, <code>DLL_PROCESS_ATTACH</code>로 호출되는 순간을 실제로 관찰할 수 있음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>IDA에서 EXE 진입점으로 이동했는데 익숙한 코드가 아니라면, 당황하지 말고 그 함수 안에서 호출되는 다른 함수들을 하나씩 따라간다. 보통 <code>GetStartupInfoW</code> 호출 직후, 준비된 인자들을 들고 실제 <code>WinMain</code>/<code>main</code>을 호출하는 지점이 나온다. DLL이라면 Export 함수 목록과 별개로, 진입점 자체가 <code>DllMain</code>이라는 것을 먼저 확인하고 <code>fdwReason</code> 분기부터 읽는다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 실제 OS 진입점과 개발자 함수 구분</strong> <code>AddressOfEntryPoint</code>가 가리키는 함수가 CRT 시작 함수인지 확인한다(<code>GetStartupInfo</code>/<code>GetCommandLine</code> 호출 패턴).</p>
+<p><strong>2) EXE라면 WinMain/wWinMain 구분</strong> 호출되는 함수의 인자 타입에서 세 번째 인자가 단일 바이트 문자열 포인터로 쓰이면 <code>WinMain</code>, 유니코드(2바이트 단위) 문자열로 쓰이면 <code>wWinMain</code>이다.</p>
+<p><strong>3) DLL이라면 DllMain의 fdwReason 분기부터 확인</strong> <code>DLL_PROCESS_ATTACH</code>(1) 분기가 보통 가장 중요한 초기화 로직을 담고 있다.</p>
+<p><strong>4) DllMain 안에서 위험한 호출이 있는지 점검</strong> <code>LoadLibrary</code>, <code>CreateThread</code>+대기, 동기화 API 호출이 있다면 로더 락 관련 제약을 어기고 있을 가능성을 염두에 두고 분석한다.</p>
+<p><strong>5) 동적으로 각 시점 관찰</strong> x64dbg의 옵션에서 "Break on DLL load/unload"를 켜거나, <code>DllMain</code> 시작 지점에 직접 브레이크포인트를 걸어 <code>fdwReason</code> 레지스터/스택 값을 실시간으로 확인한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">IDA: Jump → Jump to address(G) → AddressOfEntryPoint 값으로 이동
+IDA: 진입점 함수 더블클릭으로 호출되는 하위 함수들을 순차 확인
+x64dbg: Options → Preferences → Events → "DLL Load"/"DLL Unload" 체크 후
+        실행하면 DllMain 호출 시점 근처에서 자동 정지
+x64dbg: DllMain 주소에 직접 브레이크포인트(F2) 설정 후 fdwReason(두 번째 인자) 값 확인</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>fdwReason == 1</code>(<code>DLL_PROCESS_ATTACH</code>) — DLL이 막 로드됨. <code>lpvReserved</code>가 <code>NULL</code>이 아니면 정적 로드(암시적 링크), <code>NULL</code>이면 <code>LoadLibrary</code>를 통한 동적 로드</li><li><code>fdwReason == 0</code>(<code>DLL_PROCESS_DETACH</code>) — DLL이 언로드되는 중. <code>lpvReserved</code>가 <code>NULL</code>이 아니면 프로세스 종료로 인한 언로드(정리 코드를 건너뛰어도 되는 경우가 많음), <code>NULL</code>이면 <code>FreeLibrary</code> 호출로 인한 명시적 언로드</li><li><code>WinMain</code>/<code>wWinMain</code>의 반환값(정수)은 프로세스 종료 코드로 이어지는 경우가 많다(<code>ExitProcess</code>에 전달)</li><li><code>DllMain</code>의 반환값이 <code>FALSE</code>이면(주로 <code>DLL_PROCESS_ATTACH</code> 시점) 로더가 로드 자체를 실패로 처리하고, 이 DLL을 사용하려던 프로세스/<code>LoadLibrary</code> 호출이 실패로 이어진다</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>IDA가 자동으로 잡아준 진입점이 <code>main</code>/<code>WinMain</code>이 아니라고 해서 "파일이 손상됐다"고 오해하는 것 — CRT 시작 함수가 정상이다.</li><li><code>WinMain</code>과 <code>wWinMain</code>을 완전히 다른 기능으로 착각하는 것 — 문자열 인코딩 차이일 뿐, 나머지 인자와 호출 관례는 동일하다.</li><li><code>DllMain</code>의 <code>fdwReason</code> 값 네 가지를 헷갈려서, 스레드가 생길 때마다 <code>DLL_PROCESS_ATTACH</code> 로직이 다시 실행된다고 착각하는 것 — 프로세스 최초 로드 시 딱 한 번만 <code>DLL_PROCESS_ATTACH</code>가 온다.</li><li><code>DllMain</code> 안에서 <code>LoadLibrary</code>나 스레드 대기를 발견했는데도 이것이 데드락을 유발할 수 있다는 위험성을 인식하지 못하고 그냥 "초기화 코드"로만 넘어가는 것.</li><li><code>hPrevInstance</code> 인자를 실제로 의미 있는 값으로 취급해서 분석 시간을 낭비하는 것 — 항상 <code>NULL</code>이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>진입점과 CRT 시작 함수 전반이 헷갈리면 → <a href="rev-0121-entry-point-winmain.html">REV-0121 Entry Point와 WinMain 찾기</a></li><li>DLL 분석을 어디서부터 시작할지 감이 안 잡히면 → <a href="rev-0135-dll-analysis-start.html">REV-0135 DLL 문제 분석 시작하기</a></li><li>Subsystem과 진입점 함수 종류의 관계가 궁금하면 → <a href="rev-0564-subsystem-console-gui.html">REV-0564 콘솔 프로그램과 GUI 프로그램 서브시스템 차이</a></li><li>TLS 콜백처럼 <code>WinMain</code>보다도 더 먼저 실행되는 코드가 궁금하면 → <a href="rev-0133-tls-callback.html">REV-0133 TLS Callback과 main 이전 코드</a></li></ul>
+<h2>미니 예제</h2>
+<p><code>payload.dll</code>을 IDA로 열어 진입점을 확인했다고 하자.</p>
+<pre><code class="language-asm">; 진입점 (DllMain)
+BOOL WINAPI DllEntryPoint(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved)
+{
+  if (fdwReason == 1)   // DLL_PROCESS_ATTACH
+  {
+    sub_10004000();     // 실제 초기화 함수 호출
+  }
+  return TRUE;
+}</code></pre>
+<pre><code class="language-text">1) fdwReason 분기에서 값 1(DLL_PROCESS_ATTACH)일 때만 sub_10004000을 호출하는 것을 확인.
+2) sub_10004000 내부를 보니 CreateThread로 새 스레드를 만들고
+   WaitForSingleObject로 그 스레드가 끝나길 기다리는 코드가 있음.
+3) 이것이 로더 락 데드락을 유발할 수 있는 전형적인 안티패턴임을 인지.
+   → 실제로 이 DLL을 LoadLibrary로 로드하는 프로세스가
+      간헐적으로 멈추는 증상이 있다면, 바로 이 지점이 원인일 가능성이 높다.
+4) x64dbg로 DllMain 진입 시 fdwReason 값을 직접 확인해
+   DLL_PROCESS_ATTACH(1) 타이밍에 정확히 이 로직이 실행되는지 검증.</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0121-entry-point-winmain.html">REV-0121 — Entry Point와 WinMain 찾기</a></li><li><a href="rev-0135-dll-analysis-start.html">REV-0135 — DLL 문제 분석 시작하기</a></li><li><a href="rev-0564-subsystem-console-gui.html">REV-0564 — 콘솔 프로그램과 GUI 프로그램 서브시스템 차이</a></li><li><a href="rev-0133-tls-callback.html">REV-0133 — TLS Callback과 main 이전 코드</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>WinMain</code>/<code>wWinMain</code>/<code>DllMain</code> 함수 시그니처와 <code>mainCRTStartup</code> 계열 CRT 시작 함수: Microsoft Learn "WinMain entry point" / "DllMain entry point" 공식 문서 기준 (2026-09-08 검증).</li><li><code>fdwReason</code>(<code>DLL_PROCESS_ATTACH</code> 등) 값과 각 호출 시점, <code>lpvReserved</code>의 정적/동적 로드 구분 의미: Microsoft Learn "DllMain entry point" 공식 문서 기준.</li><li>로더 락(Loader Lock)과 <code>DllMain</code> 안에서 피해야 할 동작(LoadLibrary, 스레드 동기화 대기 등): Microsoft Learn "Dynamic-Link Library Best Practices" 공식 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

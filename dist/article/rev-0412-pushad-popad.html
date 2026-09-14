@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PUSHAD와 POPAD 차이 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>PUSHAD와 POPAD 차이</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>PUSHAD</code>는 32비트 범용 레지스터 8개(EAX, ECX, EDX, EBX, ESP, EBP, ESI, EDI)를 한 번에 스택에 저장하고 <code>POPAD</code>는 반대로 복원하는 명령어로, <a href="rev-0411-pusha-popa.html"><code>PUSHA</code>/<code>POPA</code></a>의 32비트 버전이며 마찬가지로 64비트 모드에서는 사용할 수 없다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>32비트 PE 바이너리나 셸코드에서 <code>pushad</code>, <code>popad</code>를 만났는데 왜 레지스터 8개를 한 번에 다루는지 궁금할 때</li><li>함수/스텁의 맨 앞에 <code>pushad</code>, 맨 끝에 <code>popad</code>가 있어서 "이 블록은 레지스터를 안 건드리고 지나가겠구나"라고 판단하려 할 때</li><li><code>PUSHA</code>(REV-0411)와 <code>PUSHAD</code>가 정확히 무엇이 다른지 헷갈릴 때</li><li>패커/언패킹 스텁, 32비트 CTF 익스플로잇 코드에서 이 패턴을 볼 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>PUSHAD   ; 오퍼랜드 없음
+POPAD    ; 오퍼랜드 없음</code></pre>
+<p><code>PUSHA</code>/<code>POPA</code>(REV-0411)와 동일하게 오퍼랜드가 없다.</p>
+<h3>PUSHAD가 하는 일 — 32비트 레지스터 8개를 순서대로 PUSH</h3>
+<p><code>PUSHAD</code>는 EAX, ECX, EDX, EBX, <strong>원래(시작 전) ESP 값</strong>, EBP, ESI, EDI를 이 순서로 스택에 <a href="rev-0044-push.html">PUSH</a>한다. 각 PUSH가 4바이트씩이므로 총 32바이트(8개 x 4바이트)만큼 ESP가 감소한다.</p>
+<h3>POPAD가 하는 일 — 반대 순서로 POP, ESP 슬롯은 버림</h3>
+<p><code>POPAD</code>는 EDI, ESI, EBP, <strong>(ESP 슬롯 — 읽지만 버림)</strong>, EBX, EDX, ECX, EAX 순서로 <a href="rev-0045-pop.html">POP</a>한다. ESP 자리는 <a href="rev-0411-pusha-popa.html">PUSHA/POPA</a>와 완전히 같은 이유로 실제 ESP 레지스터에 재로드되지 않는다 — 나머지 7개를 POP하면 ESP는 자연스럽게 PUSHAD 실행 전 값으로 돌아온다.</p>
+<h3>PUSHA/POPA와의 차이 — 오퍼랜드 크기와 인코딩</h3>
+<table><thead><tr><th>항목</th><th>PUSHA/POPA (REV-0411)</th><th>PUSHAD/POPAD (이 문서)</th></tr></thead><tbody><tr><td>레지스터 크기</td><td>16비트 (AX, BX, CX, DX, SP, BP, SI, DI)</td><td>32비트 (EAX, EBX, ECX, EDX, ESP, EBP, ESI, EDI)</td></tr><tr><td>스택 소비량</td><td>16바이트 (8 x 2)</td><td>32바이트 (8 x 4)</td></tr><tr><td>주 사용 환경</td><td>16비트 코드 세그먼트 (DOS, 부트로더 초기 단계)</td><td>32비트 코드 세그먼트 (32비트 PE/ELF, 셸코드)</td></tr></tbody></table>
+<p>두 명령어는 사실 <strong>같은 오피코드(<code>0x60</code>/<code>0x61</code>)를 공유</strong>하며, 실행되는 코드 세그먼트의 기본 오퍼랜드 크기(D 비트)와 <code>66h</code>(오퍼랜드 크기 오버라이드) 접두사 유무의 조합으로 어셈블러가 <code>PUSHA</code>로 어셈블할지 <code>PUSHAD</code>로 어셈블할지 결정한다. 32비트 기본 세그먼트에서는 접두사 없는 <code>0x60</code>이 <code>PUSHAD</code>, <code>66h 0x60</code>이 <code>PUSHA</code>가 된다(16비트 세그먼트에서는 반대).</p>
+<h3>플래그 변화</h3>
+<p><code>PUSHAD</code>/<code>POPAD</code> 자체는 플래그를 전혀 건드리지 않는다.</p>
+<h3>signed/unsigned 관점</h3>
+<p>해당 없음 — 레지스터 값을 그대로 복사하는 연산이다.</p>
+<h3>스택/ESP 변화</h3>
+<pre><code>PUSHAD 실행 전: ESP = S
+PUSHAD 실행 후: ESP = S - 32
+POPAD  실행 후: ESP = S       (정확히 복귀)</code></pre>
+<h3>왜 64비트 모드에서는 쓸 수 없는가</h3>
+<p><code>PUSHA</code>/<code>POPA</code>와 정확히 같은 이유다 — 오피코드 <code>0x60</code>/<code>0x61</code>이 x64 모드에서는 유효하지 않은 인코딩으로 처리되며(REX 접두사 도입으로 오피코드 공간이 재구성되면서 되살리지 않기로 결정), 이 바이트를 실행하면 <code>#UD</code> 예외가 발생한다. <code>PUSHADQ</code>/<code>POPADQ</code> 같은 64비트 버전도 아예 존재하지 않는다 — 애초에 x64에는 EFLAGS 위치의 원래 ESP 저장 슬롯 개념 자체가 다시 도입되지 않았다.</p>
+<h3>리버싱 의미 — 32비트 셸코드/패커 스텁의 전형적 패턴</h3>
+<p><code>PUSHAD ... POPAD</code>로 감싸진 코드 블록은 "이 안에서 레지스터를 마음껏 써도 밖에서는 아무 영향이 없다"는 뜻이다. 이 패턴은 다음에서 특히 자주 나타난다:</p>
+<ul><li><strong>32비트 셸코드</strong>: 페이로드를 실행하기 전에 <code>pushad</code>로 호출 환경의 레지스터를 백업하고, 실행 후 <code>popad</code>로 복원해서 원래 실행 흐름(감염된 프로세스)이 눈치채지 못하게 하는 전형적 기법.</li><li><strong>패커/언패킹 스텁</strong>: 실행 파일의 진입점에서 압축 해제 루틴이 온갖 레지스터를 자유롭게 사용한 뒤, 실제 OEP(Original Entry Point)로 넘어가기 직전에 <code>popad</code>로 레지스터를 되돌려서 마치 아무 일도 없었던 것처럼 원본 프로그램이 시작되게 만드는 경우가 많다(UPX 등 일부 패커의 스텁 구조에서 관찰되는 패턴).</li><li><strong>32비트 익스플로잇/ROP 준비 코드</strong>: 레지스터 상태를 한 번에 저장/복원할 때.</li></ul>
+<h3>컴파일러 패턴</h3>
+<p><code>PUSHA</code>/<code>POPA</code>와 마찬가지로 일반 C 컴파일러는 <code>PUSHAD</code>/<code>POPAD</code>를 자동 생성하지 않는다. 손으로 작성된 어셈블리, 셸코드, 패커 스텁에서만 나타난다고 보면 된다.</p>
+<h3>IDA/Ghidra 디컴파일에서 보이는 형태</h3>
+<p>IDA는 <code>pushad</code>/<code>popad</code>를 그대로 표시한다. Hex-Rays는 이를 직접적인 C 표현으로 변환하지 못하는 경우가 많아, 함수 시작/끝의 레지스터 저장 관례로 뭉뚱그려 처리하거나 디컴파일이 부정확해질 수 있다 — 이런 경우 어셈블리 원문을 직접 읽는 것이 더 정확하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>pushad</code> ... <code>popad</code> — 32비트 코드 블록 전체에서 레지스터를 보존하는 전형적 래핑</li><li>함수/스텁 진입부의 <code>pushad</code> — "이 함수는 호출자의 레지스터를 건드리지 않는다"는 신호</li><li>패커 스텁 끝부분의 <code>popad</code> 직후 <code>jmp</code>(OEP로 점프) — 언패킹 완료 후 원본 코드로 넘어가는 전형적 지점</li><li>x64 바이너리에서는 절대 등장하지 않음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>pushad</code>와 짝을 이루는 <code>popad</code>의 위치를 찾아 그 사이 전체를 하나의 "레지스터 보존 블록"으로 묶는다.</li><li><code>popad</code> 직후에 무엇이 오는지 확인한다 — <code>jmp</code>(특히 계산된 주소로)가 온다면 OEP(원본 진입점)로의 점프일 가능성을 의심한다(언패킹 완료 신호).</li><li>이 파일이 32비트 대상이 맞는지 확인한다(x64에서는 존재할 수 없는 명령어이므로).</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 기본 저장/복원 인식</strong></p>
+<pre><code class="language-asm">pushad
+mov  eax, 1234h
+mov  ebx, 5678h
+; 레지스터를 자유롭게 사용
+popad
+; 이 지점부터 모든 32비트 레지스터가 pushad 이전 값으로 복원됨</code></pre>
+<p><strong>2) 패커 스텁에서의 전형적 사용 (언패킹 → OEP 점프)</strong></p>
+<pre><code class="language-asm">unpack_stub:
+    pushad
+    ; ... 압축 해제 루프 (온갖 레지스터 사용) ...
+    popad
+    jmp   original_entry_point   ; OEP로 점프 — 언패킹 완료 신호</code></pre>
+<p>이 패턴을 보면 디버거에서 <code>popad</code> 다음의 <code>jmp</code> 대상 주소에 브레이크포인트를 걸고 실행하면 OEP에 바로 도달할 수 있다.</p>
+<p><strong>3) 32비트 셸코드에서의 사용</strong></p>
+<pre><code class="language-asm">shellcode_start:
+    pushad             ; 감염된 프로세스의 레지스터 백업
+    call  do_payload
+    popad               ; 복원 -&gt; 감염된 프로세스는 아무 일 없었던 것처럼 계속 실행
+    jmp   original_code</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg(32비트 대상, x32dbg): <code>pushad</code> 실행 전후 레지스터 창과 스택 창을 비교하면 8개 값이 정확히 32바이트로 쌓이는 것을 확인 가능</li><li>IDA: <code>popad</code> 바로 다음의 <code>jmp</code> 대상에 브레이크포인트를 걸어 언패킹 완료 지점(OEP) 탐색에 활용</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>pushad</code> 실행 후 ESP가 정확히 32만큼 감소했는지 확인한다.</li><li><code>popad</code> 실행 후 ESP가 <code>pushad</code> 실행 전 값으로 정확히 복귀했는지 확인한다.</li><li>패커 분석 중이라면 <code>popad</code> 직후 레지스터 값들이 이제 "원본 프로그램이 기대하는 초기 상태"와 비슷해 보이는지 관찰한다(EAX가 특정 의미 있는 값으로 바뀌어 있는 경우가 흔함).</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>PUSHAD</code>가 x64에서도 동작한다고 가정하는 것 — <code>#UD</code> 예외가 발생하는 유효하지 않은 인코딩이다.</li><li><code>PUSHA</code>(16비트)와 <code>PUSHAD</code>(32비트)를 같은 것으로 혼동해서 스택 소비량을 잘못 계산하는 것 — 16바이트 vs 32바이트로 다르다.</li><li><code>POPAD</code>가 ESP 자체도 스택에서 읽은 값으로 덮어쓴다고 착각하는 것 — 그 슬롯은 버려진다.</li><li>패커 스텁의 <code>pushad</code>/<code>popad</code> 블록 안을 명령어 단위로 하나하나 분석하려는 것 — 대부분은 "이 블록의 순수한 목적(압축 해제)"만 파악하면 되고, 굳이 모든 명령어를 이해할 필요는 없다(REV-0071의 Step Over 개념과 같은 발상).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>x64 바이너리인데 <code>pushad</code>가 보인다면 → 실제로는 임베디드된 32비트 서브 모듈, 혹은 디스어셈블 위치 오분석을 의심한다.</li><li>패커로 보이는 스텁을 분석 중이라면 → <code>pushad</code>로 시작해서 <code>popad</code> + <code>jmp</code>로 끝나는 구간을 찾아 그 <code>jmp</code>의 목적지를 OEP 후보로 표시해둔다.</li><li>스택이 어긋나 보이면 → <code>pushad</code>/<code>popad</code>가 정확히 짝을 이루는지, 그 사이에 수동 <code>push</code>/<code>pop</code>이 균형 없이 섞여 있지 않은지 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 기본 저장/복원</strong></p>
+<pre><code class="language-asm">pushad
+mov  eax, 0deadbeefh
+; ... eax 등을 마음대로 사용 ...
+popad
+; eax는 pushad 이전 값으로 복원됨</code></pre>
+<p><strong>예제 2 — 패커 스텁 → OEP 점프</strong></p>
+<pre><code class="language-asm">entry:
+    pushad
+    call  decompress_routine
+    popad
+    jmp   00401000h      ; OEP로 점프, 언패킹 완료</code></pre>
+<p><strong>예제 3 — 32비트 셸코드 레지스터 보존</strong></p>
+<pre><code class="language-asm">start:
+    pushad
+    call  find_kernel32
+    call  resolve_apis
+    call  run_payload
+    popad
+    jmp   original_ep</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0411-pusha-popa.html">REV-0411 — PUSHA와 POPA: 레거시 32비트 일괄 저장/복원</a></li><li><a href="rev-0044-push.html">REV-0044 — PUSH: 스택에 값 넣기</a></li><li><a href="rev-0045-pop.html">REV-0045 — POP: 스택에서 값 꺼내기</a></li><li><a href="rev-0046-pushf-popf.html">REV-0046 — PUSHF와 POPF: 플래그 저장과 복원</a></li><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>PUSHAD/POPAD 명령어의 레지스터 순서, 스택 변화, ESP 슬롯이 버려지는 동작, 64비트 모드에서 유효하지 않은 인코딩: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "PUSHA/PUSHAD—Push All General-Purpose Registers" / "POPA/POPAD—Pop All General-Purpose Registers" 섹션 기준 (2026-09-08 검증).</li><li>패커 스텁에서 pushad/popad + OEP 점프 패턴: 다수의 공개 언패킹 튜토리얼 및 리버싱 교육 자료에서 공통적으로 설명하는 관찰된 실무 패턴.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

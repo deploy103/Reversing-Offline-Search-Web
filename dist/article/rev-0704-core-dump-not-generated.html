@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Core dump가 생성되지 않을 때 설정 확인하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>Core dump가 생성되지 않을 때 설정 확인하기</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">ulimit</span><span class="tag">coredumpctl</span><span class="tag">sysctl</span></div>
+<h2>한 줄 요약</h2>
+<p>셸이 <code>Segmentation fault (core dumped)</code>라고 출력해도 실제로 <code>core</code> 파일이 생성되지 않는 경우가 흔한데, 원인은 대부분 <code>ulimit -c 0</code>(core 크기 제한 0)이거나 <code>/proc/sys/kernel/core_pattern</code>이 <code>apport</code>나 <code>systemd-coredump</code> 같은 다른 프로그램으로 파이프되어 있어서 현재 디렉터리가 아닌 다른 곳에 저장되기 때문이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>콘솔에는 <code>(core dumped)</code>라고 나오는데 <code>ls</code>로 봐도 현재 디렉터리에 <code>core</code> 파일이 없을 때</li><li>REV-0703 절차대로 GDB에서 크래시를 사후 분석(<code>gdb ./chall core</code>)하려는데 core 파일 자체가 없어서 시작을 못 할 때</li><li>Docker 컨테이너나 CI 환경에서 core dump가 전혀 안 남을 때</li><li>setuid 바이너리를 실행했을 때만 유독 core dump가 안 생길 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>ulimit -c — 셸 세션 단위의 core 크기 제한</h3>
+<p><code>ulimit -c</code>는 현재 셸 세션에서 생성 가능한 core dump 파일의 최대 크기(KB 단위)를 정한다. 많은 배포판이 기본값을 <code>0</code>으로 설정해두는데, 이 경우 커널은 크래시가 나도 "만들 수 있는 최대 크기가 0이니 아예 안 만든다"고 처리해 core 파일이 생성되지 않는다. <strong>이 값은 셸(터미널) 단위로 적용</strong>되므로, 다른 터미널에서 <code>ulimit -c unlimited</code>를 설정해도 정작 프로그램을 실행하는 그 셸에서 다시 설정하지 않으면 적용되지 않는다는 점이 자주 헷갈리는 부분이다.</p>
+<h3>core_pattern — core dump가 실제로 저장되는 위치/방식을 결정</h3>
+<p><code>/proc/sys/kernel/core_pattern</code>은 커널이 core dump를 어떤 이름으로, 어디에 쓸지(또는 다른 프로그램으로 넘길지) 정하는 설정이다. 기본값이 <code>core</code>처럼 단순 파일명이면 현재 작업 디렉터리에 <code>core</code>라는 이름으로 생긴다. 하지만 Ubuntu 계열은 기본적으로 <code>|/usr/share/apport/apport %p %s %c %d %P %E</code>처럼 <strong>파이프(<code>|</code>)로 시작해서 apport라는 별도 프로그램에 core dump를 넘기도록</strong> 설정되어 있고, systemd 기반 배포판은 <code>systemd-coredump</code>로 넘기는 경우가 많다. 이 경우 현재 디렉터리에는 아무 파일도 안 남고, 대신 <code>coredumpctl list</code> 같은 별도 명령으로 조회해야 한다.</p>
+<h3>suid_dumpable — setuid 바이너리의 core dump 제한</h3>
+<p>setuid 비트가 설정된 바이너리는 보안상 기본적으로 core dump가 생성되지 않는다(<code>/proc/sys/kernel/suid_dumpable</code> 기본값 <code>0</code>). CTF에서 setuid 바이너리를 다루는데 core dump가 안 남는다면 이 설정도 원인 후보다.</p>
+<h3>컨테이너 환경의 추가 제약</h3>
+<p>Docker 컨테이너는 기본적으로 <code>ulimit -c 0</code>으로 시작하는 경우가 많고, 호스트의 <code>core_pattern</code>이 파이프 방식(<code>|...</code>)이면 그 파이프 대상 프로그램이 컨테이너 네임스페이스 밖에 있어 컨테이너 안에서 core dump가 아예 만들어지지 않을 수 있다. 이 경우 컨테이너 실행 시 <code>--ulimit core=unlimited</code>를 주고, 호스트의 <code>core_pattern</code>을 컨테이너 내부에서도 접근 가능한 단순 경로로 바꾸는 것이 필요할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code>$ ./chall
+Segmentation fault (core dumped)
+$ ls
+chall
+$ ulimit -c
+0</code></pre>
+<p><code>(core dumped)</code>라는 메시지와 실제 파일 부재가 동시에 나타나는 것이 핵심 증상이다.</p>
+<h2>가장 먼저 할 것</h2>
+<p><code>ulimit -c</code> 값부터 확인한다. <code>0</code>이면 <code>ulimit -c unlimited</code>로 바꾸고 같은 셸에서 다시 실행해본다. 그래도 안 나오면 <code>cat /proc/sys/kernel/core_pattern</code>을 확인한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>ulimit -c</code>로 현재 셸의 core 크기 제한 확인</li><li><code>0</code>이면 <code>ulimit -c unlimited</code> 실행 후 같은 셸에서 프로그램 재실행</li><li><code>cat /proc/sys/kernel/core_pattern</code> 확인 — 값이 <code>|</code>로 시작하면 apport/systemd-coredump로 위임된 것</li><li>systemd-coredump 환경이면 <code>coredumpctl list</code>로 목록 확인, <code>coredumpctl dump &lt;PID&gt; -o core.dump</code>로 실제 파일 추출</li><li>apport라면 <code>/var/crash/</code> 아래에 리포트가 쌓였는지 확인, 필요하면 apport 대신 단순 <code>core</code> 파일로 남기도록 root 권한으로 <code>core_pattern</code>을 <code>core</code>로 임시 변경(<code>echo core | sudo tee /proc/sys/kernel/core_pattern</code>)</li><li>setuid 바이너리라면 <code>cat /proc/sys/kernel/suid_dumpable</code> 확인, 필요시 값 변경(테스트 환경 한정)</li><li>Docker 컨테이너라면 <code>docker run --ulimit core=unlimited ...</code>로 재시도</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">ulimit -c
+ulimit -c unlimited
+cat /proc/sys/kernel/core_pattern
+echo core | sudo tee /proc/sys/kernel/core_pattern
+coredumpctl list
+coredumpctl dump &lt;PID&gt; -o core.dump
+cat /proc/sys/kernel/suid_dumpable
+docker run --ulimit core=unlimited ...</code></pre>
+<h2>출력 해석</h2>
+<p><code>core_pattern</code> 값이 <code>core</code>나 <code>core.%p</code>처럼 평범한 문자열이면 현재 디렉터리(또는 지정 경로)에 그 이름으로 파일이 남아야 정상이다. <code>|/usr/share/apport/apport ...</code>처럼 파이프로 시작하면 파일이 안 남는 게 정상 동작이며, <code>coredumpctl</code>이나 <code>/var/crash/</code>를 대신 봐야 한다. <code>ulimit -c</code> 값이 <code>0</code>이면 그 어떤 <code>core_pattern</code> 설정과도 무관하게 core dump 자체가 생성되지 않는다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>ulimit -c unlimited</code>를 다른 터미널 탭이나 이전 세션에서만 설정하고, 정작 프로그램을 실행하는 셸에서는 적용 안 된 상태로 착각하는 것.</li><li><code>core_pattern</code>이 apport/systemd-coredump로 위임된 걸 모르고 계속 현재 디렉터리에서만 <code>core</code> 파일을 찾는 것.</li><li>setuid 바이너리인 걸 눈치채지 못하고 일반 바이너리와 같은 방식으로 core dump가 생길 거라 기대하는 것.</li><li>GDB 안에서 <code>run</code>으로 직접 크래시를 재현하면 core dump 파일 없이도 바로 분석할 수 있다는 사실(REV-0703)을 모르고, core dump 설정만 붙잡고 시간을 쓰는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>core dump 없이도 GDB로 바로 크래시 지점을 잡는 방법이 필요하면 → REV-0703 Segmentation fault가 나는데 원인 위치를 못 찾을 때.</li><li>만들어진 core 파일을 실제로 GDB에서 여는 기본 개념이 궁금하면 → REV-0113 Core dump와 크래시 지점 분석 기초.</li><li>종료 코드만으로 시그널 종류를 먼저 좁히고 싶으면 → REV-0661 리눅스 프로세스 종료 코드(Exit Code)로 크래시 원인 좁히기.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ ulimit -c
+0
+$ ulimit -c unlimited
+$ ./chall
+Segmentation fault (core dumped)
+$ ls
+chall  core
+$ gdb ./chall core</code></pre>
+<p><code>ulimit -c unlimited</code>를 적용한 뒤에야 <code>core</code> 파일이 실제로 생성되어 <code>gdb ./chall core</code>로 사후 분석을 시작할 수 있었다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0703-segfault-locate-crash-site.html">REV-0703 — Segmentation fault가 나는데 원인 위치를 못 찾을 때</a></li><li><a href="rev-0113-core-dump-basics.html">REV-0113 — Core dump와 크래시 지점 분석 기초</a></li><li><a href="rev-0661-linux-exit-code-crash-narrowing.html">REV-0661 — 리눅스 프로세스 종료 코드(Exit Code)로 크래시 원인 좁히기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>ulimit -c</code>가 셸 세션 단위로 core dump 최대 크기를 제한하는 동작: <code>bash(1)</code> 및 <code>setrlimit(2)</code> 공식 매뉴얼 기준.</li><li><code>/proc/sys/kernel/core_pattern</code>의 파이프(<code>|</code>) 문법과 apport/systemd-coredump 위임 동작: <code>core(5)</code> 공식 매뉴얼 및 systemd <code>systemd-coredump(8)</code> 공식 문서 기준 (2026-09-09 검증).</li><li><code>suid_dumpable</code>이 setuid 바이너리의 core dump 생성 여부를 제어하는 점: Linux 커널 문서(<code>Documentation/admin-guide/sysctl/kernel.rst</code>) 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>strlen이 인라인 최적화되는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>strlen이 인라인 최적화되는 패턴</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>strlen(s)</code>는 "NUL(<code>\0</code>) 바이트가 나올 때까지 센다"는 단순한 정의 때문에 컴파일러/libc가 함수 호출 대신 <code>REPNE SCASB</code>(레거시, 1바이트씩) 또는 <code>PCMPEQB</code>+<code>PMOVMSKB</code>+<code>BSF</code>(SIMD, 16바이트씩 한 번에) 조합으로 직접 펼치는 경우가 많으며, 이 코드는 이름만 안 보일 뿐 본질은 "0을 찾는 탐색"이라는 점으로 알아볼 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>strlen</code> 호출이 있어야 할 것 같은데 <code>call strlen</code>이 안 보이고 <code>repne scasb</code> 또는 <code>pcmpeqb</code>/<code>pmovmskb</code>/<code>bsf</code> 조합이 보일 때</li><li>문자열을 다루는 함수 초반에 이상한 SIMD 코드가 있어서 "혹시 암호화나 난독화인가?" 의심될 때</li><li>IDA/Ghidra 디컴파일 결과가 <code>strlen(s)</code>로 재인식되어 나오는데 실제 어셈블리와 왜 다른지 이해하고 싶을 때</li><li><code>bsf</code>/<code>tzcnt</code>(최하위 1비트 위치 찾기)가 문자열 처리 코드 근처에 나와서 낯설 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>가장 단순한 형태 — 바이트 단위 루프</h3>
+<p>최적화 없이(<code>-O0</code>) 컴파일하면 <code>strlen</code>은 그냥 함수 호출로 남는다. 하지만 <code>-O1</code> 이상이거나 짧은 문자열/컴파일 타임에 길이를 알 수 없는 경우에도, 컴파일러 자체 빌트인 인식이나 실제 libc 구현이 다음과 같은 저수준 탐색으로 대체하는 경우가 흔하다.</p>
+<h3>REPNE SCASB — 레거시 방식</h3>
+<p><code>SCASB</code>(REV-0084)는 <code>AL</code>과 <code>[RDI]</code>가 가리키는 바이트를 비교하고 <code>RDI</code>를 1 증가시키는 명령이다. <code>REPNE</code>(REV-0080) 접두사를 붙이면 "<strong>같지 않은(NE, ZF=0) 동안</strong> 반복하고, RCX가 0이 되거나 ZF=1(같음)이 되면 멈춘다."</p>
+<pre><code class="language-asm">xor     al, al          ; 찾을 값 = 0 (NUL)
+mov     rdi, s            ; 문자열 시작 주소
+mov     rcx, -1           ; 사실상 무한대(0xFFFFFFFFFFFFFFFF)
+repne scasb
+not     rcx               ; RCX = ~RCX
+dec     rcx                ; 남은 카운트를 실제 길이로 변환</code></pre>
+<p>이 패턴은 "RCX를 매우 큰 값(-1)에서 시작해서 NUL을 찾을 때까지 1씩 깎다가, 다 끝나면 얼마나 깎였는지 역산해서 길이를 구한다"는 다소 우회적인 계산을 한다 — <code>NOT</code>+<code>DEC</code>(또는 <code>NOT</code> 후 <code>SUB 1</code>) 조합이 "1씩 감소한 카운터를 원래 길이로 되돌리는" 전형적인 관용구이니 눈에 익혀두면 좋다.</p>
+<h3>PCMPEQB + PMOVMSKB — SIMD 방식(현대 libc의 주력)</h3>
+<p>16바이트를 한 번에 검사해서 NUL의 위치를 찾는, 훨씬 빠른 현대적 방식이다.</p>
+<pre><code class="language-asm">pxor    xmm1, xmm1              ; 비교 기준값 0 준비 (REV-0392)
+loop:
+movdqu  xmm0, [rdi]             ; 문자열에서 16바이트 로드
+pcmpeqb xmm0, xmm1               ; 각 바이트가 0과 같으면 0xFF, 다르면 0x00
+pmovmskb eax, xmm0               ; 16개 바이트의 최상위 비트를 모아 16비트 정수로 만듦
+test    eax, eax
+jz      next16                   ; 이 16바이트 안에 NUL이 없으면 다음 16바이트로
+bsf     eax, eax                 ; NUL이 있는 첫 위치(비트 인덱스) 찾기
+add     rdi, rax                 ; 시작 주소 + 그 위치 = NUL의 실제 주소
+jmp     done
+next16:
+add     rdi, 10h
+jmp     loop
+done:
+sub     rdi, s                   ; NUL 주소 - 시작 주소 = 문자열 길이</code></pre>
+<p><code>PCMPEQB</code>(REV-0394와 유사 계열, 바이트별 비교)는 두 XMM 레지스터를 바이트 단위로 비교해서 같으면 <code>0xFF</code>, 다르면 <code>0x00</code>을 채운다. <code>PMOVMSKB</code>는 그 결과 XMM 레지스터의 각 바이트 최상위 비트(부호 비트)만 뽑아서 하나의 정수(최대 16비트)로 압축한다 — 즉 "16바이트 중 몇 번째 바이트들이 0이었는지"를 비트마스크로 얻는다. <code>BSF</code>(Bit Scan Forward)는 그 정수에서 최하위(가장 먼저 나오는) 1비트의 위치를 찾아, 그것이 곧 문자열 시작으로부터 몇 바이트째에 NUL이 있는지를 알려준다.</p>
+<p>시작 주소가 16바이트 정렬이 아닐 수 있으므로, 실제 libc 구현은 정렬 전 prolog(첫 몇 바이트를 개별 처리해서 이후 로드를 정렬시키는 부분)를 앞에 추가로 두는 경우가 많다 — 이 부분까지 보이면 "아, 진짜 최적화된 strlen 구현이구나"라고 확신할 수 있다.</p>
+<h3>레지스터/메모리 효과와 플래그</h3>
+<ul><li><code>PCMPEQB</code>, <code>PMOVMSKB</code>, <code>MOVDQU</code>는 <strong>EFLAGS를 변경하지 않는다.</strong></li><li><code>SCASB</code>/<code>REPNE SCASB</code>는 비교 결과에 따라 <code>CMP</code>처럼 ZF, CF, SF, OF, AF, PF를 갱신한다(REV-0060 CMP와 동일한 플래그 규칙) — <code>REPNE</code>는 이 ZF를 매 반복 검사해서 종료 조건으로 쓴다.</li><li><code>BSF</code>는 피연산자가 0이면 결과가 정의되지 않고 ZF=1을 세팅하며, 0이 아니면 ZF=0이고 EAX/RAX에 최하위 1비트 위치가 들어간다 — 그래서 <code>BSF</code> 직전에 항상 <code>TEST</code>로 0 여부를 먼저 걸러내는 코드가 붙는다.</li><li>signed/unsigned 구분은 <code>strlen</code>에는 의미가 없다 — 바이트 값을 0인지 아닌지만 비교하므로 부호와 무관하다.</li></ul>
+<h3>IDA/Ghidra에서 보이는 형태</h3>
+<p>FLIRT(IDA) 시그니처나 Ghidra의 함수 ID 데이터베이스가 잘 맞으면, 이런 SIMD/SCASB 블록을 통째로 <code>strlen</code>이라는 라이브러리 함수로 자동 인식해서 이름을 붙여준다(특히 정적 링크된 바이너리에서 흔하다). 인식이 안 되면 <code>sub_401230</code> 같은 이름 없는 함수로 남고, 디컴파일 결과에도 <code>pcmpeqb</code>/<code>pmovmskb</code> 로직이 그대로 C처럼 풀려서 나온다 — 이때 "이건 strlen이다"라고 사람이 직접 알아채야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">; 레거시 REPNE SCASB
+xor     al, al
+mov     rdi, rcx
+or      rcx, -1
+repne scasb
+not     rcx
+dec     rcx</code></pre>
+<pre><code class="language-asm">; SIMD PCMPEQB + PMOVMSKB + BSF
+pxor       xmm0, xmm0
+movdqu     xmm1, [rax]
+pcmpeqb    xmm1, xmm0
+pmovmskb   ecx, xmm1
+test       ecx, ecx
+jz         short loc_next
+bsf        ecx, ecx</code></pre>
+<pre><code class="language-asm">; IDA가 이미 재인식한 디컴파일 결과
+v3 = strlen(input);</code></pre>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>pcmpeqb</code>/<code>pmovmskb</code>나 <code>repne scasb</code>가 보이면, 비교 대상이 0(NUL)인지 먼저 확인한다(<code>pxor xmm, xmm</code>로 0을 만들었는지, <code>xor al, al</code>인지).</li><li>루프가 끝난 후 "시작 주소를 빼는" 코드(<code>sub rdi, 원본주소</code>)나 "카운터를 반전/감소시키는" 코드(<code>not</code>/<code>dec</code>)가 있는지 확인한다 — 이게 곧 "길이를 계산하는 마무리 단계"다.</li><li>결과 값(길이)이 이후 어디에 쓰이는지 추적한다(버퍼 크기 비교, 반복문 카운터 등).</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 탐색 방식 식별</strong></p>
+<p><code>repne scasb</code>면 레거시(바이트 단위) 방식, <code>pcmpeqb</code>+<code>pmovmskb</code>(+<code>bsf</code>)면 SIMD 방식이다. 어느 쪽이든 목적은 "NUL 위치 찾기"로 동일하다.</p>
+<p><strong>2) 시작 주소 확인</strong></p>
+<p><code>SCASB</code>는 <code>RDI</code>, SIMD 버전은 로드에 쓰인 레지스터(<code>RAX</code>/<code>RDX</code> 등)가 탐색 시작 주소다. 이 주소가 어떤 문자열/버퍼를 가리키는지 위쪽에서 추적한다.</p>
+<p><strong>3) 길이 계산 마무리 확인</strong></p>
+<p><code>SCASB</code> 뒤 <code>not</code>+<code>dec</code> 조합, 또는 SIMD 뒤 <code>sub 현재주소, 시작주소</code> 형태를 찾아 실제 "길이" 값이 어느 레지스터에 담기는지 확정한다.</p>
+<p><strong>4) 결과 활용처 추적</strong></p>
+<p>계산된 길이가 <code>cmp</code>로 어떤 상수와 비교되는지(예: 정확히 20이어야 통과), 또는 다른 함수의 인자로 넘어가는지 확인해서 이 strlen 호출의 목적(입력 검증, 버퍼 크기 계산 등)을 파악한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>F5</code>(디컴파일), FLIRT 시그니처 적용 여부는 함수 이름이 회색이 아니라 라이브러리 색(핑크/보라 계열)으로 나오는지로 판단, <code>X</code>로 이 계산 결과의 사용처 추적</li><li>Ghidra: Function ID 분석(Analysis → One Shot → Function ID)을 켜서 라이브러리 함수 재인식률을 높임</li><li>x64dbg/GDB: 결과 레지스터(RCX/RAX 등)에 대해 함수 끝 지점(ret 직전)에 브레이크포인트를 걸어 실제 계산된 길이 값을 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>IDA가 <code>strlen(s)</code>로 재인식하면, 원래 어셈블리는 함수 호출이 아니라 SCASB/SIMD 탐색이었다는 것을 기억한다.</li><li><code>bsf ecx, ecx</code> 직전에 <code>test ecx, ecx</code> + <code>jz</code>가 있다면, 이는 "이번 16바이트 블록에 NUL이 없으면 다음 블록으로 건너뛴다"는 뜻 — 즉 이 루프가 16바이트씩 여러 번 돌 수 있다는 신호다.</li><li><code>not rcx</code> / <code>dec rcx</code> 조합이 SCASB 직후에 있으면 그 결과가 곧 문자열 길이(NUL 제외)라는 뜻이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>pcmpeqb</code>/<code>pmovmskb</code> 조합을 보고 "패스워드 검증 로직"이나 "암호화 라운드"라고 오판하는 것 — 비교 기준이 항상 0(NUL)이고, 결과를 그대로 다음 라운드에 넘기지 않고 오직 위치(오프셋) 계산에만 쓴다면 그냥 strlen이다.</li><li><code>strlen</code>이 NUL <strong>직전까지</strong>의 길이(NUL 미포함)를 반환한다는 사실을 잊고, 이후 버퍼 크기 계산에서 +1(NUL 자리)을 빼먹거나 반대로 중복으로 더하는 것 — 이는 원본 코드 버그를 찾을 때도, 자신이 코드를 재구성할 때도 흔히 나는 실수다.</li><li><code>REPNE SCASB</code>의 <code>RCX</code> 초기값이 <code>-1</code>(사실상 매우 큰 수)이라는 걸 모르고 "왜 -1을 넣지?"라고 헷갈리는 것 — 이는 "찾을 때까지 사실상 무제한 반복"하겠다는 의도이며, 최종 길이는 얼마나 반복했는지를 역산해서 얻는다.</li><li>SIMD strlen이 실제로는 스트립된 정적 링크 libc 함수(예: <code>_strlen_sse2</code> 같은 내부 심볼)인데, 이를 "이 프로그램이 직접 짠 이상한 문자열 처리 함수"라고 착각하는 것 — 함수 시작부에 정렬 prolog나 다양한 CPU 기능(SSE2/AVX2)별 분기가 있으면 컴파일러/libc가 제공하는 최적화된 표준 함수일 가능성이 높다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>이 코드가 <code>strlen</code>인지 <code>strnlen</code>(길이 상한이 있는 버전)인지 헷갈리면 → 루프에 "남은 최대 길이"를 매 반복 감소시키며 0이 되면 강제 종료하는 별도 카운터가 있는지 확인 — 있으면 <code>strnlen</code>이다.</li><li>SIMD strlen을 처음 봐서 명령어 하나하나가 낯설다면 → REV-0392(PXOR), REV-0394(PCMPEQB), REV-0389(MOVDQA/MOVDQU) 개별 명령 항목을 먼저 읽는다.</li><li>함수가 자동으로 <code>strlen</code>이라고 이름 붙지 않는데 패턴은 확실해 보인다면 → 직접 이름을 바꿔주고(IDA <code>N</code>), 이후 호출 지점들이 자연스럽게 읽히는지 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 레거시 SCASB 패턴 (x86, 32비트 예시)</strong></p>
+<pre><code class="language-c">int len = strlen(s);</code></pre>
+<pre><code class="language-asm">xor     al, al
+mov     edi, s
+mov     ecx, 0FFFFFFFFh
+repne scasb
+not     ecx
+dec     ecx          ; ecx = len</code></pre>
+<p><strong>예제 2 — 현대 SIMD 패턴 (x64)</strong></p>
+<pre><code class="language-c">size_t n = strlen(buf);
+if (n &gt; 32) truncate();</code></pre>
+<pre><code class="language-asm">mov     rax, buf
+pxor    xmm0, xmm0
+loop_16:
+movdqu  xmm1, [rax]
+pcmpeqb xmm1, xmm0
+pmovmskb ecx, xmm1
+test    ecx, ecx
+jnz     found
+add     rax, 10h
+jmp     loop_16
+found:
+bsf     ecx, ecx
+add     rax, rcx
+sub     rax, buf     ; rax = strlen(buf)
+cmp     rax, 20h
+jbe     skip_truncate
+call    truncate</code></pre>
+<p><strong>예제 3 — 짧은 고정 문자열은 컴파일 시점에 상수로 치환</strong></p>
+<pre><code class="language-c">if (strlen("hello") == 5) { ... }</code></pre>
+<p>컴파일러는 리터럴 문자열의 길이를 컴파일 시점에 이미 알고 있으므로, 아예 탐색 코드조차 만들지 않고 <code>if (5 == 5)</code> → 항상 참으로 상수 폴딩(constant folding)해버린다. 이 경우 어셈블리에 <code>strlen</code> 흔적이 전혀 남지 않는다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0447-memset-simd-pattern.html">REV-0447 — memset이 SIMD 명령으로 인라인되는 패턴</a></li><li><a href="rev-0448-memcpy-simd-pattern.html">REV-0448 — memcpy가 SIMD 명령으로 인라인되는 패턴</a></li><li><a href="rev-0080-rep-prefix.html">REV-0080 — REP Prefix와 반복 문자열 명령</a></li><li><a href="rev-0084-scas.html">REV-0084 — SCAS와 문자열 검색 패턴</a></li><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>SCASB</code>/<code>REPNE</code> 동작과 플래그 영향(ZF 등 CMP와 동일 규칙): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2, "SCAS/SCASB/SCASW/SCASD/SCASQ" 및 "REP/REPE/REPZ/REPNE/REPNZ" 항목 기준.</li><li><code>PCMPEQB</code>, <code>PMOVMSKB</code>, <code>BSF</code> 동작과 플래그 영향: Intel SDM Volume 2 각 명령어 항목(Operation, Flags Affected) 기준.</li><li>glibc/최신 CRT의 SIMD 기반 <code>strlen</code> 구현 전략(정렬 prolog + 16바이트 블록 스캔)은 공개된 glibc <code>sysdeps</code> SIMD 문자열 함수 구현 관례 기준.</li><li>FLIRT 시그니처 및 Ghidra Function ID를 통한 라이브러리 함수 재인식: Hex-Rays 공식 문서(FLIRT) 및 Ghidra 공식 문서(Function ID) 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

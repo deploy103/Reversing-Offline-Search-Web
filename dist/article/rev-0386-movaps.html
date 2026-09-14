@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MOVAPS: 정렬된 XMM 레지스터 이동 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>MOVAPS: 정렬된 XMM 레지스터 이동</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>MOVAPS</code>는 128비트 XMM 레지스터와 <strong>16바이트 정렬된</strong> 메모리(또는 다른 XMM 레지스터) 사이에서 4개의 single-precision(32비트) float를 한 번에 통째로 옮기는 SIMD 명령이며, 메모리 오퍼랜드가 16바이트 경계에 있지 않으면 예외(#GP)를 낸다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리에 <code>movaps xmm0, [rax]</code> 같은 코드가 처음 나와서 XMM이 뭔지부터 막힐 때</li><li>함수 시작부에 <code>movaps</code> 여러 줄이 몰려 있어서(레지스터 저장/복원) 이게 SIMD 계산인지 단순 데이터 이동인지 헷갈릴 때</li><li><code>movaps</code>가 실행되다가 크래시(예외)가 나서 "정렬이 안 맞은 것 같다"는 실마리를 확인하고 싶을 때</li><li><code>float</code>/<code>double</code> 배열을 다루는 C 코드가 왜 스칼라 연산 대신 SIMD 명령으로 컴파일됐는지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>XMM 레지스터란</h3>
+<p>x86/x64 CPU는 SSE(Streaming SIMD Extensions) 확장으로 <strong>128비트 XMM 레지스터</strong>를 갖는다. x64에서는 <code>xmm0</code>~<code>xmm15</code>(x86에서는 <code>xmm0</code>~<code>xmm7</code>)가 존재하며, 각 XMM 레지스터는 다음 중 하나로 해석될 수 있다:</p>
+<ul><li>4개의 32비트 single-precision float (packed single, <code>PS</code>)</li><li>2개의 64비트 double-precision float (packed double, <code>PD</code>)</li><li>16/8/4개의 8/16/32비트 정수 (packed integer)</li><li>맨 앞 하나의 값만 쓰는 scalar 형태(<code>SS</code>=scalar single, <code>SD</code>=scalar double)</li></ul>
+<p>즉 <code>PS</code>/<code>PD</code>는 "레지스터 하나에 여러 값을 나란히 담아 한 번에 처리(packed)"한다는 뜻이고, <code>SS</code>/<code>SD</code>는 "레지스터의 맨 아래 한 칸만 쓴다(scalar)"는 뜻이다. 이 접미사 규칙(P=packed, S=scalar, S=single, D=double)은 다른 SIMD 명령에도 그대로 적용된다.</p>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>MOVAPS xmm_dest, xmm/m128_src
+MOVAPS xmm/m128_dest, xmm_src</code></pre>
+<ul><li>오퍼랜드는 XMM 레지스터 또는 128비트(16바이트) 메모리이며, 둘 중 하나는 반드시 XMM 레지스터여야 한다(메모리-메모리 이동 불가는 일반 MOV와 동일).</li><li><code>A</code>는 <strong>Aligned</strong>, <code>PS</code>는 <strong>Packed Single-precision</strong>의 약자다. 즉 이름 자체가 "정렬된 상태로 4개의 float를 통째로 옮긴다"는 뜻을 담고 있다.</li></ul>
+<h3>정렬 요구사항 — 리버싱에서 가장 중요한 특징</h3>
+<p><code>MOVAPS</code>의 메모리 오퍼랜드는 <strong>반드시 16바이트 경계(주소가 0x10의 배수)</strong> 에 있어야 한다. 정렬이 맞지 않으면 CPU가 <strong>#GP(General Protection Fault)</strong> 예외를 발생시켜 프로그램이 즉시 크래시한다. 이는 스칼라 <code>MOV</code>에는 없는, SIMD 정렬 명령만의 엄격한 제약이다. 반대로 정렬 여부와 무관하게 항상 동작하는 버전이 <a href="rev-0387-movups.html">MOVUPS</a>(Unaligned)다.</p>
+<h3>레지스터/메모리 효과</h3>
+<ul><li>데이터 방향은 일반 <code>MOV</code>와 동일하게 첫 번째 오퍼랜드가 목적지, 두 번째가 소스다.</li><li>이동 크기는 항상 128비트(16바이트) 전체이며, 값의 의미(그게 float 4개인지 그냥 임의의 바이트 뭉치인지)는 해석하지 않고 비트 그대로 복사한다.</li></ul>
+<h3>플래그 변화</h3>
+<p><code>MOVAPS</code>는 <strong>EFLAGS를 전혀 건드리지 않는다.</strong> 데이터 이동일 뿐 산술/논리 연산이 아니기 때문이다.</p>
+<h3>스택/RSP/RIP 변화</h3>
+<p>없음. 단, 함수 프롤로그에서 콜리-세이브(callee-saved) XMM 레지스터를 스택에 저장할 때 <code>movaps [rsp+N], xmm6</code> 형태로 등장하기도 한다(Windows x64 ABI에서는 <code>xmm6</code>~<code>xmm15</code>가 non-volatile).</p>
+<h3>컴파일러가 MOVAPS를 쓰는 이유</h3>
+<p>C 소스에 명시적인 SIMD 코드가 전혀 없어도, 컴파일러(GCC/Clang/MSVC)는 최적화 단계에서 다음과 같은 상황을 자동으로 벡터화(auto-vectorization)해서 <code>MOVAPS</code> 계열 명령을 생성한다:</p>
+<ul><li><code>float buf[4]</code> 같은 구조체/배열을 통째로 복사하거나 초기화할 때</li><li>반복문에서 4개씩 묶어 float 연산을 처리할 수 있을 때(루프 벡터화)</li><li><code>memcpy</code>/구조체 대입에서 크기가 16의 배수인 블록을 옮길 때</li></ul>
+<p>즉 <strong>스칼라처럼 보이는 C 코드가 <code>MOVAPS</code>로 컴파일되는 것은 매우 흔한 일</strong>이며, 이것이 "SIMD를 쓴다는 것 자체가 특별한 알고리즘을 의미하지 않는다"는 점을 아는 것이 중요하다.</p>
+<h3>IDA/Ghidra 디컴파일에서 보이는 방식</h3>
+<p>IDA F5와 Ghidra 모두 <code>movaps</code>를 대부분 구조체 대입(<code>*(_QWORD *)(dst) = ...</code>, <code>local_var = src_var;</code>) 또는 float 배열 복사 형태로 정리한다. 벡터화된 루프는 종종 <code>undefined1 auVarN [16];</code> 같은 임시 128비트 변수나 SIMD 인트린식(<code>_mm_load_ps</code> 등)으로 표현되기도 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>함수 프롤로그/에필로그에서 <code>movaps [rsp+0x20], xmm6</code> 같은 저장/복원 — non-volatile XMM 레지스터 보존</li><li>구조체/배열 복사 코드에서 <code>movaps xmm0, [rax]</code> 뒤 <code>movaps [rdx], xmm0</code> — 16바이트 블록 통째 복사</li><li>루프 안에서 <code>movaps</code> + <code>addps</code>/<code>mulps</code> 조합 — 벡터화된 산술 루프</li><li>크래시 덤프에서 <code>movaps</code> 명령 주소에서 예외 발생 — 정렬 안 된 포인터를 SIMD 코드에 넘겼을 가능성</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>오퍼랜드가 XMM-XMM인지 XMM-메모리인지 확인한다.</li><li>메모리 오퍼랜드라면 그 주소가 16바이트 정렬되어 있을 것으로 기대되는 상황인지(스택 정렬, <code>malloc</code>/<code>_aligned_malloc</code> 결과 등) 확인한다.</li><li>앞뒤로 <code>addps</code>/<code>mulps</code>/<code>pxor</code> 등 다른 SIMD 명령이 있는지 봐서 단순 데이터 이동인지 실제 벡터 연산인지 구분한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 레지스터 저장/복원 인식</strong></p>
+<pre><code class="language-asm">sub  rsp, 0x30
+movaps [rsp+0x20], xmm6
+...
+movaps xmm6, [rsp+0x20]
+add  rsp, 0x30
+ret</code></pre>
+<p>→ <code>xmm6</code>을 함수 시작에서 스택에 백업했다가 끝에서 복원(콜리-세이브 관례).</p>
+<p><strong>2) 정렬 크래시 원인 진단</strong> 디버거(x64dbg/GDB)로 예외 발생 주소를 확인하고, 소스 오퍼랜드 레지스터(예: <code>rax</code>)의 값을 확인해 <code>주소 % 16 != 0</code>이면 정렬 문제로 확정한다.</p>
+<p><strong>3) 벡터화된 float 복사 구분</strong> <code>movaps</code> 뒤에 산술 명령 없이 바로 다른 <code>movaps</code>(저장)만 이어지면 순수 복사(<code>memcpy</code>류)로 판단한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: XMM 레지스터 값은 디버거 레지스터 창의 "SSE"/"XMM" 하위 탭에서 확인, F5로 디컴파일 시 구조체 대입으로 정리됨</li><li>x64dbg: 레지스터 패널 하단 XMM 레지스터 표시 영역에서 <code>xmm0</code>~<code>xmm15</code> 각 16바이트 값을 16진수/float로 확인 가능</li><li>GDB/Pwndbg: <code>info registers xmm0</code>, <code>p $xmm0.v4_float</code>로 4개의 float 값을 각각 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>x64dbg의 XMM 뷰는 16바이트를 4개의 float(또는 다른 포맷)로 나눠 보여준다 — <code>movaps</code> 실행 전후로 이 값이 통째로 바뀌는지 비교하면 이동 여부를 바로 확인할 수 있다.</li><li>예외 발생 시 x64dbg/WinDbg는 "Access violation"을, GDB는 <code>SIGSEGV</code>(정렬 문제는 실제로는 <code>SIGSEGV</code>가 아니라 <code>SIGSEGV</code>로 잡히는 #GP)로 보고한다 — 주소를 16으로 나눠 나머지를 확인하는 습관을 들인다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>MOVAPS</code>와 <code>MOVUPS</code>를 아무 데나 바꿔 써도 된다고 착각하는 것 — <code>MOVAPS</code>는 정렬이 안 맞으면 반드시 크래시한다. 디스어셈블리에서 어떤 명령이 쓰였는지가 곧 "이 메모리가 정렬되어 있다고 컴파일러가 확신했다"는 증거다.</li><li>XMM 레지스터를 정수 레지스터(EAX 등)와 같은 방식으로 값 하나만 있다고 생각하는 것 — 128비트 안에 최대 4개의 32비트 값이 동시에 들어 있을 수 있다.</li><li><code>movaps</code>를 보고 무조건 "복잡한 SIMD 알고리즘"이라 겁먹는 것 — 대부분은 컴파일러가 자동 생성한 단순 복사/초기화다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>크래시 원인이 <code>movaps</code>라면 → 소스/목적지 메모리 주소가 16의 배수인지 계산기로 확인.</li><li>어떤 값이 옮겨지는지 모르겠다면 → 디버거의 XMM 레지스터 뷰에서 float 4개로 해석된 값을 직접 확인.</li><li>이 코드가 계산인지 이동인지 헷갈리면 → 주변에 <code>addps</code>/<code>subps</code>/<code>mulps</code> 같은 산술 SIMD 명령이 있는지 검색.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 구조체 복사 (정렬된 16바이트 블록)</strong></p>
+<pre><code class="language-c">typedef struct { float x, y, z, w; } Vec4;
+Vec4 a = b;   // 16바이트, 정렬됨</code></pre>
+<pre><code class="language-asm">movaps xmm0, [rdx]   ; b 로드
+movaps [rcx], xmm0    ; a에 저장</code></pre>
+<p><strong>예제 2 — 함수 프롤로그의 XMM 레지스터 백업</strong></p>
+<pre><code class="language-asm">sub    rsp, 0x28
+movaps [rsp], xmm6</code></pre>
+<p><strong>예제 3 — 정렬 안 된 포인터로 인한 크래시 상황</strong></p>
+<pre><code class="language-c">char buf[20];
+float *p = (float *)(buf + 1); // 1바이트 오프셋이라 16정렬 아님
+__m128 v = _mm_load_ps(p);      // 컴파일러가 movaps로 내렸다면 크래시</code></pre>
+<p><strong>예제 4 — 벡터화된 루프 일부</strong></p>
+<pre><code class="language-asm">loop_top:
+    movaps  xmm0, [rsi+rcx*4]
+    addps   xmm0, xmm1
+    movaps  [rdi+rcx*4], xmm0
+    add     rcx, 4
+    cmp     rcx, count
+    jl      loop_top</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0387-movups.html">REV-0387 — MOVUPS: 비정렬 XMM 레지스터 이동</a></li><li><a href="rev-0388-movapd-movupd.html">REV-0388 — MOVAPD와 MOVUPD: Double Precision SIMD 이동</a></li><li><a href="rev-0389-movdqa-movdqu.html">REV-0389 — MOVDQA와 MOVDQU: 정수 XMM 이동</a></li><li><a href="rev-0392-pxor.html">REV-0392 — PXOR: XMM 레지스터 초기화와 XOR</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>MOVAPS</code> 명령어 동작, 정렬 요구사항, 예외 조건: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A/2B, "MOVAPS—Move Aligned Packed Single-Precision Floating-Point Values" 섹션 기준 (2026-09-08 검증).</li><li>XMM 레지스터 구조와 SSE 개요: Intel SDM Volume 1, "SSE Extensions" 챕터 기준.</li><li>Windows x64 ABI에서 XMM6-XMM15 non-volatile 규칙: Microsoft Learn "x64 calling convention" 공식 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

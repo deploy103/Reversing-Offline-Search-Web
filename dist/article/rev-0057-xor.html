@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XOR: XOR 연산과 XOR reg reg 제로화 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>XOR: XOR 연산과 XOR reg reg 제로화</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>XOR</code>는 두 오퍼랜드를 비트 단위 배타적 논리합(XOR) 연산해서 목적지에 저장하는 명령어이며, 특히 <code>xor eax, eax</code>(자기 자신과 XOR)는 디스어셈블리에서 가장 흔히 보이는 "레지스터를 0으로 만드는" 표준 관용구다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>xor eax, eax</code>, <code>xor rax, rax</code>, <code>xor ecx, ecx</code> 처럼 같은 레지스터를 두 번 쓰는 코드를 만났는데 이게 계산인지 초기화인지 헷갈릴 때</li><li>CTF 문제에서 반복문 안에 <code>xor al, key</code> 같은 코드가 나와서 이게 암호화/복호화 로직인지 판단해야 할 때</li><li>두 값을 스왑(교환)하는데 임시 변수 없이 XOR 세 번으로 처리된 코드를 만났을 때</li><li>XOR 뒤에 오는 플래그(ZF, CF, OF)가 어떻게 세팅되는지 정확히 알아야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>XOR dest, src</code></pre>
+<ul><li><code>dest = dest XOR src</code>, 결과는 dest에 저장.</li><li><code>dest</code>는 레지스터/메모리, <code>src</code>는 레지스터/메모리/즉시값. 메모리-메모리 조합은 불가.</li><li>예: <code>xor eax, ebx</code>, <code>xor eax, 0FFh</code>, <code>xor al, dl</code>.</li></ul>
+<h3>레지스터/메모리에 미치는 효과</h3>
+<p>XOR는 "두 비트가 다르면 1, 같으면 0"이다.</p>
+<pre><code>  1010 1100
+XOR 0000 1111
+= 1010 0011</code></pre>
+<p>이 성질 때문에 XOR는 다음과 같은 독특한 특징을 가진다: <strong>어떤 값을 같은 값으로 두 번 XOR하면 원래 값으로 되돌아온다</strong> (<code>x ^ k ^ k == x</code>). 이것이 XOR 기반 암호화의 핵심 원리다.</p>
+<h3>플래그 변화</h3>
+<ul><li><strong>ZF</strong>: 결과가 0이면 1</li><li><strong>SF</strong>: 결과의 최상위 비트가 1이면 1</li><li><strong>PF</strong>: 결과 하위 1바이트의 1비트 개수가 짝수면 1</li><li><strong>CF = 0</strong>, <strong>OF = 0</strong> (항상 무조건 클리어)</li><li><strong>AF</strong>: 정의되지 않음</li></ul>
+<h3><code>xor eax, eax</code> — 레지스터를 0으로 만드는 표준 관용구</h3>
+<p>같은 오퍼랜드를 자기 자신과 XOR하면 모든 비트 쌍이 "같은 값끼리" 비교되므로 결과는 <strong>항상 0</strong>이다(원래 값이 무엇이었든 상관없다). 이때 세팅되는 플래그는 명확하다:</p>
+<ul><li><strong>ZF = 1</strong> (결과가 0이므로)</li><li><strong>CF = 0</strong>, <strong>OF = 0</strong> (XOR는 항상 클리어)</li><li><strong>SF = 0</strong> (0은 음수가 아니므로)</li><li><strong>PF = 1</strong> (0은 1비트 개수가 0개, 즉 짝수이므로)</li></ul>
+<p><strong>왜 <code>mov eax, 0</code> 대신 <code>xor eax, eax</code>를 쓰는가:</strong></p>
+<ol><li><strong>인코딩 크기</strong>: <code>xor eax, eax</code>는 2바이트(<code>31 C0</code>)인 반면, <code>mov eax, 0</code>은 5바이트(<code>B8 00 00 00 00</code>)다. 코드 크기가 작아진다.</li><li><strong>속도/포트 활용</strong>: 많은 x86 CPU에서 <code>xor reg, reg</code>는 "레지스터 제로화(zeroing idiom)"로 특별 인식되어 실행 유닛을 거치지 않고 처리되거나(제로화 전용 최적화), 레지스터 이름 변경(rename)만으로 끝나는 경우가 많아 사실상 무료에 가깝다.</li><li><strong>부수효과 차이</strong>: <code>mov eax, 0</code>은 플래그를 <strong>전혀 건드리지 않는다.</strong> 반면 <code>xor eax, eax</code>는 ZF=1, CF=0, OF=0, SF=0, PF=1로 <strong>플래그를 명시적으로 세팅한다.</strong> 코드 흐름상 플래그가 이미 세팅되어 있어야 하거나, 반대로 플래그를 건드리면 안 되는 상황에서는 이 차이가 실제로 컴파일러의 명령어 선택에 영향을 준다.</li></ol>
+<p><strong>x64에서의 추가 효과 — 상위 32비트도 함께 0이 됨</strong>: x64에서 32비트 레지스터(<code>eax</code> 등)에 쓰기 연산을 하면, x86-64 아키텍처 규칙에 따라 <strong>상위 32비트가 자동으로 0으로 클리어</strong>된다(이는 XOR만의 특별한 규칙이 아니라 모든 32비트 목적지 쓰기에 적용되는 일반 규칙이다). 따라서 <code>xor eax, eax</code> 한 줄로 <code>RAX</code> 전체 64비트가 0이 된다. 64비트 전체를 명시적으로 쓰려면 <code>xor rax, rax</code>(REX 프리픽스 포함, 3바이트)를 쓰기도 하지만, 결과는 <code>xor eax, eax</code>와 동일하다.</p>
+<h3>신호 있음/없음(signed/unsigned) 관점</h3>
+<p>XOR 자체는 부호 개념이 없는 순수 비트 연산이다. 다만 <code>xor eax, eax</code>의 결과 0은 signed/unsigned 어느 쪽으로 해석해도 0이므로 안전하다.</p>
+<h3>스택/RSP/RIP 변화</h3>
+<p>없음.</p>
+<h3>XOR 기반 인코딩/암호화와 CTF</h3>
+<p>XOR는 CTF의 "플래그 검증(flag-checking)" 알고리즘에서 극도로 자주 등장한다. 이유는 간단하다: <code>encrypted[i] = plain[i] ^ key[i]</code>로 인코딩하면, 정확히 같은 연산을 다시 적용하는 것만으로 복호화가 된다(<code>plain[i] = encrypted[i] ^ key[i]</code>). 그래서 다음과 같은 반복문을 보면 단일 바이트(또는 반복 키) XOR 인코딩을 의심해야 한다:</p>
+<pre><code class="language-asm">loop_start:
+    mov  al, [rsi + rcx]
+    xor  al, 5Ah          ; 고정 키 0x5A와 XOR
+    mov  [rdi + rcx], al
+    inc  rcx
+    cmp  rcx, len
+    jl   loop_start</code></pre>
+<p>이런 코드를 보면 파이썬 등으로 같은 키를 XOR해서 되돌리면 원본 문자열(플래그)을 복구할 수 있는 경우가 많다. 다만 XOR 인코딩은 암호학적으로 약하다 — 키가 반복되고 평문의 일부(예: <code>flag{</code>처럼 알려진 접두사)를 알고 있으면 키를 역산할 수 있다는 점도 리버싱에서 자주 활용된다.</p>
+<h3>XOR 스왑 트릭</h3>
+<p>임시 변수 없이 두 값을 교환하는 고전적인 트릭도 XOR의 자기소거 성질을 이용한다:</p>
+<pre><code>a = a ^ b
+b = a ^ b   ; b = (a^b)^b = a
+a = a ^ b   ; a = (a^b)^a = b (여기서 b는 이미 원래 a)</code></pre>
+<p>컴파일러가 자동으로 이런 코드를 생성하는 경우는 드물지만(레지스터가 충분하면 그냥 <code>mov</code>+임시 레지스터를 씀), 난독화된 코드나 CTF의 손으로 짠 어셈블리, 옛날 최적화 기법에서 등장할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>xor eax, eax</code> / <code>xor ecx, ecx</code> / <code>xor rax, rax</code> — 레지스터를 0으로 초기화 (함수 시작부, 반환값 0 준비, 루프 카운터 초기화 등)</li><li>반복문 안의 <code>xor al/reg, 상수</code> — 단일 바이트/반복 키 XOR 인코딩·복호화 의심</li><li><code>xor eax, eax</code> 직후 바로 <code>ret</code> — 함수가 0을 반환 (<code>return 0;</code>)</li><li>세 개의 연속된 <code>xor</code> (<code>xor a,b</code> / <code>xor b,a</code> / <code>xor a,b</code>) — XOR 스왑</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>두 오퍼랜드가 완전히 같은 레지스터인지 확인 (같으면 100% 제로화 목적)</li><li>다르다면 실제 데이터 변환(암호화/체크섬/난독화) 연산인지 확인</li><li>반복문 안에 있다면 키가 고정 상수인지, 다른 배열/버퍼에서 오는지 확인</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 자기 자신 XOR (제로화) 인식</strong></p>
+<pre><code class="language-asm">xor eax, eax   ; eax = 0, RAX 전체(x64) = 0</code></pre>
+<p>이후 <code>eax</code>/<code>rax</code>를 반환값이나 카운터로 쓰는지 확인한다.</p>
+<p><strong>2) 반복문 안의 XOR 인코딩 인식</strong></p>
+<pre><code class="language-asm">xor_loop:
+    movzx eax, byte ptr [rsi+rcx]
+    xor   eax, 33h
+    mov   [rdi+rcx], al
+    inc   rcx
+    cmp   rcx, 20h
+    jl    xor_loop</code></pre>
+<p>키(<code>0x33</code>)와 길이(<code>0x20</code>)를 확인하고, 파이썬으로 동일하게 XOR해서 복호화를 재현한다.</p>
+<p><strong>3) XOR 스왑 인식</strong></p>
+<pre><code class="language-asm">xor eax, ebx
+xor ebx, eax
+xor eax, ebx</code></pre>
+<p>결과적으로 <code>eax</code>와 <code>ebx</code>의 값이 교환된 것과 같다.</p>
+<p><strong>4) 플래그 부수효과 활용 코드 인식</strong></p>
+<pre><code class="language-asm">xor eax, eax   ; ZF=1, SF=0, CF=0, OF=0을 만들어 놓고
+jz  always_taken  ; 항상 분기 (거의 실행되지 않지만 이론상 가능한 패턴)</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>Python으로 XOR 복호화 재현:</li></ul>
+<pre><code class="language-python">  enc = bytes.fromhex("...")
+  key = 0x5A
+  plain = bytes(b ^ key for b in enc)</code></pre>
+<ul><li>IDA: <code>xor eax, eax</code> 패턴은 IDA가 자동으로 "mov eax, 0"과 동일하게 취급해 그래프 뷰에서 특별한 강조는 안 하지만, F5 디컴파일에서는 그냥 <code>eax = 0</code>으로 정리된다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>IDA/Ghidra 디컴파일러는 <code>xor eax, eax</code>를 거의 예외 없이 <code>eax = 0</code>(또는 변수 초기화 <code>int v1 = 0;</code>)로 단순화해서 보여준다 — 원본이 XOR였다는 사실 자체는 디컴파일 결과에서 사라진다. 진짜 XOR 연산인지 확인하려면 디스어셈블리(어셈블리 원문)를 봐야 한다.</li><li>반복문 안의 실제 XOR 암호화는 Ghidra/IDA 모두 <code>v1 = v1 ^ key;</code> 형태로 그대로 보여준다(이건 결과가 0으로 고정되지 않으므로 단순화되지 않는다).</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>xor eax, eax</code>를 "뭔가 복잡한 계산"이라 오해하고 값을 추적하려 애쓰는 것 — 두 오퍼랜드가 같으면 무조건 결과는 0이다. 계산이 아니라 초기화다.</li><li>XOR를 "곱셈/나눗셈 같은 진짜 수학 연산"으로 착각하는 것 — XOR는 산술 연산이 아니라 순수 비트 연산이다. <code>x ^ 2</code>는 <code>x * 2</code>나 <code>x XOR 2진수 10</code>과 전혀 다른 결과를 낸다.</li><li>CTF에서 XOR 인코딩을 보고 "복잡한 암호"라고 지레 겁먹는 것 — 키가 짧고 반복되는 XOR는 평문의 일부만 알아도(예: <code>flag{</code>) 키를 바로 역산할 수 있는 매우 약한 인코딩이다.</li><li><code>mov eax, 0</code>과 <code>xor eax, eax</code>가 "완전히 동일하다"고 착각하는 것 — 결과 레지스터 값은 같지만, <strong>플래그에 미치는 영향이 다르다.</strong> <code>mov</code>는 플래그를 전혀 안 건드리고, <code>xor</code>는 ZF/CF/OF/SF/PF를 명시적으로 세팅한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>반복문 안의 XOR가 도무지 안 풀린다면 → 키가 고정 상수가 아니라 인덱스에 따라 달라지는(예: <code>xor al, [key_table+rcx]</code>) 다중 바이트 키일 수 있으니 키 소스를 다시 확인.</li><li><code>xor eax, eax</code> 다음 코드가 예상과 다르게 동작한다면 → 정말로 두 오퍼랜드가 완전히 같은 레지스터인지(대소문자/크기 접미사까지) 다시 확인 — <code>xor eax, ebx</code>처럼 다른 레지스터면 진짜 계산이다.</li><li>XOR 복호화 스크립트 결과가 깨진 문자로 나온다면 → 키 바이트 순서, 키 길이, 인코딩 시작 오프셋을 다시 확인.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 함수가 0을 반환</strong></p>
+<pre><code class="language-c">return 0;</code></pre>
+<pre><code class="language-asm">xor eax, eax
+ret</code></pre>
+<p><strong>예제 2 — 반환값 레지스터 초기화 후 조건부 설정 (불리언 반환)</strong></p>
+<pre><code class="language-c">int result = (a == b);</code></pre>
+<pre><code class="language-asm">xor eax, eax        ; result = 0으로 먼저 초기화
+cmp ecx, edx
+sete al              ; 같으면 al=1 (REV-00xx SETcc 참고 예정)</code></pre>
+<p><strong>예제 3 — 단일 바이트 XOR 키 복호화 루프</strong></p>
+<pre><code class="language-c">for (int i = 0; i &lt; len; i++)
+    buf[i] ^= 0x5A;</code></pre>
+<pre><code class="language-asm">xor_loop:
+    movzx eax, byte ptr [rdi+rcx]
+    xor   al, 5Ah
+    mov   [rdi+rcx], al
+    inc   rcx
+    cmp   rcx, len
+    jl    xor_loop</code></pre>
+<p><strong>예제 4 — XOR 스왑 (임시 변수 없이 두 값 교환)</strong></p>
+<pre><code class="language-asm">xor eax, ebx
+xor ebx, eax
+xor eax, ebx</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0055-and.html">REV-0055 — AND: 마스크와 비트 제거</a></li><li><a href="rev-0056-or.html">REV-0056 — OR: 비트 설정</a></li><li><a href="rev-0058-not.html">REV-0058 — NOT: 비트 반전</a></li><li><a href="rev-0059-test.html">REV-0059 — TEST: 값을 바꾸지 않는 AND 비교</a></li><li><a href="rev-0026-bit-masks.html">REV-0026 — 8비트 16비트 24비트 32비트 64비트 마스크</a></li><li>알고리즘 패턴 카테고리의 XOR 기반 인코딩/체크섬 탐지 글 (예정)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>XOR 명령어의 오퍼랜드/플래그 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "XOR—Logical Exclusive OR" 섹션 기준 (2026-09-08 검증).</li><li><code>xor reg, reg</code> 제로화 관용구와 컴파일러/CPU 최적화 근거: Agner Fog, "Optimizing subroutines in assembly language" (레지스터 제로화 관용구 섹션) 기준.</li><li>x64에서 32비트 목적지 쓰기 시 상위 32비트 자동 클리어 규칙: Intel SDM Volume 1, "General-Purpose Registers in 64-Bit Mode" 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

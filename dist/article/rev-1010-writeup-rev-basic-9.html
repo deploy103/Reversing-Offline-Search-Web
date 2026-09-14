@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Write-up] rev-basic-9 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / writeup</div>
+<article class="article-body">
+<h1>[Write-up] rev-basic-9</h1>
+<div class="article-meta"><span class="tag">writeup</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>rev-basic-9는 드림핵 rev-basic 연습 시리즈의 후반부 문제로, 풀이자 수가 앞 문제들보다 눈에 띄게 적어(약 1,278명) 시리즈 안에서 상대적으로 난이도가 높은 편이며, 이 글에서는 실제 검증 로직 상세를 담은 공개 write-up을 찾지 못했다는 점을 먼저 밝히고, 대신 rev-basic 시리즈 전체에 공통으로 적용되는 "변환 규칙 식별 → 역연산 또는 브루트포스" 접근 절차를 정리한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>rev-basic-0부터 순서대로 풀어오다가 rev-basic-8(REV-1010과 이어지는 REV-1009 참고)까지는 풀었는데 rev-basic-9에서 막혔을 때</li><li>IDA로 열었을 때 지금까지와 다른 형태의 반복 연산(예: 여러 연산이 섞여 있거나 배열 인덱싱이 더 복잡한 경우)이 보여서 "이전 문제들과 같은 방식으로 풀리지 않는다"고 느껴질 때</li><li>rev-basic 시리즈를 하나씩 검색하며 정리하는 중인데 rev-basic-9만 상세 한국어 풀이 글을 찾기 어려울 때</li></ul>
+<h2>핵심 개념</h2>
+<p>드림핵 rev-basic 시리즈는 rev-basic-0부터 rev-basic-9까지(드림핵 챌린지 번호로는 14번대에서 이어지는 것으로 확인됨) 순차적으로 난이도가 조금씩 올라가는 구조로 설계되어 있다. 앞선 문제들(rev-basic-0, 1, 2, 3 등)에 대한 공개 풀이를 종합하면 공통 패턴은 다음과 같다: 프로그램이 사용자 입력을 받고, 각 바이트에 대해 XOR·덧셈·뺄셈·곱셈 중 하나 또는 조합으로 변환한 뒤, 그 결과를 하드코딩된 배열과 비교해서 Correct/Wrong을 출력한다. rev-basic-8(REV-1009)이 곱셈 기반이었던 것처럼, 문제 번호가 뒤로 갈수록 연산이 한 가지에서 두세 가지로 조합되거나, 루프 인덱스 <code>i</code> 자체가 연산에 섞여 들어가는 방식(예: <code>input[i] XOR i</code>, <code>input[i] + 2*i</code> 등)으로 복잡도가 올라가는 경향이 이 시리즈 전반에서 관찰된다.</p>
+<p>다만 rev-basic-9 자체의 정확한 검증 상수, 반복 횟수, 정답 문자열을 구체적으로 서술한 한국어 공개 write-up은 이번 조사에서 찾지 못했다. 따라서 이 문서에서는 확인되지 않은 세부 로직을 단정적으로 지어내는 대신, rev-basic 시리즈 전체에 안전하게 적용할 수 있는 일반적 분석 절차만 정리한다. 실제 문제를 풀 때는 아래 절차를 그대로 따라가면서 이 문제만의 구체적인 상수를 IDA 디컴파일 결과에서 직접 확인해야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>"Input : " 또는 유사한 프롬프트 후 임의 문자열 입력 시 "Wrong" 출력(시리즈 공통 UI)</li><li><code>main</code>에서 검증 서브함수 하나를 호출하고 반환값으로 Correct/Wrong을 분기하는 구조(시리즈 공통 구조)</li><li>검증 서브함수 내부에 <code>for</code> 루프와 함께 인덱스 <code>i</code>가 연산식에 그대로 들어가 있는 형태(단순 상수 연산보다 한 단계 복잡한 패턴일 가능성)</li><li>비교 대상 배열이 <code>.rodata</code>/<code>.data</code> 섹션에 고정 바이트 배열로 정의됨(시리즈 공통)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문자열 창에서 "Correct"/"Wrong"을 찾아 Xref로 검증 함수 위치를 먼저 특정한다. 그 함수를 F5로 디컴파일한 뒤, 연산자가 몇 개나 섞여 있는지(더하기 하나뿐인지, XOR와 인덱스가 같이 들어가는지 등)를 가장 먼저 구분해야 한다. 이 구분이 브루트포스로 충분할지, 각 연산을 역순으로 하나씩 풀어야 할지를 결정한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>바이너리를 실행해 프롬프트와 오답 메시지를 확인한다.</li><li>IDA에서 문자열 "Correct"/"Wrong"을 찾고 Xref로 검증 함수를 특정한다.</li><li>검증 함수를 F5로 디컴파일해 반복 횟수(비교 배열 길이)와 각 반복에서 수행되는 연산의 종류·순서를 정확히 옮겨 적는다.</li><li>비교 대상 고정 배열을 Hex View 또는 Export data로 그대로 추출한다.</li><li>연산이 한 가지뿐이고 8비트 안에서 역원이 존재한다면 모듈러 역원 또는 0~255 브루트포스로 역산한다.</li><li>연산이 인덱스 <code>i</code>를 포함하거나 여러 단계로 조합되어 있다면, 뒤쪽 연산부터 순서를 거꾸로 밟아가며 Python으로 그대로 재현한 뒤 역연산 함수를 작성한다(REV-0222 참고).</li><li>복원한 값을 실제 프로그램에 입력해 Correct가 뜨는지 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">IDA: Shift+F12 (문자열 창), Ctrl+X (Xref), F5 (디컴파일), Ctrl+E (배열 export 관련 대화상자 진입 경로 확인용)</code></pre>
+<p>검증 함수를 찾은 뒤에는 반드시 Python으로 동일한 로직을 그대로 옮겨써서(REV-0222) 정방향으로 먼저 실행이 되는지 확인하고, 그 다음에 역함수를 만드는 순서로 접근하는 것이 시리즈 전체에서 안전한 방법이다.</p>
+<h2>출력 해석</h2>
+<p>Correct가 출력되면 입력값이 곧 플래그의 재료(또는 플래그 그 자체를 DH{} 형식으로 감싼 값)가 된다. 이 시리즈의 다른 문제들에서는 입력값 자체가 <code>DH{입력값}</code> 형태로 플래그가 되는 패턴이 반복해서 확인되므로, rev-basic-9도 같은 규칙을 따를 가능성이 높다(다만 이 문제 자체에서 확정된 것은 아니므로 실제 실행 결과로 다시 확인해야 한다).</p>
+<h2>흔한 실수</h2>
+<ul><li>rev-basic-8까지 통했던 접근법(곱셈 역연산)을 그대로 복사해서 rev-basic-9에 적용하려다가, 실제 연산 종류가 다른데도 억지로 끼워 맞추는 것.</li><li>검증 함수 안에 연산이 두 개 이상 섞여 있는데 하나만 보고 브루트포스를 시도해 시간 안에 안 풀리는 것.</li><li>인덱스 <code>i</code>가 연산에 포함된 경우, 이를 상수로 착각하고 모든 바이트에 같은 역연산 공식을 적용하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>검증 로직을 코드로 재현하는 절차 자체가 헷갈리면 → REV-0222 검증 루틴을 Python으로 그대로 재현하기</li><li>여러 연산이 순차적으로 합성되어 있을 때 접근하는 법이 필요하면 → REV-0911 여러 알고리즘이 순차적으로 합성된 문제 풀어내기</li><li>문제의 연산이 곱셈 기반이라 모듈러 역원이 필요하다면 → REV-0887 모듈러 역원(Modular Inverse)이 코드에 나타나는 패턴</li><li>rev-basic 시리즈의 곱셈 기반 예시가 궁금하면 → REV-1009 [Write-up] rev-basic-8</li></ul>
+<h2>미니 예제</h2>
+<p>시리즈 공통 검증 함수의 뼈대는 대략 다음과 같은 형태로 나타난다(rev-basic-9의 정확한 연산자는 실제 디컴파일 결과에서 확인해야 한다).</p>
+<pre><code class="language-c">int check(char *input) {
+    for (int i = 0; i &lt; N; i++) {
+        unsigned __int8 v = transform(input[i], i); // 정확한 transform은 문제마다 다름
+        if (v != target[i]) return 0;
+    }
+    return 1;
+}</code></pre>
+<p><code>transform</code>이 상수 연산 하나뿐인지, 인덱스 <code>i</code>를 포함하는지를 먼저 구분하는 것이 이 시리즈 전체를 관통하는 핵심 판단 기준이다.</p>
+<h2>관련 글</h2>
+<ul><li>[REV-1009 — [Write-up] rev-basic-8](rev-1009-writeup-rev-basic-8.html)</li><li><a href="rev-0222-reimplement-in-python.html">REV-0222 — 검증 루틴을 Python으로 그대로 재현하기</a></li><li><a href="rev-0911-chained-algorithm-composition.html">REV-0911 — 여러 알고리즘이 순차적으로 합성된 문제 풀어내기</a></li><li><a href="rev-0887-modular-inverse-code-pattern.html">REV-0887 — 모듈러 역원(Modular Inverse)이 코드에 나타나는 패턴</a></li><li><a href="rev-0219-bruteforce-feasibility.html">REV-0219 — Brute Force가 가능한 입력 공간 계산</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>rev-basic 시리즈의 공통 구조(입력 → 변환 → 비교 → Correct/Wrong, 입력값이 곧 플래그 재료가 되는 패턴)는 rev-basic-0, 1, 2, 3, 8에 대한 velog 공개 풀이(예: https://velog.io/@helenason/dreamhack-wargame-rev-basic-8 등 helenason·hamham 블로그 시리즈)를 종합해 재구성했다.</li><li>rev-basic-9 자체의 구체적인 검증 상수, 반복 횟수, 정답 문자열을 담은 한국어 공개 write-up은 2026-09-10 기준 조사에서 발견하지 못했다. 이 글의 "단계별 절차"는 시리즈 공통 패턴에서 유추한 일반적 접근법이며, 이 문제만의 확정된 정답이나 세부 로직을 지어내지 않았다.</li><li>드림핵 워게임 챌린지 목록(dreamhack.io/wargame/challenges?tag=reversing) 조회로 rev-basic-9의 티어(Bronze 2)와 풀이자 수(약 1,278명)를 확인했다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

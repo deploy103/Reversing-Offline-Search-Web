@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>pwntools 함수 빠른 참조(p32/p64/u32/u64/process/remote) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / automation</div>
+<article class="article-body">
+<h1>pwntools 함수 빠른 참조(p32/p64/u32/u64/process/remote)</h1>
+<div class="article-meta"><span class="tag">automation</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">pwntools</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>REV-0266(프로세스 실행)과 REV-0267(패킹)에서 다룬 pwntools 핵심 기능을 실전에서 바로 찾아 쓸 수 있도록, 프로세스/원격 연결, 송수신, 패킹/언패킹, 로깅/설정까지 한 페이지 표로 정리한 빠른 참조 문서다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>스크립트를 짜다가 <code>recvuntil</code>과 <code>recvline</code>의 정확한 차이가 기억 안 날 때</li><li><code>process()</code>를 <code>remote()</code>로 바꿀 때 인자 형태가 헷갈릴 때</li><li><code>p32</code>/<code>u32</code>와 <code>pack</code>/<code>unpack</code>의 차이, ELF/context 관련 헬퍼 이름이 기억 안 날 때</li><li>디버깅용 로그 레벨 설정 문법을 매번 검색하기 귀찮을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>pwntools의 API는 크게 네 그룹으로 나뉜다. <strong>튜브(tube) 생성</strong>(<code>process</code>, <code>remote</code>, <code>ssh</code> 등 — 실제로 무엇에 연결할지), <strong>송수신</strong>(<code>send*</code>/<code>recv*</code> — 튜브 종류와 무관하게 동일한 인터페이스), <strong>패킹/언패킹</strong>(<code>p32</code>/<code>u64</code> 등 — 정수와 바이트열 변환), <strong>환경 설정/로깅</strong>(<code>context</code>, <code>log_level</code> — 아키텍처나 출력 상세도 조정)이다. 이 네 그룹의 이름과 역할만 확실히 구분해두면 실전 스크립트 작성 속도가 크게 빨라진다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p><code>from pwn import *</code> 한 줄로 아래 표의 모든 함수/클래스가 한 번에 임포트되어, 별도 모듈 접두사 없이 바로 호출된다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>지금 다루는 대상이 로컬 바이너리인지 원격 서버인지부터 확인한다. 로컬이면 <code>process()</code>, 원격(host:port로 접속하는 CTF 서버)이면 <code>remote()</code>를 쓰며, 이후 송수신 코드는 완전히 동일하게 재사용된다.</p>
+<h2>단계별 절차</h2>
+<ol><li>튜브를 연다: <code>p = process(...)</code> 또는 <code>p = remote(host, port)</code>.</li><li>필요하면 <code>p.recvuntil(...)</code>로 불필요한 프롬프트를 먼저 읽어치운다.</li><li><code>p.sendline(...)</code>으로 입력을 보낸다. raw 바이트가 필요하면 <code>p32</code>/<code>p64</code>로 미리 패킹한다.</li><li><code>p.recv*()</code>로 응답을 받아 파싱한다. 정수로 해석해야 하면 <code>u32</code>/<code>u64</code>를 쓴다.</li><li>다 끝나면 <code>p.close()</code>로 정리하거나, 사람이 이어받아야 하면 <code>p.interactive()</code>.</li></ol>
+<h2>명령어/단축키</h2>
+<h3>튜브 생성</h3>
+<pre><code class="language-python">p = process('./chall')                 # 로컬 바이너리 실행
+p = process(['./chall', 'arg1'])       # 인자와 함께 실행
+p = remote('ctf.example.com', 1337)    # 원격 서버 접속</code></pre>
+<h3>송신</h3>
+<pre><code class="language-python">p.send(data)          # 그대로 전송
+p.sendline(data)       # 끝에 개행(\n) 추가해서 전송
+p.sendafter(delim, data)     # delim이 나올 때까지 기다린 뒤 전송
+p.sendlineafter(delim, data) # 위와 동일 + 개행 추가</code></pre>
+<h3>수신</h3>
+<pre><code class="language-python">p.recv(n)              # 최대 n바이트 수신
+p.recvline()            # 개행까지 한 줄 수신
+p.recvuntil(delim)      # delim이 나올 때까지 누적 수신(delim 포함)
+p.recvall()             # 프로세스 종료까지 전부 수신
+p.recvregex(pattern)     # 정규식에 매치될 때까지 수신</code></pre>
+<h3>패킹/언패킹</h3>
+<pre><code class="language-python">p8(n) / p16(n) / p32(n) / p64(n)        # 정수 → 바이트열(리틀 엔디안 기본)
+u8(d) / u16(d) / u32(d) / u64(d)        # 바이트열 → 정수
+pack(n, word_size=32, endian='little')   # 범용 패킹
+unpack(d, word_size=32)                   # 범용 언패킹</code></pre>
+<h3>설정/로깅</h3>
+<pre><code class="language-python">context.arch = 'amd64'        # 'i386', 'arm' 등
+context.os = 'linux'
+context.endian = 'big'         # 기본은 little
+context.log_level = 'debug'    # 송수신 바이트를 전부 로그로 출력</code></pre>
+<h3>종료/전환</h3>
+<pre><code class="language-python">p.close()             # 연결 종료
+p.interactive()        # 사람이 직접 조작하는 모드로 전환</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>recvuntil(delim)</code>은 결과에 <code>delim</code> 자체를 <strong>포함</strong>해서 반환한다. 이후 파싱 시 이 delim까지 포함된 것을 감안해야 한다.</li><li><code>recvline()</code>은 개행 문자까지 포함해서 반환하므로, 순수 텍스트만 비교하려면 <code>.strip()</code>이 필요할 수 있다.</li><li><code>context.log_level = 'debug'</code>를 켜면 실제로 오간 바이트가 <code>[DEBUG] Sent 0x9 bytes:</code> 형태로 전부 출력되어, 값이 어디서 어긋나는지 눈으로 바로 확인할 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>send</code>와 <code>sendline</code>을 혼용해서 개행 유무 때문에 대상 프로그램이 입력을 못 읽는 것.</li><li><code>recvuntil</code>의 delim이 실제 출력과 한 글자라도 다르면 무한 대기에 빠지는 것을 모르고 계속 같은 코드를 재실행하는 것.</li><li><code>process()</code>로 짠 스크립트를 대회 서버 제출 직전에 <code>remote()</code>로 바꾸는 걸 깜빡하는 것.</li><li><code>p32</code>/<code>p64</code> 크기를 헷갈려서 4바이트 자리에 8바이트 값을 넣는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>프로세스 실행/송수신 개념 자체가 헷갈리면 → REV-0266 pwntools로 프로세스 실행하고 입력 보내기</li><li>패킹/엔디안 개념을 더 자세히 알고 싶다면 → REV-0267 pwntools p32 p64 u32 u64</li><li>찾은 입력값을 Z3/angr로 자동 계산해서 바로 여기에 넣고 싶다면 → REV-0268 Z3 BitVec 기초, REV-0271 angr 심볼릭 실행 기초</li></ul>
+<h2>미니 예제</h2>
+<p>로컬 바이너리와 원격 서버 둘 다에 동일하게 쓸 수 있는 스크립트 구조 예시다.</p>
+<pre><code class="language-python">from pwn import *
+
+context.log_level = 'debug'
+
+LOCAL = True
+if LOCAL:
+    p = process('./chall')
+else:
+    p = remote('ctf.example.com', 1337)
+
+p.recvuntil(b'guess: ')
+p.sendline(p32(1337))
+result = p.recvline()
+print(result)
+p.close()</code></pre>
+<p><code>LOCAL</code> 플래그 하나만 바꾸면 로컬 테스트와 원격 제출용 스크립트를 완전히 동일한 코드로 재사용할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0266-pwntools-process-basics.html">REV-0266 — pwntools로 프로세스 실행하고 입력 보내기</a></li><li><a href="rev-0267-pwntools-packing.html">REV-0267 — pwntools p32 p64 u32 u64</a></li><li><a href="rev-0268-z3-bitvec-basics.html">REV-0268 — Z3 BitVec 기초</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>pwntools 공식 문서(docs.pwntools.com)의 <code>pwnlib.tubes</code>(process/remote/send/recv 계열), <code>pwnlib.util.packing</code>(p32/u32 등), <code>pwnlib.context</code> API를 기준으로 정리했다(2026-09-09 검증).</li><li><code>pwntools</code>는 서드파티 패키지이므로 <code>pip install pwntools</code>가 필요하며, 오프라인 설치 절차는 툴킷 카테고리(<code>../tools/</code>)에 추후 작성될 문서에서 다룬다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

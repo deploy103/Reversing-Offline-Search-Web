@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>배열 경계 체크가 어셈블리에 나타나는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>배열 경계 체크가 어셈블리에 나타나는 패턴</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>순수 C의 배열/포인터 접근에는 자동 경계 체크가 전혀 없지만, <code>std::vector::at()</code>, Rust, Java, C#, 그리고 <code>-fsanitize=bounds</code>/<code>_FORTIFY_SOURCE</code>가 켜진 코드는 배열 접근 직전에 <code>cmp 인덱스, 길이</code> 후 <code>jae</code>(또는 <code>jnb</code>) 한 번으로 "인덱스가 음수이거나 길이 이상"을 동시에 걸러내는 특징적인 패턴을 남긴다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리에서 배열/버퍼 접근 직전에 뜬금없이 <code>cmp reg, imm</code> 다음 <code>jae</code> 또는 <code>jnb</code>가 나오고, 그 목적지가 <code>abort</code>, <code>panic</code>, <code>throw</code>, <code>__stack_chk_fail</code>류 함수로 이어질 때</li><li>"C인데 배열 범위 체크가 있음" — 순수 C라면 있을 리 없는 코드를 보고 무슨 언어/라이브러리인지 짐작하고 싶을 때</li><li>CTF 바이너리에서 입력 인덱스 값을 조작해 OOB(Out-Of-Bounds) 읽기/쓰기가 가능한지 판단하려 할 때</li><li>Rust/C++/Java/C#으로 작성된 바이너리를 만나 원본 언어를 짐작하는 단서가 필요할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>C 원시 배열/포인터는 경계 체크가 없다</h3>
+<p>C 표준에서 <code>arr[i]</code>는 그냥 <code>*(arr + i)</code>의 문법 설탕일 뿐이다. 컴파일러는 <code>i</code>가 배열 범위 안에 있는지 검사하는 코드를 <strong>절대 자동으로 넣지 않는다</strong>. 그래서 순수 C/C++ 원시 배열(<code>int arr[10]</code>, <code>int *p</code>)에 대한 접근은 어셈블리 상에서 단순히:</p>
+<pre><code class="language-asm">mov  eax, [rdi]          ; i
+mov  edx, [rbp+rax*4-0x30] ; arr[i], 경계 체크 없음</code></pre>
+<p>이렇게 곧바로 메모리 접근으로 이어진다. 이것이 버퍼 오버플로우가 C/C++에서 흔한 근본 원인이다.</p>
+<h3>경계 체크가 존재하는 경우</h3>
+<p>반대로 아래와 같은 상황에서는 컴파일러/런타임이 접근 직전에 체크 코드를 삽입한다.</p>
+<ul><li><strong>C++ <code>std::vector::at()</code> / <code>std::array::at()</code></strong>: <code>operator[]</code>는 체크하지 않지만 <code>.at()</code>은 반드시 체크 후 범위를 벗어나면 <code>std::out_of_range</code> 예외를 던진다.</li><li><strong>Rust</strong>: 배열/슬라이스 인덱싱(<code>arr[i]</code>)은 기본적으로 항상 체크되며, 실패 시 <code>core::panicking::panic_bounds_check</code>를 호출한다(<code>unsafe</code> 블록의 <code>get_unchecked</code>만 예외).</li><li><strong>Java/C# (관리 언어, JIT/AOT 후에도)</strong>: 배열 접근마다 JIT가 경계 체크를 삽입하며 실패 시 <code>IndexOutOfRangeException</code>/<code>ArrayIndexOutOfBoundsException</code>을 던진다.</li><li><strong>컴파일러 새니타이저</strong>: <code>-fsanitize=bounds</code>(UBSan), <code>-fsanitize=address</code>(ASan)를 켜고 빌드하면 GCC/Clang이 일반 C 배열에도 체크 코드를 강제로 삽입한다.</li><li><strong><code>_FORTIFY_SOURCE</code></strong>: glibc 계열에서 <code>memcpy</code>, <code>strcpy</code> 등에 대해 대상 버퍼 크기를 아는 경우(<code>__builtin_object_size</code>) 컴파일 타임/런타임에 크기 체크를 추가한다(<code>__memcpy_chk</code> 등 <code>_chk</code> 접미사 함수 호출로 나타남).</li></ul>
+<h3>부호 없는 비교 트릭(Unsigned Compare Trick)</h3>
+<p>경계 체크 코드에서 가장 자주 보이는 핵심 아이디어는 <strong>"음수 인덱스"와 "길이 이상 인덱스"를 하나의 비교로 동시에 걸러내는 것</strong>이다. 인덱스 <code>i</code>가 원래 <code>int</code>(부호 있는 32비트)라도, 이를 <strong>부호 없는(unsigned) 비교</strong>로 <code>len</code>과 비교하면:</p>
+<ul><li><code>i</code>가 음수라면 unsigned로 재해석 시 매우 큰 값(예: <code>-1</code> → <code>0xFFFFFFFF</code>)이 되어 자동으로 <code>len</code> 이상이 된다.</li><li><code>i</code>가 <code>len</code> 이상인 경우도 당연히 <code>len</code> 이상이다.</li></ul>
+<p>즉 <code>if (i &lt; 0 || i &gt;= len)</code> 이라는 두 개의 조건을 컴파일러는 <strong><code>cmp edx, len</code> 다음 <code>jae fail</code>(unsigned "크거나 같음")</strong> 단 한 줄로 압축해버린다. <code>JAE</code>/<code>JNB</code>는 부호 없는 비교 분기이므로 REV-0070(JA/JAE/JB/JBE)에서 다루는 부호 없는 분기 명령이 여기서 그대로 쓰인다.</p>
+<h3>플래그와 레지스터</h3>
+<p><code>cmp edx, ecx</code>(인덱스 대 길이)는 REV-0060(CMP)과 동일하게 내부적으로 <code>SUB</code>를 수행해 <code>ZF</code>, <code>CF</code>, <code>SF</code>, <code>OF</code>, <code>PF</code>를 갱신하지만 레지스터 값 자체는 바꾸지 않는다. 이어지는 <code>jae</code>는 <code>CF=0</code>(뺄셈에서 빌림이 없었음, 즉 unsigned로 <code>edx &gt;= ecx</code>)일 때 분기한다. 인덱스 레지스터는 보통 32비트 레지스터(<code>eax</code>, <code>edx</code>, <code>ecx</code> 등)로 저장되고, 통과하면 그 값이 그대로 주소 계산(LEA/스케일 인덱스)에 재사용된다.</p>
+<h3>IDA/Ghidra 디컴파일에서 보이는 모습</h3>
+<p>경계 체크가 살아있는 최적화 수준(-O0~-O1, 또는 새니타이저/관리 언어)에서는 디컴파일러가 원래 소스와 거의 동일하게 복원한다:</p>
+<pre><code class="language-c">if ( (uint)idx &gt;= len )
+    __assert_fail("idx &lt; len", ...);   // 또는 panic_bounds_check, throw std::out_of_range 등
+return arr[idx];</code></pre>
+<p><code>(uint)idx</code> 형태의 캐스트가 붙어 있다면, 이것이 바로 위에서 설명한 unsigned 비교 트릭이 소스 레벨 캐스트 없이도(원래 int 비교였는데) 디컴파일러가 실제 명령어의 unsigned 성격을 정직하게 반영한 결과다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>cmp edx, [rbp-0x4]</code> (또는 즉시값) 뒤에 <code>jae</code>/<code>jnb</code>가 오고, 목적지가 <code>call abort</code>, <code>call panic_bounds_check</code>, <code>call __cxa_throw</code>, <code>jmp short loc_fail</code> 등으로 이어짐</li><li>함수 이름이 <code>_chk</code>로 끝남 (<code>__memcpy_chk</code>, <code>__strcpy_chk</code>) — <code>_FORTIFY_SOURCE</code>의 흔적</li><li>접근 직전 레지스터가 재사용되지 않고 별도 임시 레지스터에 인덱스가 복사되어 비교에만 쓰임</li><li>Rust 바이너리에서 <code>core::panicking::panic_bounds_check</code> 심볼이 스트립되지 않고 남아있는 경우가 많음(디버그 심볼이 없어도 문자열 <code>index out of bounds: the len is</code>가 보이면 Rust로 추정 가능)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>배열/버퍼 인덱싱으로 보이는 메모리 접근(<code>[reg+idx*scale]</code> 형태) 바로 위쪽 5~10줄을 살펴 <code>cmp</code>+<code>jae</code>/<code>jb</code>/<code>jg</code> 계열 분기가 있는지 확인한다.</li><li>있다면 분기 목적지가 정상 흐름(계속 진행)인지 에러 처리(패닉/예외/assert)인지 확인해 어느 쪽이 "정상 범위"인지 판단한다.</li><li>비교 대상이 상수(고정 배열 크기)인지 변수(가변 길이, 예: <code>std::vector</code>의 <code>size()</code>)인지 구분한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 체크가 있는지 없는지 먼저 구분</strong></p>
+<pre><code class="language-asm">; 체크 없는 원시 C 배열 접근
+mov  eax, [rbp-0x4]        ; i
+cdqe
+mov  eax, [rbp+rax*4-0x40] ; arr[i], 바로 접근</code></pre>
+<p>위처럼 <code>cmp</code> 없이 바로 인덱스를 스케일 곱해 메모리에 접근하면 경계 체크가 없는 원시 접근이다. 이 경우 <code>i</code>를 사용자가 조작할 수 있다면 OOB 읽기/쓰기 취약점 후보다.</p>
+<p><strong>2) 체크가 있는 경우 통과 조건 확정</strong></p>
+<pre><code class="language-asm">cmp   edx, r8d        ; idx (unsigned로 취급) vs len
+jae   short loc_40115A ; idx &gt;= len 이면 실패 경로
+; 통과: idx &lt; len
+mov   eax, [rbx+rdx*4]</code></pre>
+<p><code>jae</code>가 실패 경로로 가므로, 정상 진행 조건은 <code>idx &lt; len</code>(unsigned)이다.</p>
+<p><strong>3) 상수 크기 vs 동적 크기 구분</strong></p>
+<pre><code class="language-asm">cmp   edx, 9            ; 배열 크기 10 (0~9까지 유효) — 상수, 고정 배열
+ja    short loc_fail</code></pre>
+<pre><code class="language-asm">mov   rcx, [rbx+8]      ; std::vector의 size 필드 로드
+cmp   rdx, rcx           ; idx vs size() — 동적, 가변 길이 컨테이너
+jae   short loc_throw</code></pre>
+<p>두 번째 형태처럼 비교 대상이 메모리에서 매번 로드되는 필드라면 가변 길이 컨테이너(<code>vector</code>, 동적 배열)일 가능성이 높다.</p>
+<p><strong>4) 실패 경로 확인</strong> 실패 분기 목적지로 이동해서 <code>call abort</code>, <code>call __cxa_throw</code>, 문자열 참조(<code>"index out of bounds"</code> 등)가 있는지 확인하면 어떤 언어/런타임의 체크인지 특정할 수 있다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 조건 분기(<code>jae</code> 등) 목적지로 이동은 목적지 주소 더블클릭, <code>Esc</code>로 되돌아오기, <code>X</code>(Xrefs to)로 실패 라벨을 참조하는 다른 위치 확인</li><li>Ghidra: 디컴파일 창에서 <code>if (...)</code> 조건 더블클릭으로 대응하는 어셈블리 라인 강조, Listing에서 <code>G</code>(Go To) 주소 이동</li><li>x64dbg/GDB: <code>cmp</code> 명령 주소에 브레이크포인트를 걸고 실제 인덱스/길이 레지스터 값을 확인 (<code>bp &lt;addr&gt;</code> 후 <code>dump edx</code>, gdb는 <code>b *addr</code> 후 <code>p $edx</code>)</li><li><code>readelf -p .rodata &lt;binary&gt; | grep -i "out of bounds"</code> — Rust/새니타이저 바이너리에서 관련 문자열 빠르게 검색(Linux)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>jae</code>/<code>jnb</code>(unsigned "크거나 같음") 분기가 실패로 간다 → 통과 조건은 <code>idx &lt; len</code>(unsigned), 즉 음수 인덱스도 자동으로 걸러진다.</li><li><code>jg</code>/<code>jl</code>(signed) 분기가 쓰였다면 이는 unsigned 트릭이 아니라 signed 비교 두 개(<code>i &lt; 0</code>, <code>i &gt;= len</code>)가 각각 별도로 존재할 가능성이 높다 — 코드를 더 위/아래로 살펴 두 번째 비교가 있는지 확인.</li><li>실패 경로가 <code>ret</code>으로 조용히 빠지면(에러 코드만 반환) 이는 assert/panic이 아니라 방어적 조기 반환(early return) 스타일의 체크다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>"C 코드니까 배열 접근은 항상 안전하지 않다"고 성급히 일반화하는 것 — <code>_FORTIFY_SOURCE</code>, ASan/UBSan 빌드 옵션, 또는 애초에 C++ 컨테이너를 쓴 코드라면 체크가 있을 수 있다. 반드시 실제 디스어셈블리를 확인해야 한다.</li><li><code>cmp</code>+<code>jae</code> 조합을 보고 "이건 무조건 signed 비교"라고 착각하는 것 — 이름은 <code>cmp</code>뿐이라 signed/unsigned 여부는 뒤따르는 분기 명령(<code>jae</code> vs <code>jge</code>)으로만 구분된다(REV-0069, REV-0070 참고).</li><li>상수 크기 비교(<code>cmp edx, 9</code>)를 보고 무조건 "배열 크기가 9"라고 착각하는 것 — 0-based 인덱스에서 유효 최대 인덱스가 9라면 실제 배열 크기는 10이다. off-by-one에 주의.</li><li>경계 체크가 있다고 해서 그 함수가 무조건 안전하다고 넘어가는 것 — 체크 대상 변수와 실제 접근에 쓰인 변수가 컴파일러 버그나 TOCTOU(검사 후 재로드)로 미묘하게 다를 수 있는 특수 사례도 존재한다(드물지만 CTF에서 의도적으로 만들어지기도 함).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>실패 경로 함수 이름이 스트립되어 안 보인다면 → 문자열 xref(<code>Shift+F12</code>)로 "out of bounds", "panic", "assert" 류 문자열을 먼저 찾고 거기서 거꾸로 함수를 추적한다.</li><li>체크가 있는지 없는지 헷갈리면 → 접근 명령(<code>mov [reg+idx*n]</code>) 바로 위 10줄 이내에 <code>cmp</code>가 있는지부터 기계적으로 확인한다.</li><li>이 코드가 어떤 언어인지 확신이 안 서면 → 실패 함수 이름(<code>panic_bounds_check</code>=Rust, <code>__cxa_throw</code>+<code>std::out_of_range</code>=C++, <code>IndexOutOfRangeException</code>=C#/.NET, <code>ArrayIndexOutOfBoundsException</code>=Java)으로 언어를 역추적한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 체크 없는 원시 C 배열 (취약)</strong></p>
+<pre><code class="language-c">int get(int *arr, int i) { return arr[i]; }</code></pre>
+<pre><code class="language-asm">get:
+    movsxd rax, esi        ; i를 부호 확장 (음수/범위 밖 그대로 통과)
+    mov    eax, [rdi+rax*4]
+    ret</code></pre>
+<p>경계 체크가 전혀 없으므로 <code>i</code>가 음수이거나 배열 크기를 넘으면 그대로 OOB 접근이 발생한다.</p>
+<p><strong>예제 2 — <code>std::vector::at()</code> (C++, 체크 있음)</strong></p>
+<pre><code class="language-cpp">int get(std::vector&lt;int&gt;&amp; v, size_t i) { return v.at(i); }</code></pre>
+<pre><code class="language-asm">mov    rax, [rdi+8]        ; v._M_finish
+sub    rax, [rdi]          ; v._M_finish - v._M_start (바이트 단위 크기)
+sar    rax, 2               ; /4 -&gt; 원소 개수
+cmp    rsi, rax
+jae    short throw_out_of_range   ; idx &gt;= size() 이면 예외
+mov    rax, [rdi]
+mov    eax, [rax+rsi*4]
+ret
+throw_out_of_range:
+    call __cxa_throw        ; std::out_of_range 던짐</code></pre>
+<p><strong>예제 3 — Rust 슬라이스 인덱싱</strong></p>
+<pre><code class="language-rust">fn get(arr: &amp;[i32], i: usize) -&gt; i32 { arr[i] }</code></pre>
+<pre><code class="language-asm">cmp    rsi, rdx           ; i vs len (슬라이스의 두 번째 필드)
+jae    short .LBB_panic
+mov    eax, [rdi+rsi*4]
+ret
+.LBB_panic:
+    lea    rdx, [rip+str_index_out_of_bounds]
+    call   core::panicking::panic_bounds_check</code></pre>
+<p><strong>예제 4 — <code>_FORTIFY_SOURCE</code>의 <code>__memcpy_chk</code></strong></p>
+<pre><code class="language-c">char buf[16];
+memcpy(buf, src, n);   // _FORTIFY_SOURCE=2로 컴파일</code></pre>
+<pre><code class="language-asm">mov    edx, n
+lea    rdi, [rbp-0x10]   ; buf
+mov    rcx, 16             ; __builtin_object_size(buf) 컴파일 타임에 계산됨
+call   __memcpy_chk        ; n &gt; 16이면 런타임에 abort</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li><li><a href="rev-0070-ja-jae-jb-jbe.html">REV-0070 — JA JAE JB JBE: Unsigned 비교 분기</a></li><li><a href="rev-0069-jg-jge-jl-jle.html">REV-0069 — JG JGE JL JLE: Signed 비교 분기</a></li><li><a href="rev-0457-for-vs-while-loop.html">REV-0457 — for문과 while문을 어셈블리에서 구분하는 법</a></li><li><a href="rev-0105-binary-protections-overview.html">REV-0105 — Canary NX PIE RELRO 한 번에 이해</a></li><li><a href="rev-0196-strcmp-check-pattern.html">REV-0196 — strcmp 기반 Flag 검증 패턴</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>CMP</code>/<code>Jcc</code>(unsigned vs signed) 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "CMP", "Jcc" 섹션 기준.</li><li><code>std::vector::at()</code>의 <code>std::out_of_range</code> 던지는 동작: ISO C++ 표준 라이브러리 명세(<code>&lt;vector&gt;</code>) 기준.</li><li>Rust 슬라이스 인덱싱의 기본 경계 체크와 <code>panic_bounds_check</code>: Rust 공식 문서(The Rust Reference, Rust std <code>core::panicking</code>) 기준.</li><li><code>_FORTIFY_SOURCE</code>와 <code>_chk</code> 함수(<code>__memcpy_chk</code> 등): glibc 공식 매뉴얼(Glibc Manual, "Source Fortification") 기준. (2026-09-08 검증)</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

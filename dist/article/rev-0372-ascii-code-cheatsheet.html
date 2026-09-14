@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>아스키 코드와 흔한 문자 상수 치트시트 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>아스키 코드와 흔한 문자 상수 치트시트</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">HxD</span></div>
+<h2>한 줄 요약</h2>
+<p>디스어셈블리나 헥스덤프에 나오는 <code>0x41</code>, <code>0x30</code>, <code>0x0A</code> 같은 작은 상수는 산술 계산값이 아니라 <strong>아스키 문자 코드</strong>일 가능성이 높으며, 특히 <code>0x30</code>~<code>0x39</code>(숫자), <code>0x41</code>~<code>0x5A</code>(대문자), <code>0x61</code>~<code>0x7A</code>(소문자) 범위와 <code>0x0A</code>(개행), <code>0x00</code>(널)은 리버싱에서 매일 마주치는 값이라 외워두면 즉시 알아볼 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리에서 <code>cmp al, 41h</code> 같은 비교 명령어를 봤는데 <code>0x41</code>이 그냥 숫자인지 문자인지 확신이 안 설 때</li><li>헥스덤프에서 <code>48 65 6C 6C 6F</code>처럼 규칙성 있어 보이는 바이트열을 보고 문자열인지 의심될 때</li><li>입력값 검증 로직에서 특정 범위(<code>0x30</code>~<code>0x39</code> 등)를 확인하는 코드가 "숫자 문자인지 검사하는 것"인지 판단해야 할 때</li><li>파일 안의 제어 문자(개행, 탭, 널 등)의 정확한 헥스값이 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<p>아스키(ASCII, American Standard Code for Information Interchange)는 문자 하나를 0~127 범위의 정수(7비트, 실제로는 1바이트에 저장) 하나로 대응시키는 표준이다. 리버싱에서는 이 표를 암기하고 있으면 헥스값만 보고도 즉시 "이건 문자 비교/문자열 처리 코드"라고 알아챌 수 있어 매우 유용하다.</p>
+<h3>숫자 문자 (0x30 ~ 0x39)</h3>
+<table><thead><tr><th>문자</th><th>10진수</th><th>16진수</th></tr></thead><tbody><tr><td><code>'0'</code></td><td>48</td><td>0x30</td></tr><tr><td><code>'1'</code></td><td>49</td><td>0x31</td></tr><tr><td><code>'2'</code></td><td>50</td><td>0x32</td></tr><tr><td><code>'3'</code></td><td>51</td><td>0x33</td></tr><tr><td><code>'4'</code></td><td>52</td><td>0x34</td></tr><tr><td><code>'5'</code></td><td>53</td><td>0x35</td></tr><tr><td><code>'6'</code></td><td>54</td><td>0x36</td></tr><tr><td><code>'7'</code></td><td>55</td><td>0x37</td></tr><tr><td><code>'8'</code></td><td>56</td><td>0x38</td></tr><tr><td><code>'9'</code></td><td>57</td><td>0x39</td></tr></tbody></table>
+<p><strong>핵심 공식</strong>: 숫자 문자의 헥스값에서 <code>0x30</code>을 빼면 그 숫자의 실제 값이 나온다. 예: <code>'7'</code>(0x37) - 0x30 = 7. <code>atoi</code>류 함수의 파싱 루프에서 이 패턴(<code>sub</code>, <code>and 0Fh</code>)이 반복적으로 나온다.</p>
+<h3>알파벳 (대문자 0x41~0x5A, 소문자 0x61~0x7A)</h3>
+<table><thead><tr><th>구간</th><th>시작 문자</th><th>시작 헥스</th><th>끝 문자</th><th>끝 헥스</th></tr></thead><tbody><tr><td>대문자</td><td><code>'A'</code></td><td>0x41</td><td><code>'Z'</code></td><td>0x5A</td></tr><tr><td>소문자</td><td><code>'a'</code></td><td>0x61</td><td><code>'z'</code></td><td>0x7A</td></tr></tbody></table>
+<p><strong>핵심 공식</strong>: 대문자와 소문자는 정확히 <code>0x20</code>(32) 차이만 난다. 즉 <code>대문자 + 0x20 = 소문자</code>, <code>소문자 - 0x20 = 대문자</code>. <code>or al, 20h</code>(비트 5를 강제로 1로) 또는 <code>and al, 0DFh</code>(비트 5를 강제로 0으로)가 대소문자 변환 관용구로 자주 등장하는 이유다.</p>
+<h3>자주 보이는 특수/제어 문자</h3>
+<table><thead><tr><th>문자</th><th>이름</th><th>16진수</th><th>비고</th></tr></thead><tbody><tr><td><code>NUL</code></td><td>널 문자</td><td>0x00</td><td>C 문자열 종료(REV-0036)</td></tr><tr><td><code>\t</code></td><td>탭(Tab)</td><td>0x09</td><td></td></tr><tr><td><code>\n</code></td><td>개행(Line Feed)</td><td>0x0A</td><td>Linux 줄바꿈</td></tr><tr><td><code>\r</code></td><td>캐리지 리턴</td><td>0x0D</td><td>Windows는 <code>\r\n</code>(0x0D 0x0A) 조합</td></tr><tr><td><code>space</code></td><td>공백</td><td>0x20</td><td></td></tr><tr><td><code>!</code></td><td>느낌표</td><td>0x21</td><td></td></tr><tr><td><code>"</code></td><td>큰따옴표</td><td>0x22</td><td></td></tr><tr><td><code>%</code></td><td>퍼센트</td><td>0x25</td><td>포맷 스트링 취약점(<code>%s</code>, <code>%x</code>)의 시작 문자</td></tr><tr><td><code>'</code></td><td>작은따옴표</td><td>0x27</td><td></td></tr><tr><td><code>(</code></td><td>여는 괄호</td><td>0x28</td><td></td></tr><tr><td><code>)</code></td><td>닫는 괄호</td><td>0x29</td><td></td></tr><tr><td><code>*</code></td><td>별표</td><td>0x2A</td><td>포인터 역참조 연산자와 동일</td></tr><tr><td><code>+</code></td><td>더하기</td><td>0x2B</td><td></td></tr><tr><td><code>-</code></td><td>빼기/하이픈</td><td>0x2D</td><td>음수 부호로도 쓰임</td></tr><tr><td><code>.</code></td><td>마침표</td><td>0x2E</td><td></td></tr><tr><td><code>/</code></td><td>슬래시</td><td>0x2F</td><td>경로 구분자(Linux)</td></tr><tr><td><code>:</code></td><td>콜론</td><td>0x3A</td><td></td></tr><tr><td><code>;</code></td><td>세미콜론</td><td>0x3B</td><td></td></tr><tr><td><code>&lt;</code></td><td>미만</td><td>0x3C</td><td></td></tr><tr><td><code>=</code></td><td>등호</td><td>0x3D</td><td></td></tr><tr><td><code>&gt;</code></td><td>초과</td><td>0x3E</td><td></td></tr><tr><td><code>?</code></td><td>물음표</td><td>0x3F</td><td></td></tr><tr><td><code>@</code></td><td>골뱅이</td><td>0x40</td><td></td></tr><tr><td><code>[</code></td><td>여는 대괄호</td><td>0x5B</td><td></td></tr><tr><td><code>\</code></td><td>역슬래시</td><td>0x5C</td><td>경로 구분자(Windows)</td></tr><tr><td><code>_</code></td><td>밑줄</td><td>0x5F</td><td></td></tr><tr><td><code>{</code></td><td>여는 중괄호</td><td>0x7B</td><td></td></tr><tr><td>`\</td><td>`</td><td>파이프</td><td>0x7C</td><td>셸 파이프/OR 연산자 문자</td></tr><tr><td><code>}</code></td><td>닫는 중괄호</td><td>0x7D</td><td></td></tr><tr><td><code>DEL</code></td><td>삭제</td><td>0x7F</td><td>아스키 최댓값(127)</td></tr></tbody></table>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>cmp al, 30h</code> / <code>cmp al, 39h</code> 짝이 함께 보이면 "숫자 문자인지 범위 검사하는 코드"(<code>isdigit</code> 유사 로직)로 해석</li><li><code>cmp al, 41h</code> / <code>cmp al, 5Ah</code> 또는 <code>61h</code>/<code>7Ah</code> 짝이 보이면 알파벳 범위 검사(<code>isalpha</code>, <code>isupper</code>, <code>islower</code>)</li><li><code>or al, 20h</code> 또는 <code>and al, 0DFh</code>가 알파벳 처리 직후 반복되면 대소문자 변환(<code>tolower</code>/<code>toupper</code>) 관용구</li><li>헥스덤프에서 <code>20</code>~<code>7E</code> 범위 바이트가 연속되면 사람이 읽을 수 있는 ASCII 문자열 구간일 가능성이 높음(<code>strings</code> 도구의 판별 기준과 동일)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>작은 헥스 상수(<code>0x00</code>~<code>0x7F</code> 범위)를 만나면 산술 상수로 단정하기 전에 먼저 이 표에서 해당 문자를 찾아본다. 특히 <code>cmp</code>/<code>sub</code>/<code>and</code>/<code>or</code> 연산과 함께 나오는 <code>0x2F</code>~<code>0x3A</code>, <code>0x40</code>~<code>0x5B</code>, <code>0x60</code>~<code>0x7B</code> 근방 값은 문자 범위 검사일 가능성이 매우 높다.</p>
+<h2>단계별 절차</h2>
+<ol><li>의심되는 상수가 <code>0x00</code>~<code>0x7F</code> 범위인지 먼저 확인한다(범위를 벗어나면 아스키 문자가 아닐 가능성이 큼).</li><li>이 표에서 해당 헥스값에 대응하는 문자를 찾는다.</li><li>주변 명령어가 <code>cmp</code>/<code>sub</code>인지 확인해 "범위 검사"인지 "값 변환"인지 구분한다(예: <code>sub al, 30h</code>는 숫자 문자를 정수로 변환).</li><li>짝을 이루는 두 비교(예: <code>0x30</code>과 <code>0x39</code>)가 있으면 그 사이 범위 전체를 검사하는 로직으로 해석한다.</li><li>IDA/Ghidra에서 상수 표시를 "Char"로 전환해 손 계산 결과와 일치하는지 교차검증한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python">ord('A')        # 65 (0x41)
+chr(0x41)       # 'A'
+hex(ord('a'))   # '0x61'
+[chr(c) for c in range(0x30, 0x3A)]   # 숫자 문자 전체 나열</code></pre>
+<pre><code class="language-bash">man ascii        # Linux/WSL에서 전체 아스키 표 확인 (man-pages 패키지)</code></pre>
+<p>IDA/Ghidra: 헥스 상수 위에서 우클릭 → "Char" 표시 방식으로 전환하면 아스키 문자로 바로 렌더링해서 보여준다.</p>
+<h2>출력 해석</h2>
+<ul><li><code>cmp al, 30h</code> 다음에 <code>jb</code>(아래면 분기)와 <code>cmp al, 39h</code> 다음에 <code>ja</code>(초과면 분기)가 짝지어 있다면, 그 사이(<code>0x30</code>~<code>0x39</code>)를 벗어나면 실패 처리하는 "숫자인지 검사" 로직이다.</li><li>대소문자 변환 관용구(<code>or al, 20h</code>)를 발견했다면, 그 직전에 이미 알파벳 범위 검사를 통과한 값이라고 가정하고 코드를 읽으면 문맥이 맞아떨어진다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>0x41</code>을 무조건 산술 상수(65)로만 해석하고 문자 <code>'A'</code>일 가능성을 놓치는 것 — 특히 XOR 키, 비교값으로 자주 등장한다.</li><li>대문자/소문자 변환 공식(<code>±0x20</code>)을 반대로 기억하는 것 — 소문자가 대문자보다 헥스값이 크다(대문자+0x20=소문자).</li><li>개행 문자를 플랫폼에 관계없이 항상 <code>0x0A</code> 하나로만 생각하는 것 — Windows 텍스트 파일은 보통 <code>0x0D 0x0A</code>(CRLF) 조합을 쓴다.</li><li>아스키 표를 유니코드/UTF-8 멀티바이트 문자에도 그대로 적용하려는 것 — 아스키는 0~127 범위의 1바이트 문자 집합이고, 128 이상의 값은 아스키가 아니라 확장 문자셋이나 UTF-8 멀티바이트 시퀀스의 일부다(REV-0036 참고).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>문자열이 메모리에 저장되는 방식(ASCII/UTF-8/UTF-16, 널 종료 여부)이 더 궁금하면 → REV-0036 문자열이 메모리에 저장되는 방식 ASCII UTF-8 UTF-16</li><li>대소문자 변환에 쓰이는 AND/OR 마스크 연산 원리가 헷갈리면 → REV-0026 8비트 16비트 24비트 32비트 64비트 마스크</li><li>진법 변환 자체가 헷갈리면 → REV-0373 진법 변환(2진 8진 10진 16진) 빠른 참조표</li></ul>
+<h2>미니 예제</h2>
+<p>간단한 <code>atoi</code>류 파싱 루프에서 이 표가 어떻게 쓰이는지 보자.</p>
+<pre><code class="language-asm">loop_start:
+movzx   eax, byte ptr [rsi]   ; 현재 문자 하나 로드
+cmp     al, 30h                ; '0'(0x30)보다 작은가?
+jb      loop_end
+cmp     al, 39h                ; '9'(0x39)보다 큰가?
+ja      loop_end
+sub     al, 30h                ; 문자 코드에서 0x30을 빼서 실제 숫자값 추출
+; ... result = result*10 + al 형태로 누적 ...
+inc     rsi
+jmp     loop_start
+loop_end:</code></pre>
+<p><code>cmp al, 30h</code>와 <code>cmp al, 39h</code>가 짝을 이루는 순간 "숫자 문자 범위(<code>'0'</code>~<code>'9'</code>) 검사"라는 것을 이 표만 봐도 즉시 알 수 있고, 그 뒤의 <code>sub al, 30h</code>는 "문자를 실제 정수값으로 변환"하는 표준 관용구임을 바로 확인할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0036-string-encoding.html">REV-0036 — 문자열이 메모리에 저장되는 방식 ASCII UTF-8 UTF-16</a></li><li><a href="rev-0026-bit-masks.html">REV-0026 — 8비트 16비트 24비트 32비트 64비트 마스크</a></li><li><a href="rev-0373-number-base-conversion-cheatsheet.html">REV-0373 — 진법 변환(2진 8진 10진 16진) 빠른 참조표</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>ASCII 코드표 전체(제어문자 포함, 0x00~0x7F): ANSI X3.4 / ISO/IEC 646 표준 및 POSIX <code>man ascii</code> 참조 문서 기준 (2026-09-09 검증).</li><li>대소문자 아스키값 0x20 차이 및 <code>tolower</code>/<code>toupper</code> 비트 연산 관용구: C 표준 라이브러리(<code>ctype.h</code>) 구현 관례 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

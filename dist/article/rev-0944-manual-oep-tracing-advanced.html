@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>패킹된 바이너리에서 OEP를 수동으로 추적하는 절차 심화 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / packing</div>
+<article class="article-body">
+<h1>패킹된 바이너리에서 OEP를 수동으로 추적하는 절차 심화</h1>
+<div class="article-meta"><span class="tag">packing</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>REV-0227이 OEP 개념을 소개했다면, 이 글은 x64dbg에서 실제로 손을 움직여 OEP를 찾는 세 가지 구체적 기법 — ESP 트릭, 메모리 쓰기 브레이크포인트, 조건부 자동 트레이스 — 를 순서대로 시도하는 실전 절차를 다룬다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>REV-0227에서 OEP 개념은 이해했는데 "구체적으로 x64dbg에서 뭘 누르면 되는지" 모를 때</li><li>ASPack/PECompact/MPRESS(REV-0939~0941) 같은 압축 패커를 만나 pushad/popad는 찾았는데 그 다음이 막막할 때</li><li>"ESP 트릭"이라는 용어를 들었는데 정확히 어떤 원리인지 모를 때</li><li>메모리 쓰기 브레이크포인트를 걸었는데 너무 자주 걸려서 OEP까지 못 가는 상황일 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>기법 1 — ESP 트릭 (Stack Pointer 기법)</h3>
+<p><code>pushad</code>가 실행되면 8개의 32비트 레지스터(x86 기준)가 스택에 쌓이면서 ESP(스택 포인터)가 그만큼 감소한다. 스텁 코드는 나중에 <code>popad</code>로 이 값들을 복원하는데, <code>popad</code>가 실행되는 순간 ESP는 <code>pushad</code> 직후의 값으로 되돌아온다. 즉:</p>
+<ol><li>entry point에서 <code>pushad</code> 실행 직후 ESP 값을 확인한다(예: <code>0x0019FF00</code>).</li><li>이 ESP 주소에 <strong>하드웨어 브레이크포인트(Access 또는 Write 타입)</strong>를 건다.</li><li>실행(<code>F9</code>)하면, 압축 해제 스텁이 아무리 복잡해도 결국 <code>popad</code>가 그 스택 위치를 다시 "읽는" 순간 브레이크포인트가 걸린다.</li><li><code>popad</code> 직후 몇 줄만 더 따라가면 <code>jmp OEP</code> 또는 <code>call OEP</code>가 바로 보인다.</li></ol>
+<p>이 기법이 통하는 이유는, 스텁이 내부적으로 무슨 짓을 하든 결국 <code>pushad</code>로 저장한 레지스터를 원래대로 되돌리려면 그 스택 주소를 다시 읽어야 하기 때문이다. UPX, ASPack처럼 <code>pushad</code>/<code>popad</code> 쌍을 쓰는 패커에 특히 잘 통한다.</p>
+<h3>기법 2 — 메모리 쓰기 브레이크포인트 (섹션 전체)</h3>
+<p>압축 해제는 결국 원본 코드/데이터를 특정 메모리 영역(보통 원래 <code>.text</code>가 있어야 할 가상 주소)에 "쓰는" 작업이다.</p>
+<ol><li>압축 해제가 끝나면 더 이상 그 영역에 쓰기가 일어나지 않고, 대신 그 영역의 코드가 "실행"되기 시작한다.</li><li>원본 코드 영역 전체(또는 의심되는 섹션)에 <strong>Write 타입 메모리 브레이크포인트</strong>를 건다.</li><li>실행하면 압축 해제 루프가 그 영역에 바이트를 쓸 때마다 브레이크포인트가 계속 걸린다 — 이건 정상이다. <code>F9</code>로 계속 넘긴다.</li><li>어느 순간 이 영역에 대한 <strong>쓰기가 아니라 실행(Execute)</strong> 시도로 브레이크포인트가 걸리는 시점이 온다. 이때가 바로 압축 해제가 끝나고 OEP로 진입한 순간이다.</li></ol>
+<p>이 방법은 스텁 구조를 몰라도(pushad/popad가 없는 변형이라도) 적용 가능하다는 장점이 있다. 단점은 쓰기 브레이크포인트가 너무 자주 걸려서(수백~수천 번) 매번 <code>F9</code>를 눌러야 할 수 있다는 점인데, x64dbg는 조건부 브레이크포인트로 이를 줄일 수 있다.</p>
+<h3>기법 3 — 조건부 자동 트레이스</h3>
+<p>반복 걸림을 자동화하려면 x64dbg의 브레이크포인트 조건식이나 스크립트 기능을 쓴다. 브레이크포인트 우클릭 → <code>Edit breakpoint</code>에서 조건을 걸어, 예를 들어 "쓰기 주소가 특정 함수 프롤로그 바이트 패턴(<code>55 8B EC</code>, <code>48 89 5C 24</code>)과 일치할 때만 멈추기"처럼 설정하면 반복 수동 클릭을 줄일 수 있다. 또는 <code>Trace into/over</code> 기능(조건부 트레이스, <code>Ctrl+F11</code>/<code>Ctrl+F7</code> 계열)으로 "실행 주소가 특정 범위를 벗어나면 멈춤"같은 규칙을 걸어 자동으로 스텁을 빠르게 통과시킬 수 있다.</p>
+<h3>여러 OEP 후보가 나올 때</h3>
+<p>상용 프로텍터가 아닌 일반 압축 패커에서도 간혹 여러 번 <code>jmp</code>가 연쇄적으로 이어지는 경우가 있다(스텁 내부에서 단계별로 여러 섹션을 순서대로 복원하기 때문). 이 경우 "코드 스타일이 확실히 바뀌는 지점"을 최종 판단 기준으로 삼는다 — 함수 프롤로그(<code>push ebp; mov ebp, esp</code> 또는 x64 <code>sub rsp, imm</code>)와 함께, 원본 프로그램이 실제로 쓸 법한 API(<code>GetStdHandle</code>, <code>printf</code>, 커스텀 함수 호출)가 처음 등장하는 지점이 진짜 OEP다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>ESP 트릭 적용 후 몇 초 안에 <code>popad</code> 근처에서 멈추면 기법이 잘 통한 것</li><li>메모리 쓰기 브레이크포인트가 처음에는 계속 걸리다가, 어느 순간부터 "Execute" 사유로 멈추면 그 지점이 OEP</li><li>OEP 후보 코드가 함수 프롤로그로 시작하고 그 아래로 익숙한 API 호출이 이어짐</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>pushad</code>가 있는 스텁이라면 ESP 트릭을 가장 먼저 시도한다. 성공률이 높고 빠르다. <code>pushad</code>가 없거나 ESP 트릭이 통하지 않는 변형이라면 메모리 쓰기 브레이크포인트로 전환한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>entry point에서 <code>pushad</code>(또는 x64의 개별 push들) 직후 ESP 값을 Registers 창에서 확인</li><li>Dump 창에서 해당 ESP 주소로 이동(<code>Ctrl+G</code>), 우클릭 → <code>Breakpoint → Hardware, Access</code> (또는 Write)</li><li><code>F9</code>로 실행 — <code>popad</code> 근처에서 멈추는지 확인</li><li>멈췄다면 <code>F8</code>로 몇 줄 진행해 <code>jmp</code>/<code>call</code> 대상 주소 확인 → OEP 후보</li><li>ESP 트릭이 실패하면 원본 이미지의 코드 섹션 가상 주소 범위를 확인(PE-bear로 <code>.text</code> VA/크기 확인)</li><li>그 범위 전체에 메모리 쓰기 브레이크포인트, <code>F9</code> 반복 실행하며 "Execute" 사유로 멈출 때까지 진행</li><li>OEP 후보에서 코드 스타일 확인(함수 프롤로그 + 익숙한 API)</li><li>확정되면 Scylla 등으로 덤프(REV-0945)</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg Dump 창 이동: <code>Ctrl+G</code></li><li>하드웨어 브레이크포인트: Dump 창에서 우클릭 → <code>Breakpoint → Hardware, Access/Write</code></li><li>메모리 브레이크포인트: Memory Map 탭에서 섹션 우클릭 → <code>Set Memory Breakpoint on Write/Execution</code></li><li>실행/추적: <code>F9</code>(Run), <code>F8</code>(Step Over), <code>F7</code>(Step Into), <code>Ctrl+F7</code>(Trace Into), <code>Ctrl+F8</code>(Trace Over)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>하드웨어 브레이크포인트가 걸린 시점의 명령이 <code>popad</code>라면 ESP 트릭 성공, 그 다음 줄의 <code>jmp</code>가 OEP 후보다.</li><li>메모리 브레이크포인트의 "Break reason"이 <code>Execute</code>로 표시되면 그 주소가 실행되려 한 시점이며, 이는 곧 압축 해제가 끝났다는 뜻이다. <code>Write</code>로 계속 걸리는 동안은 아직 압축 해제 진행 중이다.</li><li>OEP 후보 코드에 <code>int3</code>(0xCC)가 섞여 있다면 안티 디버깅용 트랩일 수 있으니 진짜 OEP가 아닐 가능성을 의심해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>ESP 트릭에서 하드웨어 브레이크포인트가 아니라 일반(소프트웨어) 브레이크포인트를 스택 주소에 걸려고 시도하는 것 — 스택 데이터 영역에는 소프트웨어 브레이크포인트(<code>0xCC</code> 삽입)가 적용되지 않으므로 반드시 하드웨어 브레이크포인트를 써야 한다.</li><li>메모리 쓰기 브레이크포인트가 수백 번 걸리는 것을 보고 "잘못된 방법"이라 판단하고 포기하는 것 — 이는 정상이며 계속 <code>F9</code>를 누르거나 조건부 설정으로 자동화하면 된다.</li><li>첫 번째 <code>jmp</code>를 무조건 OEP로 확정하는 것 — 다단계 스텁에서는 중간 경유지일 수 있으므로 코드 스타일까지 확인해야 한다.</li><li>x64에서 <code>pushad</code>가 없다고 ESP 트릭 자체를 포기하는 것 — 개별 레지스터 push 시퀀스도 원리는 동일하게 적용된다(첫 push 직후 ESP/RSP 값 기준으로 브레이크포인트를 걸면 된다).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>OEP까지는 찾았는데 덤프한 파일이 실행 안 된다면 → REV-0945 IAT 복구 개념</li><li>안티 디버깅 때문에 애초에 디버거 부착이 막힌다면 → REV-0230/REV-0235/REV-0236/REV-0239 안티 디버깅 관련 문서</li><li>스텁이 유난히 복잡하고 VM 인터프리터처럼 보인다면 → 상용 프로텍터일 가능성, REV-0942 상용 프로텍터를 만났을 때 현실적인 대응</li><li>어떤 패커인지부터 다시 확인하고 싶다면 → REV-0939~0941 개별 패커 기초 문서</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">[entry point]
+pushad                  ; ESP: 0x0019FF00 -&gt; 0x0019FEDC (예시)
+; ... 압축 해제 스텁, 수백 줄 ...
+popad                   ; 이 시점에 ESP가 다시 0x0019FF00 근처를 읽음
+jmp 0x00401320          ; &lt;- OEP 후보
+
+[0x00401320]
+push ebp
+mov ebp, esp
+sub esp, 0x40
+call ds:[GetStdHandle]  ; 원본 프로그램의 정상 API 호출 시작</code></pre>
+<p>Dump 창에서 <code>0x0019FEDC</code>(pushad 직후 ESP)에 Hardware Access 브레이크포인트를 걸고 <code>F9</code>를 누르면, 스텁이 아무리 길어도 <code>popad</code> 시점에 정확히 멈춘다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0227-manual-unpacking-oep.html">REV-0227 — 수동 언패킹 개념 OEP와 Dump</a></li><li><a href="rev-0939-aspack-packer-basics.html">REV-0939 — ASPack 패커 기초 알아보기</a></li><li><a href="rev-0940-pecompact-packer-basics.html">REV-0940 — PECompact 패커 기초 알아보기</a></li><li><a href="rev-0945-iat-reconstruction-concept.html">REV-0945 — 언패킹 후 IAT를 복구하는 개념(Import Reconstruction)</a></li><li><a href="rev-0942-commercial-protector-realistic-approach.html">REV-0942 — 상용 프로텍터(VMProtect/Themida)를 만났을 때 현실적인 대응</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>ESP 트릭과 메모리 쓰기 브레이크포인트를 이용한 OEP 탐색 기법은 x64dbg 공식 문서(help.x64dbg.com)의 브레이크포인트 관련 설명과, 다수의 공개 수동 언패킹 튜토리얼에서 공통적으로 다루는 절차를 기준으로 정리했다(2026-09-09 검증).</li><li>실제 성공 여부는 패커 종류/버전에 따라 달라질 수 있으므로 특정 샘플에 적용할 때는 여러 기법을 함께 시도하는 것이 권장된다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

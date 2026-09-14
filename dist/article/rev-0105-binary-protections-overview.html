@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Canary NX PIE RELRO 한 번에 이해 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>Canary NX PIE RELRO 한 번에 이해</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">checksec</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p><code>checksec ./chall</code> 한 번이면 이 바이너리가 스택 카나리(Canary), 실행 방지(NX), 위치 독립 실행(PIE), GOT 보호(RELRO)를 각각 켜놓았는지 모두 확인할 수 있고, 이 네 가지 조합이 리버싱/분석 전략 전체를 결정한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>checksec ./chall</code>을 처음 실행했는데 표 형태 출력이 무엇을 뜻하는지 전체적으로 감이 안 잡힐 때</li><li>개별 보호 기법(Canary/NX/PIE/RELRO)은 각각 알고 있는데 이들이 어떻게 서로 연결되는지, 분석 순서를 어떻게 잡아야 하는지 궁금할 때</li><li>CTF 문제를 받자마자 "이 바이너리는 어떤 종류의 취약점/분석이 가능할지" 5분 안에 감을 잡고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>네 가지 보호 기법 한눈에 정리</h3>
+<table><thead><tr><th>보호 기법</th><th>무엇을 막나</th><th>리버싱에서 의미</th><th>자세히</th></tr></thead><tbody><tr><td><strong>Canary</strong> (Stack Protector)</td><td>스택 버퍼 오버플로우로 리턴 주소를 덮어쓰는 것</td><td>함수 프롤로그/에필로그에 카나리 체크 코드가 추가로 보임, <code>__stack_chk_fail</code> import 확인 가능</td><td>(본문 참고)</td></tr><tr><td><strong>NX</strong> (No-eXecute, DEP)</td><td>스택/힙 등 데이터 영역에 셸코드를 심어 실행하는 것</td><td>데이터 영역 실행이 막히므로 셸코드 injection 대신 ROP 등 코드 재사용 기법이 필요해짐</td><td>(본문 참고)</td></tr><tr><td><strong>PIE</strong> (Position Independent Executable)</td><td>실행 파일 자신의 주소를 예측해 하드코딩하는 것</td><td>IDA 주소가 실제 실행 주소가 아니라 오프셋이 됨</td><td><code>./rev-0103-pie.md</code></td></tr><tr><td><strong>RELRO</strong> (RELocation Read-Only)</td><td>GOT를 덮어써서 함수 호출을 가로채는 것</td><td>Full이면 GOT가 프로그램 시작부터 읽기 전용, lazy binding 사라짐</td><td><code>./rev-0102-relro.md</code></td></tr></tbody></table>
+<p>이 네 가지는 서로 독립적인 컴파일 옵션이며, 어떤 조합이든 나올 수 있다. ASLR(REV-0104)은 커널 기능이라 <code>checksec</code>이 바이너리 자체에서는 보여주지 않지만, PIE와 짝을 이뤄 실질적인 보호 효과를 만든다는 점에서 항상 같이 고려해야 한다.</p>
+<h3>Canary(스택 카나리) 자세히</h3>
+<p><code>gcc</code>가 스택 버퍼를 쓰는 함수를 컴파일할 때, 로컬 버퍼와 저장된 레지스터/리턴 주소 사이에 무작위 값(카나리)을 하나 심어두고, 함수가 끝나기 직전(에필로그)에 그 값이 아직 그대로인지 검사한다. 만약 버퍼 오버플로우로 리턴 주소까지 덮어썼다면 카나리 값도 함께 깨졌을 가능성이 높으므로, 값이 달라졌으면 <code>__stack_chk_fail</code>을 호출해 프로그램을 즉시 강제 종료시킨다.</p>
+<p>리버싱 관점에서 카나리가 있는 함수는 프롤로그에서 <code>mov rax, fs:0x28</code>(TLS의 카나리 값을 읽어 스택에 저장) 같은 코드가, 에필로그 직전에는 그 값을 다시 읽어 비교하는 <code>xor</code> + <code>jz</code>(또는 <code>je</code>) + <code>call __stack_chk_fail</code> 패턴이 함께 보인다. IDA 디컴파일러는 이 패턴을 자동으로 인식해서 의사코드에서 아예 생략하거나 <code>__stack_chk_fail</code> 호출로 간단히 보여주기도 한다. <code>checksec</code> 결과의 <code>Canary found</code>는 이 코드가 최소 한 함수 이상에 존재한다는 뜻이고, <code>No canary found</code>는 스택 버퍼 오버플로우에 대한 이 방어선이 아예 없다는 뜻이다.</p>
+<h3>NX(실행 방지) 자세히</h3>
+<p>과거에는 스택이나 힙 같은 데이터 영역도 실행 권한을 가질 수 있어서, 공격자가 버퍼에 셸코드를 직접 넣고 그쪽으로 실행 흐름을 돌리는 공격(고전적인 스택 스매싱)이 통했다. NX(하드웨어의 DEP, Data Execution Prevention 지원을 이용)가 켜지면 데이터 영역에는 실행 권한(<code>x</code>)이 아예 부여되지 않아, 그런 셸코드 injection이 원천적으로 막힌다. <code>readelf -l</code>로 프로그램 헤더를 보면 <code>GNU_STACK</code> 세그먼트의 권한 플래그에 <code>E</code>(실행)가 없으면 NX가 켜진 것이다. 요즘 배포판에서는 사실상 항상 켜져 있다고 봐도 무방하다. 리버싱에서는 "이 바이너리는 스택에 셸코드를 심는 방식이 아니라 ROP/ret2libc 같은 기존 코드 재사용 방식으로 접근해야 한다"는 신호로 읽으면 된다.</p>
+<h3>PIE와 RELRO는 각각 별도 문서에서</h3>
+<p>PIE는 주소 계산과 브레이크포인트 설정 방식 자체를 바꿔놓기 때문에 분량이 많아 <code>./rev-0103-pie.md</code>에서 깊게 다루고, RELRO는 GOT 조작 가능 여부를 결정하기 때문에 <code>./rev-0102-relro.md</code>에서 깊게 다룬다. 이 글에서는 넷을 조합했을 때 분석 전략이 어떻게 달라지는지에 집중한다.</p>
+<h3>네 가지 조합이 분석 전략을 바꾸는 예</h3>
+<ul><li><strong>전부 꺼짐(No Canary / NX disabled / No PIE / No RELRO)</strong>: 오래된 스타일이거나 일부러 취약하게 만든 CTF 문제. 스택에 셸코드를 직접 심고 고정 주소로 점프하는 가장 고전적인 접근이 통할 가능성이 높다. 주소도 고정이라 분석이 가장 쉽다.</li><li><strong>Canary + NX만 켜짐, PIE/RELRO 꺼짐</strong>: 스택 버퍼 오버플로우로 셸코드를 직접 실행할 수는 없지만(NX), 카나리를 우회/leak하지 못하면 리턴 주소 자체를 못 덮어쓴다. 주소는 고정이므로 ROP 체인을 짜기는 비교적 쉽다.</li><li><strong>전부 켜짐(Full RELRO + PIE + NX + Canary)</strong>: 요즘 배포판 기본 컴파일 옵션에 가깝다. GOT 조작 불가(Full RELRO), 셸코드 직접 실행 불가(NX), 카나리 없이는 리턴 주소 컨트롤 불가, 주소는 매 실행 랜덤(PIE+ASLR). 정보 유출(leak)로 카나리 값과 베이스 주소를 먼저 알아내는 것이 거의 필수적인 첫 단계가 된다.</li><li><strong>Partial RELRO + PIE + NX + Canary</strong> (실무에서 가장 흔한 기본 조합): GOT 자체는 여전히 쓰기 가능하므로(REV-0102), 임의 쓰기 취약점만 있다면 GOT overwrite가 여전히 유효한 공격 경로로 남는다.</li></ul>
+<h3>순수 리버싱(익스플로잇이 아닌) 관점에서의 의미</h3>
+<p>이 문서는 pwn 관점의 설명이 많이 섞여 있지만, 순수하게 "코드를 읽고 이해"하는 리버싱에서도 이 네 가지를 미리 파악해두면 이득이 크다.</p>
+<ul><li>Canary가 있으면 디컴파일된 코드에 나타나는 카나리 체크/<code>__stack_chk_fail</code> 관련 코드를 "핵심 로직이 아닌 부수 코드"로 걸러내고 읽을 수 있다.</li><li>PIE가 있으면 정적 분석 중에 보는 주소가 오프셋임을 항상 의식하고 GDB와 대조한다.</li><li>RELRO 상태를 보면 GOT가 실행 중 바뀔 수 있는 값인지 아닌지 미리 판단해, 안티 디버깅/자기 수정 코드 여부를 헷갈리지 않는다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>checksec</code> 표에 네 항목이 색상과 함께 한 줄로 요약되어 출력됨</li><li>디컴파일된 함수 시작/끝에 카나리 관련 코드(<code>__stack_chk_fail</code>, <code>fs:0x28</code>)가 반복적으로 나타남</li><li><code>readelf -l</code> 결과에 <code>GNU_STACK</code> 세그먼트가 있고 권한이 <code>RW</code>(NX 켜짐, 실행 권한 없음)인지 <code>RWE</code>(NX 꺼짐)인지로 구분됨</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>새 바이너리를 받으면 다른 무엇보다 먼저 <code>checksec ./chall</code>을 실행해 네 항목을 표로 확인하고, 그 결과를 메모(또는 CTF writeup 상단)에 남겨둔다. 이후 모든 분석 단계에서 이 표를 계속 참고하며 "이 취약점이 이 보호 기법 조합에서 실제로 통하는가"를 검증하는 습관을 들인다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) checksec 실행</strong></p>
+<pre><code class="language-bash">checksec --file=./chall</code></pre>
+<p><strong>2) 각 항목을 직접 원시 정보로 재확인(신뢰도 검증용)</strong></p>
+<pre><code class="language-bash">readelf -h ./chall | grep Type          # ET_EXEC(No PIE) vs ET_DYN(PIE)
+readelf -l ./chall | grep -A1 GNU_STACK # NX
+readelf -l ./chall | grep GNU_RELRO     # RELRO
+readelf --dyn-syms ./chall | grep stack_chk # Canary</code></pre>
+<p><strong>3) GDB/Pwndbg 안에서 실시간 확인</strong></p>
+<pre><code class="language-gdb">checksec</code></pre>
+<p>Pwndbg가 설치돼 있으면 GDB 프롬프트에서 바로 같은 요약을 볼 수 있어 파일 시스템을 오가지 않아도 된다.</p>
+<p><strong>4) 조합에 따라 분석 우선순위 정하기</strong></p>
+<ul><li>PIE enabled → 먼저 <code>./rev-0103-pie.md</code> 방식으로 베이스 계산 워크플로를 세팅.</li><li>Full RELRO → GOT 변조 시나리오는 배제, 다른 데이터 타겟 검토.</li><li>Canary found → 함수 프롤로그의 카나리 저장 코드를 핵심 로직과 구분해서 읽기.</li><li>NX enabled(거의 항상) → 셸코드 직접 실행이 아닌 코드 재사용 관점으로 접근.</li></ul>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">checksec --file=./chall
+readelf -h ./chall
+readelf -l ./chall
+readelf --dyn-syms ./chall</code></pre>
+<p>GDB/Pwndbg: <code>checksec</code></p>
+<h2>출력 해석</h2>
+<p><code>checksec</code> 표 예시(pwntools 스타일):</p>
+<pre><code>RELRO           STACK CANARY      NX            PIE
+Partial RELRO   Canary found      NX enabled    PIE enabled</code></pre>
+<ul><li><code>RELRO</code>: <code>No RELRO</code> &lt; <code>Partial RELRO</code> &lt; <code>Full RELRO</code> 순으로 보호가 강해짐.</li><li><code>STACK CANARY</code>: <code>Canary found</code> / <code>No canary found</code>.</li><li><code>NX</code>: <code>NX enabled</code>(데이터 실행 불가) / <code>NX disabled</code>.</li><li><code>PIE</code>: <code>PIE enabled</code> / <code>No PIE (0x400000)</code>처럼 고정 베이스 주소가 함께 표시되기도 함.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>보호 기법이 다 켜져 있으면 "취약점이 없다"고 오해하는 것 — 보호 기법은 특정 공격 기법을 어렵게 만들 뿐, 로직 자체의 버그(인증 우회, 정수 오버플로우 등)와는 무관하다. 순수 리버싱 문제라면 보호 기법과 무관하게 알고리즘을 읽어야 한다.</li><li>네 항목을 따로따로만 이해하고 조합해서 생각하지 않는 것 — 예를 들어 Partial RELRO는 PIE 여부와 상관없이 GOT가 쓰기 가능하다는 사실이 바뀌지 않는다.</li><li><code>checksec</code> 결과를 한 번만 보고 끝내는 것 — 분석 중간에 카나리 체크 코드를 발견하면 그때마다 처음 확인한 <code>checksec</code> 결과와 일치하는지 다시 대조하는 습관이 실수를 줄여준다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>PIE 하나만 깊게 → REV-0103 PIE와 주소 계산</li><li>ASLR과의 관계 → REV-0104 ASLR 때문에 실행할 때 주소가 바뀌는 이유</li><li>RELRO/GOT 하나만 깊게 → REV-0102 RELRO가 리버싱에 의미하는 것, REV-0100 PLT와 GOT 기초</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ checksec --file=./chall
+[*] './chall'
+    Arch:     amd64-64-little
+    RELRO:    Full RELRO
+    Stack:    Canary found
+    NX:       NX enabled
+    PIE:      PIE enabled</code></pre>
+<p>이 결과만 보고도 "GOT 조작 불가, 스택에 셸코드 직접 실행 불가, 카나리 없이 리턴 주소 컨트롤 불가, 주소는 매 실행 랜덤"이라는 네 가지 제약을 즉시 정리할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0100-plt-got.html">REV-0100 — PLT와 GOT 기초</a></li><li><a href="rev-0102-relro.html">REV-0102 — RELRO가 리버싱에 의미하는 것</a></li><li><a href="rev-0103-pie.html">REV-0103 — PIE와 주소 계산</a></li><li><a href="rev-0104-aslr.html">REV-0104 — ASLR 때문에 실행할 때 주소가 바뀌는 이유</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>스택 카나리(<code>-fstack-protector</code>) 동작: GCC 공식 문서(<code>-fstack-protector</code>, <code>-fstack-protector-strong</code>) 기준.</li><li>NX/<code>GNU_STACK</code> 세그먼트: ELF 프로그램 헤더 명세 및 리눅스 실행 가능 스택 보호(<code>execstack</code>) 관련 문서 기준.</li><li><code>checksec</code> 출력 항목: pwntools <code>checksec</code>/<code>checksec.sh</code> 공식 도구 문서 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Known plaintext와 Flag 형식으로 조건 줄이기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>Known plaintext와 Flag 형식으로 조건 줄이기</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>CTF 플래그는 거의 항상 <code>flag{</code>처럼 정해진 형식으로 시작하며, 이 알려진 평문(known plaintext)과 바이너리 안의 비교 대상(사실상의 암호문)을 XOR하면 브루트포스 없이 키를 직접 계산해낼 수 있다 — 형식만으로 문자셋을 좁히는 것보다 훨씬 강력한 지름길이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>체크 함수가 입력을 어떤 방식으로 변환한 뒤 고정된 배열과 비교하는데, 그 변환이 XOR 계열로 보일 때</li><li>"플래그 형식이 <code>flag{...}</code>인 걸 아는데 이걸로 뭘 할 수 있지?"라는 생각이 들 때</li><li>브루트포스 공간이 너무 커서(REV-0219 계산 결과 비현실적) 다른 지름길이 필요할 때</li><li>이미 REV-0221에서 이 변환이 XOR처럼 가역이라고 판단했는데, 정작 키 값 자체를 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<p>고전 암호학의 "기지평문 공격(known-plaintext attack)"은 공격자가 평문 일부와 그에 대응하는 암호문 일부를 동시에 알고 있을 때 성립한다. CTF 리버싱에서는 이 조건이 거의 공짜로 주어진다: 플래그가 <code>flag{</code>로 시작한다는 건 문제 설명에서 이미 알려주고, 그 <code>flag{</code>가 변환된 결과(비교 대상 상수 배열)는 바이너리의 <code>.rodata</code>에서 직접 뽑아낼 수 있기 때문이다.</p>
+<p>변환이 <code>ciphertext = plaintext XOR key</code>(키를 평문 길이에 맞춰 반복 적용) 형태라면, 알고 있는 평문 바이트와 대응 암호문 바이트를 XOR하기만 하면 키 바이트가 바로 나온다: <code>key_byte[i] = plaintext_byte[i] ^ ciphertext_byte[i]</code>. 브루트포스가 전혀 필요 없고, 알려진 길이만큼만 계산하면 끝난다(O(알려진 길이)).</p>
+<p>이 접근은 REV-0218(길이 역추적)·REV-0219(브루트포스 가능성 계산)이 "탐색 공간을 줄이는" 접근인 것과 달리, <strong>탐색 자체를 없애버리는</strong> 접근이다. 다만 이 지름길은 변환이 바이트 단위로 독립적인 XOR류일 때만 통한다 — 여러 바이트가 뒤섞이는 해시나 블록암호에는 적용할 수 없다(뒤에서 설명).</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>루프 안에서 <code>input[i] ^ key[i % key_len]</code> 형태의 바이트별 독립 XOR</li><li>비교 대상 배열이 <code>.rodata</code>에 하드코딩되어 있고, 길이가 예상 플래그 길이와 비슷함</li><li>문제 설명이나 템플릿에 <code>flag{</code> 또는 <code>FLAG{</code>, <code>dreamhack{</code>처럼 대회별 고정 접두사가 명시됨</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>IDA/Ghidra에서 비교 대상 배열(정답 암호문)의 원본 바이트를 정확히 덤프한다. 그다음 문제에서 알려진 접두사(<code>flag{</code> 등)의 아스키 바이트와 나란히 놓고 XOR해서 키 후보를 뽑는다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 비교 대상 배열 덤프</strong></p>
+<p>IDA에서 비교 대상 배열을 더블클릭해 <code>.rodata</code>로 이동한 뒤, 배열 시작 주소에서 <code>Alt+B</code>(hex view)로 바이트를 그대로 읽는다. 예를 들어 앞 5바이트가 <code>43 5C 8E 8B DB</code>라고 하자.</p>
+<p><strong>2) 알려진 평문 바이트 확보</strong></p>
+<p>플래그가 <code>flag{</code>로 시작한다고 알려져 있으면, 아스키 값은 <code>f=0x66, l=0x6C, a=0x61, g=0x67, {=0x7B</code>이다.</p>
+<p><strong>3) 바이트별 XOR로 키 계산</strong></p>
+<pre><code>0x43 ^ 0x66 = 0x25
+0x5C ^ 0x6C = 0x30
+0x8E ^ 0x61 = 0xEF
+0x8B ^ 0x67 = 0xEC
+0xDB ^ 0x7B = 0xA0</code></pre>
+<p>키 후보는 <code>[0x25, 0x30, 0xEF, 0xEC, 0xA0]</code>이다.</p>
+<p><strong>4) 키 길이 확인</strong></p>
+<p>이 5바이트가 정말 반복 키인지 확인하려면, 암호문의 6번째, 7번째... 바이트를 같은 5바이트 키로 계속 XOR해서 나온 결과가 출력 가능한 문자(아스키 32~126)로 이어지는지 본다. 사람이 읽을 수 있는 문자열이 계속 나오면 키 길이 5가 맞다고 확신할 수 있다.</p>
+<p>알려진 평문이 짧아서(예: <code>flag{</code>가 5바이트뿐) 키 길이가 5보다 긴지 확신이 안 서는 경우에는, 고전 암호학의 <strong>카시스키 테스트(Kasiski examination)</strong>와 같은 원리를 이용할 수 있다: 반복 키 XOR 암호문에서는 "같은 평문 조각이 같은 키 위치에서 다시 나타나는 지점" 사이의 거리가 키 길이의 배수가 되는 경향이 있다. 실전에서는 이렇게까지 정교하게 할 필요 없이, 후보 키 길이를 5, 8, 10, 16처럼 몇 가지로 좁혀서(대개 flag의 알려진 총 길이의 약수이거나, 함수 안에 보이는 다른 상수 배열의 크기와 일치하는 값들) 각각 시도해보고 결과가 사람이 읽을 수 있는 문자열로 나오는 후보를 고르는 <strong>가설 검증(trial decryption)</strong> 방식이 CTF 환경에서는 더 빠르고 실용적이다. 아래 파이썬 코드처럼 여러 후보 길이를 한 번에 시도하는 헬퍼를 만들어두면 편하다:</p>
+<pre><code class="language-python">def guess_key_len(ciphertext: bytes, known_pt: bytes, candidate_lens):
+    for klen in candidate_lens:
+        if klen &lt; len(known_pt):
+            continue  # 알려진 평문보다 짧은 키는 이 방법으로 검증 불가
+        key = bytes(c ^ p for c, p in zip(ciphertext[:len(known_pt)], known_pt))
+        # klen이 known_pt보다 길면 나머지 키 바이트는 아직 모름 -&gt; 앞부분만으로 부분 검증
+        print(klen, key)</code></pre>
+<p><strong>5) 전체 복호화</strong></p>
+<p>키가 확정되면 브루트포스 없이 전체 암호문에 키를 반복 적용해서 바로 평문 전체를 얻는다.</p>
+<pre><code class="language-python">known_pt = b"flag{"
+ciphertext = bytes.fromhex("435C8E8BDB...")  # 실제로는 전체 비교 대상 바이트
+key = bytes(c ^ p for c, p in zip(ciphertext[:len(known_pt)], known_pt))
+print(key.hex())   # 2530efeca0
+
+# 키가 반복된다고 확인되면 전체 복호화
+full_pt = bytes(c ^ key[i % len(key)] for i, c in enumerate(ciphertext))
+print(full_pt)</code></pre>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python"># 빠른 수동 확인
+print(hex(0x43 ^ 0x66))  # 0x25</code></pre>
+<p>IDA: <code>.rodata</code> 배열 위에서 <code>Alt+B</code>(Hex View 이동), <code>D</code>(데이터로 변환), 배열 크기가 명확하지 않으면 <code>Array</code>(<code>*</code>) 명령으로 전체 범위를 지정해 한 번에 바이트를 확인한다.</p>
+<h2>출력 해석</h2>
+<ul><li>복호화 결과 앞부분이 정확히 <code>flag{</code>로 나오면 키 계산이 맞다는 뜻이고, 그 뒤로 이어지는 바이트들이 사람이 읽을 수 있는 문자로 보이면 반복 키 길이도 맞다는 신호다.</li><li>뒷부분이 깨진 문자로 나오면 키 길이가 5가 아니라 다른 값(예: 8, 16)일 가능성이 크므로, 더 긴 길이로 다시 XOR을 시도해봐야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>모든 문제가 정확히 소문자 <code>flag{</code>로 시작한다고 가정하는 것 — 실제로는 <code>FLAG{</code>, <code>flag_</code>, 또는 <code>dreamhack{</code>, <code>ctf{</code>처럼 대회마다 고유한 접두사를 쓴다. 반드시 문제 설명이나 바이너리의 비교 대상 상수(REV-0215의 룩업 테이블/상수 추출 기법 참고)에서 정확한 접두사 바이트를 확인해야 한다 — 대소문자 하나만 틀려도 복구한 키 전체가 무의미해진다.</li><li>변환이 바이트별 독립 XOR이 아닌데도 이 기법을 억지로 적용하려는 것 — 해시, 블록암호, REV-0217의 행렬/중첩루프 변환처럼 출력 바이트 하나가 입력 여러 바이트에 동시에 의존하는 구조에서는 "암호문 바이트 하나 XOR 평문 바이트 하나"로 키를 분리해낼 수 없다. 이런 경우 알려진 접두사/접미사는 여전히 유용하지만(문자셋·길이를 좁히거나, 브루트포스 도중 첫 바이트가 틀리면 바로 가지치기하는 용도), 대수적으로 키를 바로 뽑아내는 건 불가능하다.</li><li>문자셋을 좁히는 이득을 과소평가하는 것 — 아래 예제 2에서 보듯 형식을 아는 것만으로 브루트포스 시간이 몇 자릿수씩 줄어든다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>변환이 XOR이 아니라 다른 연산(덧셈, 곱셈, 룩업테이블)일 수 있다면 → rev-0221-is-it-invertible.md에서 연산 종류부터 다시 분류.</li><li>형식은 알지만 길이를 모른다면 → rev-0218-length-check-backtrace.md에서 길이 검증 코드를 먼저 역추적.</li><li>형식 힌트로 좁힌 뒤에도 브루트포스가 필요하다면 → rev-0219-bruteforce-feasibility.md에서 정확히 몇 초/몇 분이 걸리는지 계산.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 알려진 접두사로 XOR 키 직접 계산 (위 절차 그대로)</strong></p>
+<p>암호문 <code>43 5C 8E 8B DB</code>와 평문 <code>flag{</code>를 XOR하면 키는 <code>25 30 EF EC A0</code>이다. 계산을 다시 검산해보면: <code>0x43=01000011</code>, <code>0x66=01100110</code>, XOR하면 <code>00100101=0x25</code> — 맞다. 나머지 네 바이트도 같은 방식으로 <code>0x30, 0xEF, 0xEC, 0xA0</code>이 나온다. 이 5바이트가 반복 키라면 브루트포스 0회로 전체 플래그를 복원할 수 있다.</p>
+<p><strong>예제 2 — 형식만으로 문자셋을 좁혔을 때의 효과</strong></p>
+<p>플래그 형식이 <code>flag{</code> + 16진수 문자 8개(<code>0-9a-f</code>) + <code>}</code>로 확인됐다고 하자. 미지수는 문자셋 16, 길이 8이므로 <code>16^8</code>을 계산한다. <code>16^4 = 65536</code>이고 <code>16^8 = 65536^2 = 4,294,967,296</code>이다(이 값은 정확히 <code>2^32</code>와 같다 — <code>16=2^4</code>이고 <code>4×8=32</code>이기 때문이다). 초당 10^8회를 시도하는 최적화된 브루트포스라면 <code>4,294,967,296 / 100,000,000 ≈ 42.9</code>초로 사실상 즉시 끝난다. 순수 파이썬 10^6회/초 기준이라도 <code>4,294,967,296 / 1,000,000 ≈ 4,295</code>초, 약 71.6분으로 CTF 시간 안에 충분히 시도해볼 만하다.</p>
+<p>같은 길이 8을 형식 힌트 없이 인쇄 가능 문자 95종으로 브루트포스했다면 어땠을지 비교해보자. <code>95^8</code>을 계산하면 <code>95^2=9025</code>, <code>95^4=9025^2=81,450,625</code>, <code>95^8=81,450,625^2=6,634,204,312,890,625</code>(약 6.63×10^15)이다. 이 경우는 초당 10^8회여도 <code>6.63×10^15/10^8 ≈ 6.63×10^7</code>초, 약 2.1년이 걸려 사실상 불가능하다. 문자셋을 95에서 16으로 좁힌 것만으로 소요 시간이 약 11자릿수(10^11배 이상) 줄어든 것이다 — 형식 힌트 하나가 이 정도의 차이를 만든다.</p>
+<p><strong>예제 3 — 두 기법을 합치는 최선의 경우</strong></p>
+<p>플래그 전체 길이가 20바이트로 확인됐고(REV-0218), 형식은 <code>flag{</code> + 알 수 없는 내용 14바이트 + <code>}</code>(5+14+1=20)라고 하자. 예제 1의 방식으로 앞 5바이트 <code>flag{</code>에서 반복 키 5바이트를 이미 복구했다면, 그 키를 나머지 14바이트에도 그대로 XOR 적용하면 된다 — 이 14바이트에 대해서는 브루트포스가 전혀 필요 없다. 이것이 기지평문 공격의 이상적인 결과다: 형식 힌트가 탐색 공간을 줄이는 데 그치지 않고, 변환이 바이트별 독립 연산이라면 탐색 자체를 완전히 제거해버린다.</p>
+<h3>실행 가능한 전체 스크립트 (처음부터 끝까지 그대로 실행 가능, 한국어 주석 포함)</h3>
+<p>앞의 예제 1~3에서 나온 숫자들을 실제로 이어 붙여서, "암호문만 놓고 시작해서 최종적으로 사람이 읽는 평문이 나오는" 완결된 흐름을 그대로 코드로 만들어보자.</p>
+<pre><code class="language-python"># -*- coding: utf-8 -*-
+
+# --- 1) 바이너리의 .rodata에서 그대로 덤프했다고 가정한 암호문(비교 대상 상수) ---
+# 실제로는 IDA/Ghidra의 Hex View에서 바이트를 복사해 여기에 붙여넣으면 된다.
+ciphertext_hex = "435c8e8bdb5d5f9db3cb4049b09ec5465f9989d24054b089c156598395dd"
+ciphertext = bytes.fromhex(ciphertext_hex)   # 16진수 문자열을 실제 바이트(bytes) 객체로 변환
+print("암호문 길이(바이트):", len(ciphertext))  # 실행 결과: 30
+
+# --- 2) 문제 설명에서 이미 알려진 평문의 시작 부분(known plaintext) ---
+known_plaintext = b"flag{"   # CTF 플래그는 거의 항상 이 형태로 시작한다고 가정
+
+# --- 3) 알려진 평문 길이만큼 암호문과 XOR해서 키 후보를 계산 ---
+# zip()은 두 목록을 앞에서부터 한 쌍씩 묶어주는 파이썬 표준 기능이다.
+key_guess = bytes(c ^ p for c, p in zip(ciphertext[:len(known_plaintext)], known_plaintext))
+print("복구한 키 후보(16진수):", key_guess.hex())   # 실행 결과: 2530efeca0
+
+# --- 4) 이 키가 정말 반복되는지 확인하기 위해, 이 키로 전체 암호문을 복호화해본다 ---
+def repeating_xor(data: bytes, key: bytes) -&gt; bytes:
+    # i % len(key) : i가 키 길이를 넘어가면 다시 처음 위치로 돌아가서 순환 참조한다
+    return bytes(b ^ key[i % len(key)] for i, b in enumerate(data))
+
+recovered_plaintext = repeating_xor(ciphertext, key_guess)
+print("복호화 결과:", recovered_plaintext)
+
+# --- 5) 결과가 사람이 읽을 수 있는 문자열인지 검사(모든 바이트가 출력 가능한 ASCII인지) ---
+is_printable = all(32 &lt;= b &lt;= 126 for b in recovered_plaintext)
+print("전체가 출력 가능한 문자로만 이루어져 있는가?", is_printable)</code></pre>
+<p>이 스크립트를 그대로 실행하면 다음과 같은 결과가 나온다.</p>
+<pre><code class="language-text">암호문 길이(바이트): 30
+복구한 키 후보(16진수): 2530efeca0
+복호화 결과: b'flag{xor_key_recovered_easily}'
+전체가 출력 가능한 문자로만 이루어져 있는가? True</code></pre>
+<p>5바이트짜리 알려진 평문(<code>flag{</code>)만으로 5바이트 키를 뽑아냈는데, 그 키를 나머지 25바이트에도 그대로 반복 적용했더니 전체가 깨지지 않고 <code>flag{xor_key_recovered_easily}</code>라는 완전한 문장으로 이어졌다. 이것이 바로 본문에서 말한 "키 길이 확인" 단계가 실제로 성공한 상태다 — 만약 키 길이를 잘못 짚었다면 5바이트 이후부터 결과가 알아볼 수 없는 문자로 깨져 나왔을 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0218-length-check-backtrace.html">rev-0218-length-check-backtrace.md</a> — 정확한 플래그 길이를 먼저 알아내는 법</li><li><a href="rev-0219-bruteforce-feasibility.html">rev-0219-bruteforce-feasibility.md</a> — 형식으로 좁힌 뒤에도 남은 공간이 브루트포스 가능한지 계산</li><li><a href="rev-0199-xor-loop-inversion.html">rev-0199-xor-loop-inversion.md</a> — XOR 루프 자체를 역연산하는 기본기</li><li><a href="rev-0221-is-it-invertible.html">rev-0221-is-it-invertible.md</a> — 이 기법이 통하는 변환(XOR)과 안 통하는 변환(해시/블록암호)을 먼저 구분하는 법</li></ul>
+<h2>출처/검증</h2>
+<ul><li>기지평문 공격(known-plaintext attack)의 고전적 정의와 반복 키 XOR(스트림 암호류)에서의 적용: 고전 암호학 교재 수준의 표준 개념, Vigenère/스트림 암호 키 복구 기법과 동일한 원리 (2026-09-08 검증).</li><li>CTF 플래그 형식 관례(<code>flag{...}</code>, 대회별 접두사): 다수 CTF 대회 운영 관례 기준 일반 지식.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

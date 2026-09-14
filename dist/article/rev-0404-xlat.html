@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XLAT: 테이블 변환 명령 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>XLAT: 테이블 변환 명령</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>XLAT</code>(Table Look-up Translation)은 <strong><code>AL</code>의 현재 값을 인덱스로 삼아, <code>BX</code>/<code>EBX</code>/<code>RBX</code>가 가리키는 256바이트 테이블에서 그 위치의 바이트를 읽어와 다시 <code>AL</code>에 저장</strong>하는, 바이트 단위 룩업 테이블 전용 명령이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>xlat</code> 또는 <code>xlatb</code> 명령어를 만났는데 오퍼랜드가 없어서 뭘 하는지 모를 때</li><li>대문자↔소문자 변환, 문자 치환(substitution cipher), CRC 룩업 테이블 조회 같은 코드에서 이 명령을 만났을 때</li><li>크랙미(crackme)나 난독화된 코드에서 "값이 어디선가 테이블을 거쳐 바뀌는" 패턴을 봤을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>XLAT           ; 오퍼랜드 없음 (실제로는 항상 AL, BX 암묵적 사용)
+XLATB          ; XLAT과 완전히 동일, 어셈블러가 명확성을 위해 주로 이 이름을 씀</code></pre>
+<ul><li>겉보기엔 오퍼랜드가 없는 것처럼 보이지만, 실제로는 <strong>암묵적으로 AL과 BX(32/64비트 모드에서는 EBX/RBX)를 사용</strong>한다.</li><li>매우 드물게 <code>XLAT m8</code> 형태로 테이블의 세그먼트를 명시하는 옛 문법도 존재하지만(세그먼트 오버라이드 접두사와 결합), 현대 x86/x64 코드에서는 사실상 <code>XLATB</code>만 쓰인다고 봐도 무방하다.</li></ul>
+<h3>실제로 하는 일</h3>
+<pre><code>AL = [(E/R)BX + (unsigned)AL]</code></pre>
+<ol><li>현재 <code>AL</code>의 값을 <strong>부호 없는 인덱스(0~255)</strong> 로 취급한다.</li><li><code>BX</code>/<code>EBX</code>/<code>RBX</code>가 가리키는 주소에 그 인덱스를 더한 위치에서 1바이트를 읽는다.</li><li>읽어온 바이트를 다시 <code>AL</code>에 저장한다(원래 AL 값은 사라진다 — 입력이자 동시에 출력).</li></ol>
+<p>즉 <code>RBX</code>는 "256개 항목짜리 변환 테이블"의 시작 주소 역할을 하고, <code>AL</code>은 "입력값이자 결과값"이다.</p>
+<h3>플래그 변화</h3>
+<p><strong>없음.</strong> 어떤 플래그도 건드리지 않는다.</p>
+<h3>스택/RSP/RIP 변화</h3>
+<p>없음.</p>
+<h3>왜 이 명령이 존재하는가 — 룩업 테이블 치환의 하드웨어 지원</h3>
+<p><code>XLAT</code>은 8086 시절부터 있던 명령으로, "입력 바이트 하나를 미리 정해둔 256바이트 표에 따라 다른 바이트로 바꾼다"는 연산을 <strong>1개 명령으로</strong> 처리하기 위해 만들어졌다. 이런 변환은 다음과 같은 곳에서 자주 필요하다:</p>
+<ul><li><strong>대소문자 변환(toupper/tolower)</strong>: 테이블의 각 위치에 이미 변환된 문자를 미리 채워두면, 입력 바이트를 인덱스 삼아 XLAT 한 번으로 변환 완료.</li><li><strong>문자 치환 암호(substitution cipher)</strong>: 간단한 아스키 치환형 인코딩/난독화에서 "치환표"를 그대로 XLAT용 룩업 테이블로 사용.</li><li><strong>CRC/체크섬 계산</strong>: CRC8류 알고리즘의 사전 계산된 룩업 테이블 조회.</li><li><strong>문자 인코딩 변환</strong>: EBCDIC↔ASCII 같은 구식 문자 집합 변환.</li></ul>
+<p>현대 컴파일러는 최적화 시 이런 변환을 대개 <code>movzx</code>+메모리 인덱싱(<code>mov al, [table + rax]</code>)으로 풀어써서 XLAT을 거의 생성하지 않지만, XLAT과 이 방식은 결과적으로 동일한 일을 한다 — 그래서 XLAT을 몰라도 <code>mov al, [rbx + rax]</code> 형태의 코드를 보면 "룩업 테이블 치환"이라는 같은 패턴임을 알아챌 수 있어야 한다.</p>
+<h3>리버싱 관점에서의 의미</h3>
+<p>디스어셈블리에서 <code>xlat</code>/<code>xlatb</code>가 보인다면, 이는 <strong>매우 강력한 신호</strong>다: "지금 이 코드는 입력 바이트를 고정된 256바이트 표를 통해 변환하고 있다." 크랙미/CTF에서 이런 코드를 만나면:</p>
+<ol><li><code>RBX</code>(또는 <code>EBX</code>)가 가리키는 주소로 가서 그 256바이트 데이터를 덤프한다(IDA에서 해당 주소로 이동 후 데이터로 변환, 또는 x64dbg의 Dump 창에서 확인).</li><li>그 256바이트를 배열로 추출하면, 이것이 바로 "치환 테이블"이다 — 정방향(암호화) 테이블이면, 인덱스와 값을 뒤집어서(역함수 계산) 복호화 테이블도 만들 수 있다.</li><li>이후 전체 로직은 "입력 각 바이트를 이 표로 치환"하는 단순 반복이므로, 파이썬 등으로 테이블만 추출하면 전체 알고리즘을 손쉽게 재현할 수 있다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>xlatb</code> 단독 명령, 직전에 <code>mov al, [buf + i]</code>(입력 바이트 로드)와 <code>lea rbx, [table]</code>(테이블 주소 로드)가 선행</li><li>반복문 안에서 <code>xlatb</code>가 매 반복마다 실행 — 버퍼 전체를 한 바이트씩 테이블로 치환하는 루프</li><li><code>mov al, [rbx + rax]</code> 형태(오퍼랜드로 풀어쓴 XLAT의 컴파일러 버전) — RBX가 고정 테이블 주소이고 RAX/AL이 매번 바뀌는 인덱스일 때</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>RBX/EBX가 가리키는 주소 확인 → 그 주소의 데이터(256바이트)를 룩업 테이블로 추출</li><li>XLAT을 감싸는 반복문이 있는지 확인 → 버퍼 전체를 치환하는 구조인지 파악</li><li>테이블 내용을 덤프해서 알려진 패턴(ASCII 순열, 특정 암호 S-box 등)과 비교</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 룩업 테이블 위치 특정</strong></p>
+<pre><code class="language-asm">lea   rbx, [rip + subst_table]   ; 테이블 시작 주소를 rbx에 로드</code></pre>
+<p>IDA에서 <code>subst_table</code>로 이동해 256바이트를 배열(byte[256])로 변환한다(단축키 <code>*</code> 또는 우클릭 → Array).</p>
+<p><strong>2) 변환 루프 해석</strong></p>
+<pre><code class="language-asm">lea   rbx, [subst_table]
+lea   rsi, [input]
+lea   rdi, [output]
+mov   ecx, len
+conv_loop:
+    lodsb            ; al = [rsi], rsi += 1
+    xlatb             ; al = [rbx + al]
+    stosb             ; [rdi] = al, rdi += 1
+    loop  conv_loop</code></pre>
+<p>→ <code>for (i=0;i&lt;len;i++) output[i] = table[input[i]];</code></p>
+<p><strong>3) 테이블 추출 후 알고리즘 재현</strong> 디버거나 IDA에서 <code>subst_table</code>의 256바이트를 그대로 복사해 파이썬 리스트로 만들면, <code>output = bytes(table[b] for b in input)</code>로 동일한 변환을 재현할 수 있다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 테이블 주소에서 <code>*</code>(별표) 또는 우클릭 → Array로 256바이트를 배열로 정리하면 표 전체를 한눈에 볼 수 있다.</li><li>x64dbg: Dump 창에 RBX 주소를 입력해 256바이트를 헥스로 확인, 우클릭 → "Follow in Dump"로 빠르게 이동.</li><li>GDB/Pwndbg: <code>x/256bx $rbx</code>로 테이블 256바이트를 헥스 덤프.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>XLAT 실행 전후 AL 값을 비교하면 "입력 바이트 → 변환된 바이트"의 한 쌍을 바로 확인할 수 있다.</li><li>여러 번 실행해서 (입력, 출력) 쌍을 모으면 테이블 전체를 실행 기반으로도 복원할 수 있다(정적 추출이 어려운 경우의 대안).</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>xlat</code>을 산술 연산 명령으로 착각하는 것 — 계산이 아니라 순수 메모리 조회(lookup)다.</li><li>AL이 인덱스이면서 동시에 결과값이라는 점을 놓치는 것 — 실행 후 원래 AL(입력값)은 사라지고 조회된 값으로 완전히 대체된다.</li><li>테이블 크기를 임의로 가정하는 것 — AL은 항상 0~255 범위이므로 XLAT이 참조하는 테이블은 항상 정확히 <strong>256바이트</strong>여야 한다(더 작으면 테이블 밖 메모리를 읽는 버그가 될 수 있음).</li><li>RBX가 스택 프레임 주소라고 착각하는 것 — RBX는 여기서 콜리 세이브 레지스터가 아니라 전적으로 "테이블 베이스 주소"로 쓰이고 있다. 함수 진입부에서 RBX가 무엇으로 초기화됐는지 반드시 확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>RBX가 가리키는 주소를 못 찾겠다면 → 함수 시작 부분에서 <code>lea rbx, [...]</code> 또는 <code>mov rbx, ...</code> 형태로 RBX가 초기화되는 지점을 위로 거슬러 찾는다.</li><li>테이블 내용이 이해가 안 되면 → 256바이트를 전부 덤프해서 항등 치환(table[i]==i)에서 얼마나 벗어나 있는지 눈으로 비교해본다(단순 시프트/캐사르식 치환이면 패턴이 바로 보인다).</li><li>XLAT 대신 <code>mov al, [rbx+rax]</code> 형태로 컴파일러가 풀어썼다면 → 개념은 완전히 동일하니 위 절차를 그대로 적용한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 단순 문자 치환</strong></p>
+<pre><code class="language-c">unsigned char table[256] = { /* ... */ };
+unsigned char c = input;
+unsigned char result = table[c];</code></pre>
+<pre><code class="language-asm">mov   al, input
+lea   rbx, [table]
+xlatb
+mov   result, al</code></pre>
+<p><strong>예제 2 — 버퍼 전체 치환 루프</strong></p>
+<pre><code class="language-c">for (int i = 0; i &lt; len; i++) {
+    out[i] = table[in[i]];
+}</code></pre>
+<pre><code class="language-asm">lea   rbx, [table]
+lea   rsi, [in]
+lea   rdi, [out]
+mov   ecx, len
+loop_top:
+    lodsb
+    xlatb
+    stosb
+    loop  loop_top</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0083-lods.html">REV-0083 — LODS 문자열 로드 명령</a></li><li><a href="rev-0082-stos.html">REV-0082 — STOS STOSB STOSD STOSQ</a></li><li><a href="rev-0080-rep-prefix.html">REV-0080 — REP Prefix와 반복 문자열 명령</a></li><li><a href="rev-0401-loop.html">REV-0401 — LOOP: 카운터 기반 반복 명령</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>XLAT/XLATB 명령어의 오퍼랜드/동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "XLAT/XLATB—Table Look-up Translation" 섹션 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

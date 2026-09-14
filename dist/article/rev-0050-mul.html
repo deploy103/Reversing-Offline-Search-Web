@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MUL: Unsigned 곱셈 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>MUL: Unsigned 곱셈</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>MUL</code>은 "AL/AX/EAX/RAX에 들어있는 값과 오퍼랜드로 지정한 값을 <strong>부호없는(unsigned)</strong> 정수로 곱한 뒤, 그 결과를 <strong>두 배 크기의 레지스터 쌍</strong>(AX, DX:AX, EDX:EAX, RDX:RAX)에 저장하는" 명령어다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>어셈블리에 <code>mul ebx</code>, <code>mul ecx</code>, <code>mul qword ptr [rax]</code>처럼 오퍼랜드가 하나뿐인 곱셈 명령이 나오는데 결과가 어디 저장되는지 모를 때</li><li><code>mul</code> 실행 직후에 <code>EAX</code>만 확인했는데 값이 이상하고, <code>EDX</code>에도 값이 들어있는 걸 발견했을 때 ("edx에 이상한 값이 들어있어요")</li><li><code>MUL</code>과 <code>IMUL</code>을 언제 구분해서 써야 하는지 헷갈릴 때</li><li>IDA/Ghidra 디컴파일에서 <code>(unsigned __int64)a * b</code> 같은 캐스팅이 왜 붙는지 궁금할 때</li><li>곱셈 명령 이후 플래그(CF, OF)가 어떤 조건에서 세팅되는지 확인해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>오퍼랜드가 왜 하나뿐인가</h3>
+<p><code>MUL</code>은 소스 오퍼랜드를 하나만 명시적으로 받는다. 나머지 하나는 <strong>암묵적으로(implicit)</strong> 항상 AL/AX/EAX/RAX에서 가져온다. 즉 "곱하는 대상 중 하나는 이미 정해진 레지스터에 있어야 한다"는 제약이 있다.</p>
+<table><thead><tr><th>형태</th><th>암묵적 피연산자</th><th>명시적 오퍼랜드</th><th>결과 저장 위치</th></tr></thead><tbody><tr><td><code>MUL r/m8</code></td><td>AL</td><td>8비트 레지스터/메모리</td><td><strong>AX</strong> (16비트)</td></tr><tr><td><code>MUL r/m16</code></td><td>AX</td><td>16비트 레지스터/메모리</td><td><strong>DX:AX</strong> (DX=상위16, AX=하위16)</td></tr><tr><td><code>MUL r/m32</code></td><td>EAX</td><td>32비트 레지스터/메모리</td><td><strong>EDX:EAX</strong> (EDX=상위32, EAX=하위32)</td></tr><tr><td><code>MUL r/m64</code></td><td>RAX</td><td>64비트 레지스터/메모리</td><td><strong>RDX:RAX</strong> (RDX=상위64, RAX=하위64)</td></tr></tbody></table>
+<h3>가장 중요한 함정: 결과는 "레지스터 하나"가 아니라 "레지스터 쌍"</h3>
+<p>초보자가 가장 많이 하는 실수는 <code>mul ebx</code> 실행 후 <strong>EAX만</strong> 확인하고 끝내는 것이다. 하지만 32비트 × 32비트 곱은 최대 64비트 크기가 나올 수 있으므로, MUL은 결과를 <strong>EDX:EAX</strong>라는 64비트 레지스터 쌍에 나눠 담는다. EAX에는 하위 32비트, EDX에는 상위 32비트가 들어간다.</p>
+<p>구체적인 숫자로 보자:</p>
+<pre><code>EAX = 0x80000000   (10진수로 2,147,483,648)
+EBX = 0x00000004   (10진수로 4)
+
+mul ebx
+; 진짜 결과 = 0x80000000 * 4 = 0x200000000  (10진수 8,589,934,592)
+; 이 값은 32비트(EAX 하나)에 다 안 들어간다!
+
+실행 후:
+EAX = 0x00000000   ; 하위 32비트
+EDX = 0x00000002   ; 상위 32비트  &lt;- 여기에 "진짜 값의 나머지"가 들어있다</code></pre>
+<p><code>EAX</code>만 보면 결과가 <code>0x00000000</code>, 즉 "곱셈했더니 0이 됐다"는 완전히 틀린 결론을 내리게 된다. 실제 값은 <code>EDX:EAX = 0x0000000200000000</code>이다. <strong>MUL을 볼 때마다 습관적으로 EDX(또는 DX, RDX)도 같이 확인</strong>해야 한다.</p>
+<h3>플래그: CF와 OF만 의미 있음, 나머지는 정의되지 않음</h3>
+<ul><li><strong>CF(Carry Flag)</strong>와 <strong>OF(Overflow Flag)</strong>: 상위 절반 레지스터(AH, DX, EDX, RDX)가 <strong>0이 아니면 SET(1)</strong>, <strong>0이면 CLEAR(0)</strong>된다. 즉 "결과가 하위 절반만으로는 표현이 안 돼서 상위 절반까지 필요했다"는 뜻이 CF=1/OF=1이다.</li><li>위 예제에서는 EDX=0x00000002로 0이 아니므로 CF=1, OF=1이 세팅된다.</li><li><strong>SF, ZF, AF, PF</strong>: Intel SDM에 "undefined(정의되지 않음)"라고 명시되어 있다. MUL 실행 직후 이 플래그들의 값에 의존하는 코드를 작성하거나, 리버싱 중에 이 플래그로 뭔가를 판단하려 하면 안 된다. 컴파일러도 이 플래그들을 신뢰하지 않는다.</li></ul>
+<h3>Unsigned 전용인 이유</h3>
+<p>MUL은 두 오퍼랜드를 <strong>항상 부호없는 이진수</strong>로 해석해서 곱한다. 만약 그 비트 패턴이 원래 음수(signed negative)를 의미하는 값이었다면, MUL은 그 사실을 전혀 모르고 "아주 큰 양수"로 취급해버린다.</p>
+<p>예를 들어 <code>EAX = 0xFFFFFFFF</code>는 signed로 보면 <code>-1</code>이지만, unsigned로 보면 <code>4,294,967,295</code>(약 43억)이다.</p>
+<pre><code>EAX = 0xFFFFFFFF   ; signed로는 -1, unsigned로는 4294967295
+EBX = 0x00000002   ; 2
+
+mul ebx
+; MUL은 무조건 unsigned로 계산: 4294967295 * 2 = 8589934590 = 0x1FFFFFFFE
+; 결과: EDX = 0x00000001, EAX = 0xFFFFFFFE
+
+; 만약 "-1 * 2 = -2"를 signed로 기대했다면 완전히 틀린 결과다.
+; 이런 계산이 필요하면 MUL이 아니라 IMUL을 써야 한다 (REV-0051 참고).</code></pre>
+<p>그래서 컴파일러는 C 소스의 변수 타입이 <code>unsigned int</code>, <code>unsigned long</code>, <code>size_t</code>처럼 부호없는 타입일 때만 MUL을 생성하고, <code>int</code>나 <code>long</code>처럼 부호있는 타입이면 IMUL을 생성한다.</p>
+<h3>컴파일러 패턴</h3>
+<ul><li><code>unsigned int a, b; unsigned long long r = (unsigned long long)a * b;</code> 처럼 <strong>곱셈의 전체(더블워드) 결과가 실제로 필요한 경우</strong>(오버플로우 검사, 해시 계산, 큰 수 연산 라이브러리 등) MUL이 그대로 나타난다.</li><li>배열 인덱스 계산(<code>array[i]</code>)에서 <code>i</code>의 타입이 <code>size_t</code>(unsigned)이고 원소 크기를 곱해야 할 때도 MUL 또는 IMUL이 쓰일 수 있다(어느 쪽을 쓰는지는 컴파일러/최적화 수준에 따라 다르지만, 상위 절반이 버려져도 되는 상황이면 컴파일러가 더 값싼 IMUL 2-오퍼랜드 형태나 LEA/SHL로 대체하는 경우가 많다 — REV-0051 참고).</li><li>순수하게 "오버플로우 여부까지 정확히 검사해야 하는 unsigned 곱셈"에서는 MUL 다음에 CF를 검사하는 <code>jc</code>/<code>jnc</code> 분기가 바로 따라오는 패턴이 흔하다.</li></ul>
+<h3>IDA/Ghidra 디컴파일 표현</h3>
+<ul><li>상위 절반(EDX/RDX)을 코드가 실제로 사용하지 않으면, 디컴파일러는 그냥 <code>a * b</code>처럼 단순하게 보여준다.</li><li>상위 절반을 사용하면(예: 64비트 전체 결과가 필요한 경우) <code>(unsigned __int64)a * b</code> 같은 명시적 캐스팅이 붙거나, 결과를 <code>__int128</code>/구조체 형태로 표현하기도 한다.</li><li>IDA 구버전 의사코드에서는 상·하위 32비트를 각각 꺼내는 매크로로 <code>HIDWORD(result)</code>, <code>LODWORD(result)</code> 형태가 보이기도 한다. 이는 "이 곱셈의 상위 32비트를 실제로 쓰고 있다"는 신호이므로, 그 값이 나중에 어디에 쓰이는지(오버플로우 체크? 다음 계산의 입력?) 추적할 가치가 있다.</li></ul>
+<h3>리버싱에서의 의의</h3>
+<ul><li>MUL을 보면 그 순간 "이 값은 unsigned로 다뤄지고 있다"는 확실한 타입 단서를 얻는다. 변수의 원래 C 타입을 추정할 때 매우 유용하다.</li><li>EDX(또는 DX, RDX)가 이후 코드에서 실제로 읽히는지 확인하면, 이 곱셈이 "단순 곱"인지 "오버플로우까지 신경 쓰는 안전한 곱셈"인지 구분할 수 있다.</li><li>CF/OF를 검사하는 분기가 MUL 바로 뒤에 있으면, 그 코드는 정수 오버플로우를 방어하는 로직(예: <code>malloc(n * size)</code> 앞의 오버플로우 체크)일 가능성이 높다 — 취약점 분석에서 중요한 패턴이다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>mul ebx</code>, <code>mul ecx</code>, <code>mul r8d</code> — 오퍼랜드가 하나뿐인 곱셈, 결과는 EDX:EAX</li><li><code>mul byte ptr [rbp-1]</code> — 메모리에서 8비트 값을 읽어 AL과 곱함, 결과는 AX</li><li><code>mul</code> 직후 <code>jc</code>/<code>jnc</code>(Jump if Carry) 분기 — 오버플로우 체크 패턴</li><li><code>mul</code> 직후 EDX/RDX를 다른 레지스터로 옮기거나 스택에 저장 — 상위 절반을 실제로 쓰는 코드</li><li><code>mul</code> 직후 EAX만 쓰고 EDX를 안 건드림 — 상위 절반을 버리는(오버플로우를 신경 안 쓰는) 단순 곱셈</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>오퍼랜드가 몇 비트인지 확인 (r/m8, 16, 32, 64) → 결과가 어느 레지스터 쌍에 들어가는지 결정</li><li>MUL 실행 직후 EDX/RDX(또는 DX, AH)를 반드시 같이 확인 — EAX/AX만 보지 않기</li><li>이 값이 음수(signed)로 쓰일 여지가 있는 변수인지 확인 — 만약 그렇다면 실제로는 IMUL이어야 정상이므로, 코드/디스어셈블리를 다시 확인</li><li>MUL 직후 CF/OF를 검사하는 분기가 있는지 확인 (오버플로우 방어 로직 여부)</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 결과 레지스터 쌍 식별</strong></p>
+<pre><code class="language-asm">mul ecx        ; EAX(암묵) * ECX(명시) -&gt; EDX:EAX</code></pre>
+<p>오퍼랜드가 32비트(ECX)이므로 암묵적 피연산자는 EAX, 결과는 EDX:EAX 64비트 쌍.</p>
+<p><strong>2) EDX가 실제로 0이 아닐 수 있는지 손으로 계산</strong></p>
+<pre><code>EAX = 0x0000_1000  (4096)
+ECX = 0x0010_0000  (1,048,576)
+진짜 곱 = 4096 * 1,048,576 = 4,294,967,296 = 0x1_0000_0000</code></pre>
+<p>32비트 하나로는 표현 불가 → EDX=0x00000001, EAX=0x00000000이 될 것을 예상할 수 있다. 디버거에서 실제로 확인해서 검증한다.</p>
+<p><strong>3) 플래그 확인</strong> <code>mul</code> 직후 CF, OF를 확인한다 (x64dbg/IDA 디버거 Flags 창). 위 예제처럼 EDX가 0이 아니면 CF=1, OF=1이어야 정상이다.</p>
+<p><strong>4) 다음 코드에서 EDX 사용 여부 추적</strong></p>
+<pre><code class="language-asm">mul ebx
+jc  overflow_error   ; CF=1이면(EDX!=0) 오버플로우 처리로 분기
+mov [result], eax    ; 정상 범위면 EAX만 저장</code></pre>
+<p>이런 패턴이면 "곱셈 결과가 32비트를 넘지 않는지 검사하는 안전한 곱셈"이라고 해석한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 레지스터 값은 디버거 사용 중 Registers 창에서 EAX/EDX(또는 RAX/RDX) 동시 확인, <code>F5</code>로 디컴파일해서 캐스팅(<code>unsigned __int64</code> 등) 확인</li><li>x64dbg: 우측 레지스터 패널에서 RAX/RDX, EFLAGS의 CF/OF 비트 확인, <code>F7</code>(Step In)/<code>F8</code>(Step Over)로 MUL 한 줄씩 실행</li><li>GDB/Pwndbg: <code>info registers rax rdx eflags</code> 또는 <code>p/x $rax</code>, <code>p/x $rdx</code>로 값 확인, <code>nexti</code>로 한 줄 실행 후 비교</li></ul>
+<h2>출력 해석</h2>
+<ul><li>디버거에서 MUL 실행 직후 <code>EDX = 0x00000000</code>이면 결과가 32비트 안에 완전히 들어갔다는 뜻(CF=OF=0). <code>EDX</code>가 0이 아니면 결과가 64비트 전체를 차지한다는 뜻(CF=OF=1).</li><li>IDA 의사코드에서 <code>(unsigned __int64)a * b</code>처럼 명시적 unsigned 캐스팅이 보이면, 원본 C 코드도 unsigned 타입으로 계산했을 가능성이 매우 높다.</li><li>GDB에서 <code>p/x $rax</code>, <code>p/x $rdx</code>를 나란히 찍어보면 두 값을 이어붙인 것이 실제 64비트(또는 128비트) 결과라는 것을 눈으로 확인할 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><strong>MUL 실행 후 EAX/AX만 확인하고 EDX/DX를 무시하는 것</strong> — 결과가 상위 절반까지 걸쳐 있으면 EAX만으로는 틀린 값을 읽게 된다. 가장 흔하고 가장 위험한 실수다.</li><li><strong>MUL을 signed 값에 그대로 쓰는 것</strong> — MUL은 항상 unsigned로 계산하므로, 음수 비트 패턴(<code>0xFFFFFFFF</code> 등)을 아주 큰 양수로 곱해버려 완전히 다른 결과가 나온다. signed 곱셈이 필요하면 IMUL을 써야 한다.</li><li><strong>MUL 직후 SF/ZF/AF/PF를 보고 조건을 판단하는 것</strong> — 이 플래그들은 정의되지 않은(undefined) 값이라 신뢰할 수 없다. 오직 CF/OF만 의미가 있다.</li><li>MUL이 오퍼랜드를 하나만 받는 것을 보고 "두 번째 피연산자가 없다"고 착각하는 것 — 두 번째 피연산자는 항상 AL/AX/EAX/RAX에 암묵적으로 존재한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>곱셈 결과가 이상하다면 → EDX/RDX(또는 DX, AH)도 같이 확인했는지부터 점검.</li><li>음수가 섞인 계산인데 결과가 이상하다면 → 실제로는 MUL이 아니라 IMUL이어야 하는 상황은 아닌지, 혹은 애초에 이 값이 unsigned로 설계된 게 맞는지 원본 로직을 재검토.</li><li>MUL 다음에 분기가 있는데 의미를 모르겠다면 → CF를 검사하는 <code>jc</code>/<code>jnc</code>인지 확인 (REV-0088 플래그 개요 참고), 오버플로우 방어 코드일 가능성.</li><li>두 배 크기 결과가 왜 필요한지 모르겠다면 → 이후 코드에서 EDX/RDX가 어디로 옮겨지고 어떤 계산에 쓰이는지 xref처럼 손으로 따라가본다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 32비트 MUL, EDX에 값이 남는 경우</strong></p>
+<pre><code class="language-c">// 원본 C 코드 (unsigned)
+unsigned int a = 0x80000000;
+unsigned int b = 4;
+unsigned long long r = (unsigned long long)a * b;</code></pre>
+<pre><code class="language-asm">mov     eax, 80000000h
+mov     ebx, 4
+mul     ebx            ; EDX:EAX = EAX * EBX
+; 결과: EAX = 0x00000000, EDX = 0x00000002
+; 즉 r = 0x0000000200000000 (8,589,934,592)</code></pre>
+<p><strong>예제 2 — 8비트 MUL, 결과는 AX</strong></p>
+<pre><code class="language-c">unsigned char a = 200;
+unsigned char b = 200;
+unsigned short r = (unsigned short)a * b;  // 40000, 8비트 두 개 곱이 8비트를 넘어감</code></pre>
+<pre><code class="language-asm">mov     al, 0C8h        ; 200
+mov     bl, 0C8h        ; 200
+mul     bl              ; AX = AL * BL
+; 결과: AX = 0x9C40 (40,000) - AH에 상위 바이트, AL에 하위 바이트가 걸쳐 있음</code></pre>
+<p><strong>예제 3 — 흔한 실수: EAX만 보고 틀린 결론 내리기</strong></p>
+<pre><code class="language-asm">mov     eax, 0FFFFFFFFh   ; 4,294,967,295 (unsigned)
+mov     ecx, 2
+mul     ecx               ; EDX:EAX = EAX * ECX = 8,589,934,590
+; 결과: EAX = 0xFFFFFFFE, EDX = 0x00000001</code></pre>
+<p>여기서 초보자가 <code>EAX = 0xFFFFFFFE</code>만 보고 "곱셈 결과는 0xFFFFFFFE(약 43억)"이라고 결론내리면 틀린다. 진짜 결과는 <code>EDX:EAX = 0x00000001FFFFFFFE</code>(8,589,934,590)이다.</p>
+<p><strong>예제 4 — 오버플로우 체크 패턴 (CF 검사)</strong></p>
+<pre><code class="language-c">unsigned int n, size;
+if (n &gt; SIZE_MAX / size) { /* 오버플로우 방지 */ }
+void *p = malloc((size_t)n * size);</code></pre>
+<pre><code class="language-asm">mov     eax, n
+mul     size            ; EDX:EAX = n * size
+jc      overflow_error  ; CF=1 이면(EDX!=0, 즉 32비트를 넘음) 오버플로우로 분기
+push    eax             ; 안전하면 곱셈 결과(하위 32비트)만 malloc에 전달
+call    malloc</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0051-imul.html">REV-0051 — IMUL: Signed 곱셈과 컴파일러 패턴</a></li><li><a href="rev-0052-div.html">REV-0052 — DIV: Unsigned 나눗셈</a></li><li><a href="rev-0053-idiv.html">REV-0053 — IDIV: Signed 나눗셈</a></li><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a></li><li><a href="rev-0042-lea.html">REV-0042 — LEA: 주소 계산인데 왜 산술 연산처럼 보이는가</a></li><li><a href="rev-0061-shl-sal.html">REV-0061 — SHL과 SAL: 왼쪽 시프트</a></li><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>MUL 명령어 동작, 오퍼랜드 형태, 플래그(CF/OF 설정 조건, SF/ZF/AF/PF undefined): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "MUL—Unsigned Multiply" 섹션 기준 (2026-09-08 검증).</li><li>IDA/Ghidra 의사코드에서의 unsigned 곱셈 캐스팅 표현: Hex-Rays/Ghidra 디컴파일러 일반 동작 관례 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

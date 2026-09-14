@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pwndbg 설치 스크립트가 최신 GDB와 충돌할 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>Pwndbg 설치 스크립트가 최신 GDB와 충돌할 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">Pwndbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>Pwndbg의 구식 설치 방식(<code>git clone</code> + <code>./setup.sh</code>)은 시스템에 설치된 GDB가 링크한 Python 버전과 <code>setup.sh</code>가 패키지를 까는 Python 버전이 어긋나면 <code>ModuleNotFoundError: No module named 'pwndbg'</code> 같은 오류로 깨지기 쉬우며, 최근에는 이 문제 자체를 피하도록 공식 설치 스크립트(<code>curl -qsL 'https://install.pwndbg.re' | sh</code>)나 portable 릴리스를 쓰는 것이 가장 안전한 해결책이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>./setup.sh</code>를 실행했더니 "GDB is using a different Python version than the one installed via the package manager" 같은 경고가 뜰 때</li><li>GDB를 열면 <code>pwndbg</code> 프롬프트 대신 <code>ModuleNotFoundError: No module named 'pwndbg'</code> 오류가 뜨거나, Pwndbg 명령어(<code>context</code>, <code>vmmap</code> 등)가 아예 안 먹을 때</li><li>배포판(Ubuntu/Debian/Arch)의 GDB를 업데이트했더니 멀쩡히 쓰던 Pwndbg가 갑자기 깨질 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>원인 — GDB가 내장한 Python과 시스템 Python이 서로 다른 버전</h3>
+<p>GDB는 자체적으로 Python 인터프리터를 임베드해서 스크립팅 기능(<code>gdb.execute</code>, <code>gdb.Breakpoint</code> 등, REV-0656 계열 주제)을 제공한다. Pwndbg는 이 GDB 내장 Python 위에서 동작하는 순수 Python 패키지이므로, <strong>GDB가 링크한 Python 버전</strong>과 <strong>Pwndbg가 의존성을 설치한 Python 버전</strong>이 반드시 일치해야 한다. 구식 <code>setup.sh</code>는 설치 시점에 <code>gdb -batch -q --nx -ex 'pi import sysconfig; print(sysconfig.get_config_vars()...)'</code> 같은 명령으로 GDB가 쓰는 Python을 탐지해서 그 버전에 맞춰 의존성을 설치하려 시도하지만, 다음과 같은 상황에서 어긋난다:</p>
+<ul><li>배포판 GDB 업데이트로 GDB가 갑자기 더 최신 시스템 Python(예: 3.12)에 링크되었는데, Pwndbg는 예전 Python(예: 3.10) 기준으로 설치돼 있던 경우</li><li><code>pyenv</code>, <code>conda</code>, 수동 빌드한 Python 등 여러 Python이 시스템에 공존해서 <code>setup.sh</code>가 엉뚱한 Python을 잡은 경우</li><li>GDB를 소스 빌드하면서 Python 지원 없이(<code>--without-python</code>) 빌드했거나, 다른 Python으로 링크되게 빌드한 경우</li></ul>
+<h3>흔한 오류 메시지들</h3>
+<ul><li><code>ModuleNotFoundError: No module named 'pwndbg'</code>: <code>gdbinit.py</code>가 <code>sys.path</code>에 Pwndbg 설치 경로를 못 찾을 때. GDB를 Pwndbg 클론 디렉터리 밖에서 실행했거나, 가상환경(venv) 경로가 어긋난 경우 흔히 발생한다.</li><li><code>ModuleNotFoundError: No module named 'distutils.sysconfig'</code> 또는 <code>No module named 'pkg_resources'</code>: Python 3.12+에서 <code>distutils</code>가 표준 라이브러리에서 제거되면서, Capstone 등 Pwndbg 의존 패키지의 구식 빌드 스크립트가 깨지는 경우. <code>python3-distutils</code>(또는 <code>setuptools</code>) 패키지를 별도로 설치해야 하는 경우가 있다.</li><li>"It looks like GDB is using a different Python version than the one installed via the package manager": <code>setup.sh</code>가 자체적으로 띄우는 사전 경고로, 이 시점에서 이미 계속 진행해도 실패할 가능성이 높다는 신호다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-bash">$ ./setup.sh
+[!] It looks like GDB is using a different Python version than the one installed via the package manager.
+    GDB Python: 3.10
+    System Python: 3.12</code></pre>
+<pre><code>$ gdb ./chall
+Traceback (most recent call last):
+  File "/home/user/pwndbg/gdbinit.py", line 74, in &lt;module&gt;
+    import pwndbg  # noqa: F401
+ModuleNotFoundError: No module named 'pwndbg'</code></pre>
+<h2>가장 먼저 할 것</h2>
+<p>가능하면 문제의 근본 원인(구식 <code>git clone</code> + <code>setup.sh</code> 방식)을 우회한다. Pwndbg 공식 문서(pwndbg.re)는 현재 아래와 같은 설치 방법을 권장한다:</p>
+<pre><code class="language-bash">curl -qsL 'https://install.pwndbg.re' | sh -s -- -t pwndbg-gdb</code></pre>
+<p>이 스크립트는 Python 의존성을 시스템과 분리된 형태로 번들링하므로, 시스템 GDB/Python 버전과의 충돌 가능성이 크게 줄어든다. 이미 구식 방식으로 설치해서 문제가 난 상태라면 이 공식 스크립트로 재설치하는 것이 디버깅보다 빠른 경우가 많다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) GDB가 쓰는 Python 버전 확인</strong></p>
+<pre><code class="language-bash">gdb -batch -q -ex "python import sys; print(sys.version)"</code></pre>
+<p><strong>2) 시스템 기본 python3 버전과 비교</strong></p>
+<pre><code class="language-bash">python3 --version</code></pre>
+<p>두 버전(주.부 버전, 예: 3.10 vs 3.12)이 다르면 이것이 원인일 가능성이 매우 높다.</p>
+<p><strong>3) 공식 설치 스크립트로 재설치(권장)</strong></p>
+<pre><code class="language-bash">curl -qsL 'https://install.pwndbg.re' | sh -s -- -t pwndbg-gdb</code></pre>
+<p>이 방식은 자체 런타임을 포함한 배포 형태라 시스템 Python 버전 변화의 영향을 덜 받는다. macOS는 <code>brew install pwndbg/tap/pwndbg-gdb</code>도 지원된다.</p>
+<p><strong>4) portable 릴리스로 대체(오프라인/권한 제약 환경)</strong> GitHub 릴리스 페이지에서 portable 아카이브를 받아 압축만 풀면 별도 설치 없이 실행할 수 있다:</p>
+<pre><code class="language-bash">tar -xf pwndbg-portable.tar.gz
+./pwndbg/bin/pwndbg ./chall</code></pre>
+<p>외부 네트워크가 막힌 CTF 환경이나 오프라인 실습 환경에서는 미리 이 portable 패키지를 받아둔 로컬 킷을 쓰는 것이 가장 안정적이다.</p>
+<p><strong>5) 그래도 구식 setup.sh를 써야 한다면 — Python 버전을 맞춰서 재시도</strong></p>
+<pre><code class="language-bash">sudo apt install python3.12-venv  # GDB가 링크한 버전과 맞춤
+./setup.sh</code></pre>
+<p>또는 GDB 자체를 시스템 Python과 맞는 버전으로 재빌드/재설치한다. 배포판 패키지 관리자(<code>pacman</code>, <code>apt</code> 등)로 GDB와 Pwndbg를 함께 설치하는 방법은 Pwndbg 프로젝트가 "공식 지원 대상 아님(dependency 버전을 통제할 수 없음)"이라고 명시하고 있으므로, 이 조합에서 자꾸 깨진다면 공식 설치 스크립트/portable로 갈아타는 편이 낫다.</p>
+<p><strong>6) 시스템에 GDB가 이미 깔려 있는 상태에서 재설치가 꼬였다면</strong> Pwndbg의 Python 모듈이 순정 GDB의 다른 Python 모듈과 경로 충돌을 일으키는 경우가 보고되어 있다. 순정 GDB 패키지를 완전히 제거한 뒤 Pwndbg 번들(자체 GDB 포함 버전)만 남기거나, <code>.gdbinit</code>에서 <code>source</code> 라인이 중복되지 않았는지 확인한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">curl -qsL 'https://install.pwndbg.re' | sh -s -- -t pwndbg-gdb
+gdb -batch -q -ex "python import sys; print(sys.version)"
+python3 --version
+brew install pwndbg/tap/pwndbg-gdb   # macOS</code></pre>
+<h2>출력 해석</h2>
+<pre><code>GDB Python: 3.10
+System Python: 3.12</code></pre>
+<p>이 두 줄이 다르게 나오면, <code>setup.sh</code>가 pip으로 설치하는 Capstone/Unicorn 등 확장 모듈이 3.12용 바이너리인데 GDB는 3.10 인터프리터로 그 모듈을 import하려 시도하는 상황이 된다. Python은 서로 다른 마이너 버전 간 컴파일된 확장 모듈(.so)을 호환하지 않으므로 반드시 <code>ModuleNotFoundError</code>나 <code>ImportError</code>로 실패한다.</p>
+<h2>흔한 실수</h2>
+<ul><li>오류 메시지만 보고 pip으로 <code>pwndbg</code> 모듈을 아무 Python 환경에나 설치하는 것 — 반드시 <strong>GDB가 실제로 사용하는 그 Python</strong>에 설치되어야 의미가 있다.</li><li>배포판 GDB를 업데이트할 때마다 Pwndbg가 깨지는 걸 매번 수작업으로 고치는 것 — 애초에 시스템 Python과 분리된 공식 설치 스크립트/portable 릴리스로 옮기면 이 반복을 피할 수 있다.</li><li>GEF, PEDA, Pwndbg를 동시에 <code>.gdbinit</code>에 <code>source</code>시켜 놓고 어느 하나가 안 먹는다고 착각하는 것 — 여러 GDB 플러그인을 같은 <code>.gdbinit</code>에 함께 두면 서로 충돌하므로 하나만 활성화해야 한다.</li><li>오프라인 대회장에서 그제서야 인터넷이 필요한 <code>setup.sh</code>나 <code>curl</code> 설치를 시도하는 것 — 대회 전에 portable 릴리스나 검증된 오프라인 킷을 미리 준비해둔다(REV-0285 Pwndbg 설치와 오프라인 준비 참고).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>Pwndbg 기본 설치/오프라인 준비 절차 전반이 궁금하다면 → REV-0285 Pwndbg 설치와 오프라인 준비</li><li>Pwndbg 명령어를 빠르게 훑고 싶다면 → REV-0286 Pwndbg 명령어 치트시트</li><li>GDB 자체 설치/설정이 궁금하다면 → REV-0283 GDB 설치와 기본 설정</li><li>Docker 컨테이너 안에서 GDB가 별도로 권한 오류를 낸다면(ptrace_scope) → REV-0715 Docker 컨테이너 안에서 gdb가 ptrace 권한 오류를 낼 때</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ gdb -batch -q -ex "python import sys; print(sys.version)"
+3.10.12 (main, ...) [GCC 11.4.0]
+$ python3 --version
+Python 3.12.3</code></pre>
+<p>GDB는 3.10, 시스템 기본 <code>python3</code>는 3.12로 버전이 갈라져 있다. 이 상태에서 <code>setup.sh</code>가 3.12용 패키지를 설치했다면 GDB(3.10)에서 import가 실패하는 것이 당연한 결과이며, 해결은 "GDB가 실제 사용하는 3.10 환경에 맞춰 설치"하거나 이런 버전 추적 자체가 필요 없는 공식 설치 스크립트/portable 릴리스로 옮기는 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0285-pwndbg-install.html">REV-0285 — Pwndbg 설치와 오프라인 준비</a></li><li><a href="rev-0286-pwndbg-commands-cheatsheet.html">REV-0286 — Pwndbg 명령어 치트시트</a></li><li><a href="rev-0283-gdb-install.html">REV-0283 — GDB 설치와 기본 설정</a></li><li><a href="rev-0715-docker-gdb-ptrace-permission-denied.html">REV-0715 — Docker 컨테이너 안에서 gdb가 ptrace 권한 오류를 낼 때</a></li><li><a href="rev-0716-static-binary-gdb-no-function-names.html">REV-0716 — statically linked 바이너리라 GDB가 함수 이름을 안 보여줄 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>setup.sh</code>가 GDB/시스템 Python 버전 불일치를 감지해 경고하는 동작 및 <code>ModuleNotFoundError: No module named 'pwndbg'</code>(gdbinit.py import 실패) 사례: Pwndbg 공식 GitHub 저장소 이슈(#1866) 및 <code>setup.sh</code> 소스 기준.</li><li>현재(2025 릴리스 기준) 공식 설치 방법(curl 설치 스크립트, Homebrew, Nix, portable 릴리스, distro 패키지 비공식 명시): Pwndbg 공식 문서 <code>pwndbg.re/2025.10.10/setup/</code> 기준 (2026-09-08 확인).</li><li>Python 3.12+에서 <code>distutils</code> 제거로 인한 관련 빌드 오류: Python 공식 변경 로그(PEP 632) 및 커뮤니티 보고 사례 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>HxD 설치와 기본 사용법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / tools</div>
+<article class="article-body">
+<h1>HxD 설치와 기본 사용법</h1>
+<div class="article-meta"><span class="tag">tools</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">HxD</span></div>
+<h2>한 줄 요약</h2>
+<p>HxD는 독일 개발자 Maël Hörz가 만든 Windows용 무료 헥스/디스크/메모리 에디터로, 화려한 파싱 기능은 없지만 가볍고 빠르며 바이트 검색·수정·비교 같은 기본 작업을 가장 단순하게 처리할 수 있어 CTF에서 "일단 헥스로 몇 바이트만 빨리 보고 고치고 싶을 때" 가장 먼저 여는 도구다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>ImHex처럼 무거운 기능 없이, 파일을 열어서 특정 바이트를 빠르게 보고 수정만 하면 될 때</li><li>파일 안에서 특정 헥스 패턴이나 문자열을 검색하고 싶을 때</li><li>두 파일을 비교해서 어느 바이트가 다른지 확인하고 싶을 때(패치 전/후 비교 등)</li><li>Windows 실행 중인 프로세스의 메모리를 직접 열어서 값을 확인/수정하고 싶을 때</li><li>파일의 체크섬(MD5/SHA 등)을 빠르게 계산하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>HxD는 "가장 단순한 헥스 에디터"의 대표주자</h3>
+<p>HxD는 1990년대~2000년대부터 이어져 온 전통적인 Windows 헥스 에디터 계보의 대표 도구로, UI가 단순하고 설치 파일이 작으며 동작이 빠르다. 파일 파싱이나 패턴 언어 같은 고급 기능은 없지만, 그만큼 배우는 데 몇 분이면 충분하다. ImHex(REV-0289)가 "구조를 이해하는" 헥스 에디터라면, HxD는 "바이트를 빠르게 보고 고치는" 헥스 에디터로 역할이 나뉜다.</p>
+<h3>파일뿐 아니라 디스크와 메모리도 편집 가능</h3>
+<p>이름 그대로 파일 편집기만이 아니라 <strong>디스크 에디터</strong>(물리 디스크/파티션을 직접 헥스로 열기)와 <strong>메모리 에디터</strong>(실행 중인 프로세스의 메모리를 열어서 값 확인/수정) 기능도 내장하고 있다. CTF에서는 주로 파일 편집 용도로 쓰지만, 실행 중인 프로세스의 메모리를 빠르게 스캔하고 싶을 때도 유용하다. 단, 디스크 편집은 관리자 권한이 필요하고 Windows Vista 이상에서는 시스템 드라이브에 직접 쓰기가 제한된다.</p>
+<h3>무료이며 재배포가 허용된다</h3>
+<p>HxD는 개인/상업적 용도 모두 무료이며, 개발사(mh-nexus)는 판매만 금지할 뿐 잡지 부록 CD나 사내 배포 등으로 재배포하는 것을 명시적으로 허용한다. 다만 항상 공식 사이트(<code>mh-nexus.de</code>)에서 받는 것이 안전하다 — 제3자 다운로드 포털은 오래된 버전을 제공하거나 백신 오탐을 유발하는 경우가 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>파일을 열면 왼쪽에 오프셋, 가운데에 16진수 바이트, 오른쪽에 아스키 표현이 나란히 보이는 전형적인 헥스 뷰 레이아웃</li><li>수정한 바이트는 빨간색으로 강조 표시되어 원본과 구분됨</li><li>파일 하단 상태 표시줄에 현재 커서 오프셋과 선택 범위 크기가 표시됨</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>분석하거나 수정할 파일을 HxD에 드래그&amp;드롭한다. <code>Ctrl+F</code>로 원하는 헥스 패턴이나 문자열을 검색하고, 필요하면 해당 바이트를 직접 클릭해서 수정한 뒤 <code>Ctrl+S</code>로 저장한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 공식 다운로드 (인터넷 되는 곳에서, 한 번만)</strong></p>
+<ul><li><code>https://mh-nexus.de/en/hxd/</code>에서 두 가지 버전 중 선택</li><li>설치형(Installer): 표준 설치 프로그램</li><li>포터블(Portable): 관리자 권한 없이 USB 등에서 바로 실행 가능한 버전 (HxD 2.3부터 별도 제공)</li></ul>
+<p><strong>2) 오프라인 반입</strong></p>
+<ul><li>포터블 버전을 받아두면 대회 PC에서 설치 없이 압축만 풀어 바로 실행 가능해 가장 간편하다</li><li>설치형을 쓴다면 설치 파일 자체를 USB로 옮겨 대회 PC에서 오프라인 설치</li></ul>
+<p><strong>3) 첫 실행</strong></p>
+<ul><li>포터블: 압축을 풀고 <code>HxD.exe</code> 더블클릭</li><li>설치형: 설치 후 시작 메뉴 또는 바탕화면 아이콘 실행</li></ul>
+<p><strong>4) 파일 로드</strong></p>
+<ul><li><code>File → Open</code> (<code>Ctrl+O</code>) 또는 파일을 창에 드래그&amp;드롭</li><li>여러 파일을 탭으로 동시에 열어 비교 가능</li></ul>
+<p><strong>5) 기본 조작 익히기</strong></p>
+<ul><li><code>Ctrl+F</code>로 검색(헥스 값 또는 텍스트)</li><li>원하는 바이트를 클릭 후 직접 타이핑하여 수정</li><li><code>Ctrl+S</code>로 저장(원본을 보존하려면 <code>File → Save As</code>로 사본에 저장)</li></ul>
+<h2>명령어/단축키</h2>
+<table><thead><tr><th>목적</th><th>단축키</th></tr></thead><tbody><tr><td>파일 열기</td><td><code>Ctrl+O</code></td></tr><tr><td>저장</td><td><code>Ctrl+S</code></td></tr><tr><td>다른 이름으로 저장</td><td><code>Ctrl+Shift+S</code></td></tr><tr><td>검색</td><td><code>Ctrl+F</code></td></tr><tr><td>다음 찾기</td><td><code>F3</code></td></tr><tr><td>바꾸기</td><td><code>Ctrl+H</code></td></tr><tr><td>특정 오프셋으로 이동</td><td><code>Ctrl+G</code></td></tr><tr><td>실행 취소</td><td><code>Ctrl+Z</code></td></tr><tr><td>전체 선택</td><td><code>Ctrl+A</code></td></tr><tr><td>선택 영역 복사(헥스 텍스트로)</td><td><code>Ctrl+Shift+C</code></td></tr><tr><td>두 파일 비교</td><td><code>Analysis → Compare files...</code></td></tr><tr><td>체크섬 계산</td><td><code>Analysis → Checksums/Hashes...</code></td></tr><tr><td>디스크 열기</td><td><code>File → Open disk...</code> (관리자 권한 필요)</td></tr><tr><td>프로세스 메모리 열기</td><td><code>Extras → Open RAM</code> 또는 <code>Tools → Open process memory</code></td></tr></tbody></table>
+<h2>출력 해석</h2>
+<ul><li>검색(<code>Ctrl+F</code>)에서 "Hex-values" 모드로 <code>4D 5A</code>를 찾으면 PE 파일의 매직 넘버(<code>MZ</code>) 위치를 바로 찾을 수 있다</li><li>두 파일을 비교(<code>Compare files</code>)하면 다른 바이트의 오프셋이 목록으로 나오므로, 패치 전/후 파일을 비교해 "정확히 어느 바이트가 바뀌었는지" 검증할 때 유용하다</li><li>체크섬 계산 결과(MD5/SHA1/SHA256)는 파일 무결성 확인이나 문제 서버에 제출하는 해시값 계산에 바로 활용 가능</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>원본 파일을 직접 열어 수정하고 <code>Ctrl+S</code>로 덮어써서 원본이 사라지는 경우 — 항상 사본을 만들어 작업하는 습관 필요</li><li>텍스트 검색 시 인코딩(ANSI/UTF-8/UTF-16)을 지정하지 않아 유니코드 문자열을 못 찾는 경우</li><li>디스크/메모리 편집 기능을 관리자 권한 없이 실행해서 "왜 안 열리지"라고 헷갈리는 경우</li><li>HxD로 구조체를 눈으로 계산하려다 시간을 낭비하는 경우 — 구조 파싱이 필요하면 ImHex(REV-0289)가 더 적합</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ol><li>파일이 안 열리면 다른 프로그램이 해당 파일을 잠그고 있는지(예: 실행 중인 exe) 확인</li><li>검색이 안 되면 검색 모드(Text/Hex-values)와 인코딩 설정을 재확인</li><li>디스크/메모리 기능이 안 되면 관리자 권한으로 재실행</li><li>저장 후 문제가 생기면 실행 취소(<code>Ctrl+Z</code>) 이력이 남아있는 동안 되돌리기 시도, 그래도 안 되면 사본 백업 확인</li></ol>
+<h2>미니 예제</h2>
+<pre><code class="language-text">1. chall.exe를 HxD에 드래그&amp;드롭
+2. Ctrl+F → Hex-values 모드 → "4D 5A" 검색
+   → 오프셋 0x0에서 "MZ" 매직 넘버 확인 (정상 PE 파일)
+3. 특정 오프셋의 점프 명령어 바이트를 NOP(0x90)으로 교체하고 싶다면
+   해당 바이트를 클릭 후 직접 "90"으로 타이핑
+4. File → Save As로 patched_chall.exe로 별도 저장(원본 보존)</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0289-imhex-install-usage.html">REV-0289 — ImHex 설치와 기본 사용법</a></li><li><a href="rev-0287-die-install-usage.html">REV-0287 — Detect It Easy 설치와 사용법</a></li><li><a href="rev-0288-pe-bear-install-usage.html">REV-0288 — PE-bear 설치와 사용법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>공식 사이트 <code>mh-nexus.de/en/hxd/</code>(다운로드, 라이선스, 기능 설명)를 기준으로 작성했다.</li><li>최종 확인일: 2026-09-08</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

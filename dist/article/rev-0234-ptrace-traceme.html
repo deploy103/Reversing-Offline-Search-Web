@@ -1,0 +1,103 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ptrace PTRACE_TRACEME 안티디버깅 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / packing</div>
+<article class="article-body">
+<h1>ptrace PTRACE_TRACEME 안티디버깅</h1>
+<div class="article-meta"><span class="tag">packing</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">strace</span></div>
+<h2>한 줄 요약</h2>
+<p>Linux에서는 <strong>한 프로세스를 동시에 두 개의 트레이서(tracer)가 <code>ptrace</code>할 수 없다</strong>는 커널 규칙을 이용해, 크랙미/악성코드가 시작하자마자 스스로 <code>ptrace(PTRACE_TRACEME, 0, 0, 0)</code>을 호출해서 "이미 나를 추적 중인 프로세스가 있다"는 상태를 만들어 놓고, 나중에 GDB 같은 진짜 디버거가 붙으려 하면 그 호출이 실패하는 것을 이용해 디버거의 존재를 간접적으로 탐지하는 기법이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>GDB로 <code>attach &lt;pid&gt;</code>를 시도했는데 <code>Operation not permitted</code> 에러가 뜨거나, 붙긴 붙었는데 프로그램이 곧바로 이상하게 종료될 때</li><li><code>strace ./chall</code>로 실행해봤더니 초반에 <code>ptrace(PTRACE_TRACEME, ...)</code> 호출이 보이는데 이게 뭔지 궁금할 때</li><li>CTF pwnable/reversing 문제 설명에 "디버거로 못 붙게 막아뒀다"는 힌트가 있을 때</li><li><code>ltrace</code>/<code>strace</code> 로그에서 <code>ptrace</code> 호출의 리턴값이 <code>-1</code>이고 곧이어 프로그램이 <code>exit()</code>을 호출하는 패턴을 볼 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>ptrace란 무엇인가</h3>
+<p><code>ptrace(2)</code>는 Linux 커널이 제공하는 시스템 콜로, 한 프로세스(트레이서)가 다른 프로세스(트레이시, tracee)의 메모리·레지스터를 읽고 쓰고, 시스템 콜/시그널을 가로채고, 실행을 한 단계씩 멈출 수 있게 해주는 기반 기능이다. GDB, strace, ltrace 모두 내부적으로 이 <code>ptrace</code> 시스템 콜을 사용해서 동작한다 — 즉 <strong>GDB가 프로그램을 디버깅한다는 것 자체가 커널 관점에서는 "GDB가 그 프로세스에 대해 ptrace 트레이서가 된다"는 뜻</strong>이다.</p>
+<h3>핵심 규칙: 트레이서는 하나만</h3>
+<p>Linux 커널은 <strong>한 프로세스당 하나의 ptrace 트레이서만 허용</strong>한다. 이미 어떤 프로세스가 특정 대상을 트레이싱하고 있으면, 다른 프로세스가 같은 대상에 <code>ptrace(PTRACE_ATTACH, ...)</code>나 <code>PTRACE_TRACEME</code>를 시도하면 실패한다(<code>errno</code>가 <code>EPERM</code>으로 설정되고 반환값 <code>-1</code>).</p>
+<h3>PTRACE_TRACEME를 이용한 자가 방어</h3>
+<p>크랙미나 악성코드는 이 규칙을 거꾸로 이용한다. 프로그램이 시작하자마자(보통 <code>main</code> 진입 직후, 또는 그보다 더 이른 시점) 스스로에게 다음을 호출한다.</p>
+<pre><code class="language-c">#include &lt;sys/ptrace.h&gt;
+long ret = ptrace(PTRACE_TRACEME, 0, 0, 0);</code></pre>
+<p><code>PTRACE_TRACEME</code>는 "지금부터 내 부모 프로세스를 내 트레이서로 등록해달라"는 요청이다. 이 호출 자체는 정상적인 프로그램에서도 쓰이는 기능이지만(예: 디버거가 자식 프로세스를 실행할 때 내부적으로 사용), 안티디버깅 목적의 프로그램은 이걸 <strong>아무도 자신을 추적하지 않는 상태에서 미리 스스로 호출</strong>해 트레이서 슬롯을 선점해버린다.</p>
+<p>이렇게 되면:</p>
+<ol><li>정상 실행(디버거 없이): <code>PTRACE_TRACEME</code> 호출이 성공하고(부모 프로세스, 대개 쉘이 트레이서로 등록됨) 반환값이 <code>0</code>이다. 프로그램은 정상 경로로 진행한다.</li><li>GDB로 실행(<code>gdb ./chall</code>, <code>run</code>): GDB가 이미 그 프로세스를 <code>PTRACE_ATTACH</code>(또는 <code>fork</code> 후 자동으로) 트레이서로 등록한 상태이므로, 프로그램 자신이 호출하는 <code>PTRACE_TRACEME</code>가 <strong>이미 트레이서가 있다는 이유로 실패</strong>한다(<code>-1</code> 반환, <code>errno == EPERM</code>). 프로그램은 이 반환값을 확인해서 "나는 지금 디버깅당하고 있다"고 판단하고, 종료하거나 오동작을 유도한다.</li></ol>
+<pre><code class="language-c">if (ptrace(PTRACE_TRACEME, 0, 0, 0) == -1) {
+    // 이미 트레이서가 있음 -&gt; 디버거로 실행 중
+    puts("no debugging allowed");
+    exit(1);
+}</code></pre>
+<p>이 기법의 핵심은 "디버거를 직접 탐지"하는 게 아니라 <strong>"내가 셀프 트레이서 등록에 실패했다 = 누군가 먼저 나를 붙잡고 있다"는 간접 신호를 이용</strong>한다는 점이다. <code>IsDebuggerPresent</code>(Windows, REV-0235)와 원리는 다르지만 목적은 동일하다.</p>
+<h3>변형 기법: fork + 부모가 트레이서</h3>
+<p>좀 더 정교한 버전은 <code>fork()</code>로 자식 프로세스를 만들고, 부모 프로세스가 직접 <code>PTRACE_ATTACH</code>로 자식을 추적하며 실제 로직을 자식에서 실행한다. 이러면 GDB가 붙으려고 해도 이미 부모가 트레이서 자리를 차지하고 있어 실패하고, 게다가 실제 실행 흐름이 부모-자식 사이에 나뉘어 있어 분석이 한층 더 번거로워진다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>strace ./chall</code> 초반 로그에 <code>ptrace(PTRACE_TRACEME, ...)</code> 호출이 보인다(단, <code>strace</code> 자체도 <code>ptrace</code>를 쓰므로 <code>strace</code>로 실행하면 이 호출이 실패로 나올 수 있다는 점도 함께 관찰된다 — 그 자체가 또 하나의 힌트다).</li><li>디컴파일 코드에서 <code>main</code> 초반부에 알 수 없는 시스템 콜 wrapper 호출 하나와 그 반환값을 <code>cmp</code>/<code>test</code>하는 분기가 있다.</li><li>IDA/Ghidra에서 import 목록에 <code>ptrace</code>가 있고, xref를 따라가면 프로그램 아주 초반(entry 근처)에서 호출된다.</li><li>정상 실행(<code>./chall</code>)은 잘 되는데 <code>gdb ./chall</code> → <code>run</code>으로 실행하면 이상하게 조용히 죽거나 다른 메시지가 뜬다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>strace -f ./chall</code>로 프로그램 초반에 정말 <code>ptrace(PTRACE_TRACEME, ...)</code> 호출이 있는지 확인한다.</li><li>IDA/Ghidra에서 import된 <code>ptrace</code> 심볼의 xref를 찾아 호출 위치와, 반환값을 확인하는 분기 코드를 찾는다.</li><li>분기 목표(실패 시 이동하는 블록)에 <code>exit</code>/<code>abort</code>/이상 동작 코드가 있는지 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<ol><li>먼저 정적 분석으로 <code>ptrace</code> 호출 위치를 찾는다(<code>objdump -d ./chall | grep -A5 'call.*ptrace@plt'</code> 또는 IDA import xref).</li><li>반환값(보통 <code>EAX</code>/<code>RAX</code>)을 검사하는 <code>cmp</code>/<code>test</code> + 조건 분기를 찾는다.</li><li><strong>가장 간단한 우회(교육/CTF 목적, 자신이 풀고 있는 크랙미에 한함)</strong>: 그 조건 분기 명령을 GDB에서 NOP으로 패치하거나, <code>set $eflags</code> 등으로 분기 조건을 강제로 반전시켜 "트레이서 없음" 경로로 가도록 만든다.</li><li><strong>더 근본적인 우회</strong>: <code>ptrace</code> 호출 자체를 패치해서 항상 성공(<code>0</code>)을 반환하도록 만든다 — 함수 진입부에 <code>mov rax, 0; ret</code>로 패치하거나, GDB의 <code>catch syscall ptrace</code> 기능으로 그 시스템 콜이 실행되는 순간을 잡아 결과 레지스터를 조작한다.</li><li>Pwndbg를 쓴다면 <code>set follow-fork-mode child</code>, <code>set detach-on-fork off</code> 등의 옵션과 함께 실제로 <code>ptrace</code> 콜이 어떻게 실패하는지 단계별로 관찰하면 이해가 빠르다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>GDB: <code>catch syscall ptrace</code>로 <code>ptrace</code> 시스템 콜 진입 시점에 자동으로 멈추기, <code>finish</code>로 함수 리턴까지 실행 후 <code>p $rax</code>로 반환값 확인, <code>set $rax = 0</code>으로 반환값을 강제로 성공(0)으로 조작</li><li>GDB: <code>b *0x&lt;주소&gt;</code> 후 <code>stepi</code>로 한 줄씩 실행하며 분기 조건 확인</li><li>Pwndbg: <code>context</code> 명령으로 현재 레지스터/디스어셈블리를 한 화면에서 확인, <code>patch</code> 플러그인 명령으로 명령어 직접 패치</li><li>Linux: <code>strace -f -e trace=ptrace ./chall</code>(ptrace 호출만 필터링해서 관찰)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>strace</code> 출력에서 <code>ptrace(PTRACE_TRACEME, 0, 0, 0) = 0</code>이면 성공(트레이서 없음/등록 성공)이고, <code>= -1 EPERM (Operation not permitted)</code>이면 실패(이미 트레이서 존재)다.</li><li>GDB에서 <code>catch syscall ptrace</code> 후 <code>finish</code>로 반환값을 봤을 때 <code>$rax</code>가 <code>0xffffffffffffffff</code>(즉 <code>-1</code>)이면 GDB 자신이 이미 트레이서라서 실패한 것 — 정상적인 현상이며, 프로그램이 이 값을 어떻게 처리하는지가 관건이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>ptrace(PTRACE_TRACEME, ...)</code> 실패를 GDB 설정 문제로 착각하고 GDB를 재설치하거나 권한을 만지는 것 — 이것은 프로그램이 의도적으로 넣은 탐지 로직이다.</li><li><code>strace</code>로 관찰하려다가 <code>strace</code> 자체가 트레이서 역할을 해서 프로그램의 <code>PTRACE_TRACEME</code>가 또 실패하는 것을 이상 현상으로 오해하는 것 — 오히려 이게 탐지 로직이 작동하고 있다는 증거다.</li><li>반환값 분기만 패치하고 이후 코드에서 또 다른 <code>ptrace</code> 호출(예: <code>PTRACE_PEEKTEXT</code>로 자기 코드에 브레이크포인트가 있는지 스캔)이 있다는 걸 놓치는 것 — 안티디버깅은 보통 한 곳에만 있지 않다.</li><li>fork 기반 변형에서 자식 프로세스만 디버깅하려다 부모 프로세스의 트레이서 등록을 놓치는 것 — <code>set follow-fork-mode</code>, <code>set detach-on-fork</code> 옵션을 반드시 확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>GDB로 attach만 해도 바로 죽는다면 → <code>strace -f -p &lt;pid&gt;</code>로 먼저 어떤 시스템 콜이 실패하는지 살펴본다.</li><li>패치했는데도 여전히 이상하게 종료된다면 → <code>ptrace</code> 호출이 여러 번(다른 요청 타입으로) 있는지 xref를 다시 전수 조사한다.</li><li>정적 분석으로 로직을 다 이해했는데도 확신이 안 서면 → 일단 <code>ptrace</code> 관련 분기를 전부 무조건 "정상" 경로로 강제하고 실행해서 결과를 관찰한다.</li><li>리눅스 시스템 콜 자체가 낯설다면 → <code>../linux-elf/rev-0112-strace-basics.md</code>에서 strace 기본 사용법부터 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 전형적인 자가 트레이싱 체크</strong></p>
+<pre><code class="language-c">#include &lt;sys/ptrace.h&gt;
+#include &lt;stdio.h&gt;
+#include &lt;stdlib.h&gt;
+
+int main() {
+    if (ptrace(PTRACE_TRACEME, 0, 0, 0) &lt; 0) {
+        puts("debugger detected");
+        exit(1);
+    }
+    puts("welcome");
+    // ... 실제 로직 ...
+}</code></pre>
+<p><strong>예제 2 — GDB에서 시스템 콜 가로채서 반환값 조작</strong></p>
+<pre><code class="language-text">(gdb) catch syscall ptrace
+(gdb) run
+Catchpoint 1 (call to syscall ptrace), 0x... in ptrace ()
+(gdb) finish
+Run till exit from #0 ptrace ()
+Value returned is $1 = -1
+(gdb) set $rax = 0
+(gdb) continue</code></pre>
+<p><code>catch syscall ptrace</code>로 호출 시점을 잡고, <code>finish</code>로 함수가 끝날 때까지 실행한 뒤, 반환값(<code>$rax</code>)이 담긴 레지스터를 직접 <code>0</code>으로 바꿔서 프로그램이 "성공"으로 착각하게 만드는 방식이다. 자신이 만들거나 CTF 문제로 받은 크랙미를 학습 목적으로 분석할 때만 사용해야 한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0239-exception-based-anti-debug.html">REV-0239 — Exception 기반 안티디버깅 기초</a></li><li><a href="rev-0240-debugger-sudden-exit-checklist.html">REV-0240 — 디버거에서 갑자기 종료될 때 체크리스트</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>ptrace(2)</code> 시스템 콜과 "한 프로세스당 하나의 트레이서" 제약: Linux man-pages 프로젝트의 <code>ptrace(2)</code> 매뉴얼 페이지 기준(2026-09-08 검증).</li><li><code>PTRACE_TRACEME</code>를 이용한 셀프 트레이싱 기반 안티디버깅 기법: 다수의 공개 리눅스 안티디버깅/CTF 리버싱 교육 자료에서 공통적으로 설명하는 표준 기법을 정리함.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Flag 검증 함수 찾는 가장 흔한 경로 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>Flag 검증 함수 찾는 가장 흔한 경로</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>검증 함수는 거의 항상 <strong>"성공/실패 문자열 xref" 또는 "strcmp/memcmp 계열 함수 xref" 또는 "입력 함수(scanf 등) 바로 다음 코드"</strong> 세 갈래 중 하나로 도달하며, 이 세 갈래를 순서대로 시도하면 대부분의 크랙미에서 몇 분 안에 찾을 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>main</code> 함수는 찾았는데, 실제로 입력을 검증하는 코드가 어디 있는지 못 찾을 때</li><li>함수가 수십~수백 개라서 어디부터 봐야 할지 모를 때</li><li><code>main</code> 안에 함수 호출이 여러 개 있는데 어떤 게 검증 로직인지 구분이 안 될 때</li></ul>
+<h2>핵심 개념</h2>
+<p>CTF 크랙미의 절대다수는 구조가 비슷하다: <strong>입력을 받는다 → (선택적으로 변형한다) → 정답과 비교한다 → 결과를 출력한다.</strong> 이 중 "정답과 비교한다"에 해당하는 부분이 검증 함수(check function)다. 검증 함수를 찾는 문제는 결국 "코드를 처음부터 끝까지 읽지 않고 지름길로 그 지점에 도달하는 법"의 문제다.</p>
+<p>지름길은 세 가지가 있고, 이 순서로 시도하는 게 성공률이 높다.</p>
+<ol><li><strong>결과 문자열에서 거꾸로 찾기</strong>: "Correct!", "Wrong flag", "Access granted" 같은 문자열은 반드시 어떤 조건문의 두 갈래(참/거짓) 중 한쪽에서 출력된다. 그 문자열을 참조하는 코드 위치를 찾으면, 그 바로 위에 <code>if</code> 조건이 있고, 그 조건이 검증 함수 호출이거나 검증 로직 자체다.</li><li><strong>비교 함수 자체에서 찾기</strong>: <code>strcmp</code>, <code>memcmp</code>, <code>strncmp</code> 같은 라이브러리 함수는 문자열/버퍼 비교에 쓰인다. 이 함수들을 호출하는 곳을 찾으면 바로 그 근처가 검증 로직이다. C++에서 <code>==</code> 연산자로 직접 비교하는 경우 어셈블리 레벨에서는 <code>cmp</code> 명령어가 반복되는 패턴으로 보인다.</li><li><strong>입력 함수 바로 다음을 순방향으로 추적</strong>: <code>scanf</code>, <code>gets</code>, <code>fgets</code>, <code>read</code> 같은 함수로 입력을 받은 직후의 코드를 순서대로 따라간다. 이 방법은 앞의 두 가지가 실패했을 때(문자열이 암호화되어 있거나, strcmp를 안 쓰고 직접 바이트 비교 루프를 짠 경우)의 대안이다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA Functions 창에 <code>sub_401500</code> 같은 이름 모를 함수가 <code>main</code>에서 호출되고, 그 리턴값이 바로 <code>if</code>문에 쓰인다 — 검증 함수일 확률이 높다.</li><li>디컴파일 코드에 <code>strcmp(input, "some_string")</code> 또는 <code>strcmp(v1, v2)</code>가 보인다 — 바로 그 자리가 검증 지점이다(단, 진짜 정답이 <code>"some_string"</code>처럼 평문으로 보이는 경우는 드물고, 대부분 변형된 값과 비교한다).</li><li><code>for</code>/<code>while</code> 반복문 안에서 배열 원소를 하나씩 비교하며 다르면 바로 실패 처리하는 패턴 — strcmp를 직접 구현한 형태다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>IDA/Ghidra에서 <strong>Shift+F12(Strings 창)</strong> 를 열고 "Correct", "Wrong", "Success", "Fail", "flag", "정답", "틀렸습니다" 같은 단어를 검색한다(Ctrl+F로 문자열 창 안에서 검색). 문자열이 하나라도 나오면 그게 가장 빠른 길이다.</p>
+<h2>단계별 절차</h2>
+<p><strong>경로 A: 결과 문자열에서 역추적</strong></p>
+<ol><li>Shift+F12로 Strings 창을 열고 결과 메시지로 보이는 문자열을 찾는다.</li><li>그 문자열을 더블클릭해서 <code>.rdata</code>/<code>.rodata</code>의 실제 위치로 이동한다.</li><li><strong>X</strong> 키(Cross-references, xref)를 눌러 "이 문자열을 사용하는 코드 위치" 목록을 본다.</li><li>목록에서 함수로 이동하면, 보통 그 주변에 <code>if (result == 0) { puts("Correct!"); } else { puts("Wrong!"); }</code> 형태의 분기가 보인다.</li><li><code>result</code>가 어디서 계산됐는지 위로 거슬러 올라가면 검증 함수 호출(<code>result = check(input);</code>)이 나온다. 이게 진짜 검증 함수다.</li></ol>
+<p>이 방식이 <a href="rev-0008-trace-from-strings.html">rev-0008-trace-from-strings.md</a>에서 더 자세히 다루는 내용이다.</p>
+<p><strong>경로 B: 비교 함수에서 역추적</strong></p>
+<ol><li>IDA Imports 탭(View → Open subviews → Imports) 또는 Ghidra Symbol Tree → Imports에서 <code>strcmp</code>, <code>strncmp</code>, <code>memcmp</code>를 찾는다.</li><li>함수를 더블클릭 → <strong>X</strong>(xref)로 이 함수를 호출하는 위치들을 본다.</li><li>호출 지점이 여러 개면, 그중 <code>main</code> 근처이거나 입력 변수(<code>scanf</code>로 받은 버퍼)를 인자로 쓰는 곳을 우선 확인한다.</li><li><code>memcmp(input, key, 16)</code>처럼 길이가 고정된 비교가 보이면, <code>key</code> 버퍼(정답 후보)의 실제 값을 IDA에서 확인한다(변수를 클릭 → 데이터 정의 위치로 이동).</li></ol>
+<p><strong>경로 C: 입력 함수부터 순방향 추적</strong></p>
+<p>경로 A, B가 둘 다 실패하면(문자열이 암호화되어 있거나, 자체 비교 로직을 짠 경우) 입력을 받는 지점부터 순서대로 코드를 읽는다. 이 방법은 <a href="rev-0007-trace-from-input.html">rev-0007-trace-from-input.md</a>에서 자세히 다룬다. 요약하면:</p>
+<ol><li>Imports에서 <code>scanf</code>, <code>gets</code>, <code>fgets</code>, <code>read</code>, <code>cin</code> 관련 함수를 찾는다.</li><li>그 호출 직후부터 F5 디컴파일 코드를 위에서 아래로 읽으며, 입력 변수가 어떤 함수에 전달되는지 따라간다.</li><li>반복문이나 함수 호출이 나오면 그 안으로 들어가서(더블클릭) 무엇을 하는지 확인한다 — 대부분 몇 단계 안에 비교 로직에 도달한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>Shift+F12</code>(문자열), <code>Ctrl+F</code>(문자열 창 내 검색), <code>X</code>(xref), <code>F5</code>(디컴파일), <code>Ctrl+P</code>(함수 목록)</li><li>Ghidra: <code>Window → Defined Strings</code>, 문자열 더블클릭 후 <code>Show References To</code>(단축키 없으면 우클릭 메뉴)</li><li>커맨드라인으로 미리 후보 좁히기(Linux): <code>objdump -d ./chall | grep -B5 "call.*strcmp"</code></li></ul>
+<h2>출력 해석</h2>
+<ul><li>xref 목록에 함수가 하나만 뜨면 바로 그 함수가 답이다.</li><li>xref 목록에 여러 함수가 뜨면(예: 로깅 함수, 도움말 출력 함수 등에서도 비슷한 문자열을 씀) <code>main</code>에서 가장 가깝게 호출되는 것을 우선한다.</li><li><code>strcmp</code> 리턴값은 두 문자열이 같으면 0이다. 디컴파일 코드에서 <code>if (strcmp(...) == 0)</code>이 "같을 때" 분기, <code>if (strcmp(...))</code> 단독이면 "다를 때" 분기라는 걸 헷갈리지 않아야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>xref 결과가 여러 개 나왔을 때 첫 번째 것만 보고 그게 검증 함수라고 단정하는 것 — 도움말/사용법 출력 함수일 수도 있다.</li><li><code>strcmp</code>의 인자 순서를 착각해서 어떤 게 사용자 입력이고 어떤 게 정답 후보인지 헷갈리는 것.</li><li>검증 로직이 함수로 분리되어 있지 않고 <code>main</code> 안에 인라인되어 있는 경우를 예상 못 하고 "검증 함수"라는 별도 함수만 찾으려는 것 — 컴파일러 최적화로 작은 함수는 인라인될 수 있다.</li><li>정답 문자열이 그대로 보인다고 바로 입력해보는 것 — XOR/인코딩된 값과 비교하는 경우가 많아 실제 정답이 아닐 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>문자열이 하나도 안 보인다 → <a href="rev-0008-trace-from-strings.html">rev-0008-trace-from-strings.md</a>의 "문자열이 암호화된 경우" 참고, 또는 <a href="rev-0007-trace-from-input.html">rev-0007-trace-from-input.md</a>로 전환</li><li><code>main</code> 자체를 못 찾았다 → <a href="rev-0009-finding-main.html">rev-0009-finding-main.md</a></li><li>디컴파일이 이해가 안 된다 → <a href="rev-0011-when-to-trust-asm.html">rev-0011-when-to-trust-asm.md</a></li><li>5분째 못 찾았다 → <a href="rev-0015-five-minute-checklist.html">rev-0015-five-minute-checklist.md</a></li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">// main 안에서
+int result = check_flag(input);
+if (result == 1)
+    puts("Correct!");
+else
+    puts("Wrong!");</code></pre>
+<p><code>"Correct!"</code> 문자열을 xref로 찾아서 도착한 지점이 위 코드라면, <code>result</code>가 어디서 왔는지 보면 <code>check_flag(input)</code>라는 함수 호출이 바로 보인다. <code>check_flag</code>를 더블클릭해서 들어가면 그게 진짜 검증 함수다. <code>check_flag</code> 내부에서 다시 <code>strcmp</code>나 반복문이 있다면, 그 안으로 한 단계 더 들어가서 실제 비교 대상을 찾는다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0007-trace-from-input.html">rev-0007-trace-from-input.md</a></li><li><a href="rev-0008-trace-from-strings.html">rev-0008-trace-from-strings.md</a></li><li><a href="rev-0009-finding-main.html">rev-0009-finding-main.md</a></li><li><a href="rev-0071-call.html">../assembly/rev-0071-call.md</a></li><li><a href="rev-0013-record-constants-first.html">rev-0013-record-constants-first.md</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>strcmp</code>/<code>memcmp</code> 동작: POSIX/ISO C 표준 라이브러리 명세 기준 (2026-09-08 검증).</li><li>IDA/Ghidra xref 기능: 각 공식 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

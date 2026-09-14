@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JA JAE JB JBE: Unsigned 비교 분기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>JA JAE JB JBE: Unsigned 비교 분기</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>JA</code>/<code>JAE</code>/<code>JB</code>/<code>JBE</code>는 직전 <code>CMP</code>(또는 <code>SUB</code>) 결과를 <strong>unsigned(부호 없는) 정수</strong>로 해석해서 크다/크거나 같다/작다/작거나 같다를 판단해 분기하는 명령이다. 이 계열은 CF(Carry Flag) 하나만 본다 — SF/OF 조합을 보는 signed 계열(<a href="rev-0069-jg-jge-jl-jle.html">REV-0069</a>)보다 규칙은 단순하지만, 같은 비트 패턴에 대해 signed 계열과 정반대의 분기 결과를 낼 수 있다.</p>
+<blockquote><p>이 글의 signed 버전은 <a href="rev-0069-jg-jge-jl-jle.html">REV-0069 — JG JGE JL JLE</a>를 함께 읽어라. 이 두 글은 "같은 CMP 한 줄이 signed로 보느냐 unsigned로 보느냐에 따라 정반대로 분기할 수 있다"는 것을 보여주는 짝이며, <strong>이 차이를 못 짚는 것이 CTF에서 가장 흔하게 문제를 놓치는 원인</strong>이다.</p></blockquote>
+<h2>언제 검색해야 하나</h2>
+<ul><li>어셈블리에 <code>ja</code>, <code>jae</code>, <code>jb</code>, <code>jbe</code>가 나오는데 각각 어떤 플래그를 보는지 모를 때</li><li>배열 인덱스나 버퍼 크기 검사 코드(<code>cmp idx, size</code> / <code>jae fail</code>)를 분석 중일 때</li><li><code>size_t</code>/<code>unsigned int</code> 뺄셈 결과가 이상하게 큰 값이 되는(언더플로우) 상황을 의심할 때</li><li>"ja랑 jg 차이가 뭐냐"처럼 signed/unsigned 분기 계열이 헷갈릴 때</li><li>정수 부호 버그(길이 체크 우회 등) 관련 CTF 문제를 분석 중일 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>니모닉과 별칭</h3>
+<p><code>JAE</code>와 <code>JB</code>는 각각 세 가지 이름을 가진다 — 전부 opcode가 같은 완전히 동일한 명령이다.</p>
+<table><thead><tr><th>니모닉</th><th>동일 니모닉</th><th>의미</th></tr></thead><tbody><tr><td><code>JA</code></td><td><code>JNBE</code> (Jump if Not Below or Equal)</td><td>unsigned 크다 (above)</td></tr><tr><td><code>JAE</code></td><td><code>JNB</code>, <code>JNC</code> (Jump if Not Below / Not Carry)</td><td>unsigned 크거나 같다 (above or equal)</td></tr><tr><td><code>JB</code></td><td><code>JNAE</code>, <code>JC</code> (Jump if Not Above or Equal / Jump if Carry)</td><td>unsigned 작다 (below)</td></tr><tr><td><code>JBE</code></td><td><code>JNA</code> (Jump if Not Above)</td><td>unsigned 작거나 같다 (below or equal)</td></tr></tbody></table>
+<p><code>JC</code>/<code>JNC</code>("jump if carry"/"jump if not carry")는 <code>CMP</code> 뒤뿐 아니라 <code>ADD</code>/<code>SUB</code> 직후 <strong>unsigned 오버플로우/언더플로우(자리올림/빌림) 여부만 확인하고 싶을 때</strong>도 일반적으로 쓰인다 — 꼭 "비교" 문맥이 아니어도 등장한다는 점을 기억해두면 좋다.</p>
+<h3>Intel SDM 전체 Jcc 조건 표</h3>
+<p>아래는 Intel SDM이 정의하는 조건 코드 전체 표다. 이 글에서 다루는 4개는 굵게 표시된 부분(unsigned 계열)이고, <code>G/GE/L/LE</code>(signed 계열)는 <a href="rev-0069-jg-jge-jl-jle.html">REV-0069</a>에서 다룬다.</p>
+<table><thead><tr><th>접미사</th><th>다른 표기</th><th>테스트하는 플래그 조건</th><th>의미</th></tr></thead><tbody><tr><td>E / Z</td><td>—</td><td>ZF = 1</td><td>equal / zero</td></tr><tr><td>NE / NZ</td><td>—</td><td>ZF = 0</td><td>not equal / not zero</td></tr><tr><td>G / NLE</td><td>—</td><td>ZF = 0 AND SF = OF</td><td>signed greater</td></tr><tr><td>GE / NL</td><td>—</td><td>SF = OF</td><td>signed greater or equal</td></tr><tr><td>L / NGE</td><td>—</td><td>SF ≠ OF</td><td>signed less</td></tr><tr><td>LE / NG</td><td>—</td><td>ZF = 1 OR SF ≠ OF</td><td>signed less or equal</td></tr><tr><td><strong>A / NBE</strong></td><td>—</td><td><strong>CF = 0 AND ZF = 0</strong></td><td><strong>unsigned above</strong></td></tr><tr><td><strong>AE / NB / NC</strong></td><td>—</td><td><strong>CF = 0</strong></td><td><strong>unsigned above or equal</strong></td></tr><tr><td><strong>B / NAE / C</strong></td><td>—</td><td><strong>CF = 1</strong></td><td><strong>unsigned below</strong></td></tr><tr><td><strong>BE / NA</strong></td><td>—</td><td><strong>CF = 1 OR ZF = 1</strong></td><td><strong>unsigned below or equal</strong></td></tr><tr><td>S</td><td>—</td><td>SF = 1</td><td>sign (negative)</td></tr><tr><td>NS</td><td>—</td><td>SF = 0</td><td>not sign</td></tr><tr><td>O</td><td>—</td><td>OF = 1</td><td>overflow</td></tr><tr><td>NO</td><td>—</td><td>OF = 0</td><td>no overflow</td></tr><tr><td>P / PE</td><td>—</td><td>PF = 1</td><td>parity even</td></tr><tr><td>NP / PO</td><td>—</td><td>PF = 0</td><td>parity odd</td></tr></tbody></table>
+<h3>각 조건을 하나씩 정확히</h3>
+<table><thead><tr><th>명령</th><th>플래그 조건</th><th>뜻</th></tr></thead><tbody><tr><td><code>JA</code> (<code>JNBE</code>)</td><td><strong>CF = 0 AND ZF = 0</strong></td><td>빌림 없음 &amp; 같지 않음 → a &gt; b</td></tr><tr><td><code>JAE</code> (<code>JNB</code>/<code>JNC</code>)</td><td><strong>CF = 0</strong></td><td>빌림 없음 → a ≥ b</td></tr><tr><td><code>JB</code> (<code>JNAE</code>/<code>JC</code>)</td><td><strong>CF = 1</strong></td><td>빌림 있음 → a &lt; b</td></tr><tr><td><code>JBE</code> (<code>JNA</code>)</td><td><strong>CF = 1 OR ZF = 1</strong></td><td>빌림 있거나 같음 → a ≤ b</td></tr></tbody></table>
+<h3>왜 CF 하나만 보면 되는가 — signed 계열과의 대비</h3>
+<p><code>CMP a, b</code>는 <code>a - b</code>를 계산한다. <code>CF</code>는 이 뺄셈에서 <strong>unsigned 관점의 빌림(borrow)</strong> 여부를 나타내는 플래그다: <code>a</code>를 unsigned 값으로 봤을 때 <code>a</code>가 <code>b</code>보다 작으면 뺄셈 과정에서 최상위 비트 밖에서 빌려와야 하므로 <code>CF = 1</code>이 세팅되고, <code>a</code>가 <code>b</code>보다 크거나 같으면 빌릴 필요가 없으므로 <code>CF = 0</code>이다. 이건 "a와 b를 unsigned로 봤을 때 대소관계가 어떤가"를 CF 하나가 직접적으로 말해주는 것이라, <a href="rev-0069-jg-jge-jl-jle.html">REV-0069</a>의 signed 계열처럼 오버플로우를 보정하기 위해 두 플래그(SF, OF)를 조합할 필요가 없다.</p>
+<p><strong>정리</strong>: unsigned 비교는 <code>CF</code> 하나만 보면 되므로 signed 비교(<code>SF</code>와 <code>OF</code>를 함께 봐야 함)보다 오히려 규칙이 단순하다. 다만 이 단순함이 역설적으로 실수를 유발하기도 한다 — 아래 "흔한 실수" 참고.</p>
+<h3>0xFFFFFFFF vs 1 — unsigned로 해석했을 때</h3>
+<pre><code class="language-asm">mov eax, 0FFFFFFFFh   ; eax = 0xFFFFFFFF
+cmp eax, 1            ; 내부적으로 eax - 1 을 계산해 플래그만 세팅 (eax 값 자체는 안 바뀜)</code></pre>
+<p><code>CMP</code>는 <code>0xFFFFFFFF - 1 = 0xFFFFFFFE</code>를 계산하면서 플래그를 다음처럼 세팅한다:</p>
+<ul><li><code>CF = 0</code> (unsigned 뺄셈에서 borrow 없음 — 0xFFFFFFFF는 unsigned로 1보다 크므로 안 빌림)</li><li><code>ZF = 0</code> (결과가 0이 아님)</li><li><code>SF = 1</code> (결과 0xFFFFFFFE의 최상위 비트가 1)</li><li><code>OF = 0</code> (signed 뺄셈 관점에서 오버플로우 없음: -1 - 1 = -2, 정상 범위)</li></ul>
+<p>이제 이 값을 <strong>unsigned로 해석</strong>하면 eax는 <code>4294967295</code>, 비교 대상은 <code>1</code>이다. <code>4294967295 &gt; 1</code>이므로 <code>JA</code>(<code>CF=0 AND ZF=0</code>: <code>0=0 AND 0=0</code> → 참)가 <strong>분기하고</strong>, <code>JB</code>(<code>CF=1</code>: 거짓)는 분기하지 않는다.</p>
+<p><a href="rev-0069-jg-jge-jl-jle.html">REV-0069</a>(JG/JL 글)에서는 이 <strong>완전히 동일한 CMP 명령</strong>을 signed로 해석해서 정반대의 결론(<code>JL</code>이 분기함, <code>-1 &lt; 1</code>)을 냈다. 같은 비트, 같은 CMP, 정반대 분기 — 그 차이는 오직 그 다음에 붙는 Jcc가 signed 계열(<code>JG</code>/<code>JL</code>)인지 unsigned 계열(<code>JA</code>/<code>JB</code>)인지에 달려 있다.</p>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>JA  rel8/rel32
+JAE rel8/rel32
+JB  rel8/rel32
+JBE rel8/rel32</code></pre>
+<p>오퍼랜드는 하나, 현재 RIP 기준 상대 오프셋이다.</p>
+<h3>플래그: 읽기만 하고 바꾸지 않는다</h3>
+<ul><li><strong>읽는 플래그</strong>: <code>CF</code> (<code>JA</code>/<code>JBE</code>는 <code>ZF</code>도 함께 읽음)</li><li><strong>바꾸는 플래그</strong>: 없음. 직전 <code>CMP</code>/<code>SUB</code>/<code>TEST</code>가 세팅해 둔 플래그를 읽기만 한다.</li></ul>
+<h3>스택/RIP 변화</h3>
+<p>조건이 참이면 <code>RIP</code>가 target 주소로 바뀌고, 거짓이면 다음 명령으로 진행한다. <code>RSP</code>는 건드리지 않는다.</p>
+<h3>컴파일러 패턴 — unsigned 변수의 <code>if</code></h3>
+<pre><code class="language-c">unsigned int a, b;
+if (a &gt; b) { ... }</code></pre>
+<pre><code class="language-asm">cmp eax, ebx
+ja  true_branch   ; unsigned above</code></pre>
+<p><a href="rev-0069-jg-jge-jl-jle.html">REV-0069</a>에서 본 것과 똑같이 생긴 <code>if (a &gt; b)</code>라도, 변수가 <code>unsigned int</code>로 선언되어 있으면 <code>ja</code>가 나오고 <code>int</code>였다면 <code>jg</code>가 나온다 — 변수 선언의 signedness가 최종 어셈블리를 완전히 바꾼다.</p>
+<p><strong>포인터 비교는 항상 unsigned다.</strong> 예를 들어 <code>if (ptr1 &gt; ptr2)</code>처럼 C에서 포인터를 <code>&gt;</code>로 비교하면, 포인터가 문법적으로 signed/unsigned 표시가 없더라도 주소값 자체가 본질적으로 부호 없는 값이므로 컴파일러는 항상 <code>JA</code>/<code>JAE</code>/<code>JB</code>/<code>JBE</code> 계열을 생성한다.</p>
+<p>배열 경계/버퍼 크기 검사는 이 계열이 가장 흔하게 나타나는 자리다:</p>
+<pre><code class="language-c">if (idx &gt;= size) goto out_of_bounds;   // idx, size가 size_t/unsigned</code></pre>
+<pre><code class="language-asm">cmp  eax, [size]
+jae  out_of_bounds   ; idx &gt;= size (unsigned)</code></pre>
+<h3>IDA/Ghidra 디컴파일 결과에서 보이는 모습</h3>
+<p>디컴파일러가 어떤 변수를 <code>unsigned int</code>/<code>size_t</code>나 포인터 타입으로 표시하면서, 그 배경의 디스어셈블리가 실제로 <code>JA</code>/<code>JAE</code>/<code>JB</code>/<code>JBE</code> 니모닉을 쓰고 있다면 그 비교가 진짜 unsigned라는 것이 확인된 것이다. 반대로 디컴파일러가 평범한 <code>int</code>로 표시했는데 디스어셈블리에는 실제로 <code>ja</code>/<code>jb</code> 계열이 쓰여 있다면, <strong>디스어셈블리 쪽을 신뢰</strong>해야 한다 — 니모닉이 원본 컴파일 결과에 대한 최종 근거이고, 디컴파일러의 타입 이름은 그 위에 얹힌 휴리스틱 추측일 뿐이다. 확인 방법은 IDA에서 <code>Space</code>를 눌러 디스어셈블리로 전환한 뒤 해당 <code>CMP</code>+<code>Jcc</code> 쌍의 정확한 철자를 읽는 것이다.</p>
+<h3>리버싱에서의 의미</h3>
+<p>이 계열은 <strong>unsigned 뺄셈 언더플로우(integer underflow)</strong> 버그가 사는 자리다. 예를 들어:</p>
+<pre><code class="language-c">size_t len, offset;   // 둘 다 unsigned
+if (len - offset &gt; buf_size) { error(); }</code></pre>
+<p>만약 <code>len &lt; offset</code>이면 <code>len - offset</code>은 수학적으로 음수지만 <code>size_t</code>(unsigned)에서는 <strong>엄청나게 큰 값으로 wrap-around</strong>한다 — 예를 들어 <code>len=5, offset=10</code>이면 <code>5 - 10</code>은 32비트 unsigned에서 <code>0xFFFFFFFB</code>(4294967291)가 된다. 이 wrap-around된 값을 그 다음 <code>JA</code>/<code>JB</code> 경계 검사가 어떻게 다루느냐에 따라, 체크를 통과시켜서는 안 되는 상황을 오히려 통과시키거나(체크 방향에 따라) 반대로 정상 입력을 거부하는 등 예상치 못한 동작이 나온다. 이는 실제 CVE에서도 반복적으로 나타나는 매우 흔한 패턴이고, CTF에서도 자주 등장하는 취약점 유형이다.</p>
+<p>또한 <code>cmp idx, size</code> / <code>jae out_of_bounds</code> 같은 형태는 <strong>배열 경계 검사</strong>의 표준 패턴이므로, 이 패턴을 눈에 익혀두면 바이너리에서 경계 검사가 어디 있는지(혹은 아예 빠져 있는지) 빠르게 찾을 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>cmp eax, ebx</code> 바로 다음에 <code>ja</code>, <code>jae</code>, <code>jb</code>, <code>jbe</code> 중 하나</li><li><code>cmp idx, [size]</code> / <code>jae</code>(또는 <code>jb</code>) 형태의 배열 경계 검사</li><li>대체 니모닉 <code>jnbe</code>, <code>jnb</code>/<code>jnc</code>, <code>jnae</code>/<code>jc</code>, <code>jna</code></li><li>디컴파일 결과에서 <code>unsigned int</code>, <code>size_t</code>, 포인터 타입에 대한 <code>if (a &gt; b)</code> 형태</li><li><code>sub</code>(뺄셈) 직후 결과를 <code>size_t</code>/<code>unsigned</code>로 계속 사용하는 코드 — 언더플로우 의심 지점</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>Jcc</code> 바로 위의 <code>CMP</code>(또는 <code>SUB</code>)가 어떤 두 값을 비교하는지 확인한다.</li><li>니모닉이 <code>A</code>/<code>AE</code>/<code>B</code>/<code>BE</code>(unsigned) 계열인지 <code>G</code>/<code>GE</code>/<code>L</code>/<code>LE</code>(signed) 계열인지 정확히 읽는다.</li><li>비교 대상이 절대 음수가 될 수 없는 값(길이, 크기, 인덱스, 포인터)인지 확인하고, 그 값이 뺄셈으로 계산된 것이라면 언더플로우 가능성을 의심한다.</li><li>필요하면 손으로 CF를 계산해 분기 여부를 검증한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) CMP+JA로 <code>if (a &gt; b)</code> 해석하기</strong></p>
+<pre><code class="language-asm">mov  eax, [a]
+cmp  eax, [b]
+ja   greater_branch</code></pre>
+<p>→ <code>a</code>(unsigned)가 <code>b</code>(unsigned)보다 크면 분기. C로는 <code>if (a &gt; b)</code> (a, b는 unsigned).</p>
+<p><strong>2) 배열 경계 검사 읽기</strong></p>
+<pre><code class="language-asm">cmp  eax, [size]     ; eax = idx
+jae  out_of_bounds    ; idx &gt;= size 이면 실패 처리로 분기</code></pre>
+<p>→ <code>if (idx &gt;= size) goto out_of_bounds;</code></p>
+<p><strong>3) 언더플로우 위험 코드 읽기</strong></p>
+<pre><code class="language-asm">mov  eax, [len]
+sub  eax, [offset]    ; len - offset, 결과가 unsigned로 wrap될 수 있음
+cmp  eax, [buf_size]
+ja   error             ; len-offset이 wrap돼서 매우 커지면 이 체크에 걸림 (의도했든 안 했든)</code></pre>
+<p>→ <code>len &lt; offset</code>인 입력을 넣으면 <code>eax</code>가 거대한 값이 되어 <code>ja error</code>가 예상외로 항상 참이 될 수 있다 — 혹은 체크 방향이 반대라면 오히려 위험한 큰 크기가 통과해버릴 수도 있다. 실제 취약점 여부는 체크 방향과 그 뒤에 이 값이 어떻게 쓰이는지 함께 봐야 한다.</p>
+<p><strong>4) 0xFFFFFFFF vs 1, unsigned 해석 검증</strong></p>
+<pre><code class="language-asm">mov eax, 0FFFFFFFFh
+cmp eax, 1
+ja  huge_value    ; CF=0 AND ZF=0 -&gt; 참 -&gt; 분기함 (4294967295 &gt; 1)</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>Space</code>(디스어셈블리 전환), <code>F5</code>(디컴파일), 조건 분기 화살표로 흐름 확인</li><li>x64dbg: Flags 창에서 <code>CF</code> 값 직접 확인</li><li>GDB/Pwndbg: <code>info registers eflags</code> 또는 <code>p $eflags</code>로 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>x64dbg/GDB 플래그 창에서 <code>CF=0</code>이면 <code>JAE</code> 참, <code>CF=1</code>이면 <code>JB</code> 참</li><li>IDA 그래프 뷰의 True/False 분기 화살표로 어느 쪽이 조건 성립인지 확인</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><strong>JA(unsigned)와 JG(signed)를 혼동하는 것 — 이것이 CTF에서 가장 흔한 실수다.</strong> unsigned 비교(<code>JA</code>/<code>JAE</code>/<code>JB</code>/<code>JBE</code>)는 <code>CF</code>만 본다 — signed 비교처럼 <code>SF</code>/<code>OF</code> 조합을 볼 필요가 없다. 반대로 이 단순함 때문에 signed 값을 실수로 unsigned로 비교(또는 그 반대)하면 음수가 "매우 큰 양수"로 둔갑해서 크기 검사를 통과해버리는 취약점이 생긴다.</li></ul>
+<p>구체적인 우회 방향을 정확히 짚으면: 음수(signed로는 작은 값)를 unsigned로 해석하면 항상 매우 큰 값이 된다. 그래서 <code>if ((unsigned)len &gt; MAX)</code> 처럼 <strong>unsigned 체크</strong>를 쓰는 코드에 음수 <code>len</code>을 넣으면, 그 음수가 거대한 unsigned 값(예: <code>0xFFFFFFFF</code> = 4294967295)으로 보여서 오히려 이 상한 체크에 <strong>걸려버려 통과하지 못한다</strong> — 즉 이 방향에서는 unsigned 체크가 음수 입력을 잘 막아준다. 문제는 <strong>반대 방향</strong>이다: 원래 unsigned 값을 다뤄야 하는데 코드가 실수로 <strong>signed 체크</strong>(<code>jg</code>/<code>jl</code>)를 써버린 경우, 거대한 unsigned 값(예: <code>0xFFFFFFFF</code>)이 signed로는 <code>-1</code>(음수)로 보이기 때문에 <code>if (len &gt; MAX)</code> 같은 signed 상한 체크를 "음수라서 크지 않다"는 이유로 <strong>통과해버릴 수 있다</strong>. 즉 취약점은 "signed 값을 unsigned로 착각"할 때가 아니라, "원래 unsigned여야 할 크기 값을 signed 비교로 잘못 검사"할 때 주로 발생한다 — 항상 어느 쪽 타입/비교가 실제 코드에 쓰였는지 니모닉으로 확인해야 한다.</p>
+<ul><li><code>JAE</code>(<code>JNB</code>)와 <code>JGE</code>가 영어로는 둘 다 "크거나 같다"처럼 들려서 같은 걸로 착각하는 것 — <code>JAE</code>는 <code>CF=0</code>, <code>JGE</code>는 <code>SF=OF</code>로 완전히 다른 플래그를 본다.</li><li>뺄셈 결과를 그대로 unsigned로 계속 사용하면서 언더플로우 가능성을 놓치는 것 — <code>sub</code>/<code>cmp</code> 조합을 볼 때마다 "이 뺄셈이 음수가 될 수 있는가"를 항상 의심한다.</li><li>디컴파일러의 타입 표시를 무조건 신뢰하는 것 — 실제 근거는 디스어셈블리의 <code>Jcc</code> 니모닉이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>분기 방향이 예상과 반대로 보인다면 → 니모닉이 A/B 계열인지 G/L 계열인지 Space로 디스어셈블리에서 재확인</li><li>CF 값이 헷갈리면 → 디버거로 직접 플래그 레지스터 확인</li><li><code>sub</code> 뒤에 이상하게 큰 값이 나온다면 → 언더플로우(wrap-around) 가능성부터 의심</li><li>배열 경계 검사가 안 보인다면 → 검사가 아예 빠져있거나(취약점), 다른 함수/매크로에서 이미 처리됐을 수 있으니 호출 전후 코드까지 넓게 확인</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 두 unsigned 값 비교</strong></p>
+<pre><code class="language-c">unsigned int a = 5, b = 3;
+if (a &gt; b) puts("a is bigger");</code></pre>
+<pre><code class="language-asm">mov  eax, 5
+cmp  eax, 3       ; CF=0 (5 unsigned &gt;= 3, 안 빌림), ZF=0
+ja   is_bigger    ; CF=0 AND ZF=0 -&gt; 참, 분기함</code></pre>
+<p><strong>예제 2 — 배열 경계 검사</strong></p>
+<pre><code class="language-c">if (idx &gt;= size) return -1;   // idx, size는 size_t</code></pre>
+<pre><code class="language-asm">cmp  eax, [size]
+jae  bounds_fail    ; CF=0 -&gt; idx &gt;= size -&gt; 참이면 분기</code></pre>
+<p><strong>예제 3 — 언더플로우 위험</strong></p>
+<pre><code class="language-asm">mov  eax, [len]      ; len = 5
+sub  eax, [offset]   ; offset = 10 -&gt; eax = 0xFFFFFFFB (wrap, unsigned로 매우 큰 값)
+cmp  eax, [buf_size]
+ja   reject           ; wrap된 큰 값 때문에 거의 항상 참이 되어버림</code></pre>
+<p><strong>예제 4 — 0xFFFFFFFF vs 1, unsigned 해석</strong></p>
+<pre><code class="language-asm">mov eax, 0FFFFFFFFh   ; eax = 0xFFFFFFFF (unsigned로는 4294967295)
+cmp eax, 1
+ja  huge_value          ; CF=0 AND ZF=0 -&gt; 참 -&gt; 분기함 (4294967295 &gt; 1, 맞는 결론)
+jb  never_taken          ; CF=1 -&gt; 거짓 -&gt; 분기 안 함</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0069-jg-jge-jl-jle.html">REV-0069 — JG JGE JL JLE: Signed 비교 분기</a> — 같은 CMP를 signed로 해석하는 짝 글, 반드시 함께 읽을 것</li><li><a href="rev-0067-je-jz.html">REV-0067 — JE와 JZ</a></li><li><a href="rev-0068-jne-jnz.html">REV-0068 — JNE와 JNZ</a></li><li><a href="rev-0066-jmp.html">REV-0066 — JMP: 무조건 분기</a></li><li><a href="rev-0075-cmovcc.html">REV-0075 — CMOVcc: 분기 없는 조건부 이동</a></li><li><a href="rev-0076-setcc.html">REV-0076 — SETcc: 조건 결과를 0 또는 1로 만들기</a></li><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출</a></li><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터(EFLAGS) 개요</a></li><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>Jcc</code> 조건 코드 전체 표(CF/ZF 조합): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "Jcc—Jump if Condition Is Met" 섹션의 공식 조건 표 기준 (2026-09-08 검증).</li><li>CMP/SUB의 CF(빌림) 세팅 규칙: 동 매뉴얼, "CMP—Compare Two Operands", "SUB—Subtract" 섹션 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

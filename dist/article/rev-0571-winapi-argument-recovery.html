@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinAPI 함수 인자를 스택/레지스터에서 순서대로 복원하는 실전 팁 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>WinAPI 함수 인자를 스택/레지스터에서 순서대로 복원하는 실전 팁</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>API 호출(<code>call</code>) 직전의 어셈블리 코드에서 실제로 어떤 값이 몇 번째 인자로 전달되는지 정확히 읽어내는 능력은, x86에서는 <code>call</code> 직전의 <code>push</code> 명령어들을 역순으로 읽고 x64(Windows 호출 규약)에서는 처음 네 개 인자가 <code>RCX, RDX, R8, R9</code>에, 다섯 번째부터는 스택에 쌓인다는 규칙만 알면 되지만, 실제 디스어셈블리에서는 최적화, 레지스터 재사용, 구조체 전달 등으로 헷갈리기 쉬우므로 체계적인 확인 절차가 필요하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA/x64dbg에서 <code>call CreateFileW</code> 같은 API 호출을 봤는데, 그 함수가 정확히 몇 개의 인자를 받고 각각이 무엇을 의미하는지 MSDN 원형과 매칭이 안 될 때</li><li>x64 디스어셈블리에서 <code>call</code> 직전에 <code>push</code>가 안 보이는데 인자를 어디서 찾아야 할지 모를 때</li><li>x64dbg로 API 호출 직전에 멈춰서 실제 문자열/값 인자를 확인하고 싶은데 레지스터 이름과 인자 순서 대응이 헷갈릴 때</li><li>다섯 개 이상 인자를 받는 API(<code>CreateProcessW</code> 등)를 분석하다가 다섯 번째 이후 인자를 스택 어디서 읽어야 할지 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Windows API 인자를 복원하는 첫 단계는 <strong>어떤 호출 규약(calling convention)이 쓰였는지 파악하는 것</strong>이다. x86(32비트)에서 Win32 API는 거의 전부 <code>__stdcall</code>을 쓰고(REV-0123 참고), x64에서는 사실상 하나의 통일된 규약인 Microsoft x64 Calling Convention만 쓰인다(REV-0122 참고).</p>
+<p><strong>x86 <code>__stdcall</code>에서 인자 복원</strong>: 함수 호출 전에 인자들이 <strong>오른쪽에서 왼쪽 순서로</strong>(C 원형 기준 마지막 인자부터) 스택에 <code>push</code>된다. 즉 디스어셈블리에서 <code>call</code> 바로 위쪽에 쌓여있는 <code>push</code> 명령어들을 <strong>아래에서 위로</strong>(즉 <code>call</code>에 가장 가까운 <code>push</code>가 먼저 <code>pop</code>되어 첫 번째 인자가 됨) 읽으면 C 함수 원형의 인자 순서와 일치한다. 예를 들어 <code>MSDN</code>에 <code>CreateFileA(lpFileName, dwDesiredAccess, dwShareMode, ...)</code>로 정의되어 있다면, <code>call CreateFileA</code> 바로 위의 <code>push</code>가 마지막 인자(<code>hTemplateFile</code>)이고, 가장 위쪽(즉 <code>call</code>에서 가장 먼 <code>push</code>)이 첫 번째 인자(<code>lpFileName</code>)다. <code>__stdcall</code>은 호출된 함수(callee) 쪽에서 <code>ret n</code>으로 스택을 정리하므로, <code>call</code> 직후에 <code>add esp, N</code> 같은 스택 정리 코드가 보통 없다 — 있다면 <code>__cdecl</code>일 가능성을 의심해야 한다.</p>
+<p><strong>x64 Microsoft 호출 규약에서 인자 복원</strong>: 정수/포인터 인자 기준으로 첫 번째부터 네 번째까지는 각각 <code>RCX</code>, <code>RDX</code>, <code>R8</code>, <code>R9</code>에 담긴다(부동소수점은 <code>XMM0</code>~<code>XMM3</code>을 쓰지만 레지스터 슬롯 번호는 공유). 다섯 번째 인자부터는 스택에 쌓이는데, 이때 스택 상의 위치는 <code>RSP+0x20</code>(다섯 번째 인자, 4개의 레지스터 인자를 위해 예약된 "shadow space" 32바이트 다음, REV-0124 참고), <code>RSP+0x28</code>(여섯 번째), 이런 식으로 8바이트씩 증가한다. 문제는 컴파일러가 최적화하면서 <code>RCX</code>에 값을 넣는 <code>mov</code> 명령어가 <code>call</code> 바로 위가 아니라 훨씬 앞쪽에 미리 배치되는 경우가 많다는 것이다. 따라서 <code>call</code> 직전만 보지 말고, 함수 시작부터 각 인자 레지스터(<code>RCX</code>, <code>RDX</code>, <code>R8</code>, <code>R9</code>)에 마지막으로 값이 쓰인 지점을 거꾸로 추적해야 한다.</p>
+<p><strong>인자 개수와 의미 확인</strong>: 어셈블리만 봐서는 몇 개의 인자를 받는지 확신하기 어려우므로, 반드시 Microsoft Learn의 해당 API 문서(예: "CreateFileW function")에서 공식 원형을 찾아 인자 개수와 각 인자의 타입/의미를 대조해야 한다. IDA는 잘 알려진 API에 대해 타입 정보(Type Library, 흔히 <code>.til</code> 파일)를 갖고 있어서, Imports에 있는 함수라면 <code>Y</code>(Set item type) 없이도 자동으로 인자 이름이 pseudocode에 표시되는 경우가 많다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>x86: <code>call</code> 위에 여러 개의 <code>push</code> 명령어가 연속으로 나열되고, 그 사이사이 <code>lea</code>/<code>mov</code>로 값을 준비하는 코드가 섞여 있음</li><li>x86 <code>call</code> 직후에 <code>add esp, imm</code>이 없으면 <code>__stdcall</code>(호출된 함수가 스택 정리), 있으면 <code>__cdecl</code>(호출자가 스택 정리) 가능성</li><li>x64: <code>call</code> 직전에 <code>push</code>가 거의 없고 대신 <code>mov rcx, ...</code>, <code>mov rdx, ...</code>, <code>mov r8d, ...</code>, <code>mov r9, ...</code>가 흩어져 있음</li><li>x64: <code>call</code> 직전에 <code>mov [rsp+20h], ...</code>, <code>mov [rsp+28h], ...</code> 형태로 다섯 번째 이후 인자가 스택에 쌓임</li><li>IDA F5 디컴파일 결과에서 이미 <code>CreateFileW(lpFileName, GENERIC_READ, ...)</code>처럼 인자 이름이 자동으로 채워진 경우 — 가장 편한 케이스</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>대상 API의 정확한 원형을 Microsoft Learn 문서에서 먼저 찾아 인자 순서/개수/타입을 메모지에 적어둔다. 이것 없이 어셈블리만 봐서는 절대 정확히 복원할 수 없다.</li><li>IDA에서 해당 <code>call</code> 명령을 더블클릭해 함수로 이동한 뒤, IDA가 이미 시그니처를 인식하고 있는지(함수 이름 위에 원형 주석이 있는지) 확인한다. 인식되어 있다면 <code>F5</code> 디컴파일 결과가 훨씬 읽기 편하다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) x86: push 순서 거꾸로 읽기</strong></p>
+<ul><li><code>call</code> 명령어부터 위로 올라가며 연속된 <code>push</code>들을 순서대로 나열한다.</li><li>나열한 리스트를 뒤집으면(가장 마지막에 나온 <code>push</code>, 즉 <code>call</code>에서 가장 먼 것이 첫 번째) MSDN 원형의 인자 순서와 일치한다.</li><li>각 <code>push</code>의 오퍼랜드가 상수인지, 레지스터인지, 스택 변수(<code>[ebp-8]</code> 등)인지 확인하고 그 값이 어디서 왔는지 위쪽 코드에서 추적한다.</li></ul>
+<p><strong>2) x64: 레지스터별 마지막 대입 지점 추적</strong></p>
+<ul><li><code>call</code> 명령어에서 위로 올라가며 <code>rcx</code>/<code>ecx</code>, <code>rdx</code>/<code>edx</code>, <code>r8</code>/<code>r8d</code>, <code>r9</code>/<code>r9d</code>에 값이 쓰이는 가장 가까운 <code>mov</code>를 각각 찾는다. 순서(코드 상 위치)는 중요하지 않고, "그 레지스터에 마지막으로 쓰인 값"만 중요하다.</li><li>다섯 번째 이후 인자는 <code>[rsp+20h]</code>부터 8바이트씩 증가하는 위치에서 찾는다. 단, 이 스택 오프셋은 함수 진입 시 <code>sub rsp, N</code>으로 확보한 지역 프레임 크기에 따라 달라지므로, 실제 <code>rsp</code> 기준 오프셋을 정확히 계산해야 한다.</li></ul>
+<p><strong>3) x64dbg로 실제 값 확인(동적 검증)</strong></p>
+<ul><li>대상 <code>call</code> 명령어에 브레이크포인트(<code>F2</code>)를 건다.</li><li>실행이 멈추면 레지스터 창에서 <code>RCX</code>, <code>RDX</code>, <code>R8</code>, <code>R9</code> 값을 바로 확인한다. 포인터 값이면 우클릭 → <code>Follow in Dump</code>로 실제 가리키는 데이터(문자열 등)를 확인한다.</li><li>다섯 번째 이후 인자는 Dump 창에서 <code>RSP+20</code>, <code>RSP+28</code> 위치로 이동(<code>Ctrl+G</code>에 <code>rsp+20</code> 입력)해 값을 읽는다.</li><li>x64dbg의 콜스택(<code>Call Stack</code>) 창은 API 호출 시 자동으로 알려진 함수의 인자를 이름과 함께 보여주는 경우가 많아, 이 창을 적극 활용하면 수동 계산 없이도 인자를 바로 확인할 수 있다.</li></ul>
+<p><strong>4) 구조체 인자 처리</strong></p>
+<ul><li>인자가 구조체 포인터(예: <code>STARTUPINFO*</code>)인 경우, 포인터가 가리키는 메모리를 덤프해 구조체 정의(MSDN 문서의 필드 오프셋)와 대조하며 각 필드 값을 읽는다. IDA에서는 <code>Alt+T</code>로 구조체 타입을 적용하면 pseudocode에 필드 이름이 자동으로 표시된다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>F5</code>(디컴파일), 함수 원형 위 우클릭 <code>Set call type</code>, <code>Y</code>(변수/함수 타입 지정), <code>Alt+T</code>(구조체 적용)</li><li>x64dbg: <code>F2</code>(브레이크포인트), <code>Ctrl+G</code>(주소/레지스터 표현식 이동, 예: <code>rsp+20</code>), 레지스터 창 우클릭 <code>Follow in Dump</code>, <code>Call Stack</code> 창</li></ul>
+<h2>출력 해석</h2>
+<ul><li>x64에서 <code>RCX</code>가 핸들 값처럼 작은 정수(예: <code>0xFFFFFFFFFFFFFFFF</code> 같은 <code>INVALID_HANDLE_VALUE</code> 또는 작은 정수 핸들)라면 파일/커널 핸들 인자일 가능성이 높다.</li><li>포인터인데 <code>Follow in Dump</code> 했을 때 유니코드 텍스트(2바이트 간격 ASCII처럼 보임)가 나오면 <code>LPCWSTR</code> 문자열 인자다(REV-0128 참고).</li><li>값이 0이거나 <code>NULL</code>이면 옵션성 인자(예: 보안 속성, 예약된 파라미터)일 가능성이 크므로 기능 이해에 큰 영향이 없는 경우가 많다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>x86에서 <code>push</code> 순서를 뒤집지 않고 코드에 나온 순서 그대로 인자 순서라고 착각하는 것. 반드시 역순으로 읽어야 한다.</li><li>x64에서 <code>call</code> 바로 위쪽만 보고 "레지스터 대입이 없으니 인자가 없다"고 판단하는 것. 최적화된 코드는 훨씬 앞쪽에서 레지스터를 채워두는 경우가 흔하다.</li><li>32비트 레지스터 이름(<code>ecx</code>)과 64비트 이름(<code>rcx</code>)이 같은 레지스터의 하위/전체 비트라는 것을 모르고 다른 값으로 착각하는 것.</li><li>다섯 번째 인자 이후의 스택 오프셋을 계산할 때 함수의 로컬 스택 프레임 크기(<code>sub rsp, N</code>)를 반영하지 않아 엉뚱한 위치를 읽는 것.</li><li>MSDN 원형을 확인하지 않고 인자 개수를 어셈블리만으로 추측하는 것 — 옵션 인자나 예약된 인자가 있는 API에서는 특히 위험하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>호출 규약 자체가 헷갈리면 → REV-0122(Microsoft x64 Calling Convention), REV-0123(Windows x86 stdcall cdecl fastcall thiscall)을 먼저 복습한다.</li><li>x64에서 다섯 번째 인자 스택 위치가 헷갈리면 → REV-0124(Shadow Space가 무엇인지)를 확인한다.</li><li>인자를 다 복원했는데 API 이름 자체가 뭘 하는 함수인지 모르겠다면 → REV-0138(Windows API 이름으로 기능 추측하는 법)을 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p>x64 디스어셈블리 예시:</p>
+<pre><code class="language-asm">mov     rcx, [rbp-8]            ; 1번째 인자 (hFile)
+lea     rdx, [rbp+0x20]         ; 2번째 인자 (lpBuffer, 지역 버퍼 주소)
+mov     r8d, 0x100              ; 3번째 인자 (nNumberOfBytesToRead)
+lea     r9, [rbp-0x30]          ; 4번째 인자 (lpNumberOfBytesRead, 지역 변수 주소)
+mov     qword ptr [rsp+0x20], 0 ; 5번째 인자 (lpOverlapped = NULL, 스택 전달)
+call    ReadFile</code></pre>
+<p><code>ReadFile</code>의 MSDN 원형은 <code>ReadFile(HANDLE hFile, LPVOID lpBuffer, DWORD nNumberOfBytesToRead, LPDWORD lpNumberOfBytesRead, LPOVERLAPPED lpOverlapped)</code>이다. 이 코드에서 <code>RCX=hFile</code>, <code>RDX=lpBuffer</code>, <code>R8=nNumberOfBytesToRead</code>, <code>R9=lpNumberOfBytesRead</code>라는 고정 슬롯 매핑을 그대로 대입하고, 다섯 번째 인자 <code>lpOverlapped</code>은 shadow space 바로 뒤인 <code>[rsp+0x20]</code>에서 읽는다. 여기서 핵심은 "몇 번째로 나온 <code>mov</code>인가"가 아니라 "어느 레지스터/스택 위치에 값이 들어갔는가"이다 — 컴파일러 최적화 순서에 따라 <code>mov</code> 명령어들의 코드상 순서는 얼마든지 뒤바뀔 수 있지만, 최종적으로 <code>call</code> 시점에 <code>RCX/RDX/R8/R9</code>와 <code>[rsp+0x20]</code>에 어떤 값이 들어있는지만 확인하면 인자 순서는 항상 동일하게 복원된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0122-ms-x64-calling-convention.html">REV-0122 — Microsoft x64 Calling Convention</a></li><li><a href="rev-0123-x86-calling-conventions.html">REV-0123 — Windows x86 stdcall cdecl fastcall thiscall</a></li><li><a href="rev-0124-shadow-space.html">REV-0124 — Shadow Space가 무엇인지</a></li><li><a href="rev-0138-guess-function-from-api-name.html">REV-0138 — Windows API 이름으로 기능 추측하는 법</a></li><li><a href="rev-0128-windows-string-encoding.html">REV-0128 — Windows 문자열 ASCII와 UTF-16 찾기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>x86 <code>__stdcall</code>의 우→좌 push 순서 및 callee 스택 정리 규칙은 Microsoft Learn "Argument Passing and Naming Conventions" 문서 기준이다.</li><li>x64 Microsoft Calling Convention의 <code>RCX/RDX/R8/R9</code> 정수 인자 슬롯과 shadow space 규칙은 Microsoft Learn "x64 calling convention" 공식 문서 기준이다.</li><li>개별 API(<code>CreateFileW</code>, <code>ReadFile</code> 등)의 정확한 인자 순서와 타입은 실습 시 Microsoft Learn의 해당 함수 문서를 직접 대조해 확인할 것을 권장한다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

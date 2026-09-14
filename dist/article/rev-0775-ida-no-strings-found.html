@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA에서 문자열이 하나도 안 잡힐 때(Shift+F12 결과 없음) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA에서 문자열이 하나도 안 잡힐 때(Shift+F12 결과 없음)</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p><code>Shift+F12</code>(Strings 창)가 비어 있을 때 가장 먼저 의심해야 할 것은 문자열 암호화가 아니라 <strong>Strings 창 자체의 스캔 설정(최소 길이, 인코딩 종류, 스캔 대상 세그먼트)이 실제 데이터와 안 맞는 경우</strong>이며, 설정을 다 확인했는데도 여전히 없고 데이터가 난수처럼 보인다면 그때 비로소 문자열 암호화(REV-0793)나 아직 언패킹되지 않은 코드(REV-0772)를 의심해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>Shift+F12</code>를 눌렀는데 Strings 창이 완전히 비어 있거나 몇 개뿐일 때</li><li><code>strings</code> 명령어(Linux) 또는 Sysinternals Strings로는 문자열이 잘 나오는데 IDA Strings 창에는 하나도 없을 때</li><li>UTF-16(wide string)으로 저장된 문자열이 있는 Windows 바이너리에서 특정 문자열만 안 보일 때</li><li>Setup에서 최소 길이/인코딩을 이미 만졌는데도 여전히 목록이 비어 있어서 다음에 뭘 봐야 할지 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<p>IDA의 Strings 창은 파일을 처음부터 끝까지 스캔하는 게 아니라, <strong>IDA가 이미 로드해서 인식하고 있는 세그먼트(segment) 범위 안에서, 설정된 조건에 맞는 연속된 출력 가능 문자를 찾아 보여주는 뷰</strong>다. 이 구조 때문에 "실제로는 문자열이 있는데 목록에는 안 보이는" 상황이 다음 몇 가지 이유로 발생한다.</p>
+<ul><li><strong>최소 길이(minimum length) 설정</strong>: 기본값보다 짧은 문자열(3~4글자짜리 메시지 등)은 "우연히 나온 출력 가능 바이트 나열"과 구분이 안 되므로 걸러진다.</li><li><strong>인코딩 종류 설정</strong>: 1바이트 C 문자열만 체크되어 있고 2바이트 유니코드(UTF-16, <code>MessageBoxW</code> 등에서 씀)가 꺼져 있으면 wide string이 안 보인다.</li><li><strong>스캔 대상 세그먼트/범위</strong>: Setup 대화상자에는 "어느 세그먼트를 스캔할지" 범위 옵션도 있다. 리소스 섹션이나 특정 커스텀 섹션이 스캔 범위 밖으로 설정되어 있으면 그 안의 문자열은 목록에 안 나온다.</li><li><strong>데이터가 아직 로드되지 않은 세그먼트에 있음</strong>: 파일이 아직 완전히 분석되지 않았거나(REV-0771), 특정 세그먼트가 아직 IDA 데이터베이스에 매핑되지 않은 상태라면 그 영역은 스캔 자체가 안 된다.</li><li><strong>설정을 다 맞췄는데도 없다면 진짜 원인은 데이터 자체</strong>: 위 설정들을 전부 확인했는데도 여전히 없고, Hex View로 봤을 때 바이트가 규칙 없는 난수처럼 보인다면 이는 설정 문제가 아니라 문자열이 애초에 암호화되어 저장된 것이다. 이 경우는 REV-0793(문자열이 암호화되어 있어 참조를 못 찾을 때)에서 다루는 복호화 루틴 추적이 필요한 별개의 문제다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>Shift+F12</code>로 연 Strings 창이 완전히 비어 있거나 몇 개의 짧은 문자열만 있음.</li><li>Setup 창을 열어보면 <code>Minimum length</code>가 기본값(보통 5)으로 되어 있고, 유니코드 체크박스가 꺼져 있음.</li><li>데이터 섹션을 디스어셈블리로 직접 보면 출력 가능한 문자처럼 보이는 바이트가 있는데도 Strings 창에는 그 주소가 안 나옴.</li><li><code>strings</code> 외부 도구 결과에는 파일 오프셋이 나오는데, IDA에서 같은 주소로 이동해보면 아직 데이터로 인식되지 않은 회색 영역임.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>Strings 창을 우클릭 → <code>Setup</code>(버전에 따라 <code>Options</code>)을 열어 현재 설정된 최소 길이, 인코딩 체크박스, 스캔 범위부터 확인한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>Strings 창에서 우클릭 → <code>Setup</code>을 연다. <code>Minimum length</code> 값을 확인하고 필요하면 3 정도로 낮춘다.</li><li>같은 설정 창에서 문자열 타입(C-style 1바이트, 2바이트 유니코드 등) 체크박스가 모두 켜져 있는지 확인한다. Windows GUI 프로그램인데 이 옵션이 꺼져 있었다면 이게 원인일 확률이 높다.</li><li>스캔 범위(세그먼트 선택) 옵션이 있다면 "전체(all segments)"로 설정되어 있는지 확인한다. 특정 섹션만 스캔하도록 좁혀져 있었을 수 있다.</li><li>설정을 다 확인하고 바꿔도 여전히 비어 있다면, 문제의 데이터 섹션 일부를 Hex View(<code>Shift+E</code>)로 직접 열어 바이트가 사람이 읽을 수 있는 값처럼 보이는지 확인한다.</li></ol>
+<ul><li>규칙성 없는 난수처럼 보인다면 → 문자열이 암호화되어 저장된 것이므로 REV-0793의 복호화 루틴 추적 절차로 넘어간다.</li><li>코드처럼 보이거나 아예 정의되지 않은 회색 <code>db</code> 상태라면 → 아직 코드/데이터 경계가 안 잡힌 것이므로 REV-0772(함수가 아예 안 잡힐 때) 절차를 먼저 확인한다(패킹된 바이너리일 가능성).</li></ul>
+<ol><li><code>strings</code>(Linux) 등 외부 도구로는 나오는데 IDA에서는 안 보인다면, 외부 도구가 알려준 파일 오프셋으로 IDA에서 직접 이동(<code>G</code>)해서 그 위치가 왜 인식이 안 됐는지(정렬 문제, 세그먼트 미매핑 등) 개별적으로 대조한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li><code>Shift+F12</code> : Strings 창 열기</li><li>Strings 창 우클릭 → <code>Setup</code> : 최소 길이/인코딩/스캔 범위 설정</li><li><code>G</code> : 특정 주소로 이동(Jump to address)</li><li><code>Shift+E</code> 또는 Hex View 서브뷰 : 원시 바이트 직접 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>설정을 바꿔서 Strings 창에 갑자기 문자열이 많이 나타난다면, 원래는 순수히 설정(길이/인코딩/범위) 문제였다는 뜻이다.</li><li>설정을 다 맞춰도 여전히 비어 있고 Hex View의 바이트가 무작위처럼 보인다면, 설정 문제가 아니라 데이터 자체가 암호화된 것이다.</li><li>외부 도구에서는 나오는데 IDA 특정 주소만 안 보인다면, 그 구간이 아직 코드 섹션으로 잘못 분류돼 있거나 세그먼트가 로드되지 않았을 가능성이 크다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Setup의 최소 길이/인코딩 설정을 확인하지 않고 곧바로 "이 프로그램은 문자열을 암호화했다"고 단정해서 시간을 낭비하는 것 — 설정 문제인 경우가 실제로 더 흔하다.</li><li>Windows GUI 프로그램에서 유니코드 옵션을 켜지 않고 "문자열이 없다"고 오해하는 것.</li><li><code>strings</code> 외부 도구 결과와 IDA Strings 창 결과가 항상 같을 거라 가정하는 것 — 스캔 대상 범위와 기준이 서로 다르다.</li><li>Setup을 만졌는데도 안 나오는 이유가 "암호화"인지 "아직 분석 안 된 영역"인지 구분하지 않고 무작정 복호화 루틴부터 찾으려 드는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>Setup을 다 맞췄는데도 안 보이고 데이터가 난수처럼 보인다면 → REV-0793 문자열이 암호화되어 있어 참조를 못 찾을 때</li><li>함수/코드 자체가 안 잡혀서 데이터 섹션 인식 자체가 이상하다면 → REV-0772 IDA에서 함수가 아예 하나도 안 잡힐 때</li><li>찾은 문자열에서 실제로 그걸 쓰는 코드로 넘어가려면 → REV-0145 IDA Xrefs와 X 키 사용법</li><li>문자열에서 검증 함수로 넘어가는 전체 흐름이 필요하면 → REV-0163 문자열에서 검증 함수로 이동하는 정적 분석</li></ul>
+<h2>미니 예제</h2>
+<p>Windows GUI 바이너리를 열었는데 Strings 창이 몇 개의 짧은 ASCII 문자열만 보이고, 실제로 프로그램이 띄우는 안내 메시지는 안 보이는 상황.</p>
+<pre><code class="language-text">1. Strings 창 우클릭 → Setup 확인 → Unicode(2바이트) 체크박스가 꺼져 있음을 확인
+2. Unicode 옵션을 켜고 다시 스캔 → 안내 메시지 문자열들이 대거 목록에 추가됨
+3. Minimum length도 5에서 3으로 낮춰 짧은 라벨 문자열까지 확인 가능해짐</code></pre>
+<p>설정 두 가지만 바로잡아서 "암호화된 줄 알았던" 문자열이 사실은 단순 유니코드 인식 설정 문제였음을 확인했다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0793-encrypted-strings-no-xref.html">REV-0793 — 문자열이 암호화되어 있어 참조를 못 찾을 때</a></li><li><a href="rev-0772-ida-no-functions-detected.html">REV-0772 — IDA에서 함수가 아예 하나도 안 잡힐 때</a></li><li><a href="rev-0145-ida-xrefs.html">REV-0145 — IDA Xrefs와 X 키 사용법</a></li><li><a href="rev-0163-strings-to-check-function.html">REV-0163 — 문자열에서 검증 함수로 이동하는 정적 분석</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Strings 창의 최소 길이/인코딩/스캔 범위 설정 항목과 동작 방식: Hex-Rays 공식 사용자 가이드 "Strings window" 섹션 기준.</li><li>정확한 Setup 대화상자 옵션명과 기본값은 버전에 따라 다를 수 있어 실제 설치 버전에서 재확인을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

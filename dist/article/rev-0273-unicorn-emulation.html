@@ -1,0 +1,207 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Unicorn으로 작은 검증 함수 에뮬레이션 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / automation</div>
+<article class="article-body">
+<h1>Unicorn으로 작은 검증 함수 에뮬레이션</h1>
+<div class="article-meta"><span class="tag">automation</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Python</span><span class="tag">Unicorn</span><span class="tag">Capstone</span></div>
+<h2>한 줄 요약</h2>
+<p><code>Unicorn</code>은 실제 CPU 명령어를 그대로 실행(에뮬레이션)해주는 경량 CPU 에뮬레이터 라이브러리로, 메모리를 직접 <code>mem_map</code>/<code>mem_write</code>로 준비하고 <code>mu.emu_start(시작주소, 종료주소)</code>를 호출하면 대상 바이너리 전체를 실행하지 않고도 검증 함수 하나만 따로 떼어내 돌려서 레지스터/메모리 결과를 확인할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>바이너리 전체를 GDB로 붙여서 실행하기엔 번거로운데, 특정 함수 하나(예: 체크섬 계산, XOR 인코딩 루틴)의 동작만 여러 입력값으로 반복해서 빠르게 확인하고 싶을 때</li><li>Capstone(REV-0272)으로 명령어 목록은 확인했는데, 실제로 이 명령어들이 특정 입력에 대해 어떤 값을 계산해내는지 눈으로 보고 싶을 때</li><li>대상 함수가 라이브러리 호출이나 파일 I/O 없이 순수 계산만 하는 작은 루틴이라서, 굳이 전체 프로그램을 기동하지 않아도 결과를 얻을 수 있을 것 같을 때</li><li>크로스 아키텍처(예: x64 리눅스에서 ARM 바이너리의 함수)를 실행 없이 결과만 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p><code>Unicorn</code>은 QEMU의 CPU 에뮬레이션 코어를 기반으로 만들어진 라이브러리로, x86/x64/ARM/ARM64/MIPS 등 여러 아키텍처의 명령어를 실제로 "실행"할 수 있다. Capstone이 "바이트를 명령어 텍스트로 바꿔주기만" 하는 반면, Unicorn은 그 명령어들을 정말로 CPU처럼 처리해서 레지스터 값과 메모리 내용을 실제로 바꿔준다. 다만 Unicorn은 운영체제 기능(파일 읽기, 시스템 콜, 동적 라이브러리 로딩 등)을 자동으로 제공하지 않는다 — CPU 코어만 순수하게 에뮬레이션하므로, "메모리에 어떤 코드/데이터가 있는지"는 사용자가 직접 다 준비해줘야 한다. 이 특성 때문에 Unicorn은 운영체제 의존성이 없는 순수 계산 함수(체크섬, 간단한 암호화/인코딩 루틴 등)를 통째로 떼어내 돌려보는 데 특히 적합하다.</p>
+<p>Unicorn을 쓰는 기본 흐름은 다음과 같다.</p>
+<ol><li><strong>에뮬레이터 생성</strong> — <code>Uc(UC_ARCH_X86, UC_MODE_64)</code>로 대상 아키텍처의 CPU 에뮬레이터를 만든다.</li><li><strong>메모리 준비</strong> — <code>mu.mem_map(주소, 크기)</code>로 가상 메모리 영역을 할당한다. Unicorn은 실제 운영체제 메모리 관리 없이 완전히 빈 주소 공간에서 시작하므로, 코드가 위치할 영역과 스택으로 쓸 영역을 최소한 각각 하나씩 직접 매핑해야 한다.</li><li><strong>코드/데이터 기록</strong> — <code>mu.mem_write(주소, 바이트열)</code>로 실행할 기계어 코드나 초기 데이터를 매핑된 메모리에 실제로 써넣는다.</li><li><strong>레지스터 초기값 설정(필요시)</strong> — <code>mu.reg_write(UC_X86_REG_RDI, 값)</code>처럼 함수 인자에 해당하는 레지스터(예: SysV x64 호출 규약의 RDI/RSI)를 원하는 입력값으로 미리 세팅한다.</li><li><strong>실행</strong> — <code>mu.emu_start(시작주소, 종료주소)</code>를 호출하면 시작주소부터 명령어를 하나씩 실제로 실행하다가 종료주소에 도달하면 멈춘다.</li><li><strong>결과 읽기</strong> — <code>mu.reg_read(UC_X86_REG_RAX)</code>로 반환값에 해당하는 레지스터를 읽거나, <code>mu.mem_read(주소, 크기)</code>로 메모리에 쓰인 결과를 읽어서 함수가 실제로 무엇을 계산했는지 확인한다.</li></ol>
+<p>이 흐름에서 실행할 코드 바이트열은 보통 대상 바이너리 파일에서 직접 잘라내 온 것을 그대로 쓴다(즉 IDA/Ghidra에서 함수의 시작/끝 주소를 확인한 뒤, 그 범위의 raw 바이트를 파일에서 읽어 <code>mem_write</code>에 넣는다). 이렇게 하면 진짜 바이너리 코드를 그대로 실행하면서도, 전체 프로그램을 띄우지 않고 그 함수 하나의 입출력 관계만 빠르게 여러 번 실험해볼 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>from unicorn import *</code>와 함께 <code>from unicorn.x86_const import *</code>처럼 아키텍처별 상수 모듈을 따로 import한다 — 레지스터 이름(<code>UC_X86_REG_RAX</code> 등) 상수가 이 모듈에 들어있다.</li><li><code>mu = Uc(UC_ARCH_X86, UC_MODE_64)</code> 다음에 <code>mu.mem_map(0x1000000, 2 * 1024 * 1024)</code>처럼 큰 크기의 메모리 영역을 미리 할당하는 코드가 있다.</li><li><code>mu.mem_write(ADDRESS, CODE)</code>로 코드를 써넣은 뒤, <code>mu.reg_write(UC_X86_REG_RSP, STACK_ADDR)</code>처럼 스택 포인터를 수동으로 세팅하는 코드가 있다 — Unicorn은 스택도 자동으로 안 만들어주므로 직접 준비해야 한다.</li><li><code>mu.emu_start(START, END)</code> 호출 뒤에 <code>mu.reg_read(UC_X86_REG_EAX)</code>로 결과를 꺼낸다.</li><li>에러 발생 시 <code>unicorn.UcError: Invalid memory read (UC_ERR_READ_UNMAPPED)</code>처럼 매핑되지 않은 메모리에 접근했다는 예외 메시지가 뜬다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>대상 함수가 정말로 "운영체제 도움 없이 순수 계산만" 하는지 먼저 IDA/Ghidra에서 확인한다. 함수 안에 <code>malloc</code>, <code>printf</code>, 시스템 콜, 다른 외부 함수 호출이 섞여 있다면 Unicorn만으로는 그 호출들이 실패하며 에뮬레이션이 막힌다(직접 후킹해서 흉내 내는 방법도 있지만 초보 단계에서는 복잡하다). 순수 계산 함수(체크섬, 간단한 XOR/치환 루틴 등)부터 연습하는 것이 좋다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 설치 확인</strong></p>
+<pre><code class="language-bash">pip install unicorn
+python3 -c "import unicorn; print(unicorn.__version__)"</code></pre>
+<p><strong>2) 가장 단순한 예: 레지스터 두 개를 더하는 코드 실행</strong></p>
+<pre><code class="language-python">from unicorn import *
+from unicorn.x86_const import *
+
+# mov eax, edi ; add eax, esi ; ret  (SysV 호출규약: rdi=첫 인자, rsi=둘째 인자)
+CODE = b'\x89\xf8\x01\xf0\xc3'
+ADDRESS = 0x1000000
+
+mu = Uc(UC_ARCH_X86, UC_MODE_64)
+mu.mem_map(ADDRESS, 2 * 1024 * 1024)   # 2MB 코드/데이터 영역
+mu.mem_write(ADDRESS, CODE)
+
+mu.reg_write(UC_X86_REG_RDI, 10)  # 첫 번째 인자
+mu.reg_write(UC_X86_REG_RSI, 32)  # 두 번째 인자
+
+mu.emu_start(ADDRESS, ADDRESS + len(CODE))
+
+result = mu.reg_read(UC_X86_REG_EAX)
+print('result =', result)  # 42</code></pre>
+<p><strong>3) 스택이 필요한 코드를 위한 스택 영역 준비</strong></p>
+<p><code>call</code>/<code>ret</code>을 포함하거나 지역 변수를 스택에 쓰는 함수는 스택 영역도 매핑하고 RSP를 세팅해야 한다.</p>
+<pre><code class="language-python">from unicorn import *
+from unicorn.x86_const import *
+
+CODE = b'\x89\xf8\x01\xf0\xc3'
+BASE = 0x1000000
+STACK_BASE = 0x2000000
+STACK_SIZE = 0x10000
+
+mu = Uc(UC_ARCH_X86, UC_MODE_64)
+mu.mem_map(BASE, 0x1000)
+mu.mem_write(BASE, CODE)
+
+mu.mem_map(STACK_BASE, STACK_SIZE)
+mu.reg_write(UC_X86_REG_RSP, STACK_BASE + STACK_SIZE // 2)  # 스택 중간 지점
+
+mu.reg_write(UC_X86_REG_RDI, 7)
+mu.reg_write(UC_X86_REG_RSI, 35)
+mu.emu_start(BASE, BASE + len(CODE))
+print(mu.reg_read(UC_X86_REG_EAX))  # 42</code></pre>
+<p><strong>4) 실제 바이너리에서 함수 바이트를 잘라와 실행하기</strong></p>
+<pre><code class="language-python">from unicorn import *
+from unicorn.x86_const import *
+
+FUNC_FILE_OFFSET = 0x1400   # IDA/objdump로 확인한 함수의 파일 오프셋
+FUNC_SIZE = 0x40             # 함수 크기(바이트)
+LOAD_ADDR = 0x401400          # 실제 로드될 가상주소(고정 베이스 PIE-off 바이너리 가정)
+
+with open('chall', 'rb') as f:
+    f.seek(FUNC_FILE_OFFSET)
+    code = f.read(FUNC_SIZE)
+
+mu = Uc(UC_ARCH_X86, UC_MODE_64)
+mu.mem_map(0x400000, 0x10000)  # 코드가 속한 영역을 넉넉히 매핑
+mu.mem_write(LOAD_ADDR, code)
+
+mu.mem_map(0x2000000, 0x10000)
+mu.reg_write(UC_X86_REG_RSP, 0x2000000 + 0x8000)
+
+mu.reg_write(UC_X86_REG_RDI, 0x1337)  # 테스트하고 싶은 입력값
+mu.emu_start(LOAD_ADDR, LOAD_ADDR + FUNC_SIZE - 1)  # ret 직전까지
+
+print(hex(mu.reg_read(UC_X86_REG_EAX)))</code></pre>
+<p><strong>5) 여러 입력값을 빠르게 반복 테스트하기</strong></p>
+<p>에뮬레이터 상태를 함수로 감싸면 여러 후보 입력을 반복해서 빠르게 실험할 수 있다.</p>
+<pre><code class="language-python">from unicorn import *
+from unicorn.x86_const import *
+
+CODE = b'\x89\xf8\x01\xf0\xc3'
+BASE = 0x1000000
+
+def run_check(a, b):
+    mu = Uc(UC_ARCH_X86, UC_MODE_64)
+    mu.mem_map(BASE, 0x1000)
+    mu.mem_write(BASE, CODE)
+    mu.reg_write(UC_X86_REG_RDI, a)
+    mu.reg_write(UC_X86_REG_RSI, b)
+    mu.emu_start(BASE, BASE + len(CODE))
+    return mu.reg_read(UC_X86_REG_EAX)
+
+for candidate in range(40, 45):
+    print(candidate, '-&gt;', run_check(candidate, 2))</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li><code>Uc(UC_ARCH_X86, UC_MODE_64)</code> : x64 CPU 에뮬레이터 생성(<code>UC_MODE_32</code>는 32비트)</li><li><code>mu.mem_map(addr, size)</code> : 가상 메모리 영역 할당(주소는 페이지 크기 정렬 필요, 보통 0x1000 단위)</li><li><code>mu.mem_write(addr, data)</code> / <code>mu.mem_read(addr, size)</code> : 메모리 쓰기/읽기</li><li><code>mu.reg_write(UC_X86_REG_RDI, value)</code> / <code>mu.reg_read(UC_X86_REG_RAX)</code> : 레지스터 쓰기/읽기</li><li><code>mu.emu_start(begin, until)</code> : begin부터 실행 시작, until 주소에 도달하면 정지</li><li><code>mu.emu_stop()</code> : 후크 콜백 등에서 강제로 실행 중단</li><li><code>mu.hook_add(UC_HOOK_CODE, callback)</code> : 명령어 단위로 실행을 가로채는 후크 등록(고급 디버깅용)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>reg_read(UC_X86_REG_EAX)</code> 결과가 예상한 계산 결과와 정확히 일치하면 그 코드 블록의 동작을 올바르게 재현하고 있다는 뜻이다.</li><li><code>UcError: Invalid memory read/write (UC_ERR_READ_UNMAPPED / UC_ERR_WRITE_UNMAPPED)</code> — 매핑하지 않은 메모리 주소에 접근했다는 뜻이다. 스택 영역을 안 만들었거나, 코드가 참조하는 전역 변수/문자열 영역을 매핑하지 않은 경우 흔히 발생한다.</li><li><code>UcError: Invalid instruction (UC_ERR_INSN_INVALID)</code> — 아키텍처/모드 설정이 실제 코드와 안 맞거나(32비트 코드를 64비트 모드로 실행), 코드 시작 주소를 잘못 잡아 명령어 경계가 어긋난 경우 발생한다.</li><li><code>emu_start()</code>가 반환됐는데 결과가 0이거나 기대와 전혀 다르면, 함수가 실행되기 전에 필요했던 입력 레지스터/메모리(인자, 전역 상태)를 빠뜨렸을 가능성이 크다 — 원본 함수가 어떤 값을 전제로 시작하는지 디스어셈블리를 다시 확인한다.</li><li>실행이 <code>until</code> 주소에서 멈추지 않고 계속되거나 예상 못한 곳에서 멈추면, 함수 안에 분기/루프가 있어 실제 종료 지점(ret 명령어 주소)이 처음 가정과 다를 수 있다 — Capstone(REV-0272)으로 먼저 함수 전체를 디스어셈블해서 정확한 <code>ret</code> 위치를 확인하는 것이 안전하다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>스택을 매핑하지 않고 <code>push</code>/<code>pop</code>/<code>call</code>이 포함된 코드를 실행해서 <code>UC_ERR_WRITE_UNMAPPED</code>가 나는 경우 — 순수 산술 함수라도 컴파일러가 지역 변수를 위해 스택을 건드리는 경우가 흔하므로 기본적으로 스택은 항상 준비하는 습관을 들이는 것이 안전하다.</li><li><code>mem_map()</code>에 페이지 정렬이 안 된 주소(0x1000 단위가 아닌 임의의 주소)를 넣어서 예외가 나는 경우.</li><li>함수가 참조하는 전역 변수나 문자열 상수가 원본 바이너리의 다른 섹션(<code>.data</code>, <code>.rodata</code>)에 있는데, 그 섹션을 매핑하지 않아서 함수 실행 중 매핑되지 않은 메모리를 읽으려다 실패하는 경우 — 필요한 섹션들을 원본 바이너리에서 함께 읽어와 해당 가상주소에 그대로 복사해줘야 한다.</li><li>32비트 함수인데 <code>UC_MODE_64</code>로 돌려서 레지스터 이름(예: <code>UC_X86_REG_EDI</code>가 아니라 <code>UC_X86_REG_RDI</code>)과 호출 규약(레지스터 전달 vs 스택 전달)을 혼동하는 경우 — 32비트 x86 cdecl은 인자를 레지스터가 아니라 스택으로 전달하므로 아예 준비 방식이 달라진다.</li><li><code>emu_start()</code>의 종료 주소를 함수의 마지막 <code>ret</code> 명령어 "다음" 주소로 정확히 안 잡아서, 마지막 명령어가 실행되지 않거나 반대로 다음 함수 코드까지 실행돼버리는 경우.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>UC_ERR_*</code> 예외가 계속 난다면 → 먼저 Capstone(REV-0272)으로 같은 코드 범위를 디스어셈블해서, 이 코드가 실제로 어떤 메모리/레지스터를 건드리는지 목록을 뽑아보고 그만큼 전부 매핑했는지 대조한다.</li><li>함수가 라이브러리 호출을 포함해서 Unicorn만으로 못 돌리겠다면 → 그 함수 호출부만 후킹(<code>hook_add</code>)해서 결과를 흉내 내거나, 아예 전체 프로그램을 pwntools(REV-0266)로 실제 실행시켜 확인하는 방향으로 바꾸는 것이 더 실용적일 수 있다.</li><li>함수 로직 자체를 역산해서 특정 조건을 만족하는 입력을 찾고 싶다면 → 에뮬레이션 결과 확인은 Unicorn으로 하되, 실제 입력값 탐색은 Z3(REV-0268~REV-0270)나 angr(REV-0271)로 하는 것이 더 적합하다. Unicorn은 "이 입력을 넣으면 무엇이 나오는지" 확인하는 도구이지, "어떤 입력을 넣어야 하는지" 자동으로 찾아주는 도구는 아니다.</li><li>함수 시작/끝 주소를 정확히 모르겠다면 → IDA/Ghidra의 Functions 창에서 해당 함수를 클릭해 시작 주소와 크기를 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p>문자 하나를 받아 <code>(c ^ 0x5a) + 1</code>을 계산해서 반환하는 아주 작은 검증 함수를, 실제 x64 기계어로 만들어 Unicorn으로 통째로 실행해본다.</p>
+<pre><code class="language-python">from unicorn import *
+from unicorn.x86_const import *
+
+# 대상 로직: eax = (edi ^ 0x5a) + 1  (SysV: 첫 인자 edi)
+# xor edi, 0x5a ; lea eax, [rdi+1] ; ret
+CODE = b'\x81\xf7\x5a\x00\x00\x00\x8d\x47\x01\xc3'
+BASE = 0x1000000
+
+mu = Uc(UC_ARCH_X86, UC_MODE_64)
+mu.mem_map(BASE, 0x1000)
+mu.mem_write(BASE, CODE)
+
+mu.mem_map(0x2000000, 0x10000)
+mu.reg_write(UC_X86_REG_RSP, 0x2000000 + 0x8000)
+
+for c in [ord('A'), ord('Z'), 0x5a]:
+    mu.reg_write(UC_X86_REG_RDI, c)
+    mu.emu_start(BASE, BASE + len(CODE))
+    result = mu.reg_read(UC_X86_REG_EAX)
+    print(f'input={hex(c)} -&gt; output={hex(result)}')</code></pre>
+<p>이렇게 여러 입력값에 대한 결과를 즉시 확인할 수 있으므로, 바이너리 전체를 매번 다시 실행하지 않고도 검증 함수 하나의 동작을 빠르게 파악하고 역산 실마리를 얻을 수 있다.</p>
+<h2>실전 예시: 반복문(루프)이 있는 함수 에뮬레이션</h2>
+<p>지금까지의 예시는 분기가 없는 직선 코드(straight-line code)였다. 하지만 실전 체크섬/해시 함수는 대부분 <strong>반복문</strong>을 돈다. Unicorn은 CPU를 실제로 흉내 내는 엔진이므로, 조건부 분기(<code>cmp</code>/<code>jge</code> 등)가 있는 진짜 루프도 명령어 그대로 실행하면서 결과를 만들어낼 수 있다. 아래는 <code>0</code>부터 <code>n-1</code>까지 더하는 아주 단순한 누산 루프를 실제 x64 기계어로 만들어 실행하는 예시다.</p>
+<pre><code class="language-c">// 원본 C 로직: 0부터 4까지(즉 n=5) 더하는 루프
+// int sum = 0;
+// for (int i = 0; i &lt; 5; i++) sum += i;
+// 결과: sum == 10</code></pre>
+<pre><code class="language-python">from unicorn import *
+from unicorn.x86_const import *
+
+# xor eax,eax ; xor ecx,ecx ; L1: cmp ecx,5 ; jge L2 ; add eax,ecx ; inc ecx ; jmp L1 ; L2: ret
+CODE = bytes([
+    0x31, 0xc0,        # xor eax, eax        ; eax(누산기 sum) = 0
+    0x31, 0xc9,        # xor ecx, ecx        ; ecx(카운터 i) = 0
+    0x83, 0xf9, 0x05,  # L1: cmp ecx, 5      ; i와 5를 비교
+    0x7d, 0x06,        # jge L2               ; i &gt;= 5 이면 루프 종료(L2로 이동)
+    0x01, 0xc8,        # add eax, ecx        ; sum += i
+    0xff, 0xc1,        # inc ecx              ; i += 1
+    0xeb, 0xf5,        # jmp L1                ; 다시 루프 시작으로
+    0xc3               # L2: ret
+])
+
+BASE = 0x1000000
+STACK = 0x2000000
+RET_ADDR = BASE + 0x0f   # ret 명령어가 있는 정확한 주소(끝까지 실행하지 않고 여기서 정지)
+
+mu = Uc(UC_ARCH_X86, UC_MODE_64)
+mu.mem_map(BASE, 0x1000)          # 코드 영역 매핑
+mu.mem_write(BASE, CODE)           # 코드 기록
+mu.mem_map(STACK, 0x10000)         # 스택 영역도 반드시 매핑(이 코드엔 call/ret이 없지만 습관적으로 준비)
+mu.reg_write(UC_X86_REG_RSP, STACK + 0x8000)
+
+mu.emu_start(BASE, RET_ADDR)         # ret 직전까지 실행 (ret까지 실행하면 초기화 안 된 스택값으로 튀어 에러가 남)
+
+print('sum(eax) =', mu.reg_read(UC_X86_REG_EAX))   # 10
+print('i(ecx)   =', mu.reg_read(UC_X86_REG_ECX))    # 5</code></pre>
+<p>이 스크립트를 그대로 실행하면 <code>sum(eax) = 10</code>, <code>i(ecx) = 5</code>가 정확히 출력된다(직접 Unicorn 2.x로 재현 검증됨, <code>0+1+2+3+4 = 10</code>). 여기서 주목할 점은 <code>emu_start(BASE, RET_ADDR)</code>의 두 번째 인자를 <strong><code>ret</code> 명령어가 실제로 있는 주소</strong>로 정확히 지정했다는 것이다. 만약 이 함수처럼 스택에 유효한 반환 주소를 미리 준비해두지 않은 상태에서 <code>ret</code>까지 실행되도록 두면, CPU가 스택에서 초기화되지 않은(보통 0인) 값을 "돌아갈 주소"로 읽어 그 주소(0번지)로 점프하려다가 <code>Invalid memory fetch</code> 예외가 발생한다. 이처럼 <strong>함수를 진짜로 호출해서 끝까지 실행하는 게 아니라 함수의 로직만 값을 확인하고 싶을 때는, 항상 <code>ret</code> 명령어 바로 앞에서 실행을 멈추는 것</strong>이 스택 준비의 번거로움을 줄이는 실용적인 방법이다. 루프가 있는 코드도 이렇게 직접 실행해서 검증할 수 있다는 사실은, Capstone(REV-0272)이 "정적으로 읽기만" 할 수 있는 것과 대비되는 Unicorn의 핵심 강점이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0272-capstone-basics.html">REV-0272 — Capstone으로 디스어셈블 자동화</a></li><li><a href="rev-0271-angr-basics.html">REV-0271 — angr 심볼릭 실행 기초</a></li><li><a href="rev-0266-pwntools-process-basics.html">REV-0266 — pwntools로 프로세스 실행하고 입력 보내기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Unicorn Engine 공식 문서(unicorn-engine.org) 및 공식 GitHub(unicorn-engine/unicorn)의 파이썬 바인딩 API(<code>Uc</code>, <code>mem_map</code>, <code>mem_write</code>, <code>reg_write</code>, <code>emu_start</code>)를 기준으로 정리했다(2026-09-08 검증).</li><li>SysV x64 호출 규약(정수 인자가 RDI, RSI, RDX, RCX, R8, R9 순서로 전달됨)은 System V AMD64 ABI 문서의 일반적인 서술과 일치한다.</li><li><code>unicorn</code>은 서드파티 패키지이므로 <code>pip install unicorn</code>이 필요하며, 오프라인 설치 절차는 툴킷 카테고리(<code>../tools/</code>)에 추후 작성될 문서에서 다룬다.</li><li>코드 예제에 쓰인 x64 기계어 바이트열은 표준 x86-64 인코딩을 기준으로 직접 구성했으며, <code>pip install unicorn</code> 환경의 표준 CPython 3에서 그대로 재현 가능하다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>objdump 디스어셈블 결과가 중간에 끊길 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>objdump 디스어셈블 결과가 중간에 끊길 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">objdump</span></div>
+<h2>한 줄 요약</h2>
+<p><code>objdump -d</code> 출력이 "끊긴 것처럼" 보이는 원인은 대부분 실제 디스어셈블 실패가 아니라, objdump가 반복되는 0 바이트 블록을 <code>...</code>으로 생략하거나, 코드가 있는 섹션 전체가 아니라 일부만 지정해서 보고 있거나, 터미널/파이프 때문에 화면에서 잘려 보이는 것이며, 진짜 문제는 점프 테이블 등 데이터가 코드 사이에 섞여 있어 선형 디스어셈블이 깨지는 경우다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>objdump -d ./chall</code>을 실행했는데 함수가 중간에서 뚝 끊기고 그 뒤로 아무것도 안 나올 때</li><li>출력에 <code>...</code>만 찍히고 그 다음 코드가 안 보일 때</li><li>특정 함수의 disassembly만 보고 싶은데 <code>objdump -d</code> 결과가 원하는 함수까지 도달하지 못하는 것처럼 보일 때</li><li>파일로 저장한 <code>objdump -d ./chall &gt; out.asm</code> 결과의 줄 수가 예상보다 훨씬 적을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>objdump는 반복되는 동일한 바이트를 생략한다</h3>
+<p>objdump는 기본적으로 연속된 0(널 바이트)로만 이루어진 블록을 만나면 그 내용을 전부 출력하지 않고 <code>...</code>로 축약해서 보여준다. 이건 "디스어셈블이 실패했다"는 뜻이 아니라 "이 구간은 전부 0이라서 생략했다"는 뜻이다. 패딩 구간, 정렬을 위한 채움 바이트, 초기화되지 않은 <code>.bss</code> 근처 등에서 흔히 나타난다. <code>-z</code>(<code>--disassemble-zeroes</code>) 옵션을 주면 생략 없이 전부 출력한다.</p>
+<h3>objdump는 기본적으로 실행 가능한 섹션만 디스어셈블한다</h3>
+<p><code>objdump -d</code>는 <code>SHF_EXECINSTR</code> 플래그가 붙은 섹션(<code>.text</code>, <code>.plt</code>, <code>.init</code>, <code>.fini</code> 등)만 디스어셈블한다. <code>.rodata</code>나 <code>.data</code> 안에 있는 바이트는 아예 대상이 아니므로, 원하는 함수가 그 섹션에 없거나 특정 섹션만 남기고 싶다면 <code>-j SECTION</code>으로 명시해야 한다. 반대로 모든 섹션을 억지로 코드처럼 보고 싶다면 <code>-D</code>(전체 디스어셈블, 데이터 섹션 포함)를 쓸 수 있는데 이 경우 데이터가 의미 없는 명령어로 오역될 수 있다.</p>
+<h3>점프 테이블/데이터가 코드 사이에 섞여 선형 디스어셈블이 깨진다</h3>
+<p>컴파일러는 <code>switch</code>문을 점프 테이블(주소 배열)로 최적화하는 경우가 많은데, 이 테이블이 <code>.text</code> 섹션 한가운데에 데이터로 박혀 있을 수 있다. objdump는 흐름을 따라가는 게 아니라 주소 순서대로 바이트를 처음부터 끝까지 기계어로 해석하는 <strong>선형 디스어셈블러</strong>이기 때문에, 이 데이터 구간을 명령어로 잘못 해석해 이상한 옵코드나 <code>(bad)</code>를 뱉고 그 다음 줄부터 정렬이 완전히 어긋난다. 이후 진짜 코드가 나와도 바이트 경계가 밀려서 깨진 것처럼 보인다.</p>
+<h3>터미널/파이프로 인한 착시</h3>
+<p><code>objdump -d ./chall | less</code> 없이 그냥 터미널에 출력하면 스크롤 버퍼 크기 때문에 앞부분이 잘려 보이거나, 반대로 <code>objdump -d ./chall | head</code>처럼 실수로 파이프를 걸어서 일부만 본 것을 "끊겼다"고 오해하는 경우도 흔하다. 이 경우는 objdump 자체 문제가 아니라 셸/파이프 사용 실수다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code>$ objdump -d ./chall
+...
+  401230:   55                      push   %rbp
+  401231:   48 89 e5                mov    %rsp,%rbp
+	...</code></pre>
+<p><code>...</code> 한 줄만 출력되고 그 아래로 아무 내용도 없이 프롬프트가 바로 나오면 생략된 것이고, 반대로 옵코드가 깨진 채로 계속 이어지면 데이터-코드 혼재 문제다.</p>
+<h2>가장 먼저 할 것</h2>
+<p><code>objdump -d ./chall &gt; full.asm</code>으로 전체를 파일에 저장한 뒤 <code>wc -l full.asm</code>로 줄 수를 확인하고, <code>grep -n '\.\.\.$' full.asm</code>로 생략 표시 위치를 찾는다. 그다음 원하는 함수 이름이 파일 안에 실제로 있는지 <code>grep -n '&lt;함수이름&gt;:' full.asm</code>으로 확인한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>objdump -d ./chall &gt; full.asm</code>으로 표준출력이 아닌 파일에 전체 저장</li><li><code>wc -l full.asm</code>로 실제 줄 수 확인 — 터미널 화면 착시인지 구분</li><li><code>grep -n '\.\.\.$' full.asm</code>로 <code>...</code> 생략 지점 확인, 필요하면 <code>-z</code> 옵션으로 재실행</li><li>원하는 함수가 애초에 어느 섹션에 있는지 <code>readelf -S ./chall</code>, <code>nm ./chall</code>로 확인 후 <code>-j .text</code> 등으로 섹션 명시</li><li>옵코드가 깨진 구간이 있으면 그 앞뒤 주소를 <code>readelf</code>/<code>nm</code>으로 대조해 점프 테이블·데이터 구간인지 의심하고, 필요하면 IDA/Ghidra처럼 CFG 기반 디스어셈블러로 교차 확인</li><li>PLT 관련 함수가 안 보이면 <code>-d</code>가 아니라 <code>--disassemble=malloc@plt</code> 식으로 심볼 지정 디스어셈블도 시도</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">objdump -d ./chall &gt; full.asm
+objdump -dz ./chall            # 생략 없이 전부 출력
+objdump -j .text -d ./chall    # 특정 섹션만 디스어셈블
+objdump -D ./chall             # 데이터 섹션 포함 전체(오역 위험 있음)
+objdump --disassemble=main ./chall
+readelf -S ./chall
+nm ./chall | grep ' T '</code></pre>
+<h2>출력 해석</h2>
+<p><code>...</code>만 있고 그 위/아래 주소 차이가 크면(예: <code>401300</code> 다음 줄이 바로 <code>401500</code>) 그 사이가 전부 0으로 채워진 패딩이라는 뜻이지 디스어셈블 실패가 아니다. 반대로 <code>(bad)</code>가 반복되거나 명령어 길이가 이상하게 짧게/길게 나오며 그 뒤로 코드가 전혀 말이 안 되면, 그 지점부터는 데이터를 코드로 잘못 해석하고 있다는 신호다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>...</code>을 보고 "objdump가 뻗었다"고 오해하는 것 — 대부분 0 바이트 생략일 뿐이다.</li><li>원하는 함수가 애초에 strip되어 이름이 없거나 다른 섹션에 있는데 계속 <code>-d ./chall</code> 결과에서만 찾으려는 것.</li><li><code>| head</code>, <code>| less</code>를 걸어놓고 전체를 다 봤다고 착각하는 것.</li><li>점프 테이블 구간을 코드로 착각해 그 안의 깨진 옵코드를 실제 명령어처럼 분석하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>objdump 기본 사용법 자체가 헷갈리면 → REV-0092 objdump 기본 사용법.</li><li>정적 링킹된 거대한 바이너리라 함수가 너무 많아서 원하는 곳을 못 찾는 것이라면 → REV-0646 정적 링킹된(Statically Linked) ELF 분석 접근법.</li><li>strip된 바이너리에서 함수 이름 자체가 없어서 못 찾는 것이라면 → REV-0668 strip된 정적 바이너리에서 libc 함수 식별 개념(시그니처 매칭).</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ objdump -d ./chall | wc -l
+842
+$ objdump -dz ./chall | wc -l
+15230</code></pre>
+<p><code>-z</code> 없이는 842줄뿐이었는데 <code>-z</code>를 붙이자 15230줄로 늘어난 것은, 그 사이 대부분이 0으로 채워진 구간이라 생략되어 있었다는 뜻이다. 실제 코드가 사라진 게 아니라 출력 옵션 문제였다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0092-objdump-basics.html">REV-0092 — objdump 기본 사용법</a></li><li><a href="rev-0646-statically-linked-elf-analysis.html">REV-0646 — 정적 링킹된(Statically Linked) ELF 분석 접근법</a></li><li><a href="rev-0668-stripped-static-libc-signature-matching.html">REV-0668 — strip된 정적 바이너리에서 libc 함수 식별 개념(시그니처 매칭)</a></li><li><a href="rev-0089-elf-header.html">REV-0089 — ELF 헤더 읽는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>objdump의 <code>-z</code>/<code>--disassemble-zeroes</code> 옵션과 반복 구간 생략 동작: GNU Binutils 공식 매뉴얼(<code>objdump(1)</code>) 기준 (2026-09-09 검증).</li><li><code>SHF_EXECINSTR</code> 플래그와 실행 가능 섹션만 기본 디스어셈블 대상이 되는 점: ELF Specification 및 System V ABI 기준.</li><li>컴파일러가 switch문을 점프 테이블로 변환해 <code>.text</code> 내에 데이터가 섞이는 패턴: 일반적인 x86-64 GCC/Clang 최적화 관찰 결과(리버싱 커뮤니티 공통 지식) 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

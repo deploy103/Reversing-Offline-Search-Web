@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Python으로 Signed Unsigned 변환 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / automation</div>
+<article class="article-body">
+<h1>Python으로 Signed Unsigned 변환</h1>
+<div class="article-meta"><span class="tag">automation</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>Python 정수는 크기 제한이 없어 "부호"라는 개념이 CPU 레지스터와 다르게 동작하므로, C의 <code>int8_t</code>/<code>int16_t</code>/<code>int32_t</code>/<code>int64_t</code>와 똑같이 동작시키려면 비트 폭을 명시한 <code>to_signed(x, bits)</code> / <code>to_unsigned(x, bits)</code> 변환 함수를 직접 만들어 써야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디버거의 레지스터 창에는 음수(예: <code>EAX = FFFFFFFF</code>가 <code>-1</code>로 표시)로 나오는데, Python으로 같은 값을 계산하면 항상 양수 4294967295로만 나올 때</li><li>IDA/Ghidra 디컴파일 결과에 <code>int</code> 타입 변수가 음수 비교(<code>if (v &lt; 0)</code>)를 쓰는데 그 값을 파이썬으로 재현해야 할 때</li><li><code>IMUL</code>, <code>IDIV</code>, <code>SAR</code>처럼 부호를 신경 쓰는 명령과 <code>MUL</code>, <code>DIV</code>, <code>SHR</code>처럼 부호를 신경 쓰지 않는 명령의 결과 차이를 코드로 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>CPU는 부호 있는 정수를 저장할 별도의 공간이 없다. 대신 <strong>2의 보수(two's complement)</strong> 표현을 쓴다 — 최상위 비트(MSB)가 1이면 그 비트 패턴을 "음수"로 해석할 뿐, 메모리에 저장된 비트 자체는 부호 없는 정수와 동일하다. 즉 32비트에서 <code>0xFFFFFFFF</code>라는 같은 비트 패턴이 부호 없는 관점에서는 <code>4294967295</code>, 부호 있는 관점에서는 <code>-1</code>이다.</p>
+<p>Python의 <code>int</code>는 이런 "고정 비트 폭" 개념이 없는 임의 정밀도 정수이므로, <code>0xFFFFFFFF</code>를 그대로 쓰면 항상 4294967295로 취급된다. 따라서 부호 있는 값처럼 다루려면 <strong>비트 폭을 정하고, 그 폭 기준으로 최상위 비트를 검사해서 필요하면 2^bits를 빼주는</strong> 변환을 직접 해야 한다. 변환 공식은 다음과 같다.</p>
+<ul><li>부호 없는 → 부호 있는: <code>x &gt;= 2**(bits-1)</code>이면 <code>x -= 2**bits</code></li><li>부호 있는 → 부호 없는: <code>x &lt; 0</code>이면 <code>x += 2**bits</code> (그 다음 <code>&amp; mask</code>로 폭 안에 가두면 안전)</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>x64dbg/OllyDbg의 레지스터 창에서 부호 있는 10진수 표시(<code>-1</code>)와 16진수 표시(<code>FFFFFFFF</code>)를 오갈 수 있는 컨텍스트 메뉴가 있는데, Python으로 직접 계산하다 보면 이 변환을 놓쳐서 부호가 다른 값으로 조건 분기 결과가 어긋나는 경우가 흔하다.</li><li>Ghidra 디컴파일에서 <code>int</code>(부호 있음)와 <code>uint</code>(부호 없음) 타입이 섞여 있고, 같은 비트 패턴인데 조건문 결과가 다르게 나오는 코드.</li><li><code>IDIV</code>/<code>SAR</code> 뒤에 나오는 결과가 예상과 반대 부호로 나오는 상황.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문제가 되는 값의 <strong>비트 폭</strong>(8/16/32/64)부터 정확히 파악한다. <code>al</code>이면 8비트, <code>ax</code>면 16비트, <code>eax</code>면 32비트, <code>rax</code>면 64비트다. 폭을 잘못 잡으면 변환 결과가 완전히 다르게 나온다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 변환 함수 정의 (한 번만 작성해서 재사용)</strong></p>
+<pre><code class="language-python">def to_signed(x: int, bits: int) -&gt; int:
+    """부호 없는 값(또는 임의의 정수) x를 bits비트 2의 보수 signed 값으로 해석"""
+    mask = (1 &lt;&lt; bits) - 1
+    x &amp;= mask                      # 우선 해당 비트 폭 안으로 자름
+    if x &gt;= (1 &lt;&lt; (bits - 1)):     # 최상위 비트가 1이면 음수
+        x -= (1 &lt;&lt; bits)
+    return x
+
+
+def to_unsigned(x: int, bits: int) -&gt; int:
+    """부호 있는 값 x를 bits비트 unsigned 표현(0 이상 값)으로 변환"""
+    return x &amp; ((1 &lt;&lt; bits) - 1)</code></pre>
+<p><strong>2) 폭별 헬퍼(선택 사항, 가독성용)</strong></p>
+<pre><code class="language-python">def s8(x):  return to_signed(x, 8)
+def s16(x): return to_signed(x, 16)
+def s32(x): return to_signed(x, 32)
+def s64(x): return to_signed(x, 64)
+
+def u8(x):  return to_unsigned(x, 8)
+def u16(x): return to_unsigned(x, 16)
+def u32(x): return to_unsigned(x, 32)
+def u64(x): return to_unsigned(x, 64)</code></pre>
+<p><strong>3) 실제 값에 적용</strong></p>
+<pre><code class="language-python">&gt;&gt;&gt; to_signed(0xFFFFFFFF, 32)
+-1
+&gt;&gt;&gt; to_signed(0x80000000, 32)
+-2147483648
+&gt;&gt;&gt; to_signed(0x7FFFFFFF, 32)
+2147483647
+&gt;&gt;&gt; to_unsigned(-1, 32)
+4294967295
+&gt;&gt;&gt; to_unsigned(-1, 8)
+255</code></pre>
+<p><strong>4) 부호 있는 나눗셈/곱셈 재현</strong> IDIV, IMUL은 부호를 유지한 채 계산한다. Python <code>//</code>는 음수에 대해 "0 방향 버림"이 아니라 "음의 무한대 방향 버림"이므로 그대로 쓰면 C의 결과와 달라질 수 있다.</p>
+<pre><code class="language-python">import math
+
+def c_div(a: int, b: int) -&gt; int:
+    """C/IDIV 스타일 0-방향 버림 나눗셈"""
+    q = abs(a) // abs(b)
+    return -q if (a &lt; 0) != (b &lt; 0) else q
+
+&gt;&gt;&gt; c_div(-7, 2)
+-3
+&gt;&gt;&gt; (-7) // 2      # Python 기본 연산자는 -4 (음의 무한대 방향)
+-4</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg 레지스터 창에서 값 위 우클릭 → "Signed" 표시로 전환해 부호 있는 10진수를 바로 확인 가능</li><li>IDA에서 <code>Alt+M</code>(구조체/타입 뷰) 대신, 변수 타입을 <code>int</code>↔<code>unsigned int</code>로 바꿔보며(<code>Y</code> 키) 디컴파일 결과 변화 관찰</li><li>Python REPL에서 위 함수들을 파일(<code>convert.py</code>)로 저장해두고 <code>from convert import *</code>로 매번 재사용</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>to_signed</code> 결과가 음수인데 원래 알고리즘이 부호 없는 비교(<code>unsigned</code> 타입)를 쓰는 코드였다면, 애초에 부호 변환을 적용하면 안 되는 값이다 — 디컴파일된 변수의 선언 타입을 먼저 확인해야 한다.</li><li>8/16비트 값은 <code>movzx</code>(부호 확장 없이 0으로 채움)로 로드됐는지 <code>movsx</code>(부호 확장, MSB를 그대로 반복 채움)로 로드됐는지에 따라 상위 비트 해석이 달라진다. <code>movsx</code>로 로드된 값이라면 이미 CPU가 부호 확장을 마쳤으므로 <code>to_signed</code>를 다시 적용하면 이중 변환 오류가 난다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>비트 폭을 항상 32로 고정해버려서 <code>al</code>/<code>ax</code> 같은 8/16비트 레지스터 값을 잘못 해석하는 것.</li><li><code>to_unsigned</code> 없이 음수를 그대로 <code>hex()</code>에 넣어 <code>-0x...</code> 같은 형태를 만들고, 이걸 다시 바이트로 변환할 때 <code>to_bytes()</code>가 <code>OverflowError</code>를 던지는 것 — 반드시 <code>to_unsigned</code>로 먼저 양수화하거나 <code>int.to_bytes(..., signed=True)</code>를 명시해야 한다.</li><li>C 나눗셈과 Python <code>//</code> 연산자의 버림 방향 차이를 모르고 그대로 써서 음수 나눗셈 결과가 1 어긋나는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>바이트를 정수로/정수를 바이트로 직접 다루는 법이 필요하면 → REV-0261 (struct pack/unpack, <code>int.to_bytes(signed=True)</code> 포함).</li><li>부호 있는 값을 32비트 안에서 계속 연산해야 하면 → REV-0264 (32비트 Overflow 재현)와 함께 사용.</li><li>두 보수 개념 자체(왜 이런 표현을 쓰는지)가 헷갈리면 → 이론 설명이 정리된 기본 개념 글을 먼저 본다.</li></ul>
+<h2>미니 예제</h2>
+<p>Ghidra에서 다음과 같은 디컴파일 결과를 봤다고 하자.</p>
+<pre><code class="language-c">int check(int v) {
+    return (v ^ 0x7F) - 100 &lt; 0;
+}</code></pre>
+<p><code>v = 0xA3</code>(부호 없이 읽으면 163)일 때 이 조건이 참인지 파이썬으로 그대로 재현하면:</p>
+<pre><code class="language-python">def check(v_raw, bits=32):
+    v = to_signed(v_raw, bits)
+    result = to_signed((v ^ 0x7F) - 100, bits)
+    return result &lt; 0
+
+print(check(0xA3))   # v를 부호 있는 int로 해석해서 그대로 대입</code></pre>
+<p>이처럼 원본 코드의 변수 타입(<code>int</code>)을 그대로 존중해 <code>to_signed</code>를 적용한 뒤 연산하면, 디버거에서 관찰한 값과 Python 계산 결과가 항상 일치한다.</p>
+<h3>실전 예제 2 — 디버거에서 읽은 오프셋 값을 다시 패킷 바이트로 만들기</h3>
+<p>스택 카나리 검사를 우회하려고 디버거에서 <code>EAX</code> 레지스터 값을 읽었더니 <code>0xFFFFFFEC</code>였다고 하자. 이 값을 그대로 부호 없는 큰 수(4294967276)로 취급하면 "오프셋"이라는 의미가 사라진다. 이 값은 사실 <strong>음수 오프셋</strong>이며, <code>to_signed</code>로 변환하고, 그 결과를 다시 소켓으로 보낼 4바이트로 조립하는 전체 과정을 실행해본다.</p>
+<pre><code class="language-python">def to_signed(x: int, bits: int) -&gt; int:
+    # x를 bits비트 2의 보수 signed 값으로 해석해서 돌려준다
+    mask = (1 &lt;&lt; bits) - 1
+    x &amp;= mask
+    if x &gt;= (1 &lt;&lt; (bits - 1)):
+        x -= (1 &lt;&lt; bits)
+    return x
+
+
+eax_raw = 0xFFFFFFEC        # 디버거 레지스터 창에서 그대로 복사한 16진수 값(부호 없는 표현)
+
+offset = to_signed(eax_raw, 32)   # 32비트 EAX이므로 bits=32로 변환
+print("오프셋(signed):", offset)   # -20  &lt;- 사람이 이해할 수 있는 "음수 오프셋"으로 해석됨
+
+# 이 오프셋 값을 다시 4바이트 리틀엔디안(x86 기본) 바이트로 패킹해서
+# 취약점 서버에 그대로 보낼 페이로드를 만든다고 가정
+payload = offset.to_bytes(4, "little", signed=True)   # signed=True를 반드시 명시해야 음수를 담을 수 있음
+print("전송할 payload:", payload.hex())                # ecffffff
+
+# 페이로드를 다시 정수로 복원해서, 왕복 변환이 원래 값과 정확히 일치하는지 확인
+restored = int.from_bytes(payload, "little", signed=True)
+print("복원된 값:", restored)          # -20
+assert restored == offset, "왕복 변환 결과가 원본과 다르다면 signed 플래그를 빼먹은 것"</code></pre>
+<p><code>0xFFFFFFEC</code>라는 16진수 표기 하나가 "부호 없는 값으로 보면 42억이 넘는 큰 수"이면서 동시에 "부호 있는 값으로 보면 <code>-20</code>"이라는 완전히 다른 의미를 갖는다는 것을, <code>to_signed</code>와 <code>to_bytes(..., signed=True)</code>를 왕복시켜 직접 확인할 수 있다. <code>signed=True</code>를 빼먹으면 음수를 담으려 할 때 <code>OverflowError: can't convert negative int to unsigned</code>가 즉시 발생해서, 부호를 빼먹었다는 사실을 코드 실행 시점에 바로 알 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0258-python-number-conversion-cheatsheet.html">REV-0258 — 리버싱용 Python 숫자 변환 치트시트</a></li><li><a href="rev-0261-python-struct.html">REV-0261 — Python struct pack unpack</a></li><li><a href="rev-0264-python-32bit-overflow.html">REV-0264 — Python 32비트 Overflow 재현</a></li><li>../binary-basics/rev-0024-twos-complement.md</li><li>../binary-basics/rev-0025-signed-unsigned.md</li></ul>
+<h2>출처/검증</h2>
+<ul><li>2의 보수 표현과 부호 확장 규칙은 Intel 64 and IA-32 Architectures Software Developer's Manual의 정수 표현 섹션과 모든 C 언어 표준의 정수 표현 정의를 따름(2026-09-08 확인). Python 임의 정밀도 정수 동작은 CPython 공식 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

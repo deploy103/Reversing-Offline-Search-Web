@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CMOVcc: 분기 없는 조건부 이동 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>CMOVcc: 분기 없는 조건부 이동</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>CMOVcc</code>는 "조건(cc)이 참이면 src를 dst로 옮기고, 거짓이면 dst를 그대로 둔다"는 명령어다. <code>Jcc</code>처럼 조건에 따라 실행 흐름이 갈라지는 게 아니라, <strong>분기 자체가 아예 없이</strong> 한 줄로 끝난다 — 그래서 "branchless(분기 없는)" 코드라고 부른다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리에 <code>cmovg</code>, <code>cmovle</code>, <code>cmova</code> 같은 명령이 나오는데 <code>Jcc</code>와 뭐가 다른지 모를 때</li><li>IDA 디컴파일에서는 <code>if</code>/삼항 연산자(<code>? :</code>)로 보이는 코드인데, 실제 어셈블리에는 분기(jump)가 하나도 없어서 당황스러울 때</li><li><code>max()</code>, <code>min()</code>, <code>abs()</code> 스타일 함수를 디버깅하다가 예상한 <code>jg</code>/<code>jl</code> 브레이크포인트가 절대 안 걸릴 때</li><li>"CMOVcc 뭐임", "cmov이 뭐임"처럼 처음 보는 명령어를 찾아볼 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>CMOVcc가 실제로 하는 일</h3>
+<p><code>CMOVcc dst, src</code>는 (이전 명령이 세팅해둔) 플래그를 검사해서:</p>
+<ul><li>조건이 <strong>참</strong>이면 → <code>src</code>의 값을 <code>dst</code>에 복사 (<code>MOV</code>와 동일하게 동작)</li><li>조건이 <strong>거짓</strong>이면 → <code>dst</code>를 <strong>완전히 그대로 둔다</strong> (아무것도 안 씀)</li></ul>
+<p>중요한 점은, CPU는 조건이 참이든 거짓이든 <strong>매번 src와 dst를 둘 다 읽고 실행 자체는 항상 한다</strong> — 다만 "쓸 것이냐 말 것이냐"만 조건에 달려 있다. RIP가 갈라지는 지점(분기)이 아예 존재하지 않기 때문에 분기 예측(branch prediction)이 틀릴 일도 없다.</p>
+<h3>이 cc 접미사 표는 Jcc/CMOVcc/SETcc 전부 공통</h3>
+<p>이 cc 접미사 표는 Jcc(<a href="rev-0067-je-jz.html">JE/JZ</a>, <a href="rev-0068-jne-jnz.html">JNE/JNZ</a>, <a href="rev-0069-jg-jge-jl-jle.html">JG/JGE/JL/JLE</a>, <a href="rev-0070-ja-jae-jb-jbe.html">JA/JAE/JB/JBE</a>), CMOVcc, <a href="rev-0076-setcc.html">SETcc</a>에서 전부 동일하게 적용된다 — 명령어의 "동작"(분기냐, 이동이냐, 0/1 기록이냐)만 다르고 "어떤 플래그 조합을 테스트하는가"는 완전히 같은 규칙이다.</p>
+<table><thead><tr><th>접미사</th><th>테스트하는 플래그 조건</th><th>의미</th></tr></thead><tbody><tr><td>E / Z</td><td>ZF = 1</td><td>equal / zero</td></tr><tr><td>NE / NZ</td><td>ZF = 0</td><td>not equal / not zero</td></tr><tr><td>G / NLE</td><td>ZF = 0 AND SF = OF</td><td>signed greater</td></tr><tr><td>GE / NL</td><td>SF = OF</td><td>signed greater or equal</td></tr><tr><td>L / NGE</td><td>SF ≠ OF</td><td>signed less</td></tr><tr><td>LE / NG</td><td>ZF = 1 OR SF ≠ OF</td><td>signed less or equal</td></tr><tr><td>A / NBE</td><td>CF = 0 AND ZF = 0</td><td>unsigned above</td></tr><tr><td>AE / NB / NC</td><td>CF = 0</td><td>unsigned above or equal</td></tr><tr><td>B / NAE / C</td><td>CF = 1</td><td>unsigned below</td></tr><tr><td>BE / NA</td><td>CF = 1 OR ZF = 1</td><td>unsigned below or equal</td></tr><tr><td>S</td><td>SF = 1</td><td>sign(negative)</td></tr><tr><td>NS</td><td>SF = 0</td><td>not sign</td></tr><tr><td>O</td><td>OF = 1</td><td>overflow</td></tr><tr><td>NO</td><td>OF = 0</td><td>no overflow</td></tr><tr><td>P / PE</td><td>PF = 1</td><td>parity even</td></tr><tr><td>NP / PO</td><td>PF = 0</td><td>parity odd</td></tr></tbody></table>
+<p>실제 mnemonic: <code>CMOVE</code>/<code>CMOVZ</code>, <code>CMOVNE</code>/<code>CMOVNZ</code>, <code>CMOVG</code>, <code>CMOVGE</code>, <code>CMOVL</code>, <code>CMOVLE</code>, <code>CMOVA</code>, <code>CMOVAE</code>, <code>CMOVB</code>, <code>CMOVBE</code>, <code>CMOVS</code>, <code>CMOVNS</code> 등 — <code>J</code> 대신 <code>CMOV</code>가 붙을 뿐, 접미사 규칙은 <code>Jcc</code>와 완전히 같다.</p>
+<p><strong>signed vs unsigned 주의</strong>: 같은 비트 패턴이라도 signed로 볼 때와 unsigned로 볼 때 비교 결과가 정반대로 나올 수 있다(예: <code>0xFFFFFFFF</code>는 signed로 -1, unsigned로 4294967295). 따라서 <code>CMOVG</code>(signed greater)와 <code>CMOVA</code>(unsigned above)는 완전히 다른 조건을 테스트하며 서로 바꿔 쓰면 안 된다. 이 signed/unsigned 함정의 상세한 원리는 <a href="rev-0069-jg-jge-jl-jle.html">JG/JGE/JL/JLE</a>와 <a href="rev-0070-ja-jae-jb-jbe.html">JA/JAE/JB/JBE</a>에서 다룬다.</p>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>CMOVcc r16, r/m16
+CMOVcc r32, r/m32
+CMOVcc r64, r/m64</code></pre>
+<p><code>MOV</code>와 마찬가지로 <code>CMOVcc dst, src</code> 순서다(왼쪽이 목적지, 오른쪽이 소스). <strong>주의</strong>: dst는 반드시 <strong>레지스터</strong>여야 한다(메모리로는 못 씀). src는 레지스터 또는 메모리 모두 가능하다. 그리고 <strong>8비트 형태(<code>CMOVE al, bl</code>처럼)는 존재하지 않는다</strong> — 16/32/64비트만 지원한다.</p>
+<h3>레지스터/메모리 효과</h3>
+<ul><li>조건 참: dst가 src 값으로 완전히 덮어써진다(다른 부작용 없음).</li><li>조건 거짓: dst는 CMOVcc 실행 전 값 그대로 남는다. 메모리는 dst가 아니므로 CMOVcc가 메모리를 쓰는 일은 없다(읽는 것은 가능).</li></ul>
+<h3>플래그</h3>
+<ul><li><strong>읽는 플래그</strong>: cc 접미사가 요구하는 플래그 조합(위 표 참고) — 보통 그 앞의 <code>CMP</code>나 <code>TEST</code> 등이 세팅해 둔 값이다.</li><li><strong>쓰는 플래그</strong>: 없다. <code>CMOVcc</code>는 어떤 플래그도 바꾸지 않는다. <code>Jcc</code>와 마찬가지로 "플래그를 소비만 하고 만들지는 않는" 명령이다.</li></ul>
+<h3>스택/RIP 변화 — 이 글에서 가장 중요한 포인트</h3>
+<p><code>CMOVcc</code>는 <strong>제어 흐름을 전혀 바꾸지 않는다.</strong> RIP는 조건과 무관하게 항상 다음 명령으로 그냥 진행한다. 스택도 건드리지 않는다. <code>Jcc</code>는 조건에 따라 RIP가 다른 곳으로 튈 수 있지만, <code>CMOVcc</code>는 "갈림길" 자체가 없다 — 실행되는 명령의 순서는 코드에 적힌 그대로 한 줄씩 흘러간다. 조건에 따라 달라지는 건 오직 "레지스터에 값을 쓰느냐 마느냐"뿐이다. 이 때문에 분기 예측이 틀려서 파이프라인을 통째로 비우는(flush) 일이 원천적으로 생기지 않는다.</p>
+<h3>컴파일러가 CMOVcc를 쓰는 이유와 대표 패턴</h3>
+<p>최적화 컴파일러(<code>gcc -O2</code> 등)는 아래처럼 짧고 예측하기 어려운(데이터에 따라 랜덤한) 조건문을 <code>Jcc</code> 분기 대신 <code>CMOVcc</code>로 바꿔치기하는 경우가 많다:</p>
+<pre><code class="language-c">int max(int a, int b) {
+    return (a &gt; b) ? a : b;
+}</code></pre>
+<pre><code class="language-asm">mov     eax, edi      ; eax = a  (일단 결과를 a라고 가정)
+cmp     edi, esi      ; a와 b 비교
+cmovle  eax, esi      ; a &lt;= b 이면 eax를 b로 덮어씀 (a &gt; b 이면 eax는 그대로 a)
+ret</code></pre>
+<p>읽는 법: "결과를 일단 a로 가정해두고, <code>a &lt;= b</code>라서 그 가정이 틀렸다면 b로 고쳐 쓴다." 어디에도 점프가 없다.</p>
+<p><strong>왜 컴파일러가 이렇게 하나</strong>: 최신 CPU는 분기 예측이 틀리면 이미 미리 실행해둔(speculative execution) 명령들을 전부 버리고 파이프라인을 다시 채워야 하는 큰 페널티를 문다. <code>max(a,b)</code>처럼 어느 쪽이 클지 데이터마다 랜덤이라 예측하기 어려운 짧은 조건문은, 차라리 두 값을 다 계산해두고 <code>CMOVcc</code>로 하나만 골라 쓰는 게(= "낭비되는 일"을 조금 하더라도) 분기 예측 실패 페널티보다 평균적으로 더 빠를 수 있다. 그래서 최적화 컴파일러는 이런 짧고 부작용 없는 삼항 연산자/<code>min</code>/<code>max</code>/<code>abs</code> 패턴을 즐겨 <code>CMOVcc</code>로 바꾼다.</p>
+<h3>IDA/Ghidra 디컴파일에서 보이는 모습</h3>
+<p>디컴파일러는 대개 <code>CMOVcc</code>를 다시 삼항식(<code>dst = cond ? src : dst</code>)이나 인라인 <code>if</code>로 재구성해서 보여준다. 원래 실행 흐름에 분기가 없었다는 사실 자체는 디컴파일된 C 유사 코드만 봐서는 드러나지 않는다 — 이는 <strong>디스어셈블리 원문을 보는 게 디컴파일 결과보다 오히려 더 정확한 몇 안 되는 경우</strong> 중 하나다.</p>
+<p>실전에서 자주 겪는 함정: 디컴파일 결과가 <code>if (a &gt; b) x = a; else x = b;</code>처럼 보여서 "분기가 있겠지"라 생각하고 그 지점에 브레이크포인트를 걸었는데, 실제 바이너리에는 <code>CMOVcc</code> 한 줄만 있어서 브레이크포인트가 절대 안 걸리는 경우다. <code>if</code>/<code>else</code>처럼 보이는 코드에 실제 조건부 점프(<code>jg</code>, <code>jle</code> 등)가 안 보인다면, <code>CMOVcc</code>로 컴파일됐을 가능성을 의심하고 그 명령 자체에 브레이크포인트를 걸어야 한다.</p>
+<h3>리버싱 관점에서의 의미</h3>
+<ul><li><code>CMOVcc</code>는 의도적인 난독화가 아니라 <strong>정상적인 컴파일러 최적화</strong>다. 하지만 결과적으로 "분기 지점에 브레이크포인트를 걸어 조건을 확인한다"는 표준 분석 방식을 무력화시킨다는 점에서 안티 분석 기법과 비슷한 효과를 낸다.</li><li>반대로, <code>CMOVcc</code>는 절대 분기 예측 실패가 없기 때문에 실행 시간이 입력값에 따라 달라지지 않는다(constant-time). 그래서 암호학 코드(비밀번호/키 비교, 상수 시간 비교 함수 등)에서는 <strong>타이밍 사이드채널 공격을 막으려고 일부러</strong> <code>Jcc</code> 대신 <code>CMOVcc</code>를 사용하는 경우가 있다. 크립토 관련 코드에서 <code>CMOVcc</code>가 자주 보인다면 "의도적인 상수 시간 구현"일 가능성을 염두에 두자.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>cmovg</code>, <code>cmovle</code>, <code>cmova</code>, <code>cmovb</code>, <code>cmove</code>, <code>cmovne</code> 등 — cc 접미사가 <code>Jcc</code>와 동일한 이름 규칙</li><li>직전에 <code>cmp</code>나 <code>test</code>가 있고, 그 다음 줄에 곧바로 <code>mov</code> + <code>cmovcc</code> 쌍이 오는 패턴</li><li>디컴파일러가 삼항 연산자(<code>? :</code>)나 <code>if</code>/<code>else</code> 한 줄짜리로 보여주는데, 정작 어셈블리에는 <code>jcc</code> 계열 명령이 하나도 없는 경우</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>CMOVcc</code> 앞의 <code>CMP</code>/<code>TEST</code>가 무엇을 비교하는지 확인한다.</li><li>cc 접미사를 표에서 찾아 정확히 어떤 플래그 조합을 테스트하는지 확인한다(signed/unsigned 구분 필수).</li><li>dst 레지스터의 "조건 전 값"과 src 값이 각각 무엇인지 확인해서, 조건이 참/거짓일 때 최종 값이 뭐가 되는지 두 경우 모두 계산해본다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 앞의 비교 찾기</strong></p>
+<pre><code class="language-asm">cmp     edi, esi
+cmovle  eax, esi</code></pre>
+<p><code>cmp edi, esi</code>가 <code>edi - esi</code>를 계산해 플래그를 세팅한다. <code>cmovle</code>는 LE(signed less or equal) 조건, 즉 <code>ZF=1 OR SF≠OF</code>를 테스트한다.</p>
+<p><strong>2) dst의 "이전 값"과 src 값 확인</strong> <code>cmovle eax, esi</code>가 실행되기 직전 <code>eax</code>에 이미 들어있던 값(보통 앞줄의 <code>mov eax, edi</code>로 세팅된 값)을 확인하고, 조건이 거짓이면 <code>eax</code>는 그 값을 그대로 유지한다는 걸 기억한다.</p>
+<p><strong>3) 조건 참/거짓 각각의 결과를 손으로 계산</strong> <code>edi=5, esi=3</code>이라면 <code>5 &lt;= 3</code>은 거짓이므로 <code>cmovle</code>는 실행되지 않고 <code>eax</code>는 <code>edi</code>(=5)로 남는다 → <code>max(5,3)=5</code>.</p>
+<p><strong>4) IDA/Ghidra 디컴파일과 대조</strong> 디컴파일 결과가 삼항식으로 나오면, 그게 실제로는 <code>CMOVcc</code> 한 줄이라는 걸 인지하고 분기로 착각해 브레이크포인트를 걸지 않는다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 명령어 위에서 <code>?</code>(Value 계산)나 레지스터 창에서 실행 전/후 값을 비교. <code>CMOVcc</code> 자체에 브레이크포인트를 걸 때는 <code>F2</code>.</li><li>x64dbg: 명령어 라인 우클릭 → "Toggle Breakpoint", 레지스터 패널에서 실행 전/후 값을 직접 비교.</li><li>GDB/Pwndbg: <code>stepi</code>로 한 줄씩 실행하며 <code>info registers eax</code>(또는 <code>p $eax</code>)로 CMOVcc 실행 전후 값을 비교.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>디버거에서 <code>cmovle eax, esi</code>를 실행했는데 <code>eax</code> 값이 안 바뀌었다면 → 조건이 거짓이었다는 뜻(정상 동작, 버그 아님).</li><li>IDA 디컴파일에 <code>if</code>/삼항식이 보이는데 실제 디스어셈블리에 대응하는 <code>jcc</code>가 없다면 → <code>CMOVcc</code>로 컴파일된 것.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>CMOVcc</code>가 분기라고 착각해서 "분기 안 타는 지점"에 브레이크포인트를 걸고 하염없이 기다리는 것 — 애초에 분기가 없으므로 절대 안 걸린다.</li><li><code>CMOVG</code>(signed)와 <code>CMOVA</code>(unsigned)를 같은 것으로 착각하는 것 — 완전히 다른 플래그 조합을 테스트한다. 자세한 원리는 <a href="rev-0069-jg-jge-jl-jle.html">JG/JGE/JL/JLE</a>, <a href="rev-0070-ja-jae-jb-jbe.html">JA/JAE/JB/JBE</a> 참고.</li><li>조건이 거짓일 때 <code>CMOVcc</code>가 "아예 아무 일도 안 했다"고 생각하는 것 — 정확히는 "dst를 이전 값 그대로 유지한다"는 뜻이며, 그 이전 값이 무엇인지 추적하고 있어야 레지스터 값 변화를 제대로 읽을 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>디컴파일에서 분기처럼 보이는 코드에 브레이크포인트가 안 걸린다면 → 어셈블리 원문에서 <code>jcc</code> 대신 <code>cmovcc</code>가 쓰였는지 확인.</li><li>cc 접미사 뜻이 헷갈리면 → 위 표를 다시 확인하고, signed 문제인지 unsigned 문제인지부터 구분.</li><li>dst 값이 예상과 다르면 → CMOVcc 직전 dst에 이미 들어있던 값을 놓쳤을 가능성이 크다. 그 위의 <code>mov</code>/<code>lea</code> 등을 다시 확인.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — max(a, b)</strong></p>
+<pre><code class="language-c">int max(int a, int b) { return (a &gt; b) ? a : b; }</code></pre>
+<pre><code class="language-asm">mov     eax, edi
+cmp     edi, esi
+cmovle  eax, esi     ; a &lt;= b 이면 b로 교체
+ret</code></pre>
+<p><strong>예제 2 — min(a, b)</strong></p>
+<pre><code class="language-c">int min(int a, int b) { return (a &lt; b) ? a : b; }</code></pre>
+<pre><code class="language-asm">mov     eax, edi
+cmp     edi, esi
+cmovge  eax, esi     ; a &gt;= b 이면 b로 교체
+ret</code></pre>
+<p><strong>예제 3 — 일반 삼항 연산자</strong></p>
+<pre><code class="language-c">int x = cond ? a : b;</code></pre>
+<pre><code class="language-asm">mov     eax, ebx      ; eax = b (기본값)
+test    ecx, ecx      ; cond 검사 (0인지 아닌지)
+cmovnz  eax, edx       ; cond != 0 이면 eax = a</code></pre>
+<p><strong>예제 4 — 0 이하이면 0으로 클램프 (CMOVS)</strong></p>
+<pre><code class="language-c">int clamp_nonneg(int x) { return (x &lt; 0) ? 0 : x; }</code></pre>
+<pre><code class="language-asm">mov     eax, edi
+test    edi, edi
+cmovs   eax, ecx      ; SF=1(음수)이면 eax = ecx(0으로 미리 세팅해둔 레지스터)</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0076-setcc.html">SETcc: 조건 결과를 0 또는 1로 만들기</a> — 같은 cc 접미사, 분기 없이 0/1 바이트를 기록</li><li><a href="rev-0067-je-jz.html">JE/JZ: ZF가 1일 때 분기</a></li><li><a href="rev-0068-jne-jnz.html">JNE/JNZ: ZF가 0일 때 분기</a></li><li><a href="rev-0069-jg-jge-jl-jle.html">JG/JGE/JL/JLE: Signed 비교 분기</a></li><li><a href="rev-0070-ja-jae-jb-jbe.html">JA/JAE/JB/JBE: Unsigned 비교 분기</a></li><li><a href="rev-0066-jmp.html">JMP: 무조건 분기</a></li><li><a href="rev-0071-call.html">CALL: 함수 호출, 반환 주소, 인자 추적</a></li><li><a href="rev-0088-flags-overview.html">FLAGS 레지스터 개요</a></li><li>CMP: 값을 바꾸지 않는 SUB 비교 (예정)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>CMOVcc 동작 및 오퍼랜드 형식: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "CMOVcc—Conditional Move" 섹션 기준 (2026-09-08 검증).</li><li>분기 예측/파이프라인 플러시로 인한 분기 비용과 컴파일러의 branchless 최적화 배경: 일반 컴퓨터 구조/컴파일러 최적화 통념(SRC-GENERAL-ASM) 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

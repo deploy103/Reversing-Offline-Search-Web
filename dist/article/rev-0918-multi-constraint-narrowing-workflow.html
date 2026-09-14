@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>다중 조건을 만족하는 입력 공간 좁히는 실전 절차 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>다중 조건을 만족하는 입력 공간 좁히는 실전 절차</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span><span class="tag">Z3</span></div>
+<h2>한 줄 요약</h2>
+<p>실전 크랙미는 길이 제약, 문자셋 제약, known-plaintext, 구조적 힌트(체크섬, 접두사/접미사) 같은 여러 게이트(gate) 조건이 동시에 걸려 있는 경우가 많으며, 이 조건들을 하나씩 순서대로(가장 싸고 강력한 조건부터) 적용해 탐색 공간을 곱셈적으로 줄여나가는 절차 자체가 하나의 재사용 가능한 워크플로우다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>REV-0218(길이), REV-0223(known-plaintext) 등 개별 narrowing 기법은 알고 있는데, 여러 조건이 동시에 걸린 실전 문제에서 이들을 어떤 순서로 어떻게 조합해야 할지 막막할 때</li><li>조건을 하나 적용했는데도 탐색 공간이 여전히 브루트포스하기엔 너무 클 때, 다른 조건을 더 찾아내야 하는지 판단이 안 설 때</li><li>여러 조건을 조합하는 과정에서 실수로 조건 일부를 놓치거나 중복 적용해서 답이 하나도 안 나오거나(제약이 모순) 너무 많이 나오는(제약이 부족한) 상황일 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>narrowing은 집합의 교집합이다</h3>
+<p>입력 공간 좁히기는 결국 집합론이다. 전체 가능한 입력의 집합을 <code>U</code>라 하면, 각 조건(게이트) <code>G1, G2, ..., Gn</code>은 각각 <code>U</code>의 부분집합을 정의하고, 최종적으로 남는 답의 집합은 이 모든 부분집합의 교집합이다.</p>
+<pre><code>Answer ⊆ G1 ∩ G2 ∩ ... ∩ Gn</code></pre>
+<p>교집합의 크기는 부분집합 중 어느 하나보다도 절대 크지 않으므로, 조건을 하나씩 더 찾아 추가할 때마다 탐색 공간은 줄어들거나 그대로 유지될 뿐 절대 늘어나지 않는다. 이 성질 때문에 "일단 찾을 수 있는 조건은 다 찾아서 교집합을 구하는 것"이 항상 이득이 되는 전략이다.</p>
+<h3>실전 게이트의 종류와 비용 순서</h3>
+<p>게이트는 종류에 따라 "적용 비용"(분석에 드는 시간)과 "좁히는 힘"(탐색 공간을 얼마나 줄여주는지)이 다르다. 다음 순서로 적용하는 것이 효율적이다.</p>
+<ol><li><strong>길이 제약(REV-0218)</strong>: 가장 싸다. 버퍼 크기, 길이 비교 코드 한 곳만 찾으면 되고, 지수 <code>n</code>을 확정 짓기 때문에 좁히는 힘도 크다.</li><li><strong>문자셋 제약</strong>: 입력 문자마다 <code>isalpha</code>, <code>isdigit</code>, 특정 범위 체크가 있는지 확인. 있다면 밑(charset_size)을 95에서 26이나 16으로 줄여준다(REV-0219 예제와 동일한 효과).</li><li><strong>known-plaintext(REV-0223)</strong>: 있다면 가장 강력하다 — 대수적으로 가역인 단계라면 해당 구간의 탐색을 아예 제거해버린다.</li><li><strong>체크섬/검증합 조건</strong>: 예를 들어 "전체 바이트의 합이 특정 값이어야 한다", "짝수 인덱스 바이트의 XOR이 0이어야 한다" 같은 부가 조건. 이런 조건은 개별 문자를 독립적으로 결정짓지는 못하지만, 전체 조합 중 일부를 즉시 제외시켜준다(브루트포스 루프 안에서 이런 조건을 먼저 검사하면 조기 종료로 실질 속도가 빨라진다).</li><li><strong>구조적 힌트(접두사/접미사 고정)</strong>: <code>flag{</code>, <code>}</code> 같은 고정된 부분은 아예 미지수에서 빼버릴 수 있다 — 이것도 known-plaintext의 일종이지만 형식만으로도(내용을 몰라도) 적용 가능한 경우가 있다.</li></ol>
+<h3>조건을 순서대로 적용하는 실전 절차</h3>
+<p>게이트를 하나씩 적용할 때마다 남은 탐색 공간을 REV-0219 공식으로 즉시 재계산하고, 이 값을 계속 추적하는 것이 핵심이다.</p>
+<pre><code class="language-python">def track_narrowing(charset_size, length, rate=1e8, budget=3600):
+    keyspace = charset_size ** length
+    seconds = keyspace / rate
+    print(f"charset={charset_size}, length={length}, "
+          f"keyspace={keyspace:.3e}, est_sec={seconds:.1f}, "
+          f"feasible={seconds &lt;= budget}")
+    return keyspace, seconds
+
+# 1단계: 아무 조건도 없을 때
+track_narrowing(95, 20)
+# 2단계: 길이가 20 -&gt; 8로 확정(REV-0218)
+track_narrowing(95, 8)
+# 3단계: 문자셋이 hex로 확정(REV-0913/코드 관찰)
+track_narrowing(16, 8)
+# 4단계: known-plaintext로 앞 4바이트가 이미 확정(REV-0223) -&gt; 미지 길이 4로 축소
+track_narrowing(16, 4)</code></pre>
+<p>이렇게 각 단계마다 수치를 눈으로 확인하면서 진행하면, "이제 브루트포스가 가능한 크기에 도달했다"는 시점을 정확히 판단할 수 있고, 어떤 조건이 가장 크게 기여했는지도 한눈에 파악된다.</p>
+<h3>조건들이 서로 모순되거나 중복되는지 검증하기</h3>
+<p>여러 조건을 코드에서 따로따로 뽑아내다 보면, 실수로 서로 모순되는 조건(예: 길이가 8이라고 뽑았는데 다른 곳에서는 길이가 6이라는 조건이 나옴)을 둘 다 채택하는 경우가 생긴다. 이 경우 교집합이 공집합이 되어 답이 하나도 안 나온다. 조건을 추가할 때마다 실제로 그 조건을 만족하는 예시가 최소 하나는 존재하는지(공집합이 아닌지) 작은 스크립트로 즉시 확인하는 습관이 중요하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>검증 함수 안에 길이 체크, 문자 범위 체크, 별도의 합계/체크섬 비교, 그리고 최종 해시 비교가 순서대로 나열되어 있음</li><li>한 조건만 적용해서는 REV-0219 계산 결과 여전히 며칠 이상 걸리는 규모로 나옴</li><li>여러 REV 문서(REV-0218, REV-0223 등)에서 각각 조건을 뽑았지만 이를 하나로 합치는 절차가 없어 무엇부터 브루트포스에 넣어야 할지 헷갈림</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>검증 함수를 위에서 아래로 훑으며 "이것도 조건이다" 싶은 모든 체크(길이, 문자 범위, 합계, known-plaintext 가능 여부)를 빠짐없이 목록으로 뽑는다. 그 다음 각 조건을 비용이 싼 순서(길이 → 문자셋 → known-plaintext → 체크섬)로 정렬한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>검증 함수 전체를 훑으며 모든 게이트 조건을 표로 나열한다(조건 종류, 어떤 변수/바이트에 적용되는지, 어디서 확인했는지).</li><li>각 조건을 비용이 싼 순서로 정렬한다.</li><li><code>track_narrowing()</code> 같은 헬퍼로 조건을 하나씩 적용하며 탐색 공간이 줄어드는 과정을 수치로 기록한다.</li><li>각 조건이 서로 모순되지 않는지, 실제로 만족 가능한 예시가 있는지 작은 스크립트로 검증한다.</li><li>남은 탐색 공간이 REV-0219/REV-0920 기준으로 실현 가능한 크기가 되면 브루트포스나 Z3(REV-0917로 축소한 뒤)로 넘긴다.</li><li>실현 가능한 크기에 아직 못 미치면, 검증 함수를 다시 훑어 놓친 조건이 없는지(특히 체크섬처럼 눈에 잘 안 띄는 부가 조건) 재확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python">def track_narrowing(charset_size, length, rate=1e8, budget=3600):
+    keyspace = charset_size ** length
+    seconds = keyspace / rate
+    print(f"charset={charset_size}, length={length}, "
+          f"keyspace={keyspace:.3e}, est_sec={seconds:.1f}, "
+          f"feasible={seconds &lt;= budget}")
+    return keyspace, seconds
+
+def check_satisfiable(constraints, sample_space):
+    # 조건들이 모순되지 않는지 작은 후보군으로 사전 검증
+    for candidate in sample_space:
+        if all(c(candidate) for c in constraints):
+            return candidate
+    return None</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>track_narrowing()</code>을 단계별로 호출한 로그에서 <code>est_sec</code>이 급격히 줄어드는 지점이 있다면, 그 조건이 이번 문제에서 가장 강력한 게이트였다는 뜻이다 — 비슷한 유형의 문제를 다시 만나면 그 종류의 조건부터 먼저 찾는 게 효율적이다.</li><li><code>feasible=True</code>로 전환되는 시점이 곧 "이제 브루트포스로 넘어갈 타이밍"이다.</li><li><code>check_satisfiable()</code>이 <code>None</code>을 반환하면 조건들 중 일부가 서로 모순되거나, 조건 자체를 잘못 뽑았다는 뜻이므로 원본 코드를 재확인해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>조건을 발견하는 순서 그대로(비용을 고려하지 않고) 적용해서, 비싼 분석(예: known-plaintext 확인)을 먼저 하고 싼 분석(길이 체크)을 나중에 하는 비효율.</li><li>체크섬처럼 "문자 하나하나를 결정짓지는 못하지만 조합 전체를 걸러내는" 조건의 가치를 과소평가해서 아예 안 찾아보는 것 — 이런 조건도 브루트포스 루프 안에서 조기 종료 조건으로 쓰면 상당한 속도 향상을 준다.</li><li>여러 조건을 합칠 때 모순 여부를 확인하지 않고 브루트포스를 몇 시간 돌렸다가 답이 하나도 안 나오는 것을 뒤늦게 알아채는 것.</li><li>narrowing이 아직 부족한데도 "이 정도면 됐겠지"라고 성급하게 브루트포스에 들어가 몇 시간을 낭비하는 것 — 진행 전 반드시 REV-0219/REV-0920 계산으로 예상 시간을 확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>길이 조건 뽑는 법이 기억 안 나면 → REV-0218 길이 검증부터 역추적하는 법</li><li>known-plaintext 적용법이 기억 안 나면 → REV-0223 Known plaintext와 Flag 형식으로 조건 줄이기</li><li>known-plaintext가 아예 없는 상황이라면 → REV-0913 Known-plaintext 없이 알고리즘 성질만으로 역산 가능성 판단하기</li><li>narrowing 후에도 Z3로 넘겨야 한다면 → REV-0917 Z3로 풀기 전에 손으로 먼저 검증 로직 축소하기</li><li>최종적으로 브루트포스 가능 여부를 정확히 판단하려면 → REV-0219 Brute Force가 가능한 입력 공간 계산, REV-0920 시간 복잡도로 브루트포스 가능 여부 판단하는 실전 기준</li></ul>
+<h2>미니 예제</h2>
+<p>어떤 크랙미의 검증 함수를 분석해 다음 조건들을 순서대로 발견했다고 하자.</p>
+<pre><code class="language-python"># 발견한 게이트 조건 목록 (비용 오름차순으로 이미 정렬)
+# 1) 길이는 정확히 12바이트 (REV-0218)
+# 2) 모든 문자는 소문자 또는 숫자 (charset=36)
+# 3) 앞 5바이트는 known-plaintext로 이미 "flag{" 확정 (REV-0223)
+# 4) 마지막 바이트는 반드시 "}" (구조적 힌트로 확정)
+
+track_narrowing(95, 12)   # 아무 조건 없을 때: 도저히 불가능한 크기
+track_narrowing(36, 12)   # 문자셋만 좁혔을 때
+track_narrowing(36, 12 - 5 - 1)  # known-plaintext + 접미사 확정 후 미지 길이 6</code></pre>
+<p>각 단계 출력(예시 수치, 10^8/s 가정):</p>
+<pre><code>charset=95, length=12, keyspace=5.404e+23, est_sec=5.404e+15, feasible=False
+charset=36, length=12, keyspace=4.739e+18, est_sec=4.739e+10, feasible=False
+charset=36, length=6,  keyspace=2.176e+09, est_sec=21.8,      feasible=True</code></pre>
+<p>문자셋 축소만으로는 여전히 불가능한 규모였지만, known-plaintext와 구조적 힌트로 미지 길이를 12에서 6으로 줄이자 21.8초로 완전히 실현 가능한 규모가 되었다. 이처럼 여러 조건의 교집합 효과는 개별 조건 하나의 효과를 단순히 더한 것이 아니라 곱셈적으로 누적된다는 것이 실전에서 가장 중요하게 체감되는 지점이다.</p>
+<h3>완전한 예제 스크립트 — 4개의 게이트를 실제로 적용해서 정답까지 끝까지 찾기</h3>
+<p>위에서 나열한 4가지 조건(길이 12, 문자셋 소문자+숫자, 접두사 <code>flag{</code>, 접미사 <code>}</code>)에 "가운데 6글자의 바이트 합이 500이어야 한다"는 체크섬 조건을 하나 더 추가해서, 실제로 조건을 전부 적용한 뒤 브루트포스로 정답을 찾아내는 전체 과정을 보여준다.</p>
+<pre><code class="language-python">import itertools  # 모든 조합을 순서대로 만들어주는 표준 라이브러리
+
+
+def verify(candidate: bytes) -&gt; bool:
+    """
+    실제 검증 함수라고 가정한다. 분석을 통해 다음 5가지 게이트를 모두 찾아냈다고 하자.
+    1) 길이는 정확히 12바이트
+    2) 앞 5바이트는 반드시 "flag{" (known-plaintext, REV-0223)
+    3) 마지막 1바이트는 반드시 "}" (구조적 힌트)
+    4) 가운데 6바이트는 소문자 또는 숫자만 가능 (문자셋 축소)
+    5) 가운데 6바이트의 합이 정확히 500이어야 한다 (체크섬 조건)
+    """
+    if len(candidate) != 12:                          # 게이트 1: 길이 확인
+        return False
+    if not candidate.startswith(b"flag{"):             # 게이트 2: 접두사 확인
+        return False
+    if not candidate.endswith(b"}"):                    # 게이트 3: 접미사 확인
+        return False
+
+    mid = candidate[5:11]                                # 가운데 6바이트만 잘라낸다 (미지수 부분)
+    charset = b"abcdefghijklmnopqrstuvwxyz0123456789"
+    if not all(c in charset for c in mid):               # 게이트 4: 문자셋 확인
+        return False
+    if sum(mid) != 500:                                   # 게이트 5: 체크섬 확인
+        return False
+
+    return True   # 모든 게이트를 통과하면 정답으로 인정
+
+
+# 게이트를 전부 적용했으니 실제로 브루트포스해야 하는 미지수는 "가운데 6글자"뿐이다.
+# 문자셋 크기 36, 길이 6 -&gt; 36**6 = 2,176,782,336가지지만, 체크섬 조건(합이 500)으로
+# 미리 걸러내면서 탐색하기 때문에 실제로는 훨씬 빠르게 끝난다.
+charset = b"abcdefghijklmnopqrstuvwxyz0123456789"
+found = None
+for combo in itertools.product(charset, repeat=6):
+    mid = bytes(combo)
+    if sum(mid) != 500:            # 체크섬 조건을 가장 먼저 검사해서 대부분의 조합을 즉시 건너뛴다(조기 종료)
+        continue
+    candidate = b"flag{" + mid + b"}"
+    if verify(candidate):
+        found = candidate
+        break
+
+print("찾은 정답:", found)</code></pre>
+<p>실제로 실행한 결과:</p>
+<pre><code>찾은 정답: b'flag{aaaa79}'</code></pre>
+<p><code>mid = b"aaaa79"</code>의 바이트 합을 손으로 검산해보면 <code>'a'</code>(97) x 4 + <code>'7'</code>(55) + <code>'9'</code>(57) = <code>388 + 55 + 57 = 500</code>으로 정확히 일치한다. 이 예제에서 핵심은, 체크섬 조건(<code>sum(mid) != 500</code>)을 반복문 맨 앞에서 먼저 검사해서 조건을 만족하지 못하는 조합은 <code>verify()</code>를 호출하기 전에 즉시 건너뛴다는 점이다 — 이것이 바로 본문에서 설명한 "체크섬 조건을 브루트포스 루프 안에서 조기 종료 조건으로 쓰면 속도가 빨라진다"는 원칙을 실제 코드로 구현한 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0218-length-check-backtrace.html">REV-0218 — 길이 검증부터 역추적하는 법</a></li><li><a href="rev-0223-known-plaintext-narrowing.html">REV-0223 — Known plaintext와 Flag 형식으로 조건 줄이기</a></li><li><a href="rev-0219-bruteforce-feasibility.html">REV-0219 — Brute Force가 가능한 입력 공간 계산</a></li><li><a href="rev-0913-invertibility-without-known-plaintext.html">REV-0913 — Known-plaintext 없이 알고리즘 성질만으로 역산 가능성 판단하기</a></li><li><a href="rev-0917-manual-reduction-before-z3.html">REV-0917 — Z3로 풀기 전에 손으로 먼저 검증 로직 축소하기</a></li><li><a href="rev-0920-time-complexity-bruteforce-criteria.html">REV-0920 — 시간 복잡도로 브루트포스 가능 여부 판단하는 실전 기준</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>여러 제약 조건의 교집합이 개별 조건보다 항상 작거나 같다는 성질: 집합론의 기본 정리(교집합은 부분집합 관계) 기준.</li><li>게이트 조건을 비용 순서로 정렬해 적용하는 것이 탐색 효율을 높인다는 원칙: 제약 만족 문제(Constraint Satisfaction Problem)에서 저렴한 제약을 먼저 적용해 탐색 공간을 조기에 줄이는 일반적인 알고리즘 설계 관행(제약 전파, constraint propagation) 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

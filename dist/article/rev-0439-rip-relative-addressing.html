@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RIP 상대 주소 지정 방식(RIP-relative addressing) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>RIP 상대 주소 지정 방식(RIP-relative addressing)</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>[rip+disp32]</code>는 "다음 실행할 명령의 주소(RIP)에 고정된 변위(displacement)를 더한 곳"을 가리키는 x64 전용 주소 지정 방식으로, 컴파일러가 절대 주소 대신 상대 주소로 전역 데이터/문자열/임포트를 참조하게 해준다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>lea rax, [rip+0x2f10]</code>, <code>mov eax, [rip+0x3000]</code>, <code>call qword ptr [rip+0x2f10]</code> 같은 코드에서 실제로 어떤 주소를 가리키는지 손으로 계산하고 싶을 때</li><li>PIE(Position Independent Executable)나 x64 PE 바이너리에서 왜 절대 주소 대신 <code>rip+오프셋</code> 형태가 자주 보이는지 궁금할 때</li><li>IDA가 <code>[rip+0x2f10]</code>을 <code>off_140003020</code>처럼 이름 붙여 보여주는데, 원본 바이트만 보고 그 주소를 검증하고 싶을 때</li><li>셸코드나 패치를 만들 때 절대 주소를 하드코딩하면 안 되는 이유를 이해하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 RIP 상대 주소가 필요한가</h3>
+<p>x64 이전(x86 32비트)에는 전역 변수 접근이 보통 절대 주소(<code>mov eax, [0x00403000]</code>)로 이루어졌다. 그런데 ASLR(주소 공간 배치 난수화)과 PIE/공유 라이브러리가 널리 쓰이면서, 실행할 때마다 코드/데이터가 메모리의 다른 위치에 로드된다. 절대 주소를 명령어에 그대로 박아두면 로더가 실행할 때마다 그 값을 일일이 재배치(relocation)해야 해서 느리고 코드 공유(여러 프로세스가 같은 물리 페이지를 공유)도 어려워진다.</p>
+<p>x64는 이 문제를 해결하기 위해 <strong>RIP 상대 주소 지정 방식</strong>을 ModRM 인코딩에 추가했다. <code>disp32</code>(부호 있는 32비트 변위, ±2GB 범위)만 명령어에 넣고, 실행 시점에 "현재 명령 다음 주소(RIP) + disp32"로 실제 주소를 계산한다. 코드와 데이터 사이의 <strong>상대적</strong> 거리는 재배치 없이도 항상 고정이므로, 코드가 메모리 어디에 로드되든 이 방식은 그대로 동작한다(위치 독립 코드, PIC/PIE의 핵심 메커니즘).</p>
+<p>참고로 32비트 x86에는 이런 "EIP 상대" 범용 주소 지정 모드가 없다. 32비트 PIC 코드는 <code>call $+5; pop ebx</code> 같은 트릭으로 현재 EIP를 레지스터에 억지로 담아낸 뒤 그 레지스터를 base로 써서 흉내를 낸다 — x64 RIP-relative addressing이 이를 하드웨어 수준에서 정식으로 지원하게 된 것이다.</p>
+<h3>주소 계산 방법 — RIP는 "이 명령의 시작"이 아니다</h3>
+<p>가장 흔한 착각은 <code>disp32</code>를 현재 명령어의 시작 주소에 더하는 것이다. <strong>틀렸다.</strong> 실제 공식은:</p>
+<pre><code>실효 주소 = (이 명령어의 마지막 바이트 다음 주소, 즉 "다음에 실행될 명령의 주소") + disp32</code></pre>
+<p>즉 RIP는 CPU가 <strong>이 명령어를 전부 페치한 직후</strong>의 값이며, 대개 "이 명령어의 시작 주소 + 이 명령어의 바이트 길이"와 같다.</p>
+<p><strong>계산 예시</strong>: <code>lea rdi, [rip+0x1234]</code> 명령이 주소 <code>0x140001000</code>에서 시작하고, 이 명령어 전체가 7바이트라면,</p>
+<pre><code>다음 명령 주소(RIP) = 0x140001000 + 7 = 0x140001007
+실효 주소            = 0x140001007 + 0x1234 = 0x140002237</code></pre>
+<p>디스어셈블러(IDA, Ghidra, objdump, x64dbg)는 이 계산을 대신 해줘서 <code>lea rdi, [rip+0x1234]</code> 옆에 <code>; "some string"</code>처럼 실제 주소나 심볼을 주석으로 붙여준다. 원시 바이트만 보고 직접 패치하거나 셸코드를 만들 때는 이 계산을 손으로 해야 한다.</p>
+<h3>어떤 명령에서 나타나는가</h3>
+<p>RIP 상대 주소는 특정 명령 전용이 아니라, <strong>메모리를 피연산자로 쓰는 거의 모든 명령</strong>(MOV, LEA, CMP, CALL, JMP, ADD 등)에서 나타날 수 있는 <strong>주소 지정 방식</strong>이다.</p>
+<ul><li><code>lea rax, [rip+0x2f10]</code> — 전역 변수/문자열 리터럴의 <strong>주소 자체</strong>를 구할 때 (REV-0042 LEA 참고)</li><li><code>mov eax, [rip+0x3000]</code> — 전역 정수 변수의 <strong>값</strong>을 읽을 때</li><li><code>call qword ptr [rip+0x2f10]</code> — Windows PE에서 IAT(Import Address Table) 슬롯을 통해 임포트 함수를 간접 호출할 때 (REV-0071 CALL 참고)</li><li><code>jmp [rip+0x2f00]</code> — 점프 테이블이나 함수 포인터 테이블 참조</li></ul>
+<h3>레지스터/플래그 효과</h3>
+<p>RIP 상대 주소 지정 자체는 "주소를 계산하는 방법"일 뿐이므로 그 자체로는 어떤 레지스터도 변경하지 않고 플래그도 바꾸지 않는다(<code>LEA</code>처럼 주소 계산 결과를 레지스터에 넣는 명령이라면 그 대상 레지스터만 바뀐다). 실제 레지스터/플래그 변화는 이 주소 지정 방식을 사용하는 <strong>명령 자체</strong>(MOV, ADD, CMP...)의 규칙을 따른다.</p>
+<h3>컴파일러 패턴과 디컴파일러 화면</h3>
+<p>컴파일러(MSVC, GCC, Clang)는 x64 코드에서 전역 변수, 문자열 리터럴, vtable, IAT 참조 등 거의 모든 정적 데이터 접근에 기본적으로 RIP 상대 주소를 사용한다. IDA/Ghidra는 원시 <code>[rip+0x2f10]</code>을 그대로 보여주지 않고, 대신 자동으로 계산한 절대 주소에 이름을 붙여 <code>[rip+0x2f10]</code> → <code>cs:qword_140003020</code> 또는 아예 <code>off_140003020</code>, <code>unk_140003020</code>처럼 표시한다. 디컴파일 결과(F5)에서는 이런 참조가 완전히 사라지고 <code>global_var</code>, <code>"literal string"</code>처럼 자연스러운 C 표현으로 나타난다.</p>
+<h3>리버싱 관점에서의 의미</h3>
+<ul><li><strong>PIE/ASLR 여부 판단</strong>: 코드에 절대 주소 대신 RIP 상대 주소가 많이 보이면 그 바이너리가 위치 독립적으로(PIE로) 컴파일됐을 가능성이 높다. <code>checksec</code> 결과의 PIE 항목과 함께 확인하면 좋다(REV-0105, REV-0096 참고).</li><li><strong>패치 작업 시 주의</strong>: 바이너리를 직접 바이트 패치할 때, 명령어 길이가 바뀌면 그 뒤의 모든 RIP 상대 참조의 <code>disp32</code> 값도 다시 계산해야 한다. 단순히 명령어를 다른 것으로 교체했다가 disp32를 안 고치면 엉뚱한 주소를 참조하게 된다.</li><li><strong>셸코드 작성</strong>: 절대 주소를 하드코딩하면 로드 위치가 달라질 때 깨지므로, 위치 독립적인 셸코드는 RIP 상대 주소(또는 <code>call/pop</code> 트릭)로 자기 자신의 데이터를 참조해야 한다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>[rip+0x...]</code>, <code>[rip-0x...]</code> 형태의 메모리 오퍼랜드</li><li>IDA/objdump가 붙여주는 <code>cs:off_...</code>, <code>cs:qword_...</code>, <code>cs:unk_...</code> 같은 자동 주석</li><li><code>lea reg, [rip+disp]</code> 뒤에 문자열 출력 함수(<code>printf</code>, <code>puts</code>)가 이어지는 패턴</li><li><code>call qword ptr [rip+disp]</code>로 이어지는 Windows x64 IAT 호출</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>이 명령어가 <code>LEA</code>(주소 자체가 필요)인지 <code>MOV</code>/<code>CMP</code>(그 주소의 값이 필요)인지부터 구분한다.</li><li>디스어셈블러가 이미 계산해서 붙여준 절대 주소/이름 주석을 확인한다 — 대부분 직접 계산할 필요가 없다.</li><li>직접 계산해야 하는 경우(패치, 셸코드) 명령어의 시작 주소와 전체 바이트 길이를 먼저 정확히 파악한다.</li></ol>
+<h2>단계별 절차</h2>
+<ol><li>명령어의 시작 주소를 확인한다(디스어셈블러가 표시하는 주소).</li><li>그 명령어의 전체 바이트 길이를 확인한다(다음 명령어 주소 - 이 명령어 주소).</li><li><code>RIP-relative 유효주소 = 다음 명령어 주소 + disp32</code>로 직접 계산해본다.</li><li>디스어셈블러가 이미 주석으로 붙여준 절대 주소/이름과 비교해서 계산이 맞는지 검증한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 오퍼랜드 위에 커서를 놓고 <code>Enter</code> 키를 누르면 계산된 실제 주소로 바로 이동. objdump는 <code>objdump -d</code>가 자동으로 <code># 0x...</code> 주석을 붙여준다.</li><li>x64dbg: 디스어셈블리 창에서 <code>[rip+...]</code> 오퍼랜드를 더블클릭하면 실제 주소로 점프하거나 덤프 창에서 바로 확인 가능.</li><li>GDB/Pwndbg: <code>x/i $rip</code>로 현재 명령을 보고, <code>p $rip + disp</code>로 직접 계산해서 검증할 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>disp32</code>를 명령어의 <strong>시작 주소</strong>에 더하는 것 — 반드시 "다음 명령의 주소"(현재 명령어의 끝)에 더해야 한다.</li><li>RIP 상대 주소가 특정 명령어(<code>LEA</code>만)에서 쓰인다고 착각하는 것 — MOV, CMP, CALL 등 메모리 피연산자를 갖는 대부분의 명령에서 나타날 수 있다.</li><li>32비트 x86 코드에서도 <code>[rip+...]</code> 같은 표기를 기대하는 것 — 이 주소 지정 방식은 x64 전용이며, 32비트에서는 지원되지 않는다.</li><li>IDA가 이미 이름을 붙여준 심볼(<code>off_...</code>, <code>cs:qword_...</code>)을 보고 "이게 원래 명령어 인코딩에 들어있는 값"이라고 오해하는 것 — 실제 명령어 바이트에는 여전히 <code>disp32</code>(작은 상대값)만 들어있고, 절대 주소/이름은 디스어셈블러가 계산해서 보여주는 것일 뿐이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>이 주소가 SIB(<code>base+index*scale</code>)와 함께 더 복잡하게 조합되어 있다면 → REV-0440.</li><li>이 주소로 계산된 값을 레지스터에 그대로 담는 이유가 궁금하면 → REV-0042(LEA).</li><li>PIE 여부를 바이너리 전체 차원에서 확인하고 싶으면 → REV-0105, REV-0096(checksec).</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 문자열 리터럴 주소 구하기</strong></p>
+<pre><code class="language-asm">; 0x140001000: lea rdi, [rip+0x1234]   ; 이 명령어가 7바이트라고 가정
+; 실효 주소 = 0x140001000 + 7 + 0x1234 = 0x140002237
+lea     rdi, [rip+0x1234]   ; rdi = "Enter password: " 문자열 주소
+call    printf</code></pre>
+<p><strong>예제 2 — 전역 변수 값 읽기</strong></p>
+<pre><code class="language-asm">mov     eax, dword ptr [rip+0x2ff0]   ; 전역 int 변수의 "값"을 읽음 (LEA가 아니라 MOV이므로 주소가 아니라 값)</code></pre>
+<p><strong>예제 3 — IAT를 통한 간접 호출 (Windows x64)</strong></p>
+<pre><code class="language-asm">call    qword ptr [rip+0x2f10]   ; [rip+0x2f10]이 IAT 슬롯 → 그 슬롯에 담긴 실제 함수 주소로 호출</code></pre>
+<p><strong>예제 4 — objdump/IDA가 계산해서 보여주는 형태</strong></p>
+<pre><code class="language-text">140001000: 48 8d 3d 34 12 00 00   lea rdi, [rip+0x1234]        ; 0x140002237 = "flag string"</code></pre>
+<p>원시 바이트 <code>34 12 00 00</code>가 리틀엔디언 <code>disp32 = 0x00001234</code>이고, IDA/objdump가 대신 계산해서 주석으로 실제 주소를 알려준다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0440-sib-byte-addressing.html">REV-0440 — SIB 바이트로 복잡한 주소 지정 읽는 법</a></li><li><a href="rev-0042-lea.html">REV-0042 — LEA: 주소 계산인데 왜 산술 연산처럼 보이는가</a></li><li><a href="rev-0039-mov.html">REV-0039 — MOV: 값 복사와 레지스터 메모리 이동</a></li><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li><li><a href="rev-0105-binary-protections-overview.html">REV-0105 — Canary NX PIE RELRO 한 번에 이해</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>RIP 상대 주소 지정 방식 인코딩과 실효 주소 계산 규칙: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "3.7.5 RIP-Relative Addressing" 기준 (2026-09-08 검증).</li><li>PIE/PIC와 위치 독립 코드 배경: System V Application Binary Interface AMD64 Architecture Processor Supplement 공식 스펙 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

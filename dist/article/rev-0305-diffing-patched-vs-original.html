@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Diffing으로 패치된 버전과 원본 비교하는 기초 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>Diffing으로 패치된 버전과 원본 비교하는 기초</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">BinDiff</span><span class="tag">diaphora</span><span class="tag">objdump</span><span class="tag">diff</span></div>
+<h2>한 줄 요약</h2>
+<p>패치 전/후 두 바이너리가 주어지면 파일 전체를 읽는 대신 <strong>함수 단위 diffing 도구(BinDiff, diaphora)로 변경된 함수만 자동으로 추려낸 뒤</strong>, 그 함수들만 집중 분석하는 것이 표준 접근이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>문제에 <code>patched</code>/<code>original</code>, <code>before</code>/<code>after</code>, 버전 번호가 다른 바이너리 두 개가 함께 첨부되어 있을 때</li><li>"이 업데이트로 어떤 취약점이 고쳐졌는가"를 찾아야 하는 n-day류 문제를 만났을 때</li><li>두 바이너리의 크기/해시가 다른데 육안으로는 차이를 못 찾겠을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Diffing(바이너리 비교)은 두 바이너리의 함수를 서로 매칭시킨 뒤, 매칭된 함수 쌍 중 <strong>명령어/그래프 구조가 다른 함수만</strong> 골라내는 작업이다. 단순 텍스트 diff(<code>diff</code> 명령)는 바이너리에는 거의 쓸모가 없다 — 컴파일러가 함수 순서를 바꾸거나 주소가 살짝 밀리기만 해도 파일 전체가 다르게 보이기 때문이다. 그래서 전용 도구가 필요하다.</p>
+<ul><li><strong>BinDiff</strong>(zynamics/Google, 무료): IDA 데이터베이스(<code>.idb</code>/<code>.i64</code>) 두 개를 비교해서 함수를 그래프 구조(콜그래프, 제어흐름그래프)와 문자열/상수 유사도로 매칭한다. 결과를 "Similarity" 점수(0.0~1.0)로 보여주며, 점수가 1.0이면 완전히 동일, 낮을수록 많이 바뀐 함수다.</li><li><strong>Diaphora</strong>(오픈소스, 무료): BinDiff와 유사한 목적의 IDA/Ghidra 플러그인. SQLite 기반으로 두 데이터베이스의 함수 시그니처를 비교한다.</li><li><strong>objdump + diff 조합</strong>(초간단 대안): 도구 설치가 어려운 환경에서 <code>objdump -d</code>로 두 바이너리를 각각 어셈블리 텍스트로 뽑고, 주소를 제거한 뒤 <code>diff</code>로 비교하는 방법. 정밀하진 않지만 급할 때 쓸 수 있다.</li></ul>
+<p>n-day 취약점 분석에서 diffing이 중요한 이유는, 벤더가 "보안 패치"라고만 공지하고 세부 내용을 밝히지 않는 경우가 많기 때문이다. 패치 전/후 바이너리를 diffing하면 <strong>어떤 함수가 바뀌었는지</strong>, 그리고 그 함수의 변경 내용(범위 체크 추가, 조건문 추가, 함수 호출 추가 등)으로 <strong>원래 무엇이 취약했는지</strong>를 역으로 추론할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>chall_v1</code>, <code>chall_v2</code>처럼 버전이 다른 두 바이너리, 또는 <code>chall.old</code>, <code>chall.new</code>라는 이름의 파일이 첨부되어 있다.</li><li>두 파일의 SHA256 해시가 다른데 <code>strings</code> 결과는 거의 동일하다.</li><li>문제 설명에 "이 프로그램의 최신 버전에서 패치된 취약점을 찾아 익스플로잇하세요" 같은 문구가 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>두 바이너리를 각각 IDA(또는 Ghidra)로 열어 자동 분석을 완료시킨다(초기 오토 애널리시스가 끝날 때까지 대기). IDA를 쓴다면 각각 <code>.i64</code>로 저장해두고, 이후 BinDiff로 이 두 파일을 비교한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 두 바이너리 기본 정보 대조</strong></p>
+<pre><code class="language-bash">sha256sum chall_old chall_new
+diff &lt;(strings chall_old) &lt;(strings chall_new)</code></pre>
+<p>문자열 목록 차이만으로도 새로 추가된 에러 메시지("Invalid length!" 등)가 보이면, 그 근처에 범위 체크 코드가 추가됐을 가능성이 높다는 1차 힌트를 얻는다.</p>
+<p><strong>2) IDA에서 각각 오토 애널리시스 후 저장</strong> <code>chall_old</code>, <code>chall_new</code>를 각각 IDA로 열고 자동 분석이 끝나면 File → Save로 <code>.idb</code>/<code>.i64</code> 저장.</p>
+<p><strong>3) BinDiff 실행</strong> BinDiff GUI에서 두 <code>.idb</code>/<code>.i64</code> 파일을 각각 primary/secondary로 선택해 diff를 실행한다. 결과 창에 "Matched Functions" 목록이 similarity 점수와 함께 표시된다.</p>
+<p><strong>4) similarity가 낮은 함수부터 정렬해서 확인</strong> 결과 테이블을 Similarity 오름차순으로 정렬한다. 1.0(완전 동일)인 함수는 무시하고, 0.5~0.95 사이의 함수(구조는 비슷하지만 일부 명령어가 바뀐 함수)를 우선 확인한다. 완전히 새로 추가된 함수("Unmatched" 목록)도 별도로 확인한다.</p>
+<p><strong>5) 변경된 함수를 나란히 놓고 어셈블리/디컴파일 비교</strong> BinDiff 결과에서 함수 쌍을 더블클릭하면 두 함수의 그래프를 나란히 보여주는 뷰(Primary/Secondary 그래프)가 뜬다. 색으로 표시된 차이(보통 빨강/초록 계열로 추가/삭제된 베이직 블록 강조)를 보고 어떤 분기/체크가 추가되었는지 확인한다. IDA에서 각 함수를 F5로 디컴파일해서 나란히 띄우고 비교해도 좋다.</p>
+<p><strong>6) Diaphora 대안 절차(BinDiff 설치가 어려운 경우)</strong> Diaphora는 각 IDA 인스턴스에서 스크립트를 실행해 <code>.sqlite</code> 데이터베이스를 export한 뒤, 별도 Diaphora GUI로 두 sqlite 파일을 diff한다. 결과 화면 구성은 BinDiff와 유사하게 매칭 함수/유사도 목록을 보여준다.</p>
+<p><strong>7) 취약점 추론</strong> 변경된 함수에서 새로 추가된 조건문이 길이 체크, 인덱스 범위 체크, NULL 체크라면, <strong>패치 전 버전에는 그 체크가 없었다</strong>는 뜻이다. 즉 패치 전 버전에서 그 체크가 없어서 발생하던 취약점(버퍼 오버플로우, OOB 접근 등)을 거꾸로 추론할 수 있다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">sha256sum chall_old chall_new
+diff &lt;(strings chall_old) &lt;(strings chall_new)
+objdump -d chall_old | sed -E 's/^\s*[0-9a-f]+:/ADDR:/' &gt; old.asm
+objdump -d chall_new | sed -E 's/^\s*[0-9a-f]+:/ADDR:/' &gt; new.asm
+diff old.asm new.asm</code></pre>
+<p>BinDiff: primary/secondary <code>.idb</code> 선택 → Diff 실행 → Matched Functions 테이블 Similarity 열 정렬. Diaphora: IDA에서 export 스크립트 실행 → 두 <code>.sqlite</code> 로드 → Best/Partial/Unmatched 탭 확인.</p>
+<h2>출력 해석</h2>
+<ul><li>BinDiff Similarity가 1.0인 함수는 완전히 동일한 코드이므로 분석에서 제외해도 안전하다.</li><li>Similarity가 0.5 전후인 함수는 그래프 구조(분기 개수)는 비슷하지만 일부 명령어가 바뀐 것이다 — 상수 값 변경, 조건 반전 등을 의심한다.</li><li>"Unmatched" 목록에 있는 함수는 완전히 새로 추가되었거나 완전히 삭제된 함수다. 새로 추가된 함수가 <code>validate_length</code>, <code>check_bounds</code> 같은 이름(또는 strip되어 있어도 단순 비교 후 함수 호출 패턴)이면 그 자체가 패치의 핵심이다.</li><li><code>objdump</code> 텍스트 diff에서는 주소값 자체가 달라 거의 모든 줄이 다르게 나올 수 있으므로, 반드시 주소를 정규식으로 제거(마스킹)한 뒤 비교해야 의미 있는 결과가 나온다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>두 바이너리를 처음부터 끝까지 손으로 함수 하나하나 대조하려다 시간을 다 쓰는 것 — 함수가 수십~수백 개면 반드시 도구를 써야 한다.</li><li><code>objdump</code> 텍스트를 마스킹 없이 그냥 <code>diff</code>해서 "전부 다르다"는 무의미한 결과만 얻는 것.</li><li>BinDiff Similarity가 낮은 함수만 보고 "Unmatched"(아예 매칭 안 된 새 함수/삭제된 함수) 목록은 확인하지 않아 핵심 변경을 놓치는 것.</li><li>컴파일러/최적화 옵션이 달라서 생긴 무관한 차이(레지스터 할당 차이, 인라이닝 차이)를 전부 "취약점 패치"로 오인하는 것 — 반드시 실제 조건문/체크 로직 추가 여부로 판단해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>변경된 함수를 찾았는데 그 함수의 로직 자체가 이해가 안 된다 → REV-0011 디컴파일 코드가 이상할 때 어셈블리로 돌아가는 기준</li><li>패치 전 버전에서 실제로 취약점을 트리거하는 입력을 만들어야 한다 → REV-0007 입력 함수부터 역추적하는 방법</li><li>정적으로 원인은 찾았는데 실제 크래시를 재현해서 검증하고 싶다 → REV-0005 문제를 정적 분석부터 할지 동적 분석부터 할지 결정하는 법</li></ul>
+<h2>미니 예제</h2>
+<p><code>libfoo_1.0.so</code>(패치 전), <code>libfoo_1.1.so</code>(패치 후) 두 파일이 주어졌다고 하자.</p>
+<ol><li><code>diff &lt;(strings libfoo_1.0.so) &lt;(strings libfoo_1.1.so)</code> → <code>1.1</code>에만 있는 문자열 <code>"buffer too long"</code> 발견.</li><li>두 파일을 IDA로 열어 각각 분석 후 저장, BinDiff 실행.</li><li>Similarity 오름차순 정렬 → <code>parse_request</code> 함수가 0.62로 가장 낮게 나옴.</li><li>그래프 비교 뷰에서 <code>parse_request</code>에 새 베이직 블록(초록색 강조)이 추가된 것을 확인 → <code>if (len &gt; 256) return -1;</code> 형태의 조건문이 새로 삽입됨.</li><li>결론: 패치 전 <code>libfoo_1.0.so</code>의 <code>parse_request</code>는 길이 체크 없이 고정 크기 버퍼에 복사했을 가능성이 높음 → 이 지점을 스택/힙 버퍼 오버플로우 후보로 확정하고 다음 분석(동적 검증)으로 넘어간다.</li></ol>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0011-when-to-trust-asm.html">REV-0011 — 디컴파일 코드가 이상할 때 어셈블리로 돌아가는 기준</a></li><li><a href="rev-0007-trace-from-input.html">REV-0007 — 입력 함수부터 역추적하는 방법</a></li><li><a href="rev-0005-static-vs-dynamic.html">REV-0005 — 문제를 정적 분석부터 할지 동적 분석부터 할지 결정하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>BinDiff 매칭 알고리즘(그래프/콜그래프 기반 유사도): zynamics/Google BinDiff 공식 문서 기준.</li><li>Diaphora 동작 방식(SQLite export 후 비교): Diaphora 공식 GitHub 저장소 문서 기준.</li><li>n-day 패치 diffing을 통한 취약점 추론 관행: 다수의 공개 보안 리서치/CTF writeup 요약 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

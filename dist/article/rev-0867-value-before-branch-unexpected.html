@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>조건 분기 직전 값이 예상과 달라서 로직을 오해할 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>조건 분기 직전 값이 예상과 달라서 로직을 오해할 때</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>조건 분기 직전에 확인한 값이 정적 분석(디컴파일 코드)이나 소스 코드에서 예상했던 값과 다르게 보인다면, 실제 버그이기보다는 ①지금 멈춘 시점이 생각했던 반복 회차/호출이 아니거나, ②컴파일러 최적화가 소스 레벨 변수와 다른 형태로 값을 계산·보관하고 있거나, ③값을 잘못된 크기·부호로 읽고 있는 경우가 대부분이므로, 이 세 가지를 순서대로 배제해 나가야 진짜 원인을 찾을 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA/Ghidra 디컴파일 결과로는 <code>x == 10</code>일 때 분기해야 할 것 같은데, 디버거에서 실제로 멈춰서 보니 레지스터 값이 전혀 다른 숫자일 때</li><li>반복문 안의 비교인데 "지금이 몇 번째 반복인지" 확신 없이 값을 봐서 결과를 오해할 때</li><li>디컴파일 의사코드의 변수와 실제 레지스터/메모리 값이 일대일로 안 맞아서 최적화 때문인지 버그인지 헷갈릴 때</li><li>값 자체는 맞는데 signed로 읽어야 할 것을 unsigned로 읽어서(또는 반대로) 결론을 잘못 내렸을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>원인 ① 원하는 반복/호출 시점이 아닐 수 있다</h3>
+<p>반복문 안이나 재귀/반복 호출되는 함수 안에 브레이크포인트를 걸면, 그 브레이크포인트는 매번 히트된다. 사용자가 "3번째 반복에서의 값"을 보고 싶었는데 무심코 <code>F9</code>/<code>continue</code>를 한 번만 눌러 멈춘 지점은 사실 1번째 반복일 수 있다. 이 경우 값이 "예상과 다르다"고 느끼는 것은 실제로는 다른 시점의 값을 보고 있기 때문이지, 로직 자체가 이상한 것이 아니다. 조건부 브레이크포인트(REV-0183)나 카운터 기반 조건(<code>ignore N COUNT</code>, REV-0642)으로 원하는 회차를 정확히 지정해야 한다.</p>
+<h3>원인 ② 컴파일러 최적화가 소스 변수를 그대로 보관하지 않는다</h3>
+<p><code>-O2</code>/<code>/O2</code> 같은 최적화가 켜지면 컴파일러는 다음과 같은 변환을 자주 한다.</p>
+<ul><li>변수를 레지스터에만 두고 메모리에 아예 쓰지 않아, 디컴파일러가 보여주는 변수 이름과 실제 레지스터 사이의 대응이 헷갈리게 표시된다.</li><li>상수 폴딩/전파(REV-0364 참고)로 여러 단계의 계산을 미리 합쳐서, 소스에는 없던 값이 레지스터에 나타난다.</li><li>루프 불변식을 루프 밖으로 끌어올리거나(loop-invariant hoisting), 비교 대상을 동등하지만 형태가 다른 값으로 바꿔치기(예: <code>x &lt; 10</code>을 <code>x - 10 &lt; 0</code>으로)한다.</li></ul>
+<p>이런 변환 때문에 "디컴파일 의사코드에 적힌 변수 X"와 "그 순간 레지스터에 있는 값"이 다르게 보일 수 있으며, 이는 버그가 아니라 컴파일러가 의미상 동일한 다른 계산으로 바꾼 것이다. 이럴 때는 어셈블리 원문(objdump/디스어셈블리)을 직접 한 줄씩 따라가며 각 단계가 소스 로직과 정말 동등한지 확인해야 한다.</p>
+<h3>원인 ③ 크기/부호를 잘못 읽었다</h3>
+<p>32비트 레지스터의 하위 값만 보고 상위 비트가 남아있는 걸 놓치거나(REV-0381 참고), signed로 봐야 할 값을 unsigned 16진수로만 보고 "큰 양수"라고 착각하는 경우가 흔하다(REV-0870 참고). 이 경우 값 자체는 맞게 읽혔지만 해석이 틀려서 "예상과 다르다"고 느끼는 것뿐이다.</p>
+<h3>확인 순서</h3>
+<ol><li>지금이 정말 원하는 반복/호출 시점인지 콜스택과 카운터 변수로 재확인한다.</li><li>어셈블리 원문을 직접 열어 그 값이 어떤 명령어들의 결과로 만들어졌는지 역추적한다.</li><li>값을 signed/unsigned, 정확한 비트 폭으로 다시 읽어본다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>디컴파일 의사코드에는 <code>if (count == 5)</code>로 보이는데, 디버거의 레지스터 값은 <code>5</code>가 아닌 다른 수다.</li><li>같은 브레이크포인트에 여러 번 멈췄는데, 매번 값이 계속 바뀌어서 "어느 시점 값이 맞는 값인지" 헷갈린다.</li><li>어셈블리를 보면 <code>cmp</code>가 소스 코드에 있는 변수가 아니라 낯선 임시 계산 결과(예: 두 값을 미리 빼놓은 결과)와 비교하고 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>지금 멈춘 시점이 몇 번째 반복/호출인지부터 카운터 변수나 콜스택으로 명확히 확인한다.</li><li>디컴파일 의사코드가 아니라 실제 어셈블리 원문을 펼쳐서 그 값이 어떻게 만들어졌는지 확인한다.</li><li>값의 비트 폭과 부호 해석이 올바른지 재확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<ol><li>조건부 브레이크포인트나 <code>ignore</code>(GDB)/조건식(x64dbg)으로 원하는 정확한 반복 회차에서만 멈추도록 다시 건다.</li></ol>
+<pre><code>   break *0x401234 if counter == 3</code></pre>
+<ol><li>그 지점에서 관련 레지스터/메모리 값을 확인하되, 디컴파일 변수 이름이 아니라 실제 어셈블리 오퍼랜드 기준으로 확인한다.</li><li>그 값이 나오기까지 거슬러 올라가며 직전 몇 개 명령어(<code>mov</code>, <code>add</code>, <code>sub</code>, <code>lea</code> 등)를 하나씩 실행해보고 각 단계의 중간값을 기록한다(REV-0172 참고).</li><li>이 값이 소스 레벨 로직과 수학적으로 동일한 변환인지 손으로 계산해서 검증한다.</li><li>signed/unsigned 해석을 다시 점검한다(REV-0870, REV-0025 참고).</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>GDB: <code>break *ADDR if EXPR</code>, <code>p/x $reg</code>, <code>p (int)$reg</code>, <code>p (unsigned)$reg</code>, <code>x/i $pc</code>(현재 명령어 재확인)</li><li>x64dbg: 브레이크포인트 조건식(우클릭 → Edit breakpoint), 레지스터 창 우클릭 → "Signed"/"Unsigned"/"Hex" 표시 전환, 디스어셈블리 창에서 <code>Enter</code>로 CALL 등 따라가기</li></ul>
+<h2>출력 해석</h2>
+<ul><li>조건부 브레이크포인트가 원하는 회차에서 정확히 멈췄다면, 그 값이 여전히 이상하다면 진짜 최적화/부호 문제로 좁혀진 것이다.</li><li>어셈블리 원문에서 <code>cmp</code>가 소스에 없던 낯선 임시값과 비교하고 있다면, 그 값이 어떻게 유도됐는지 몇 줄 위의 산술 명령을 반드시 함께 봐야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>디컴파일 의사코드만 보고 실제 어셈블리를 확인하지 않아, 컴파일러가 바꿔치기한 계산을 소스 그대로라고 오해하는 것.</li><li>반복문 안에서 몇 번째 회차인지 확인하지 않고 "지금 본 값"을 항상 "첫 값"이라고 가정하는 것.</li><li>signed/unsigned 표시를 바꿔보지 않고 16진수 값만 보고 "말도 안 되게 큰 수"라며 로직 자체를 의심하는 것 — 실제로는 단순히 음수를 unsigned로 보고 있었을 뿐인 경우가 많다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>여전히 값이 설명되지 않는다면 → 이 값이 스레드 간 공유되는 전역 변수인지 확인한다(다른 스레드가 동시에 바꾸고 있을 수 있다).</li><li>최적화 관련 변환이 의심되면 → REV-0364(상수 폴딩과 상수 전파), REV-0454(나눗셈 매직넘버 패턴)를 참고해 흔한 변환 패턴을 대조한다.</li><li>signed/unsigned 표시 자체가 헷갈린다면 → REV-0870을 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<pre><code>; 디컴파일 의사코드: if (idx == 5) goto success;
+(gdb) break *0x401200
+(gdb) run
+(gdb) p idx_reg
+$1 = 1              ; 예상(5)과 다름 → 첫 히트일 뿐
+(gdb) delete 1
+(gdb) break *0x401200 if $eax == 5
+(gdb) continue
+(gdb) p $eax
+$2 = 5              ; 5번째 반복에서 확인, 예상과 일치</code></pre>
+<p>값이 "틀린" 게 아니라 아직 원하는 반복 회차에 도달하지 않았던 것이 원인이었다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0174-before-conditional-branch.html">REV-0174 — 조건 분기 직전에 무엇을 봐야 하는가</a></li><li><a href="rev-0870-debugger-signed-unsigned-display-confusion.html">REV-0870 — 디버거 값 표시가 Signed/Unsigned로 헷갈려서 잘못 판단할 때</a></li><li><a href="rev-0172-tracing-registers.html">REV-0172 — 레지스터 값을 실행 중 추적하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>컴파일러 최적화(상수 폴딩/전파, 루프 불변식 이동)가 레지스터 값과 소스 변수의 대응을 바꾸는 현상: GCC/LLVM 최적화 문서 일반 원칙 기준.</li><li>조건부 브레이크포인트와 <code>ignore</code> 명령: GNU GDB 공식 매뉴얼 "Break Conditions" 섹션 기준.</li><li>2026-09-09 검증.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

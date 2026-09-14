@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>명령어 하나가 여러 마이크로옵으로 나뉜다는 개념(참고용) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>명령어 하나가 여러 마이크로옵으로 나뉜다는 개념(참고용)</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>현대 x86 CPU는 우리가 보는 복잡한 CISC 명령어(예: <code>MOV</code>, <code>LEAVE</code>, <code>REP MOVSB</code>)를 내부적으로 더 단순한 RISC 스타일의 "마이크로옵(micro-op, uop)"으로 쪼개서 비순차 실행 엔진에 넣어 처리하는데, 이는 정적 디스어셈블리 분석에는 거의 영향이 없지만 타이밍/성능 기반 분석이나 IDA의 "마이크로코드(microcode)"라는 전혀 다른 개념과의 혼동을 피하기 위해 알아둘 필요가 있는 참고 지식이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>CPU 마이크로아키텍처, 파이프라인, "마이크로옵"이라는 용어를 어디선가 보고 이게 리버싱과 무슨 관련이 있는지 궁금할 때</li><li><code>RDTSC</code> 기반 타이밍 안티디버깅(REV-0087 참고)을 분석하다가 "왜 같은 명령어 개수인데 실행 시간이 다르지?"라는 의문이 들 때</li><li>IDA Hex-Rays에서 "microcode"라는 표현(디컴파일러 내부 IR, <code>View &gt; Open subviews &gt; Microcode</code> 또는 디버그 정보)을 보고 이게 CPU의 마이크로옵과 같은 것인지 헷갈릴 때</li><li>명령어 하나(예: <code>LEAVE</code>, <code>ENTER</code>, 오래된 <code>LOOP</code>)가 왜 유독 느리다고 알려져 있는지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>CISC 명령어와 마이크로옵</h3>
+<p>x86은 대표적인 CISC(Complex Instruction Set Computer) 아키텍처로, 하나의 명령어가 메모리 접근 + 산술 연산처럼 여러 단계를 한 번에 수행할 수 있다(예: <code>add [rax], ebx</code>는 로드 + 덧셈 + 스토어를 한 명령어로 표현). 하지만 실제 최신 인텔/AMD CPU 내부는 RISC에 가까운 실행 엔진을 쓴다. 그래서 프론트엔드 디코더가 x86 명령어를 받으면, 이를 내부적으로 더 단순한 <strong>마이크로옵(micro-operation, 흔히 uop 또는 μop이라 부름)</strong> 하나 이상으로 변환한 뒤, 이 마이크로옵들을 비순차 실행 엔진(스케줄러, 실행 유닛)에 넣어 처리하고 마지막에 원래 프로그램 순서대로 결과를 정리(retire)한다.</p>
+<p>예를 들어 <code>add [rax], ebx</code>(메모리 피연산자에 직접 더하기)는 대략 다음과 같은 마이크로옵들로 쪼개질 수 있다(실제 세부 구현은 CPU 세대마다 다름):</p>
+<ol><li>로드 uop: <code>[rax]</code>에서 값을 읽음</li><li>ALU uop: 읽은 값과 <code>ebx</code>를 더함</li><li>스토어 uop: 결과를 다시 <code>[rax]</code>에 씀</li></ol>
+<p>반대로 <code>mov eax, ebx</code>, <code>add eax, ebx</code>처럼 레지스터끼리만 다루는 단순한 명령어는 보통 uop 1개로 처리되며, 아주 흔한 조합(<code>mov</code> + 특정 연산)은 CPU가 실행 엔진에 넘기지 않고 아예 없애버리는 "제로 레이턴시 mov 제거(move elimination)" 같은 특수 최적화 대상이 되기도 한다.</p>
+<h3>매크로옵 퓨전(Macro-op Fusion)</h3>
+<p>반대 방향의 최적화도 있다. <code>cmp</code>나 <code>test</code> 명령어 바로 뒤에 조건 분기(<code>jcc</code>)가 오는 매우 흔한 패턴(REV-0060, REV-0059, REV-0067~0070 참고)은, CPU가 디코드 단계에서 이 <strong>두 명령어를 하나의 내부 연산으로 합쳐서(fusion)</strong> 실행 엔진에 넘긴다. 이걸 매크로옵 퓨전이라 하며, <code>cmp</code>/<code>jcc</code> 조합이 그토록 흔하게 붙어 나오는 이유(REV-0468에서 다룬 스케줄링이 이 쌍을 잘 떨어뜨리지 않으려는 경향) 중 하나이기도 하다.</p>
+<h3>"느린" 명령어가 왜 느린가</h3>
+<p><code>LEAVE</code>(REV-0073), <code>ENTER</code>, 오래된 <code>LOOP</code>, <code>REP</code> 계열 문자열 명령(길이가 긴 경우, REV-0080~0085) 같은 명령어들은 하나의 명령어가 내부적으로 훨씬 많은 마이크로옵으로 풀리기 때문에 겉보기엔 명령어 1개지만 실행에는 여러 사이클이 걸린다. 이런 지식은 코드의 <strong>논리를 이해하는 데는 필요 없지만</strong>, 다음과 같은 상황에서 실전적으로 도움이 된다:</p>
+<ul><li><strong>타이밍 기반 안티디버깅/안티에뮬레이션</strong>: <code>RDTSC</code>로 특정 코드 블록의 실행 사이클 수를 재서 "너무 느리면(=디버거/에뮬레이터가 붙어있으면) 비정상 종료"하는 트릭을 분석할 때, 명령어 개수와 실제 사이클 수가 비례하지 않는다는 걸 알아야 오해하지 않는다.</li><li><strong>최적화 여부 추정</strong>: 마이크로옵이 많이 드는 "무거운" 명령어(<code>LEAVE</code>, 복잡한 주소 지정 등)를 컴파일러가 의도적으로 피해서 더 단순한 명령어 여러 개로 대체하는 경우도 있다 — 이것도 컴파일러가 "성능"을 신경 쓴 흔적이다.</li></ul>
+<h3>중요한 함정: IDA "마이크로코드(Microcode)"는 CPU 마이크로옵이 아니다</h3>
+<p>Hex-Rays(IDA의 디컴파일러)는 어셈블리를 C처럼 보이는 코드로 재구성하는 내부 과정에서 자체적인 중간 표현(intermediate representation)을 쓰는데, 이를 <strong>"마이크로코드(microcode)"</strong> 라고 부른다. 이름이 CPU의 "마이크로옵"과 매우 비슷해서 혼동하기 쉽지만, <strong>완전히 다른 개념</strong>이다.</p>
+<ul><li><strong>CPU 마이크로옵</strong>: 하드웨어 내부에서 실제 실행 엔진이 처리하는 저수준 단위. 바이너리 파일에는 존재하지 않고, 디스어셈블리로 볼 수 없으며, 오직 실행 시점에만 존재한다.</li><li><strong>IDA 마이크로코드</strong>: Hex-Rays 디컴파일러가 F5(디컴파일)를 수행하는 <strong>소프트웨어 분석 과정</strong>에서 어셈블리를 더 다루기 쉬운 형태로 변환한 중간 단계 표현. 최적화 패턴 인식, 변수 복원 등에 쓰이며 사용자가 원하면 <code>View</code>에서 직접 열어볼 수도 있다.</li></ul>
+<p>리버싱 커뮤니티 자료나 IDA 관련 문서를 읽다가 "microcode"라는 단어를 보면, 문맥이 CPU 하드웨어 얘기인지 IDA 디컴파일러 내부 얘기인지 먼저 구분해야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>이 주제는 정적 디스어셈블리에 직접적인 "징후"로 나타나지 않는다(마이크로옵은 바이너리에 안 보인다). 대신 다음과 같은 <strong>간접적 신호</strong>로 마주치게 된다.</p>
+<pre><code class="language-asm">cmp     eax, 10
+jge     label          ; cmp+jcc는 흔히 매크로옵 퓨전 대상 -&gt; 컴파일러가 이 조합을 잘 안 떨어뜨림</code></pre>
+<pre><code class="language-asm">rdtsc                  ; 타이밍 안티디버깅에서 실행 사이클 수를 측정하는 전형적인 시작점
+...
+rdtsc
+sub     eax, ebx       ; 두 RDTSC 사이 경과 사이클 계산
+cmp     eax, threshold
+ja      detected_debugger</code></pre>
+<h2>가장 먼저 할 것</h2>
+<ol><li>이 개념은 "알아두면 좋은 배경지식"이지 매 분석마다 필요한 필수 절차가 아니다 — 보통의 로직 분석에서는 무시해도 된다.</li><li><code>RDTSC</code> 기반 타이밍 체크 코드를 만났을 때만 적극적으로 떠올린다.</li><li>"IDA microcode"라는 표현을 보면 이게 CPU 얘기가 아니라 Hex-Rays 내부 얘기라는 걸 먼저 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 타이밍 안티디버깅 코드 식별</strong> <code>rdtsc</code>(REV-0087)가 두 번 이상 나오고 그 사이 경과값을 임계치와 비교하는 패턴을 찾는다.</p>
+<p><strong>2) "명령어 개수 ≠ 사이클 수"라는 전제로 접근</strong> 그 사이 블록의 명령어 개수만 세서 "정상 실행이면 얼마나 걸릴지" 예측하려 하지 말고, 실제로 디버거 없이/디버거와 함께 실행해서 측정값 차이를 실증적으로 확인하는 게 더 안전하다.</p>
+<p><strong>3) 우회 전략은 실행 흐름 조작으로 접근</strong> 타이밍 체크를 피하려면 마이크로옵 수준까지 이해할 필요 없이, 비교/분기 직후의 조건 플래그나 분기 자체를 패치하거나(REV-0060, REV-0067~0070), <code>RDTSC</code>의 반환값(EDX:EAX)을 후킹해서 항상 "정상 범위"처럼 보이는 값을 돌려주는 방식이 실전적이다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>View &gt; Open subviews &gt; Microcode</code>(Hex-Rays 마이크로코드 뷰 — CPU 마이크로옵과는 다른 개념임을 재확인)</li><li>GDB/Pwndbg: <code>rdtsc</code>를 후킹하거나 값을 조작하려면 해당 명령 주소에 브레이크포인트를 걸고 실행 후 <code>EDX:EAX</code>를 원하는 값으로 덮어쓰는 방식 사용</li><li>성능 카운터를 직접 보고 싶다면 Linux <code>perf stat</code>(오프라인 환경에서는 사전 설치 필요)으로 실제 uop 카운트 등 하드웨어 이벤트를 관찰 가능(참고용, 필수 아님)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>RDTSC</code> 두 번 사이의 값 차이가 "명령어 개수"와 정비례하지 않는다 — 로드/스토어를 포함한 명령어, 분기 예측 실패, 캐시 미스 등이 훨씬 큰 영향을 준다. 값이 예상보다 크게 나온다고 반드시 디버거가 붙어서라고 단정할 수 없다(다만 안티디버깅 코드 작성자는 보통 충분히 큰 임계값을 잡아 이런 노이즈를 감안한다).</li><li>IDA Microcode 뷰에 나오는 <code>ldc</code>, <code>stx</code>, <code>mov</code> 같은 표현은 CPU 마이크로옵 이름이 아니라 Hex-Rays 내부 IR 연산자 이름이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>"마이크로옵"과 "IDA 마이크로코드"를 같은 것으로 착각해서 서로 관련 없는 자료를 뒤섞어 참고하는 것.</li><li>명령어 개수를 세어서 "몇 사이클 걸릴지" 정확히 계산하려 드는 것 — 이는 실제 CPU 마이크로아키텍처(파이프라인, 캐시, 분기 예측 등)에 대한 훨씬 깊은 지식이 필요하며, 일반적인 정적 리버싱에서는 불필요한 시도다.</li><li>타이밍 안티디버깅을 피하려고 마이크로옵 수준까지 이해하려 애쓰는 것 — 대부분은 조건 분기나 <code>RDTSC</code> 반환값 자체를 패치/후킹하는 게 훨씬 실용적이다.</li><li>모든 x86 명령어가 항상 1 사이클이라고 가정하는 것 — 명령어별 지연시간과 처리량(throughput)은 명령어 종류와 CPU 세대에 따라 크게 다르다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>RDTSC</code> 자체의 동작(무엇을 반환하는지, 어떻게 쓰이는지)이 궁금하면 → REV-0087(RDTSC)을 먼저 참고한다.</li><li>매크로옵 퓨전과 관련된 <code>cmp</code>/<code>jcc</code> 배치 경향이 궁금하면 → REV-0468(명령어 스케줄링)을 참고한다.</li><li>명령어 인코딩과 프리픽스가 실행 방식에 영향을 주는 부분이 궁금하면 → REV-0474(명령어 프리픽스)를 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 마이크로옵으로 여러 개 풀리는 무거운 명령어(개념 예시)</strong></p>
+<pre><code class="language-asm">leave       ; 내부적으로 대략: rsp &lt;- rbp (mov 성격) + rbp &lt;- [rsp], rsp += 8 (pop 성격)
+            ; 즉 하나의 명령어지만 최소 2개 이상의 내부 동작으로 풀림</code></pre>
+<p><strong>예제 2 — RDTSC 기반 타이밍 안티디버깅 패턴</strong></p>
+<pre><code class="language-c">// 개념적 C 표현
+unsigned long t1 = __rdtsc();
+do_some_check();
+unsigned long t2 = __rdtsc();
+if (t2 - t1 &gt; THRESHOLD) exit(1);   // 너무 오래 걸리면 디버거로 의심</code></pre>
+<pre><code class="language-asm">rdtsc                 ; edx:eax = t1
+shl     rdx, 32
+or      rax, rdx
+mov     r15, rax
+call    do_some_check
+rdtsc
+shl     rdx, 32
+or      rax, rdx
+sub     rax, r15
+cmp     rax, THRESHOLD
+ja      exit_now</code></pre>
+<p>이 코드에서 <code>do_some_check</code> 내부 명령어가 몇 개인지 세는 것보다, <code>t2-t1</code> 값을 실제로 디버거 유무에 따라 측정해서 임계값과의 관계를 실증적으로 파악하는 편이 훨씬 정확하다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0087-rdtsc.html">REV-0087 — RDTSC: 타이밍 측정과 안티디버깅</a></li><li><a href="rev-0468-instruction-scheduling-reorder.html">REV-0468 — 명령어 스케줄링 때문에 순서가 뒤바뀐 것처럼 보이는 코드</a></li><li><a href="rev-0474-instruction-prefixes-rex-66-f2-f3.html">REV-0474 — 명령어 프리픽스(REX, 66h, F2h/F3h)가 붙는 이유 개요</a></li><li><a href="rev-0073-leave.html">REV-0073 — LEAVE: 함수 에필로그와 스택 프레임</a></li><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>x86 CISC 명령어의 마이크로옵 분해, 매크로옵 퓨전, 비순차 실행 개념: Intel 64 and IA-32 Architectures Optimization Reference Manual, "Microarchitecture" 관련 챕터 기준.</li><li>Hex-Rays 디컴파일러의 "Microcode" 중간 표현(CPU 마이크로옵과 무관한 소프트웨어 개념): Hex-Rays 공식 문서(Hex-Rays SDK, Microcode API 설명) 기준.</li><li><code>RDTSC</code> 기반 타이밍 안티디버깅 기법: 일반적으로 알려진 안티디버깅 리버싱 기법 자료 기준(2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

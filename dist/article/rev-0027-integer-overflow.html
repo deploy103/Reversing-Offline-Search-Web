@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>정수 Overflow와 Wraparound · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>정수 Overflow와 Wraparound</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>CPU 레지스터는 비트 폭이 고정되어 있어서, 연산 결과가 그 범위를 벗어나면 <strong>넘친 상위 비트를 그냥 버리고</strong> 잘린 값만 남긴다. 이것이 "오버플로/랩어라운드"이며, 예외를 던지지 않고 조용히 일어나기 때문에 CTF 취약점의 단골 원인이 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>0xFF + 1</code>을 했는데 결과가 <code>0x100</code>이 아니라 <code>0x00</code>으로 나와서 이해가 안 될 때</li><li><code>unsigned int</code>인 카운터나 길이(length) 변수가 <code>0</code>인 상태에서 <code>--</code>(감소) 연산을 했더니 갑자기 <code>4294967295</code> 같은 거대한 값이 될 때</li><li><code>INT_MAX</code>(<code>0x7FFFFFFF</code>)에 1을 더했더니 음수(<code>INT_MIN</code>)가 되는 코드를 봤을 때</li><li>어셈블리에서 <code>add</code>/<code>sub</code> 직후 <code>jo</code>, <code>jc</code>, <code>jb</code> 같은 플래그 조건 점프가 나와서 무슨 뜻인지 궁금할 때</li><li>길이 검사(<code>if (len &gt; MAX) reject()</code>)가 있는데도 버퍼 오버플로가 발생하는 이유를 찾고 있을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>고정 폭 정수의 한계</h3>
+<p>8/16/32/64비트 정수는 표현할 수 있는 값의 개수가 정해져 있다. 예를 들어 8비트는 <code>2^8 = 256</code>가지 비트 패턴만 가능하다. unsigned로 해석하면 <code>0 ~ 255</code>, signed(2의 보수, <a href="rev-0024-twos-complement.html">REV-0024</a> 참고)로 해석하면 <code>-128 ~ 127</code>이 전부다.</p>
+<p>문제는 산술 연산의 <strong>수학적으로 진짜 정답</strong>이 이 범위를 벗어날 수 있다는 것이다. <code>255 + 1 = 256</code>은 수학적으로 맞지만, 8비트 레지스터에는 256을 담을 자리가 없다(<code>256</code>은 9비트가 필요: <code>1 0000 0000</code>). CPU의 ALU(산술논리연산장치)는 이럴 때 <strong>9번째 비트(캐리)를 그냥 버리고</strong> 하위 8비트만 레지스터에 남긴다. 결과적으로 <code>255 + 1</code>의 레지스터 값은 <code>0</code>이 된다.</p>
+<p>중요한 점: <strong>CPU는 이 상황에서 에러를 내거나 프로그램을 멈추지 않는다.</strong> ALU는 항상 잘린 결과를 만들어내고, 대신 그 사실을 <strong>플래그 비트</strong>에 기록해 둔다. 그 기록을 확인하고 대응하는 것은 프로그램(컴파일러가 생성한 코드)의 몫이다. 즉, 오버플로가 "감지"되려면 개발자가 그 다음에 오는 조건 점프 명령으로 플래그를 확인하는 코드를 넣었어야 한다 — 확인하지 않으면 오버플로는 조용히 묻히고 잘못된 값이 계속 다음 연산에 쓰인다.</p>
+<h3>unsigned 오버플로: CF (Carry Flag)</h3>
+<p>8비트 unsigned 예시로 직접 확인해보자. <code>al = 0xFF</code>(십진수 255)인 상태에서 <code>add al, 1</code>을 실행하면:</p>
+<pre><code>  1111 1111   (0xFF = 255)
++ 0000 0001   (1)
+-----------
+1 0000 0000   (진짜 수학적 결과 = 256, 9비트 필요)</code></pre>
+<p>8비트 레지스터 <code>al</code>에는 하위 8비트인 <code>0000 0000</code>만 남는다. 즉 <strong><code>al = 0x00</code></strong>이 된다. 그리고 9번째 자리로 "넘친" 캐리가 있었으므로 <strong>CF(Carry Flag) = 1</strong>로 설정된다. CF는 "unsigned 관점에서 결과가 진짜 값보다 작아졌다(넘쳤다)"는 것을 알려주는 신호다.</p>
+<h3>signed 오버플로: OF (Overflow Flag)</h3>
+<p>같은 비트 패턴이라도 signed로 해석하면 다른 이야기가 된다. 32비트 signed 최댓값은 <code>INT_MAX = 0x7FFFFFFF = 2147483647</code>이다. 여기에 1을 더하면:</p>
+<pre><code>  0111 1111 1111 1111 1111 1111 1111 1111   (0x7FFFFFFF = 2147483647)
++ 0000 0000 0000 0000 0000 0000 0000 0001   (1)
+-------------------------------------------
+  1000 0000 0000 0000 0000 0000 0000 0000   (0x80000000)</code></pre>
+<p>비트 패턴 <code>0x80000000</code>을 signed 32비트로 해석하면 최상위 비트가 1이므로 음수이고, 실제 값은 <code>-2147483648</code>(<code>INT_MIN</code>)이다. <strong>양수 최댓값에 1을 더했더니 가장 작은 음수가 되어버린 것</strong> — 이것이 signed 오버플로다. 이때 CPU는 <strong>OF(Overflow Flag) = 1</strong>로 설정한다. (참고로 C 표준에서 signed 정수 오버플로는 undefined behavior로 정의되어 있어 컴파일러가 이론적으로 임의의 최적화를 할 수 있지만, 실제 x86/x64 하드웨어에서 컴파일된 <code>add</code>/<code>sub</code> 명령어 자체는 항상 위와 같이 결정적으로 2의 보수 규칙에 따라 랩어라운드한다. 리버서가 바이너리에서 실제로 관찰하는 것은 바로 이 하드웨어 동작이다.)</p>
+<h3>CF와 OF는 서로 다른 독립적인 플래그다</h3>
+<p>여기서 헷갈리기 쉬운 부분: <strong><code>add</code>/<code>sub</code> 명령어 하나가 실행되면 CF와 OF가 동시에 계산되어 둘 다 세팅(또는 클리어)된다.</strong> CPU는 그 값이 signed로 쓰이는지 unsigned로 쓰이는지 전혀 모른다. 그냥 같은 비트 연산을 하고, 두 가지 관점에서 "오버플로가 났는가"를 각각 플래그에 기록해 둘 뿐이다.</p>
+<ul><li><strong>CF (Carry Flag)</strong>: unsigned 관점에서 최상위 비트를 넘어 캐리가 나가거나(덧셈) 빌려왔는지(뺄셈)를 표시.</li><li><strong>OF (Overflow Flag)</strong>: signed 관점에서 결과의 부호가 수학적으로 말이 안 되는지(양수+양수인데 음수가 나옴, 또는 음수+음수인데 양수가 나옴)를 표시.</li></ul>
+<p>그 값을 signed로 취급할지 unsigned로 취급할지는 <strong>그 다음에 오는 조건 점프 명령어</strong>가 결정한다. <code>jo</code>/<code>jno</code>는 OF를 보고, <code>jc</code>/<code>jb</code>(carry/below)와 <code>jnc</code>/<code>jae</code>는 CF를 본다. 이는 <a href="rev-0025-signed-unsigned.html">REV-0025</a>(Signed와 Unsigned 해석)에서 다루는 <code>jg</code>/<code>ja</code>처럼 "같은 cmp 뒤에 다른 조건 점프를 쓰면 signed/unsigned 해석이 갈린다"는 원리와 정확히 같은 축을 공유한다 — 컴파일러가 변수 타입을 보고 <code>jo</code> 계열을 쓸지 <code>jc</code> 계열을 쓸지 결정한다.</p>
+<h3>unsigned 언더플로: 0에서 빼면 거대한 값이 된다</h3>
+<p>"underflow"는 오버플로의 반대 방향, 즉 표현 범위의 아래쪽(0 미만)으로 넘어가는 경우를 가리키는 흔한 표현이다. <code>unsigned int x = 0;</code> 상태에서 <code>x - 1</code>을 계산하면 어떻게 될까? unsigned에는 애초에 음수가 없으므로 결과는 <code>-1</code>이 아니라 <strong>2의 보수 규칙에 따라 랩어라운드한 <code>0xFFFFFFFF</code> = <code>4294967295</code></strong>가 된다.</p>
+<pre><code>  0000 0000 0000 0000 0000 0000 0000 0000   (0)
+- 0000 0000 0000 0000 0000 0000 0000 0001   (1)
+-------------------------------------------
+  1111 1111 1111 1111 1111 1111 1111 1111   (0xFFFFFFFF, 최상위 비트에서 빌려왔으므로 CF=1)</code></pre>
+<p>이것이 CTF/실전 버그에서 자주 등장하는 패턴이다. 다음 시나리오로 구체적으로 확인해보자:</p>
+<pre><code class="language-c">unsigned int remaining = 0;   // 남은 바이트 수, 애초에 더 처리할 게 없다는 뜻
+remaining--;                  // 개발자는 "0이니까 그대로거나 에러겠지"라고 착각
+if (remaining &gt; MAX) {        // MAX = 100 이라고 하자
+    reject();
+}</code></pre>
+<p>숫자를 그대로 따라가 보자: <code>remaining</code>은 <code>0</code>에서 시작한다. <code>remaining--</code>을 실행하면 <code>0 - 1</code>이 랩어라운드하여 <code>remaining = 4294967295</code>(<code>0xFFFFFFFF</code>)가 된다. 그다음 <code>remaining &gt; MAX</code>, 즉 <code>4294967295 &gt; 100</code>을 비교하면 <strong>참(true)</strong>이므로 이 특정 코드에서는 <code>reject()</code>가 호출되어 방어가 성립한다.</p>
+<p>하지만 여기서 중요한 건 방향을 바꿔보는 것이다. 만약 검사 로직이 반대로 <code>if (remaining &lt; MAX)</code>였거나, 혹은 언더플로된 거대한 <code>remaining</code> 값이 그대로 <code>memcpy(buf, src, remaining)</code> 같은 <strong>복사 크기</strong>로 넘어가는 코드였다면 어떻게 될까? <code>memcpy</code>는 세 번째 인자를 <code>size_t</code>(보통 unsigned)로 받으므로 <code>4294967295</code>바이트를 복사하라는 명령이 되어버리고, 이는 힙/스택을 훨씬 넘어서는 범위까지 읽거나 쓰게 만들어 크래시나 메모리 손상으로 이어진다. 즉, 핵심은 "언더플로 자체가 항상 검사를 실패시키는 것은 아니며, 그 잘못된 거대한 값이 어디에 다음으로 쓰이는가에 따라 방어가 되기도 하고 치명적 취약점이 되기도 한다"는 것이다. 이런 이유로 <code>remaining &gt; MAX</code> 같은 검사만 보고 "안전하다"고 단정하지 말고, 감소 연산이 <strong>부호 있는 타입인지, 0이 될 수 있는 입력인지</strong>를 항상 함께 확인해야 한다.</p>
+<p>비슷하게, <code>if (len - 1 &gt;= 0)</code>처럼 <code>len</code>이 <code>unsigned int</code>인 코드는 항상 참인 죽은 코드(dead code)다. unsigned 값에서 뺄셈 결과는 랩어라운드하더라도 여전히 unsigned이므로 <code>0</code> 이상이라는 조건은 절대 거짓이 될 수 없다. 컴파일러가 이런 비교를 아예 최적화로 지워버리는 경우도 있으니, 디컴파일 결과에 이 비교 자체가 안 보인다면 원래 소스에 이런 무의미한 코드가 있었을 가능성도 염두에 둔다.</p>
+<h3>오버플로가 버퍼 오버플로로 이어지는 전형적 패턴</h3>
+<p>정수 오버플로는 그 자체로 끝나지 않고, 크기 검사를 우회해 실제 메모리 오버플로를 유발하는 경우가 많다. 전형적인 패턴은 다음과 같다:</p>
+<pre><code class="language-c">// user_len, header_len 모두 unsigned int, 공격자가 값을 어느 정도 제어 가능하다고 가정
+if (user_len + header_len &gt; BUFFER_SIZE) {
+    reject();
+} else {
+    copy(buf, user_len + header_len);   // 검사를 통과한 값으로 그대로 복사
+}</code></pre>
+<p>만약 <code>user_len + header_len</code>의 수학적 합이 <code>BUFFER_SIZE</code>보다 크지만, 그 덧셈 자체가 32비트 unsigned 범위를 넘어 랩어라운드해서 작은 값으로 잘린다면 어떻게 될까? 예를 들어 <code>header_len = 0x10</code>이고 공격자가 <code>user_len = 0xFFFFFFF0</code>을 넣었다면, <code>user_len + header_len = 0x100000000</code>인데 이는 32비트에 담을 수 없어 잘려서 <code>0x00000000</code>이 된다. 이러면 <code>0 &gt; BUFFER_SIZE</code>는 거짓이므로 검사를 통과해버리고, 그 뒤 <code>copy()</code> 내부에서 크기를 다시 계산하거나 원래의 거대한 <code>user_len</code>을 그대로 쓰는 경로가 있다면 버퍼 밖으로 쓰기가 발생한다. 이런 패턴이 실제 CVE와 CTF 문제에서 "integer overflow to buffer overflow"라고 불리는 전형적 취약점 클래스다. 방어적으로 이해할 점은, <strong>크기 관련 덧셈/뺄셈을 검사 직전에 하고 있다면 그 연산 자체가 오버플로할 수 있는지부터 확인</strong>해야 하며, 검사와 실제 사용 사이에 크기가 재계산되지 않는지도 함께 봐야 한다는 것이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>디스어셈블리에서 <code>add</code>/<code>sub</code>/<code>inc</code>/<code>dec</code> 직후에 <code>jo</code>(Jump if Overflow), <code>jno</code>, <code>jc</code>(Jump if Carry) / <code>jb</code>, <code>jnc</code> / <code>jae</code> 같은 플래그 조건 점프가 붙어 있는 경우 — 오버플로를 명시적으로 검사하는 코드다.</li><li>디컴파일된 C 코드에서 카운터/길이 변수가 <code>unsigned int</code>, <code>size_t</code>, <code>DWORD</code> 타입이고 반복문 안에서 <code>--</code> 연산을 하는데 종료 조건이 <code>== 0</code> 하나뿐인 경우 — 조건을 놓치면 무한루프나 언더플로로 이어질 수 있다.</li><li><code>len + n &gt; SIZE</code> 같은 검사 직후 곧바로 메모리 복사/할당 함수가 오는 경우.</li><li>변수에 <code>0x7FFFFFFF</code>, <code>0x80000000</code>, <code>0xFFFFFFFF</code> 같은 "경계값" 상수가 등장하는 경우 — 오버플로 경계를 다루는 코드일 가능성이 높다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문제의 연산(<code>add</code>, <code>sub</code>, <code>imul</code> 등)이 어떤 비트 폭에서 일어나는지(al/ax/eax/rax 중 어느 레지스터인지), 그리고 그 결과가 signed로 쓰이는지 unsigned로 쓰이는지부터 확인한다. 변수 타입이 IDA/Ghidra에서 <code>unsigned int</code>, <code>DWORD</code>, <code>size_t</code>로 보이면 CF(캐리) 중심으로, <code>int</code>, <code>INT</code>로 보이면 OF(오버플로) 중심으로 생각한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 랩어라운드가 실제로 일어나는지 직접 계산해서 확인</strong></p>
+<pre><code class="language-python">&gt;&gt;&gt; 0xFF + 1
+256
+&gt;&gt;&gt; (0xFF + 1) &amp; 0xFF        # 8비트로 자르면
+0
+&gt;&gt;&gt; (0x7FFFFFFF + 1) &amp; 0xFFFFFFFF
+2147483648
+&gt;&gt;&gt; hex(2147483648)
+'0x80000000'</code></pre>
+<p>파이썬 정수는 임의 정밀도라 자동으로 잘리지 않으므로, C의 고정폭 정수 연산을 흉내 내려면 <a href="rev-0026-bit-masks.html">REV-0026</a>에서 다룬 것처럼 <code>&amp; 0xFFFFFFFF</code>(32비트 마스크)를 명시적으로 걸어야 한다. 이 마스크 연산이 바로 실제 하드웨어가 자동으로 하는 "상위 비트 버림"을 스크립트에서 그대로 재현하는 방법이다.</p>
+<p><strong>2) 그 값을 signed로 볼지 unsigned로 볼지 판단</strong></p>
+<pre><code class="language-python">&gt;&gt;&gt; v = 0x80000000
+&gt;&gt;&gt; v if v &lt; 0x80000000 else v - 0x100000000   # signed 32비트로 해석
+-2147483648</code></pre>
+<p><a href="rev-0024-twos-complement.html">REV-0024</a>에서 다룬 "MSB가 1이면 값에서 2^bits를 뺀다" 패턴을 그대로 쓰면 된다.</p>
+<p><strong>3) 어셈블리에서 어떤 조건 점프가 쓰였는지 확인</strong></p>
+<p><code>cmp</code>/<code>add</code>/<code>sub</code> 뒤에 오는 점프 명령을 보고 signed 검사인지 unsigned 검사인지 구분한다:</p>
+<table><thead><tr><th>점프</th><th>확인하는 플래그</th><th>의미</th></tr></thead><tbody><tr><td><code>jo</code> / <code>jno</code></td><td>OF</td><td>signed 오버플로 발생/미발생</td></tr><tr><td><code>jc</code> / <code>jb</code> / <code>jnae</code></td><td>CF</td><td>unsigned 오버플로(carry) 발생</td></tr><tr><td><code>jnc</code> / <code>jae</code> / <code>jnb</code></td><td>CF=0</td><td>unsigned 오버플로 없음</td></tr></tbody></table>
+<p><strong>4) 디컴파일 결과에서 의심되는 크기 계산 찾기</strong></p>
+<p><code>+</code>, <code>-</code>가 들어간 크기/길이 변수가 검사 직후 바로 복사/할당 함수의 인자로 쓰이는지 확인한다. 특히 두 개 이상의 사용자 제어 값을 더해서 만든 크기가 그렇다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python"># 파이썬으로 N비트 unsigned/​signed 오버플로 흉내내기
+def add_u32(a, b):
+    return (a + b) &amp; 0xFFFFFFFF
+
+def add_i32(a, b):
+    r = (a + b) &amp; 0xFFFFFFFF
+    return r - 0x100000000 if r &amp; 0x80000000 else r
+
+&gt;&gt;&gt; add_u32(0xFFFFFFFF, 1)
+0
+&gt;&gt;&gt; add_i32(0x7FFFFFFF, 1)
+-2147483648</code></pre>
+<p>어셈블리에서: <code>add al, 1</code> / <code>sub eax, 1</code> 뒤에 <code>jo</code>(오버플로 시 점프), <code>jc</code>(캐리 시 점프)를 찾는다. GDB에서는 <code>info registers eflags</code>로 현재 CF, OF 비트를 직접 확인할 수 있다(<code>CF</code>, <code>OF</code> 문자열이 플래그 목록에 표시됨).</p>
+<h2>출력 해석</h2>
+<ul><li><code>al = 0xFF</code> 상태에서 <code>add al, 1</code> 실행 후 → <code>al = 0x00</code>, <code>CF = 1</code>(unsigned로 넘쳤음), <code>OF = 0</code>(signed로는 <code>-1 + 1 = 0</code>이라 정상이라 오버플로 아님).</li><li><code>eax = 0x7FFFFFFF</code> 상태에서 <code>add eax, 1</code> 실행 후 → <code>eax = 0x80000000</code>, <code>OF = 1</code>(signed 최댓값을 넘어 최솟값이 됨), <code>CF = 0</code>(unsigned 관점에선 <code>2147483647 + 1 = 2147483648</code>로 32비트 안에 멀쩡히 들어가서 캐리 없음).</li><li>이 두 예시가 보여주듯 CF와 OF는 같은 연산에서도 서로 다른 값을 가질 수 있다 — 반드시 둘을 구분해서 읽어야 한다.</li><li><code>remaining--</code>가 반복되는 루프에서 <code>remaining</code>이 갑자기 <code>4294967295</code> 근처의 거대한 값으로 뛴다면 언더플로가 발생한 것이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>CF와 OF를 같은 것으로 착각하는 것 — CF는 unsigned용, OF는 signed용이며 하나의 연산이 둘 다 독립적으로 세팅한다.</li><li><code>unsigned int</code> 변수에 대해 <code>if (x - 1 &gt;= 0)</code>처럼 절대 거짓이 될 수 없는 조건을 "정상적인 하한 검사"로 오해하는 것 — unsigned는 항상 0 이상이므로 이런 비교는 무의미하다.</li><li>오버플로가 "에러를 일으킬 것"이라고 기대하는 것 — 실제로는 아무 경고 없이 조용히 잘못된 값으로 계산이 이어지며, 그 값이 나중에 크기나 인덱스로 쓰일 때 비로소 크래시나 취약점으로 드러난다.</li><li>파이썬으로 취약점을 재현하는 스크립트를 짤 때 비트 마스크(<code>&amp; 0xFFFFFFFF</code>)를 빼먹어서, C 바이너리와 다른 결과가 나오는 것.</li><li>두 개의 작은 값을 더하는 연산이 오버플로할 수 있다는 걸 간과하는 것 — 개별 값은 작아 보여도 합계가 타입 범위를 넘을 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>signed/unsigned 해석 자체가 헷갈리면 → <a href="rev-0025-signed-unsigned.html">REV-0025</a>(Signed와 Unsigned 해석)로 이동해서 <code>jg</code>/<code>ja</code> 같은 조건 점프의 차이부터 다시 확인.</li><li>오버플로 결과 비트 패턴을 손으로 계산하기 힘들면 → <a href="rev-0024-twos-complement.html">REV-0024</a>(2의 보수와 음수 표현)의 파이썬 변환 치트시트를 사용.</li><li>비트폭별 마스크(<code>0xFF</code>, <code>0xFFFFFFFF</code> 등)의 의미가 헷갈리면 → <a href="rev-0026-bit-masks.html">REV-0026</a>(비트 마스크)에서 표를 다시 확인 — <code>x &amp; 0xFFFFFFFF</code>가 32비트 하드웨어의 자동 랩어라운드를 스크립트에서 그대로 흉내 내는 방법이라는 점이 이 문서와 직접 연결된다.</li><li>오버플로가 실제로 어떤 메모리 손상으로 이어지는지 더 깊이 파고들고 싶다면 → 버퍼 오버플로/힙 오버플로 관련 문서(예정)로 이동.</li></ul>
+<h2>미니 예제</h2>
+<p>아래는 자주 나오는 CTF 스타일의 취약 함수와, 그 취약점을 확인하기 위한 파이썬 계산이다.</p>
+<pre><code class="language-c">// 서버가 패킷을 파싱한다고 가정. count는 클라이언트가 보낸 값(unsigned char, 0~255)
+unsigned int remaining = count;
+while (remaining) {
+    process_one_item();
+    remaining--;              // remaining이 0이 되면 루프 종료... 되어야 하지만
+    if (should_add_extra())   // 특정 조건에서 remaining을 다시 증가시키는 버그가 있었다고 하자
+        remaining++;
+}</code></pre>
+<p>만약 <code>remaining</code>이 <code>0</code>인 상태에서 실수로 한 번 더 <code>remaining--</code>가 호출되는 경로가 있다면 (예: 루프 조건 체크 순서가 꼬여서), <code>remaining</code>은 <code>0</code>에서 곧바로 <code>4294967295</code>로 랩어라운드한다. <code>while (remaining)</code> 조건은 <code>0</code>이 아니면 계속 참이므로, 이 루프는 사실상 40억 번 넘게 반복되는 것과 같아진다 — 프로그램이 멈춘 것처럼 보이거나(사실상 무한루프), 그동안 <code>process_one_item()</code>이 계속 잘못된 메모리를 읽어 크래시를 일으킬 수 있다. 파이썬으로 이 상황을 미리 계산해보면:</p>
+<pre><code class="language-python">&gt;&gt;&gt; remaining = 0
+&gt;&gt;&gt; remaining = (remaining - 1) &amp; 0xFFFFFFFF
+&gt;&gt;&gt; remaining
+4294967295
+&gt;&gt;&gt; remaining != 0     # while(remaining) 조건이 여전히 참인지
+True</code></pre>
+<p>이렇게 실제 숫자를 손으로(또는 파이썬으로) 끝까지 따라가 보면, "카운터가 0에서 감소했다"는 한 줄짜리 버그가 왜 심각한 문제로 이어지는지 명확하게 눈으로 확인할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0024-twos-complement.html">REV-0024 — 2의 보수와 음수 표현</a></li><li><a href="rev-0025-signed-unsigned.html">REV-0025 — Signed와 Unsigned 해석</a></li><li><a href="rev-0026-bit-masks.html">REV-0026 — 8비트 16비트 24비트 32비트 64비트 마스크</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>CF/OF 플래그 정의 및 ADD/SUB 명령어의 플래그 세팅 규칙: Intel 64 and IA-32 Architectures Software Developer's Manual, Vol.1, "EFLAGS Register" 및 Vol.2 "ADD/SUB" 명령어 설명 기준 개념 정리 (2026-09-08 검증).</li><li>signed 정수 오버플로가 C 표준상 undefined behavior라는 점: ISO C 표준(C11 기준) 정수 연산 관련 조항 기준 일반적으로 알려진 사실.</li><li>정수 오버플로가 버퍼 오버플로로 이어지는 취약점 클래스: CWE-190 (Integer Overflow or Wraparound), CWE-191 (Integer Underflow) 공식 설명 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

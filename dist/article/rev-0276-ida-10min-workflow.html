@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA 10분 실전 워크플로 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / tools</div>
+<article class="article-body">
+<h1>IDA 10분 실전 워크플로</h1>
+<div class="article-meta"><span class="tag">tools</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>간단한 크랙미(입력 → 비교 → "Correct"/"Wrong" 출력)라면, IDA에서 <strong>Strings로 힌트 문자열 찾기 → xref로 그 문자열을 쓰는 함수 찾기 → F5로 디컴파일해서 비교 로직 읽기</strong> 순서를 따르면 파일을 연 지 10분 안에 정답 조건(플래그 검사 로직)까지 도달할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>시간 제한이 있는 CTF에서 IDA로 빠르게 플래그 검사 로직을 찾고 싶을 때</li><li>IDA를 설치는 했는데 실제로 어떤 순서로 눌러야 할지 감이 안 잡힐 때</li><li>"일단 열어서 아무 함수나 눌러보며 헤매는" 습관을 실전 루틴으로 바꾸고 싶을 때</li><li>이미 개별 기능(Functions/Strings/F5/xref)은 알지만 전체를 이어붙인 흐름이 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>이 문서는 개별 창/기능 사용법(REV-0142, REV-0143, REV-0144, REV-0145, REV-0146, REV-0150 등)을 이미 안다는 전제로, <strong>그것들을 실전에서 어떤 순서와 타이밍으로 조합하는지</strong>에 집중한다. 각 기능 자체의 자세한 설명은 해당 문서를 참고하고, 여기서는 "10분짜리 하나의 흐름"만 본다.</p>
+<p>전형적인 초급~중급 크랙미의 구조는 대개 이렇다.</p>
+<pre><code class="language-text">1. 사용자에게 입력을 받는다 (scanf/fgets/cin 등)
+2. 입력을 어떤 방식으로 검사한다 (strcmp, 문자별 비교, 간단한 변환 후 비교 등)
+3. 결과에 따라 "Correct!"/"Wrong!" 같은 메시지를 출력한다</code></pre>
+<p>이 구조를 알고 있으면, "출력 메시지 문자열"이라는 확실한 진입점에서 거꾸로 타고 올라가는 것이 코드를 처음부터 순서대로 읽는 것보다 압도적으로 빠르다. 이 문서의 10분 루틴은 이 "거꾸로 타고 올라가기" 전략을 그대로 따른다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Strings 창(<code>Shift+F12</code>)에 <code>"Correct!"</code>, <code>"Wrong password"</code>, <code>"Try again"</code>, <code>"flag{"</code> 같은 사람이 읽을 수 있는 메시지가 보인다.</li><li>그 문자열에 <code>X</code>(xref)를 누르면 딱 한두 곳에서만 참조되며, 대개 <code>printf</code>/<code>puts</code> 계열 호출 바로 앞이다.</li><li>해당 호출을 포함한 함수를 F5로 열면, <code>if (조건) { 성공 메시지 } else { 실패 메시지 }</code> 형태이거나, 조건이 <code>strcmp(...) == 0</code>, <code>v1 == 0x1234</code>, 반복문으로 한 글자씩 비교하는 형태로 보인다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>파일을 열고 자동 분석이 끝나길 기다린 뒤(REV-0142), 곧바로 <code>Shift+F12</code>로 Strings 창부터 연다. Functions 창을 처음부터 하나하나 읽지 않는다 — 그건 힌트 문자열이 하나도 없을 때의 차선책이다.</p>
+<h2>단계별 절차</h2>
+<p><strong>[0:00~0:30] 파일 열기 &amp; 분석 대기</strong></p>
+<p><code>File → Open</code>으로 바이너리를 연다. 포맷 인식 대화상자에서 기본값 그대로 OK. 상태 바가 "AU: idle"이 될 때까지 기다린다(자세한 초기 루틴은 REV-0142 참고). 작은 크랙미라면 보통 몇 초 안에 끝난다.</p>
+<p><strong>[0:30~1:30] Strings로 힌트 찾기</strong></p>
+<p><code>Shift+F12</code>로 Strings 창을 연다. 목록에서 <code>"Correct"</code>, <code>"Wrong"</code>, <code>"Success"</code>, <code>"Fail"</code>, <code>"flag"</code>, <code>"password"</code>, <code>"Try again"</code> 같은 사람이 읽는 메시지를 찾는다. 문자열이 너무 많으면 창 안에서 Ctrl+F로 "correct", "wrong", "flag" 등을 검색한다. 이 시점에 힌트 문자열을 하나 이상 확보하는 것이 목표다.</p>
+<p><strong>[1:30~2:30] xref로 사용처 추적</strong></p>
+<p>찾은 문자열(예: <code>"Correct!"</code>)을 더블클릭해서 데이터 위치로 이동한 뒤, 그 위에서 <code>X</code>를 눌러 xref 목록을 본다. 보통 한 곳(많아야 두세 곳)에서만 참조되며, 그 목록을 더블클릭하면 이 문자열을 실제로 사용하는 코드 위치로 이동한다.</p>
+<p><strong>[2:30~2:45] 함수로 이동</strong></p>
+<p>이동한 위치가 함수 몸통 어딘가라면, 화면 위쪽으로 스크롤하거나 <code>Ctrl+P</code>(Functions 창)에서 같은 이름을 찾아 함수 전체를 확인한다. 이 함수가 바로 "검사 로직 + 결과 출력"을 담당하는 핵심 함수일 확률이 높다.</p>
+<p><strong>[2:45~4:00] F5로 디컴파일</strong></p>
+<p>함수 내부에 커서를 두고 <code>F5</code>를 눌러 Pseudocode를 연다. 여기서 다음을 찾는다.</p>
+<ul><li>사용자 입력을 어디서 받는지(<code>scanf</code>, <code>fgets</code>, <code>read</code>, <code>cin &gt;&gt;</code> 등)</li><li>그 입력을 어떤 조건으로 검사하는지(<code>strcmp</code>, <code>memcmp</code>, <code>==</code>, <code>for</code> 반복문 등)</li><li>조건이 참일 때 성공 메시지를, 거짓일 때 실패 메시지를 출력하는 <code>if/else</code> 구조</li></ul>
+<p>이 3가지가 한 함수 안에 다 있는 경우가 가장 흔하고 가장 빠르게 끝난다.</p>
+<p><strong>[4:00~6:00] 비교 대상 값 확인</strong></p>
+<p>비교 로직이 <code>strcmp(input, "S3cr3t_Pa55")</code>처럼 정답 문자열이 코드에 그대로 박혀 있는 경우가 가장 쉬운 케이스다. 이때는 그 문자열 자체가 플래그이거나 플래그의 일부다. <code>strcmp(input, some_var)</code>처럼 변수와 비교한다면, <code>Tab</code>으로 원본 디스어셈블리로 전환해서 그 변수가 어디서 초기화되는지(<code>X</code>로 xref 추적)를 따라간다. 문자별 비교 루프(<code>for (i=0;i&lt;len;i++) if(input[i] != table[i]) fail;</code>)라면 <code>table</code> 배열의 실제 바이트 값을 Hex View나 배열 변수를 더블클릭해서 확인한다.</p>
+<p><strong>[6:00~7:30] 변수/함수 이름 정리(선택)</strong></p>
+<p>시간이 남으면 <code>N</code>으로 의미 없는 변수명(<code>v3</code>, <code>a1</code> 등)을 <code>input_buf</code>, <code>answer</code> 등으로 바꿔가며 읽으면 코드가 훨씬 눈에 잘 들어온다. 시간이 빠듯하면 이 단계는 생략하고 바로 다음으로 넘어가도 된다.</p>
+<p><strong>[7:30~9:00] 정답 조립 및 검증</strong></p>
+<p>찾은 비교값들을 조합해서 예상 입력(플래그 후보)을 만든다. 단순 <code>strcmp</code>형이면 그 문자열이 곧 답이다. 변환이 섞여 있으면(XOR, Base64 등) 그 변환을 손으로 역산하거나 Python으로 짧게 재구현한다(REV-0168, 알고리즘 패턴 문서들 참고).</p>
+<p><strong>[9:00~10:00] 최종 확인</strong></p>
+<p>가능하면 실제 바이너리를 실행해서 조립한 입력을 넣어보고 "Correct" 메시지가 뜨는지 확인한다. 실행 파일 테스트가 여의치 않으면(예: 대상 환경이 다름) 디컴파일된 조건식을 다시 한번 손으로 검산해서 확신을 굳힌다.</p>
+<h2>명령어/단축키</h2>
+<ul><li><code>Shift+F12</code> : Strings 창 (진입점)</li><li><code>X</code> : 문자열/함수의 xref 추적</li><li><code>Ctrl+P</code> : Functions 창에서 함수 재확인</li><li><code>F5</code> : 디컴파일</li><li><code>Tab</code> : Pseudocode ↔ Disassembly 전환</li><li><code>N</code> : 변수/함수 이름 정리</li><li><code>G</code> : 특정 주소로 바로 이동(비교 테이블 등 위치를 알 때)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Strings에 "Correct"류 메시지가 아예 없으면 → 문자열이 암호화/난독화되어 있거나(REV-0163 참고), 이 루틴 자체가 안 통하는 다른 유형의 문제(알고리즘 검증형 등)일 수 있다.</li><li>xref가 한 곳도 안 뜨면 → 그 문자열이 실제로는 안 쓰이는 디버그용/장식용 문자열일 수 있으니 다른 힌트 문자열로 넘어간다.</li><li>F5 결과가 알아보기 힘든 뒤섞인 조건이면 → 컴파일러 최적화 때문일 수 있다. <code>Tab</code>으로 디스어셈블리를 같이 보거나 Graph view(REV-0150)로 분기 구조를 먼저 큰 그림으로 파악한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Strings를 건너뛰고 Functions 창부터 위에서 아래로 다 읽으려다가 시간을 다 쓰는 경우 — 힌트 문자열이 있는 크랙미라면 이건 거의 항상 손해다.</li><li>xref 목록에 여러 개가 뜨는데 첫 번째만 보고 잘못된 함수로 들어가는 경우 — 여러 후보가 있으면 함수 이름이나 호출 문맥을 보고 진짜 "검사 함수"를 골라야 한다.</li><li>F5 결과에서 <code>strcmp</code>의 인자 순서를 헷갈려 사용자 입력과 정답 문자열을 반대로 착각하는 경우.</li><li>변환(XOR/인코딩)이 섞여 있는데 이를 무시하고 비교 테이블 값을 그대로 답이라고 제출하는 경우 — 반드시 어떤 연산을 거친 뒤 비교하는지 확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>Strings에 힌트가 아예 없으면 → REV-0163(Strings로 검사 함수 찾기), REV-0164(Imports로 후보 좁히기)를 참고해서 다른 진입점을 찾는다.</li><li>디컴파일이 실패하거나 이상하게 나오면 → REV-0152(IDA 디컴파일 실패 시 대처)를 참고한다.</li><li>함수 경계나 스택 포인터가 이상해 보이면 → REV-0153, REV-0154를 참고한다.</li><li>비교 로직에 XOR/커스텀 인코딩이 섞여 있으면 → <code>../algorithms/</code> 아래 관련 패턴 문서(예: XOR 루프, lookup table 변환)를 참고해서 역산한다.</li><li>정적으로 아무리 봐도 값이 확신이 안 서면 → 디버거로 실제 실행하며 값을 찍어보는 쪽(x64dbg/GDB)으로 전환하는 것이 더 빠를 수 있다.</li></ul>
+<h2>미니 예제</h2>
+<p>가상의 32비트 Windows 크랙미 <code>crackme.exe</code>를 여는 순간부터 답을 찾기까지의 타임라인 예시:</p>
+<pre><code class="language-text">0:00  File → Open crackme.exe, 자동 분석 대기
+0:35  Shift+F12 → 문자열 목록에서 "Correct password!" 발견
+1:10  해당 문자열에 X → xref 1건, sub_401230 안에서 참조
+1:40  Ctrl+P에서 sub_401230 더블클릭, 함수 전체 확인
+2:50  F5 → Pseudocode 확인:
+      if ( strcmp(input, "R3v3rse_Me_2026") == 0 )
+        puts("Correct password!");
+      else
+        puts("Wrong password!");
+5:00  strcmp 두 번째 인자가 정답 문자열임을 확인 → "R3v3rse_Me_2026"이 곧 플래그 후보
+7:00  실제 exe 실행 → 입력창에 R3v3rse_Me_2026 입력 → "Correct password!" 출력 확인</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0142-ida-first-open.html">REV-0142 — IDA에 바이너리 처음 열었을 때 해야 할 것</a></li><li><a href="rev-0150-ida-graph-view.html">REV-0150 — IDA Graph View에서 분기 읽기</a></li><li><a href="rev-0274-ida-install.html">REV-0274 — IDA 설치와 오프라인 준비</a></li><li><a href="rev-0275-ida-shortcuts-cheatsheet.html">REV-0275 — IDA 핵심 단축키 치트시트</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Strings → xref → F5 흐름은 Hex-Rays 공식 문서에 나오는 각 기능(Strings window, Cross-references, Decompiler)의 표준 사용법을 조합한 것이며, 다수의 공개 CTF 라이트업/입문 강의에서 공통적으로 쓰이는 실전 순서와 일치한다(2026-09-08 검증).</li><li>실제 걸리는 시간은 바이너리 크기, 최적화 수준, 문자열 난독화 여부에 따라 크게 달라질 수 있으므로 "10분"은 단순 비교/strcmp형 크랙미를 기준으로 한 목표 시간이지 모든 문제에 대한 보장이 아니다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

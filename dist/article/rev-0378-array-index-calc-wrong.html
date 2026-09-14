@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>배열 인덱스 계산이 이상하게 나올 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>배열 인덱스 계산이 이상하게 나올 때</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>배열 접근 어셈블리에서 인덱스 계산이 예상과 다르게 보인다면, 대부분 <strong>원소 크기를 곱하는 스케일(scale) 값</strong>을 빼먹고 계산했거나, 인덱스 변수가 signed라서 <strong>음수 인덱스가 그대로 허용</strong>되는 경우이며, 두 원인 모두 인덱스 변수의 실제 타입과 배열 원소 크기를 정확히 확인하면 해결된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>배열 접근 어셈블리에서 인덱스에 왜 4, 8, 12, 16 같은 숫자가 곱해지는지 헷갈릴 때</li><li><code>[rax + rcx*4 + 0x10]</code> 같은 SIB(Scale-Index-Base) 형태 주소 계산이 손으로 한 계산과 안 맞을 때</li><li>배열 인덱스에 음수를 넣었는데도 프로그램이 크래시하지 않고 이상한 메모리를 읽어서 계속 동작할 때</li><li><code>movsxd</code>/<code>movsx</code>/<code>movzx</code>가 인덱스 레지스터 앞에 왜 붙어 있는지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<p><code>array[i]</code>라는 C 코드는 어셈블리에서 절대 <code>array + i</code>로 바로 계산되지 않는다. 배열의 각 원소가 차지하는 바이트 크기(원소 크기, element size)만큼 인덱스에 <strong>곱셈</strong>을 해야 올바른 주소가 나온다.</p>
+<p><strong>기본 공식</strong>: <code>주소 = 배열_시작주소 + i * sizeof(원소타입)</code></p>
+<p><strong>구체적 예시</strong>: <code>int arr[10]</code>이 있고 <code>arr[3]</code>에 접근한다고 하자. <code>int</code>는 4바이트이므로 실제 주소는 <code>배열_시작 + 3 * 4 = 배열_시작 + 12</code>다. 어셈블리에서는 다음처럼 나타난다.</p>
+<pre><code class="language-asm">mov     eax, [rdi + rcx*4]   ; rcx = 인덱스(i), 4 = sizeof(int)</code></pre>
+<p>여기서 <code>rcx*4</code>가 바로 "인덱스 곱하기 원소 크기"이며, x86/x64의 SIB(Scale-Index-Base) 주소 지정 방식은 스케일 값으로 <strong>1, 2, 4, 8만</strong> 지원한다. 만약 원소 크기가 그 외의 값(예: 구조체 배열처럼 24바이트)이라면, CPU가 한 번에 곱할 수 없으므로 컴파일러는 별도의 <code>imul</code>이나 <code>lea</code> 조합으로 곱셈을 미리 계산한 뒤 더한다.</p>
+<pre><code class="language-asm">imul    rcx, rcx, 24      ; i * 24 (구조체 크기)
+add     rax, rcx          ; 배열_시작 + i*24</code></pre>
+<p><strong>인덱스의 부호 확장 문제</strong>: 인덱스 변수가 32비트(<code>int i</code>)이고 배열 접근 주소 계산은 64비트로 이뤄지는 x64 환경에서는, 컴파일러가 인덱스를 64비트로 확장하는 명령어를 반드시 끼워 넣는다.</p>
+<ul><li>인덱스가 <code>int</code>(signed)면 <code>movsxd rcx, ecx</code>(부호 확장) — 인덱스가 음수면 상위 32비트도 전부 1로 채워져서, 곱셈 후에도 "배열보다 앞쪽의 메모리"를 가리키는 매우 큰(또는 음수인) 오프셋이 그대로 유지된다.</li><li>인덱스가 <code>unsigned int</code>나 <code>size_t</code>면 <code>mov ecx, ecx</code>(상위 32비트를 0으로 자동 클리어, x64의 특성) — 음수라는 개념 자체가 없으므로 어떤 값을 넣어도 항상 "배열 뒤쪽의 아주 먼 메모리"를 가리키는 큰 양수 오프셋이 된다.</li></ul>
+<p><strong>왜 음수 인덱스가 위험한가</strong>: <code>int i = -1</code>을 32비트 인덱스로 쓰면 <code>arr[-1]</code>은 배열 시작 바로 앞의 4바이트(다른 변수나 메타데이터일 수 있음)를 가리킨다. 경계 검사가 <code>if (i &gt;= 0 &amp;&amp; i &lt; len)</code>처럼 제대로 돼 있으면 막히지만, <code>if (i &lt; len)</code>처럼 하한 검사가 빠져 있으면 음수 인덱스로 배열 앞쪽 메모리를 임의로 읽거나 쓸 수 있는 취약점이 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>디스어셈블리에서 <code>imul reg, reg, N</code>(N이 4, 8, 12, 16, 24 등) 직후 배열 베이스 주소에 더하는 패턴</li><li><code>[base + index*scale + disp]</code> 형태의 SIB 주소 지정에서 <code>scale</code>이 1/2/4/8 중 하나</li><li>인덱스 레지스터 앞에 <code>movsxd</code>(signed 확장) 또는 단순 32비트 대입(unsigned, 상위 비트 자동 클리어)이 붙어 있는 경우</li><li>경계 검사 코드에 <code>if (idx &lt; len)</code>만 있고 <code>idx &gt;= 0</code> 체크가 없는 경우</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문제의 배열 접근에서 곱해지는 스케일 값(4, 8, 24 등)이 그 배열 원소 타입의 실제 <code>sizeof</code>와 일치하는지부터 확인한다. 그다음 인덱스 변수가 signed인지 unsigned인지, 그리고 확장 명령어가 <code>movsxd</code>인지 단순 클리어인지 확인한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 스케일 값으로 원소 크기 역산</strong> <code>rcx*4</code>가 보이면 원소는 4바이트(<code>int</code>, <code>float</code>, 포인터가 아닌 32비트 계열), <code>rcx*8</code>이면 8바이트(<code>double</code>, 64비트 포인터, <code>long</code>)다. 스케일 없이 <code>imul reg, reg, N</code>이 별도로 있다면 N이 곧 구조체/배열 원소의 전체 크기(<code>sizeof</code>)다.</p>
+<p><strong>2) 인덱스 확장 명령어로 signed/unsigned 판단</strong> <code>movsxd rcx, ecx</code>가 보이면 인덱스는 signed(<code>int</code>)로 선언된 것이고 음수 인덱스가 이론적으로 가능하다. 단순히 32비트 레지스터에만 값을 넣고 그대로 64비트 연산에 쓰는 경우(x64에서 32비트 결과는 자동으로 상위를 0으로 채움)라면 unsigned로 다뤄지고 있다는 뜻이다.</p>
+<p><strong>3) 경계 검사 코드 앞뒤로 하한/상한 둘 다 확인</strong> 인덱스를 쓰는 지점 앞에 있는 조건문을 찾아서 상한(<code>idx &lt; len</code>)만 있는지, 하한(<code>idx &gt;= 0</code>)도 있는지 확인한다. signed 인덱스인데 하한 검사가 없다면 음수 인덱스 취약점 후보다.</p>
+<p><strong>4) 실제 주소를 손으로 재계산해서 검증</strong> 배열 시작 주소, 인덱스 값, 원소 크기를 직접 대입해 <code>배열_시작 + i * size</code>를 계산하고, 디버거에서 그 주소의 값을 확인해 어셈블리 결과와 일치하는지 검증한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">어셈블리: [base + index*scale + disp]   ; scale은 1/2/4/8만 가능
+어셈블리: imul reg, reg, N               ; scale 4/8로 표현 불가능한 원소 크기(N)일 때
+어셈블리: movsxd reg64, reg32            ; signed 32비트 인덱스를 64비트로 부호 확장
+GDB:    x/4xg (addr)                    ; 계산된 주소 주변 메모리를 8바이트씩 확인
+IDA:    배열 변수 위 Ctrl+X               ; 이 배열이 접근되는 모든 위치 확인</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>imul rcx, rcx, 24</code> 다음에 배열 베이스와 더해진다면, 이 배열의 원소는 24바이트(예: 8+4+4바이트 필드를 가진 구조체에 4바이트 패딩이 더해진 형태 등)라는 뜻이다. REV-0377에서 다룬 구조체 패딩과 함께 보면 왜 24바이트가 나왔는지 설명된다.</li><li><code>movsxd</code>가 보이는데 실제로 이 인덱스에 음수가 들어갈 수 있는 경로가 있다면, 그건 설계 실수이거나 의도적으로 파고들 수 있는 취약점이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>SIB 주소의 스케일이 항상 1이라고 가정하고 <code>index*4</code>, <code>index*8</code>을 그냥 "index에 이상한 숫자가 곱해졌다"고 오해하는 것.</li><li>구조체 배열처럼 원소 크기가 4/8이 아닌 경우, 스케일만 찾다가 별도로 존재하는 <code>imul</code> 명령어를 놓치는 것.</li><li>인덱스가 signed인지 unsigned인지 확인하지 않고 "인덱스는 항상 0 이상"이라고 가정해서 하한 검사 누락을 놓치는 것.</li><li>x64에서 32비트 레지스터에 값을 쓰면 상위 32비트가 자동으로 0이 된다는 규칙(REV-0381 참고)을 모르고 unsigned 인덱스 확장 과정을 혼란스러워하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>배열 접근이 어셈블리로 변환되는 기본 패턴 자체가 더 필요하면 REV-0034 문서로 이동.</li><li>인덱스 변수의 부호 확장/제로 확장 규칙이 헷갈리면 REV-0025 문서로 이동.</li><li>32비트 레지스터 연산 후 64비트 상위 비트가 어떻게 되는지 궁금하면 REV-0381 문서로 이동.</li><li>구조체 원소 크기(패딩 포함)가 왜 그렇게 계산됐는지 궁금하면 REV-0377 문서로 이동.</li></ul>
+<h2>미니 예제</h2>
+<p>다음 C 코드와 어셈블리를 비교해보자.</p>
+<pre><code class="language-c">int get_item(int *arr, int idx) {
+    return arr[idx];
+}</code></pre>
+<pre><code class="language-asm">movsxd  rax, esi          ; idx(esi, 32비트 signed)를 64비트로 부호 확장
+mov     eax, [rdi+rax*4]  ; arr + idx*4 (int는 4바이트)
+ret</code></pre>
+<p><code>idx = -1</code>을 넣으면 <code>movsxd</code>가 <code>rax = 0xFFFFFFFFFFFFFFFF</code>(64비트 -1)로 만들고, <code>rax*4 = 0xFFFFFFFFFFFFFFFC</code>(64비트 -4)가 되어 결과 주소는 <code>arr - 4</code>, 즉 배열 바로 앞의 4바이트를 읽는다. 호출하는 쪽에서 <code>idx &gt;= 0</code>을 검사하지 않았다면 이 함수는 배열 앞쪽 임의 메모리를 읽어주는 통로가 된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0034-array-access-in-asm.html">REV-0034 — 배열 접근이 어셈블리로 변하는 방식</a></li><li><a href="rev-0025-signed-unsigned.html">REV-0025 — Signed와 Unsigned 해석</a></li><li><a href="rev-0381-upper-bits-leftover-64bit.html">REV-0381 — 32비트 값인데 64비트 레지스터 상위비트가 남아있을 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>SIB(Scale-Index-Base) 주소 지정 방식과 허용 스케일 값(1/2/4/8): Intel 64 and IA-32 Architectures Software Developer's Manual, Vol.2, "ModRM and SIB Bytes" 섹션 기준 (2026-09-09 검증).</li><li><code>MOVSXD</code> 명령어와 x64에서 32비트 연산 결과의 상위 비트 자동 클리어 규칙: 동 매뉴얼 Vol.2 "MOVSXD" 및 Vol.1 "General-Purpose Registers in 64-Bit Mode" 섹션 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

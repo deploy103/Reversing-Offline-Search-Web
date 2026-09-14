@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA에서 함수가 아예 하나도 안 잡힐 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA에서 함수가 아예 하나도 안 잡힐 때</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p><code>Ctrl+P</code>로 연 Functions 창이 텅 비어 있다면, 대부분은 IDA가 코드/데이터 시작 지점(entry point)을 못 찾았거나(패킹/난독화/커스텀 로더), 아니면 그 영역이 아직 <strong>코드로 인식되지 않은 순수 데이터(회색 <code>db</code> 바이트)</strong> 상태로만 남아 있는 것이므로, entry point부터 강제로 <code>C</code>(코드로 변환) → <code>P</code>(함수 생성)를 수동으로 걸어줘야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>바이너리를 열고 자동 분석이 다 끝났는데도 <code>Ctrl+P</code>(Functions 창)를 열면 목록이 텅 비어 있거나 함수가 1~2개뿐일 때</li><li>IDA View에 코드처럼 보이는 부분이 없고, 대부분 회색 <code>db 90h</code>, <code>db 0CCh</code> 같은 raw 바이트로만 표시될 때</li><li>UPX 등으로 패킹된 실행 파일을 열었더니 <code>main</code>은커녕 아무 함수도 안 잡힐 때</li><li>셸코드(shellcode)나 순수 바이너리(raw binary) 파일을 "Unknown format"으로 열었을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>IDA가 함수를 만드는 과정은 크게 두 단계다. 먼저 <strong>어디서부터 코드를 해석하기 시작할지(entry point 결정)</strong>를 정하고, 그 지점부터 명령어를 하나씩 디코딩하면서 코드 흐름(jump, call)을 따라가며 함수 경계를 넓혀 나간다. 이 흐름이 시작조차 못 되면 함수가 하나도 안 생긴다. 흔한 원인은 다음과 같다.</p>
+<ul><li><strong>파일 포맷을 IDA가 제대로 인식하지 못함</strong>: 표준 PE/ELF 헤더가 없는 셸코드, 덤프된 raw 메모리 이미지, 혹은 헤더가 손상된 파일을 열면 IDA가 진입점을 알 수 없어 "Unknown format"으로 처리하고, 이 경우 사용자가 로드 옵션에서 아키텍처와 시작 주소를 직접 지정해야 한다.</li><li><strong>패킹/난독화로 원본 코드가 암호화되어 있음</strong>: UPX 같은 패커는 실제 코드를 압축·암호화한 상태로 저장하고, 파일이 실행될 때 압축 해제 스텁(unpacking stub)이 메모리에서 원본을 풀어낸다. IDA는 정적으로 파일을 읽으므로, 압축 해제되기 전의 암호화된 바이트만 보게 되어 이를 "의미 있는 코드"로 인식하지 못하고 대부분 데이터로 남겨둔다.</li><li><strong>엔트리 포인트에서 시작은 했지만 간접 점프/콜 때문에 흐름이 끊김</strong>: 코드가 레지스터를 통한 간접 점프(<code>jmp eax</code>)로 이어지면 정적 분석기가 그 다음 목적지를 알 수 없어 코드 추적이 거기서 멈춘다. 그 뒤에 나오는 진짜 함수들은 IDA 입장에서는 "아무도 참조하지 않는 데이터"로 남는다.</li><li><strong>섹션 속성 문제</strong>: 실행 파일의 섹션 헤더에 실행 속성이 잘못 표시되어 있으면(예: 패커가 조작), IDA가 그 섹션을 아예 코드 후보로 스캔하지 않을 수 있다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>Ctrl+P</code>(Functions 창)를 열면 목록이 완전히 비어 있거나, <code>start</code>류 함수 한두 개만 있고 나머지는 없음.</li><li>IDA View-A 화면 대부분이 회색 <code>db XX</code> 나열로 채워져 있고, 명령어처럼 보이는 디스어셈블리가 거의 없음.</li><li>Strings 창(Shift+F12)도 텅 비어 있는 경우가 흔함(패킹된 경우 원본 문자열도 암호화되어 있기 때문).</li><li>Output window에 <code>Unknown format</code>, <code>The input file does not appear to be a valid ...</code> 같은 메시지가 남아 있을 수 있음.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>IDA View 화면에서 진입점(entry point, <code>Ctrl+E</code>로 Entry points 창 확인 가능)에 실제로 커서를 놓고, 그 위치가 회색 데이터(<code>db</code>)로 보이는지 실제 코드(<code>mov</code>, <code>push</code> 등 니모닉)로 보이는지 확인한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>Ctrl+E</code>(Entry points 창)를 열어 IDA가 인식한 진입점 주소를 확인한다. 목록에 항목이 있다면 더블클릭해서 그 위치로 이동한다.</li><li>이동한 위치가 회색 <code>db</code> 바이트로 보인다면, 커서를 그 시작 주소에 놓고 <code>C</code>(Code로 변환)를 누른다. 정상적으로 명령어들이 어셈블리로 바뀌어 보이면, 이어서 함수 시작 위치에 커서를 놓고 <code>P</code>(Create function)를 눌러 함수로 만든다.</li><li>그래도 코드로 안 바뀌거나 이상한 명령어(의미 없는 조합)로 깨져 보인다면, 이 위치가 진짜 코드 시작점이 아닐 가능성이 높다 — 패킹된 바이너리라면 REV-0226(UPX 기본 언패킹), REV-0227(수동 언패킹 개념 OEP와 Dump)에서 다루는 대로, 압축 해제 스텁을 디버거로 실행해서 실제 OEP(Original Entry Point)를 찾아야 한다.</li><li>파일이 순수 셸코드/raw 바이너리라서 IDA가 "Unknown format"으로만 열었다면, 파일을 다시 열 때(File → Open) 뜨는 대화상자에서 파일 타입을 강제로 지정한다: <code>Binary File</code>을 선택하고, 아키텍처(예: <code>Metapc</code>)와 로드 주소(base address), 그리고 어떤 오프셋을 코드로 볼지 직접 입력한 뒤, 로드 후 시작 주소에서 수동으로 <code>C</code> → <code>P</code>를 반복한다.</li><li>함수 하나를 수동으로 만든 뒤에는, 그 함수 안에서 호출하는 다른 위치(간접 호출 대상 등)도 데이터로 남아있을 수 있으므로, 코드처럼 보이는 나머지 회색 영역들도 같은 방식(<code>C</code> → <code>P</code>)으로 하나씩 넓혀 나간다. 넓은 범위를 한 번에 처리하고 싶다면 해당 범위를 마우스로 드래그해 선택한 뒤 우클릭 → <code>Code</code>를 적용할 수도 있다.</li><li>섹션 속성이 의심되면 <code>Edit → Segments → Edit segment</code>에서 해당 섹션이 실행 가능(execute) 속성으로 표시되어 있는지 확인하고, 아니라면 체크해서 IDA가 그 영역도 코드 후보로 고려하게 만든다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li><code>Ctrl+E</code> : Entry points 창 열기</li><li><code>Ctrl+P</code> : Functions 창 열기</li><li><code>C</code> : 선택 영역을 Code로 변환</li><li><code>P</code> : 커서 위치를 함수 시작으로 지정해 함수 생성</li><li><code>U</code> : Undefine(코드/함수 정의 해제, 다시 시도할 때 사용)</li><li><code>Edit → Segments → Edit segment</code> : 섹션 속성(실행 가능 여부 등) 확인/수정</li><li><code>Shift+F12</code> : Strings 창(패킹 여부 정황 파악용)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>C</code>를 눌렀을 때 정상적인 니모닉(<code>push ebp</code>, <code>mov eax, ...</code> 등)이 줄줄이 나온다면 진짜 코드 영역을 맞게 찾은 것이다.</li><li><code>C</code>를 눌렀는데 이상한 조합(<code>??</code>, 알 수 없는 옵코드, 즉시 다시 <code>db</code>로 표시되는 경우)이 나온다면 그 위치는 코드가 아니라 진짜 데이터이거나, 압축된 코드일 가능성이 높다.</li><li>Entry points 창에 항목이 하나도 없다면 IDA가 이 파일 포맷 자체를 온전히 파싱하지 못했다는 뜻이므로, 파일 자체가 손상되었거나 커스텀 포맷일 가능성을 먼저 의심해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>회색 <code>db</code> 바이트를 보고 "이 파일은 코드가 없다"고 성급히 결론짓는 것 — 실제로는 대부분 코드이지만 아직 IDA가 그렇게 인식하지 못한 것뿐이다.</li><li>패킹된 바이너리에서 정적으로만 계속 <code>C</code>/<code>P</code>를 시도하며 시간을 쓰는 것 — 패킹된 스텁 내부는 정적 분석으로 실제 로직을 알아내기 어렵고, 디버거로 실행해서 언패킹된 이후 메모리를 덤프하는 편이 훨씬 빠르다.</li><li>셸코드 파일을 "Portable executable" 같은 잘못된 포맷으로 강제로 열어서 헤더 파싱 오류만 반복해서 겪는 것 — 셸코드는 <code>Binary File</code>로 열어야 한다.</li><li>진입점 하나만 함수로 만들고, 그 함수가 간접 호출하는 나머지 코드 영역을 방치해서 여전히 대부분이 데이터로 남아있는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>UPX 등으로 패킹된 것이 확실하다면 → REV-0774 및 언패킹 관련 문서를 먼저 확인한다.</li><li>entry point는 찾았는데 특정 함수만 디컴파일이 안 된다면 → REV-0152 IDA Decompiler Failed가 뜰 때</li><li>함수는 만들어졌는데 경계가 이상하다면 → REV-0154 IDA에서 함수 경계가 잘못 잡혔을 때</li><li>코드/데이터 경계 자체를 다시 잡는 기초가 필요하면 → REV-0155 IDA에서 Undefined Bytes를 Code/Data로 재해석</li></ul>
+<h2>미니 예제</h2>
+<p>UPX로 패킹된 Windows PE 파일을 IDA로 열었더니 Functions 창이 텅 비어 있는 상황.</p>
+<pre><code class="language-text">1. Ctrl+E로 Entry points 확인 → 주소 0x00401000 하나만 존재
+2. 0x00401000으로 이동 → 이미 코드(push/mov 등 unpacking stub 명령어)로 보임
+3. 이 스텁은 자기 자신을 압축 해제하는 루틴이라, 이 안에서 나오는 함수는 원본 프로그램의 진짜 로직이 아님
+4. 정적으로는 더 진행이 안 되므로 x64dbg 등 디버거로 실행 → 압축 해제가 끝나는 지점(OEP)까지 실행 후 메모리 덤프
+5. 덤프한 언패킹 이미지를 다시 IDA로 열었더니 Functions 창에 수백 개의 함수가 정상적으로 나타남</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0226-upx-basic-unpacking.html">REV-0226 — UPX 기본 언패킹</a></li><li><a href="rev-0802-wrong-architecture-load.html">REV-0802 — IDA/Ghidra에서 잘못된 아키텍처로 로드되어 전부 깨질 때</a></li><li><a href="rev-0774-ida-specific-function-decompile-keeps-failing.html">REV-0774 — IDA에서 특정 함수만 계속 디컴파일이 실패할 때</a></li><li><a href="rev-0155-ida-undefined-bytes.html">REV-0155 — IDA에서 Undefined Bytes를 Code/Data로 재해석</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>IDA의 코드/함수 인식 흐름(entry point 기반 추적, <code>C</code>/<code>P</code> 단축키 동작)은 Hex-Rays 공식 사용자 가이드 "Analyzing programs" 챕터 기준.</li><li>패킹된 바이너리에서 정적 분석기가 원본 코드를 인식하지 못하는 이유(압축 해제 스텁과 런타임 언패킹 구조)는 일반적으로 알려진 소프트웨어 패킹 동작 원리에 기반한다.</li><li>정확한 로드 다이얼로그 항목명은 버전에 따라 달라질 수 있어 실제 설치 버전에서 재확인을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

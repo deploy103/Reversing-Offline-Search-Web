@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GDB 실행 run start args 사용법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>GDB 실행 run start args 사용법</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">입문</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>GDB에서 프로그램을 동적으로 분석하려면 먼저 <code>gdb ./chall</code>로 바이너리를 로드한 뒤, 그냥 끝까지 돌리는 <code>run</code>, <code>main</code> 진입 직전에 자동으로 멈추는 <code>start</code>, 명령줄 인자를 넘기는 <code>set args</code>/<code>run arg1 arg2</code>, 아예 첫 명령어에서 멈추는 <code>starti</code> 중 상황에 맞는 시작 방법을 골라야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>gdb ./chall</code>까지는 켰는데 그다음 뭘 입력해야 프로그램이 실제로 돌기 시작하는지 모를 때</li><li><code>run</code>을 눌렀더니 프로그램이 끝까지 실행되고 그냥 종료 메시지만 뜰 때(브레이크포인트를 안 걸어서)</li><li>대상 프로그램이 <code>./chall input.txt</code> 처럼 명령줄 인자를 받아야 하는데, GDB 안에서 어떻게 인자를 넘기는지 모를 때</li><li><code>main</code>이 실행되기 직전, 또는 라이브러리가 로드되기 직전처럼 아주 이른 시점에서 멈추고 싶은데 어떤 명령을 써야 할지 모를 때</li><li>PIE 바이너리의 진짜 로드 베이스 주소를 보고 싶어서 <code>main</code>보다도 더 앞선 시점(엔트리 포인트)에서 멈추고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>GDB에 바이너리를 로드하는 것과 "실행"은 다른 단계다</h3>
+<p><code>gdb ./chall</code>(또는 실행 중 <code>file ./chall</code>)을 입력하면 GDB는 바이너리를 <strong>읽어서 심볼 테이블과 디스어셈블리 정보를 파싱</strong>할 뿐, 아직 프로세스를 만들지 않는다. 이 상태에서 <code>info registers</code>나 <code>x/10i $rip</code>을 치면 "프로세스가 없다"는 취지의 에러가 난다. 실제로 프로세스를 fork/exec해서 메모리에 올리는 건 <code>run</code>이나 <code>start</code> 같은 명령이 담당한다. 이 구분을 모르면 "왜 레지스터가 안 보이지?"라는 흔한 초보 질문이 나온다.</p>
+<h3><code>run</code> — 그냥 끝까지 돌린다</h3>
+<p><code>run</code>(줄여서 <code>r</code>)은 프로그램을 실행시키고, 브레이크포인트가 없으면 <strong>끝까지</strong> 실행한 뒤 종료 코드와 함께 GDB 프롬프트로 돌아온다. 분석 없이 그냥 프로그램이 어떻게 동작하는지 한 번 보고 싶을 때, 또는 미리 <code>break</code>로 원하는 지점을 걸어둔 뒤 그 지점까지 빠르게 진행시키고 싶을 때 쓴다. 브레이크포인트가 하나도 없는 상태에서 <code>run</code>을 치면 그냥 프로그램이 자연 종료될 때까지 GDB가 관여하지 않으므로, "run 했더니 그냥 끝나버렸어요"라는 증상은 대부분 <strong>브레이크포인트를 안 걸었다</strong>는 뜻이다.</p>
+<h3><code>start</code> — main 진입 직전에 자동으로 멈춘다</h3>
+<p><code>start</code>는 내부적으로 <code>main</code> 함수에 <strong>임시 브레이크포인트(tbreak)</strong>를 걸고 <code>run</code>을 실행하는 것과 같다. 즉:</p>
+<pre><code class="language-gdb">tbreak main
+run</code></pre>
+<p>을 한 번에 해주는 단축 명령이다. <code>main</code>에서 멈춘 뒤에는 그 임시 브레이크포인트가 자동으로 삭제되므로, 이후 프로그램을 몇 번을 다시 <code>run</code>해도 <code>start</code>처럼 다시 걸리진 않고 그냥 끝까지 실행된다(원한다면 <code>main</code>에 <code>break</code>를 따로 걸어두면 된다). <code>start</code>는 실전에서 가장 많이 쓰이는 진입 명령이다 — 라이브러리와 동적 링커의 초기화가 이미 끝났고, PIE 바이너리라면 로드 베이스도 이미 확정된 상태이기 때문에, 이 시점부터는 <code>info proc mappings</code>로 정확한 런타임 주소를 조회할 수 있다.</p>
+<h3><code>starti</code> — 그보다도 더 앞선 진입점(엔트리 포인트)에서 멈춘다</h3>
+<p><code>starti</code>는 <code>main</code>보다도 훨씬 이른 시점, ELF의 <code>e_entry</code>가 가리키는 <strong>진짜 프로그램 시작 지점</strong>(보통 <code>_start</code>)에서 멈춘다. <code>main</code>이 호출되기 전에 스택 초기화, <code>argc</code>/<code>argv</code> 설정, 동적 링커의 라이브러리 로딩 과정을 명령어 단위로 지켜보고 싶을 때 사용한다. 초보자가 당장 필요한 경우는 많지 않지만, "동적 링킹이 정확히 언제 일어나는지" 또는 "PIE 베이스가 결정되는 순간을 최대한 앞에서 잡고 싶을 때" 유용하다.</p>
+<h3>명령줄 인자 넘기기: <code>set args</code>와 <code>run</code> 뒤에 바로 쓰는 방법</h3>
+<p>GDB 밖에서 <code>./chall hello 123</code>처럼 인자를 주며 실행하던 프로그램이라면, GDB 안에서도 똑같이 인자를 넘겨야 프로그램이 정상 동작한다. 두 가지 방법이 있다.</p>
+<pre><code class="language-gdb">set args hello 123
+run</code></pre>
+<p>또는 한 줄로:</p>
+<pre><code class="language-gdb">run hello 123</code></pre>
+<p><code>run</code> 뒤에 인자를 직접 쓰면 그 인자가 그대로 <code>set args</code>처럼 저장되어, 이후 다시 <code>run</code>만 쳐도 같은 인자가 재사용된다. 표준 입력으로 데이터를 넣어야 하는 프로그램이라면(<code>./chall &lt; input.txt</code>) 리다이렉션도 그대로 쓸 수 있다:</p>
+<pre><code class="language-gdb">run &lt; input.txt</code></pre>
+<p>파일 경로, 환경변수를 다르게 주고 싶다면 <code>set environment VAR=value</code>, 실행 시 작업 디렉터리를 바꾸고 싶다면 <code>cd /path</code>도 GDB 안에서 지원한다.</p>
+<h3>GDB를 실행할 때부터 인자를 함께 넘기는 방법</h3>
+<p>매번 <code>set args</code>를 치기 귀찮다면 셸에서 GDB를 켤 때 <code>--args</code> 옵션으로 한 번에 지정할 수 있다:</p>
+<pre><code class="language-bash">gdb --args ./chall hello 123</code></pre>
+<p>이렇게 하면 GDB 안에서 그냥 <code>run</code>만 쳐도 <code>hello 123</code> 인자가 자동으로 붙는다. CTF에서 exploit 스크립트와 함께 자동화할 때 특히 편리한 방식이다.</p>
+<h3>여러 번 실행하기: 재시작과 상태 초기화</h3>
+<p>브레이크포인트에서 멈춘 뒤 다시 처음부터 실행하고 싶다면 <code>kill</code>로 현재 프로세스를 종료하고 다시 <code>run</code>(또는 <code>start</code>)을 치면 된다. GDB는 종료되지 않은 프로세스에서 <code>run</code>을 다시 치면 "다시 시작할까요?(y/n)"라고 물어본다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>gdb ./chall</code> 직후 <code>(gdb)</code> 프롬프트만 뜨고 아직 아무 레지스터도 없는 상태</li><li><code>run</code>을 쳤는데 아무 브레이크포인트도 안 걸려 있어서 <code>[Inferior 1 (process 12345) exited normally]</code> 메시지와 함께 그냥 끝나버림</li><li><code>Missing separate debuginfos</code> 경고(디버그 심볼이 없다는 뜻, 분석에는 큰 지장 없음)</li><li><code>start</code> 실행 시 <code>Temporary breakpoint 1, 0x0000... in main ()</code>처럼 <code>main</code>에서 멈췄다는 메시지</li><li>프로그램이 인자를 요구하는데 안 줘서 <code>Usage: ./chall &lt;file&gt;</code>처럼 사용법 메시지만 찍고 바로 종료되는 경우</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>분석 목적이 "일단 <code>main</code> 시작부터 천천히 보고 싶다"라면 그냥 <code>gdb ./chall</code> 후 <code>start</code>를 치는 것이 가장 빠른 시작이다. 프로그램이 명령줄 인자나 표준입력을 요구한다면 <code>start</code> 전에 <code>set args ...</code>부터 설정해둔다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) GDB로 바이너리 로드</strong></p>
+<pre><code class="language-bash">gdb ./chall</code></pre>
+<p>또는 인자까지 한 번에:</p>
+<pre><code class="language-bash">gdb --args ./chall input.txt</code></pre>
+<p><strong>2) (필요하면) 인자/표준입력 설정</strong></p>
+<pre><code class="language-gdb">set args input.txt</code></pre>
+<p><strong>3) 진입 방식 선택</strong></p>
+<pre><code class="language-gdb">start        # main 직전에서 멈춤 (가장 흔한 선택)</code></pre>
+<p>또는</p>
+<pre><code class="language-gdb">run          # 브레이크포인트 없이 끝까지 실행</code></pre>
+<p>또는</p>
+<pre><code class="language-gdb">starti       # 엔트리 포인트(_start)에서 멈춤</code></pre>
+<p><strong>4) 멈춘 뒤 상태 확인</strong></p>
+<pre><code class="language-gdb">info registers
+bt</code></pre>
+<p><strong>5) 이후 진행</strong> <code>break</code>로 원하는 지점에 브레이크포인트를 추가로 걸고 <code>continue</code>로 이어서 진행한다(REV-0186, REV-0187 참고).</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-gdb">gdb ./chall
+gdb --args ./chall arg1 arg2
+run
+run arg1 arg2
+run &lt; input.txt
+set args arg1 arg2
+start
+starti
+kill</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>start</code> 직후 뜨는 <code>Temporary breakpoint 1, 0x0000555555555185 in main ()</code>에서 <code>0x0000555555555185</code>는 PIE 베이스가 이미 반영된 <strong>실제 런타임 주소</strong>다. 이 값을 그대로 이후 분석에 활용할 수 있다.</li><li><code>run</code>만으로 종료됐을 때 나오는 <code>[Inferior 1 (process N) exited normally]</code>은 브레이크포인트 없이 프로그램이 정상 종료했다는 뜻이다. <code>exited with code 01</code>처럼 코드가 붙으면 비정상 종료(0이 아닌 반환값)다.</li><li><code>starti</code> 직후에는 아직 라이브러리가 매핑되지 않았을 수 있어 <code>info proc mappings</code>가 실행 파일 자신만 보여줄 수 있다. 라이브러리까지 보고 싶다면 <code>start</code>를 쓰는 게 낫다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>인자를 요구하는 프로그램에 <code>set args</code> 없이 그냥 <code>run</code>을 쳐서 "Usage" 메시지만 보고 왜 코드가 안 보이는지 헤매는 것.</li><li>브레이크포인트를 하나도 안 걸고 <code>run</code>을 쳐서 프로그램이 끝까지 실행돼버린 뒤 "GDB가 멈추질 않아요"라고 착각하는 것 — GDB는 아무것도 안 시키면 그냥 정상 실행만 시켜준다.</li><li><code>start</code>가 <code>main</code>에 건 임시 브레이크포인트를 영구 브레이크포인트로 착각하는 것 — <code>start</code> 이후 다시 <code>run</code>을 하면 <code>main</code>에서 자동으로 멈추지 않는다. 계속 <code>main</code>에서 멈추고 싶다면 <code>break main</code>을 별도로 걸어야 한다.</li><li><code>gdb --args</code>를 쓰지 않고 <code>gdb ./chall arg1 arg2</code>처럼 인자를 그냥 뒤에 붙여서 GDB 자체가 이상하게 파싱하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>특정 함수나 주소에 정확히 멈추고 싶다면 → REV-0186 GDB break와 address breakpoint</li><li>멈춘 뒤 한 줄씩 실행하고 싶다면 → REV-0187 GDB stepi nexti continue</li><li>PIE 바이너리라 주소가 매번 바뀌어서 브레이크포인트가 안 걸린다면 → REV-0194 PIE 바이너리 GDB 브레이크포인트 잡기</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ gdb --args ./chall secret.txt
+GNU gdb (Ubuntu 12.1) ...
+Reading symbols from ./chall...
+(gdb) start
+Temporary breakpoint 1 at 0x1189: file chall.c, line 10.
+Starting program: /home/user/chall secret.txt
+Temporary breakpoint 1, main (argc=2, argv=0x7fffffffe4d8) at chall.c:10
+10          char buf[64];
+(gdb) info registers rip
+rip            0x555555555189      0x555555555189 &lt;main+8&gt;</code></pre>
+<p><code>argc=2, argv=0x7fffffffe4d8</code>가 보이는 것으로 <code>secret.txt</code> 인자가 제대로 전달됐음을 확인할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0186-gdb-break.html">REV-0186 — GDB break와 address breakpoint</a></li><li><a href="rev-0187-gdb-stepi-nexti-continue.html">REV-0187 — GDB stepi nexti continue</a></li><li><a href="rev-0194-gdb-pie-breakpoints.html">REV-0194 — PIE 바이너리 GDB 브레이크포인트 잡기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>run</code>, <code>start</code>, <code>starti</code>, <code>set args</code>, <code>--args</code> 옵션: GDB 공식 온라인 문서("Starting your Program", "Arguments") 기준.</li><li><code>tbreak main</code> + <code>run</code> 조합이 <code>start</code>와 동일하다는 설명: GDB 공식 문서의 <code>start</code> 명령 설명 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>디버거에서 함수 인자를 실행 중 값으로 바꿔서 실험하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>디버거에서 함수 인자를 실행 중 값으로 바꿔서 실험하기</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>CALL</code> 직전에 인자가 담긴 레지스터(또는 스택 슬롯)를 x64dbg 레지스터 창이나 GDB <code>set $rdi = ...</code> 명령으로 원하는 값으로 덮어쓰면, 소스 코드나 바이너리를 패치하지 않고도 "이 함수에 이 값을 넣으면 어떻게 되는가"를 즉석에서 실험할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>검증 함수의 로직이 복잡해서 정적 분석만으로는 통과 조건을 완전히 파악하기 어렵고, 여러 입력값을 직접 넣어 반환값 변화를 관찰하고 싶을 때</li><li>특정 분기로 들어가려면 함수 인자가 특정 범위여야 하는데, 실제 입력을 그렇게 만들기 번거로워서 디버거에서 바로 그 값으로 바꿔치기하고 싶을 때</li><li>함수가 포인터 인자를 받는데, 그 포인터가 가리키는 버퍼 내용 대신 다른 문자열/데이터로 바꿔서 함수가 어떻게 반응하는지 보고 싶을 때</li><li>REV-0175에서 배운 "CALL 직전 인자 확인법"을 활용해 인자를 읽는 것에서 한 단계 더 나아가, 그 값을 직접 바꿔보고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>인자가 어디에 있는지부터 알아야 바꿀 수 있다</h3>
+<p>인자를 바꾸려면 먼저 calling convention에 따라 인자가 레지스터에 있는지 스택에 있는지 알아야 한다(REV-0175 참고).</p>
+<ul><li><strong>Windows x64</strong>: 첫 4개 정수/포인터 인자가 <code>RCX</code>, <code>RDX</code>, <code>R8</code>, <code>R9</code>에 순서대로 들어간다. 5번째부터는 스택.</li><li><strong>SysV x64(Linux)</strong>: 첫 6개 정수/포인터 인자가 <code>RDI</code>, <code>RSI</code>, <code>RDX</code>, <code>RCX</code>, <code>R8</code>, <code>R9</code> 순서로 들어간다. 7번째부터는 스택.</li><li><strong>x86(32비트, cdecl)</strong>: 인자가 전부 스택에 오른쪽부터 왼쪽 순서로 푸시된다. <code>[esp]</code>, <code>[esp+4]</code>, <code>[esp+8]</code>처럼 접근한다.</li></ul>
+<p><code>CALL</code> 명령 실행 직전(디스어셈블리 상에서 그 줄에 브레이크포인트를 걸고 아직 실행 전 상태)에 레지스터/스택 값을 바꾸면, 그 직후 실행되는 함수는 바뀐 값을 그대로 인자로 받는다.</p>
+<h3>레지스터 값 바꾸기</h3>
+<ul><li><strong>x64dbg</strong>: Registers 패널에서 해당 레지스터(예: <code>RCX</code>)를 더블클릭하거나 우클릭 → "Edit"으로 새 값을 16진수로 입력한다. 즉시 반영되며 Step Into(F7)나 Step Over(F8)로 다음 명령을 실행하면 그 값이 그대로 쓰인다.</li><li><strong>GDB</strong>: <code>set $rdi = 0x1234</code> 또는 <code>set variable rdi = 0x1234</code>처럼 레지스터를 직접 대입한다. <code>p $rdi</code>로 바뀐 값을 바로 확인할 수 있다.</li></ul>
+<h3>포인터 인자는 "가리키는 내용"까지 바꿔야 의미가 있을 때가 많다</h3>
+<p>문자열 포인터를 인자로 받는 함수라면, 포인터 값 자체(주소)만 바꾸는 것보다 그 주소가 가리키는 메모리 내용을 원하는 문자열로 덮어써야 실질적인 실험이 된다.</p>
+<ul><li><strong>x64dbg</strong>: Dump 창에서 해당 주소로 이동한 뒤 우클릭 → Binary → Edit(또는 Fill)로 바이트를 직접 입력. 문자열이면 "Edit" 다이얼로그에서 ASCII 탭에 새 문자열을 입력할 수 있다.</li><li><strong>GDB</strong>: <code>set {char[8]}0x7fffffffe100 = "TESTVAL"</code> 처럼 메모리 영역에 직접 대입하거나, 더 간단히는 스택에 여유 공간을 만들어 <code>set $rdi</code>가 그 새 버퍼를 가리키게 한 뒤 그 버퍼를 채우는 방식도 쓴다.</li></ul>
+<h3>이 방법의 한계</h3>
+<p>레지스터/메모리 값을 바꾸는 것은 "그 실행 한 번"에만 적용되는 임시 실험이다. 프로그램을 재시작하면 원래대로 돌아간다. 이는 바이너리 자체를 영구적으로 바꾸는 패치(REV-0184)와 다른 개념이며, "이 값이면 통과하는지 아닌지"를 빠르게 확인하는 용도로 쓰고, 확정되면 그 다음에 실제 입력을 그렇게 만들거나 알고리즘을 역산하는 식으로 넘어간다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>디스어셈블리에서 <code>mov rdi, rax</code> / <code>mov edi, [rbp-4]</code> 처럼 인자를 채우는 명령들이 <code>call validate_password</code> 직전에 연속으로 나옴</li><li>함수가 <code>int</code>, <code>bool</code>을 반환하는데 그 값에 따라 직후 <code>test eax, eax</code> / <code>cmp eax, 1</code> + 조건 분기가 이어짐(REV-0176 반환값 확인과 연결)</li><li>여러 번 실행해도 항상 같은 입력에 대해 같은 반환값만 나와서 "이 함수의 입력-출력 관계를 다른 값으로도 확인해보고 싶다"는 필요가 생김</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>대상 함수 호출 직전(<code>call</code> 명령 바로 위 줄)에 브레이크포인트를 걸고, 실행이 멈추면 calling convention에 따라 어느 레지스터/스택 위치가 몇 번째 인자인지부터 확인한다(REV-0175). 그 다음 바꾸고 싶은 인자 하나를 정하고, 원래 값을 먼저 메모해둔다(나중에 되돌리거나 비교하기 위해).</p>
+<h2>단계별 절차</h2>
+<ol><li><code>call</code> 대상 함수 직전 주소에 브레이크포인트</li><li>브레이크포인트에 걸리면 calling convention에 맞는 레지스터(RDI/RCX 등) 또는 스택 슬롯에서 현재 인자 값을 먼저 읽고 기록</li><li>x64dbg는 Registers 패널에서 값 편집, GDB는 <code>set $rdi = 새값</code> 명령으로 인자 교체</li><li>포인터 인자라면 필요 시 가리키는 메모리 내용도 함께 편집(Dump 창 편집 또는 GDB <code>set {type}addr = value</code>)</li><li>Step Over(F8) 또는 GDB <code>finish</code>로 함수 실행을 끝까지 진행</li><li>반환값(RAX/EAX)과 이후 분기 결과를 관찰(REV-0176)</li><li>다른 값으로 반복하려면 프로그램을 재시작하거나, 같은 함수가 루프 안에서 여러 번 호출되는 경우 다음 호출 때 다시 값만 바꿔서 반복 실험</li></ol>
+<h2>명령어/단축키</h2>
+<p>GDB(Linux/SysV x64 기준):</p>
+<pre><code>break *0x401234
+p $rdi
+set $rdi = 0x2a
+set {char[8]}0x7fffffffe100 = "TESTVAL"
+finish
+p $rax</code></pre>
+<p>x64dbg(Windows/x64 기준):</p>
+<pre><code>Registers 패널에서 RCX 더블클릭 → 값 입력
+Dump 창 → 우클릭 → Binary → Edit (문자열/바이트 수정)
+F8 (Step Over) 로 CALL 실행</code></pre>
+<h2>출력 해석</h2>
+<ul><li>GDB <code>finish</code> 실행 후 <code>Value returned is $1 = 1</code>처럼 나오는 값이 함수의 반환값이다. 바꾼 인자에 따라 이 값이 어떻게 달라지는지가 실험의 핵심 결과다.</li><li>x64dbg에서 F8로 CALL을 넘기면 RAX(또는 EAX)에 반환값이 남는다. Registers 패널에서 색이 바뀐(빨간색 등) 레지스터가 방금 값이 변경된 레지스터이므로, 반환값이 갱신됐는지 한눈에 보인다.</li><li>인자를 바꿨는데도 반환값이 전혀 달라지지 않는다면, 그 레지스터가 실제로는 그 함수의 인자로 쓰이는 게 아니거나(계산 착오로 잘못된 레지스터를 바꿨거나) 함수 내부에서 그 인자를 실제로 쓰지 않는 경로로 빠졌을 가능성을 의심해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>calling convention을 착각해서 Windows 함수인데 SysV 레지스터(RDI 등)를 바꾸거나 그 반대로 하는 것</li><li><code>CALL</code> 실행 이후(함수 내부로 들어간 뒤)에 인자 레지스터를 바꿔서, 이미 함수가 스택/다른 레지스터로 인자를 복사해간 뒤라 효과가 없는 것</li><li>포인터 인자의 "주소 값"만 바꾸고 그 주소가 가리키는 실제 데이터는 그대로 둬서, 함수가 여전히 예전 내용을 읽는 것</li><li>이 방법으로 확인한 "통과하는 값"을 바로 정답이라고 확신하는 것 — 함수 하나의 조건만 만족했을 뿐, 프로그램 전체 검증 로직(다른 단계)이 더 있을 수 있으므로 REV-0833(멀티스텝 검증 추적)과 함께 확인해야 함</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>인자 위치 자체를 다시 확인하고 싶으면 → REV-0175 CALL 직전 함수 인자 확인하는 법</li><li>반환값 읽는 법이 헷갈리면 → REV-0176 CALL 직후 반환값 확인하는 법</li><li>이 실험 결과를 바탕으로 분기 자체를 강제로 바꿔서 우회 경로를 확인하고 싶다면 → REV-0826 디버거에서 분기 조건을 강제로 바꿔서 실험하기(Flag 조작)</li><li>임시 실험이 아니라 영구적으로 바이너리를 고치고 싶다면 → REV-0184 x64dbg CTF용 간단 패치와 저장</li><li>GDB에서 레지스터를 바꿨는데 반영이 안 되는 것처럼 보인다면 → REV-0713 GDB에서 레지스터를 수정했는데 반영이 안 되는 것처럼 보일 때</li></ul>
+<h2>미니 예제</h2>
+<pre><code>(gdb) break *0x4011a0
+(gdb) run
+Breakpoint 1, 0x00000000004011a0 in main ()
+(gdb) p/x $rdi
+$1 = 0x404050
+(gdb) x/s $rdi
+0x404050: "wrongpass"
+(gdb) set {char[10]}0x404050 = "guessed12"
+(gdb) x/s $rdi
+0x404050: "guessed12"
+(gdb) finish
+Run till exit from #0  0x00000000004011a0 in main ()
+validate_password (buf=0x404050 "guessed12") at chall.c:55
+Value returned is $2 = 0</code></pre>
+<p><code>rdi</code>가 가리키는 문자열을 강제로 <code>guessed12</code>로 바꾼 뒤 함수를 마저 실행하자 반환값이 <code>0</code>(실패)으로 나왔다. 이런 식으로 여러 문자열을 대입해가며 어떤 조건에서 반환값이 <code>1</code>(성공)이 되는지 실험할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0175-args-before-call.html">REV-0175 — CALL 직전 함수 인자 확인하는 법</a></li><li><a href="rev-0176-return-value-after-call.html">REV-0176 — CALL 직후 반환값 확인하는 법</a></li><li><a href="rev-0826-force-flag-manipulation.html">REV-0826 — 디버거에서 분기 조건을 강제로 바꿔서 실험하기(Flag 조작)</a></li><li><a href="rev-0184-x64dbg-patching.html">REV-0184 — x64dbg CTF용 간단 패치와 저장</a></li><li><a href="rev-0713-gdb-register-write-not-applied.html">REV-0713 — GDB에서 레지스터를 수정했는데 반영이 안 되는 것처럼 보일 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Windows x64 calling convention(RCX/RDX/R8/R9)과 SysV x64 calling convention(RDI/RSI/RDX/RCX/R8/R9): Microsoft x64 Software Conventions 문서 및 System V AMD64 ABI 문서 기준.</li><li>GDB <code>set $reg = value</code>, <code>set {type}addr = value</code>, <code>finish</code> 명령: GNU GDB 공식 매뉴얼 기준.</li><li>x64dbg Registers/Dump 편집 절차: x64dbg 공식 GitHub Wiki 문서 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

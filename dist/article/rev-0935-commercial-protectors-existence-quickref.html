@@ -1,0 +1,70 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>VMProtect/Themida 등 상용 프로텍터 존재만 알아두는 참조표 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / packing</div>
+<article class="article-body">
+<h1>VMProtect/Themida 등 상용 프로텍터 존재만 알아두는 참조표</h1>
+<div class="article-meta"><span class="tag">packing</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">Detect It Easy</span></div>
+<h2>한 줄 요약</h2>
+<p>VMProtect, Themida/WinLicense, Enigma Protector, Code Virtualizer 같은 상용 프로텍터는 UPX 같은 단순 압축기와 달리 코드를 자체 바이트코드로 변환(가상화)하고 강력한 안티디버깅·안티덤프를 겹겹이 두르므로, 이 문서는 "이런 이름이 존재하고 대략 이런 특징을 가진다"는 정도만 알아두기 위한 참조표이며 실제 언패킹 절차는 다루지 않는다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Detect It Easy가 UPX가 아니라 <code>VMProtect</code>, <code>Themida</code>, <code>Enigma</code> 같은 낯선 이름을 표시했을 때, 이게 뭔지 감이 안 잡힐 때</li><li>entry point 코드가 UPX처럼 짧지 않고 이상하게 길고 반복적인 인터프리터 구조로 보일 때, 이것이 상용 프로텍터의 특징인지 확인하고 싶을 때</li><li>CTF 문제 설명에 "VMProtect로 보호됨"이라고 적혀 있어서 난이도를 가늠하고 싶을 때</li><li>REV-0227(수동 언패킹 개념)을 읽었는데, 그 개념이 이런 상용 프로텍터에도 그대로 적용되는지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>UPX 같은 패커는 "압축된 원본 코드를 메모리에 그대로 복원한 뒤 원본으로 점프"하는 구조라서 OEP만 찾으면 사실상 원본 코드를 그대로 되찾을 수 있다. 반면 상용 프로텍터는 목적 자체가 다르다. 이들은 소프트웨어 판매사가 자사 프로그램을 크랙·분석당하지 않도록 보호하는 것이 주 용도이며(CTF에서는 문제 난이도를 극단적으로 높이는 용도로 등장), 다음과 같은 훨씬 강력한 기법을 쓴다.</p>
+<ul><li><strong>코드 가상화(virtualization)</strong>: 원본 x86 명령어를 그대로 두지 않고, 프로텍터가 만든 커스텀 바이트코드로 변환한 뒤, 그 바이트코드를 해석하는 자체 인터프리터(가상 머신)를 함께 심는다. 그래서 "원본으로 점프하는 한 지점(OEP)"이라는 개념 자체가 희미해지거나 아예 없을 수 있다.</li><li><strong>다중/중첩 안티디버깅</strong>: REV-0932에서 다룬 여러 분류(API 질의, 구조체 직접 읽기, 타이밍, 예외)를 동시에, 그것도 여러 겹으로 배치한다.</li><li><strong>안티덤프</strong>: 메모리 덤프 자체를 방해하는 코드(덤프 시점에 메모리 내용을 스스로 변경하는 등)를 포함하는 경우가 많다.</li><li><strong>체크섬/무결성 검사</strong>: 코드 일부를 패치하면 실행 중 자체 체크섬 검증에 걸려 다른 곳에서 크래시가 나도록 설계되기도 한다.</li></ul>
+<p>이 때문에 이런 프로텍터는 REV-0226의 <code>upx -d</code> 같은 한 줄 자동 언패킹이 존재하지 않으며, 완전한 언패킹에는 숙련자도 며칠~몇 주가 걸릴 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<table><thead><tr><th>프로텍터</th><th>제작사/성격</th><th>DIE 표시 예</th><th>대표 특징</th></tr></thead><tbody><tr><td>VMProtect</td><td>상용, 코드 가상화 중심</td><td><code>Protector: VMProtect(3.x)</code></td><td>섹션 이름이 <code>.vmp0</code>/<code>.vmp1</code>이거나 랜덤화됨, 강한 안티디버깅</td></tr><tr><td>Themida / WinLicense</td><td>상용, 가상화+라이선싱</td><td><code>Protector: Themida/WinLicense</code></td><td>매우 다양한 안티디버깅/안티VM 조합, 섹션 다수</td></tr><tr><td>Enigma Protector</td><td>상용, 라이선싱+간단 가상화</td><td><code>Protector: Enigma Protector</code></td><td>트라이얼/라이선스 체크 로직과 결합되는 경우가 많음</td></tr><tr><td>Code Virtualizer (Oreans)</td><td>상용, 함수 단위 부분 가상화</td><td><code>Protector: Code Virtualizer</code></td><td>프로그램 전체가 아니라 특정 함수만 가상화하는 경우가 흔함</td></tr></tbody></table>
+<h2>가장 먼저 할 것</h2>
+<p>DIE 결과가 <code>Protector:</code>로 시작하고 위 표의 이름 중 하나라면, 곧바로 UPX식 자동 언패킹을 시도하지 말고 "이 문제가 실제로 완전한 언패킹을 요구하는지"부터 재검토한다. 대부분의 CTF 문제는 프로텍터 완전 제거보다 동적 분석(REV-0241)으로 목표 로직만 확인하는 것이 현실적이다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) DIE로 프로텍터 이름 확정.</strong> <strong>2) 이름이 위 표에 있으면 "가상화/강한 보호" 계열임을 인지한다.</strong> <strong>3) 문제 목적을 재확인</strong>: 완전한 정적 분석용 언패킹이 꼭 필요한지, 아니면 특정 비교 로직/플래그 확인만 필요한지 구분한다. <strong>4) 후자라면 REV-0241의 안내대로 동적 분석(디버거로 직접 실행하며 API 후킹/브레이크포인트)으로 전환한다.</strong> <strong>5) 전자(완전 언패킹)가 꼭 필요하다면, 이 문서 범위를 넘어서는 전용 언패커 리서치(패커 이름 + 버전 + "unpacker"로 검색)가 필요함을 인지하고 별도로 진행한다.</strong></p>
+<h2>명령어/단축키</h2>
+<ul><li>DIE: 파일 드래그 → 상단 결과란에서 <code>Protector:</code> 접두어 확인</li><li>이 문서 수준에서는 별도 실습 명령을 다루지 않는다(존재 인지가 목적).</li></ul>
+<h2>출력 해석</h2>
+<ul><li>DIE가 <code>Protector: VMProtect(3.5) [-]</code>처럼 버전까지 표시하면 신뢰도가 높다.</li><li>버전 정보 없이 <code>Protector: Themida/WinLicense</code>만 나오는 경우도 흔한데, 이는 이 계열 프로텍터가 버전 식별을 어렵게 만드는 자체 난독화를 포함하기 때문이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>"프로텍터도 결국 패커의 일종이니 UPX처럼 몇 분이면 풀리겠지"라고 낙관하는 것 — 근본적으로 설계 목적과 난이도가 다르다.</li><li>CTF 문제에서 프로텍터가 걸린 것을 보고 곧장 완전 언패킹부터 시도하는 것 — REV-0241에서 안내하듯 동적 분석 우회가 더 실용적인 경우가 많다.</li><li>이 문서만 읽고 실제 우회/언패킹 절차까지 다 배웠다고 착각하는 것 — 이 문서는 "이런 것이 존재한다"는 인지 수준만 다룬다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>완전한 언패킹 개념(OEP, 메모리 덤프, IAT 복구)이 궁금하면 → REV-0227 수동 언패킹 개념 OEP와 Dump(단, 상용 프로텍터에는 훨씬 큰 난이도로 적용됨을 감안).</li><li>이런 바이너리를 만났을 때 정적 분석 대신 동적 분석으로 전환하는 기준이 궁금하면 → REV-0241 패커와 난독화 때문에 디컴파일이 틀릴 때 정적/동적 전환.</li><li>안티디버깅이 겹겹이 걸려있다면 → REV-0932 안티디버깅 기법 종류 빠른 참조표(정리본).</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">DIE 결과: Protector: VMProtect(3.x) [strong]
+섹션: .vmp0, .vmp1, .text(정상 크기보다 훨씬 작음)
+
+-&gt; 이 시점에서 판단할 것: "문제가 요구하는 것이 완전한 코드 복원인가,
+   아니면 특정 분기의 결과(예: 플래그 비교)만 확인하면 되는가?"
+   후자라면 REV-0241의 동적 분석 전환을 우선 검토한다.</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0227-manual-unpacking-oep.html">REV-0227 — 수동 언패킹 개념 OEP와 Dump</a></li><li><a href="rev-0241-switch-to-dynamic-when-packed.html">REV-0241 — 패커와 난독화 때문에 디컴파일이 틀릴 때 정적/동적 전환</a></li><li><a href="rev-0932-anti-debug-techniques-summary-quickref.html">REV-0932 — 안티디버깅 기법 종류 빠른 참조표(정리본)</a></li><li><a href="rev-0931-packer-signature-quickref.html">REV-0931 — 흔한 패커 시그니처 빠른 참조표(UPX/ASPack/PECompact 등)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>VMProtect, Themida/WinLicense, Enigma Protector, Code Virtualizer의 코드 가상화·안티디버깅·안티덤프 특징은 각 제품 공식 웹사이트(vmpsoft.com, oreans.com)의 제품 소개 및 다수의 공개 리버싱 컨퍼런스 발표 자료(코드 가상화 분석 관련)에서 공통적으로 설명하는 일반적 특징을 요약한 것이다(2026-09-09 검증).</li><li>Detect It Easy의 프로텍터 시그니처 인식은 프로젝트 공식 저장소(github.com/horsicq/Detect-It-Easy)를 참고했다.</li><li>이 문서는 존재 인지 목적의 개요이며, 실제 우회/언패킹 성공 여부는 프로텍터 버전과 설정 옵션에 따라 크게 달라지므로 별도의 심화 리서치가 필요하다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

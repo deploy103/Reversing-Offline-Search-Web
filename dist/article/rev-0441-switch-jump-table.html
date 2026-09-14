@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Switch문 점프 테이블(Jump Table) 완전 분석 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>Switch문 점프 테이블(Jump Table) 완전 분석</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>switch</code> 문의 case 값이 촘촘하게 이어져 있으면 컴파일러는 <code>if-else</code> 체인 대신 <strong>케이스 값을 인덱스로 삼아 목적지 주소 배열을 한 번에 점프</strong>하는 점프 테이블을 만드는데, 어셈블리에서는 <code>cmp</code>(범위 체크) 직후 <code>jmp [reg*4+table]</code> 형태로 나타난다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리에 <code>jmp</code> 대상이 레지스터나 <code>[rax*4+addr]</code>처럼 계산된 주소로 나와서 "어디로 뛰는지" 바로 안 보일 때</li><li>IDA/Ghidra가 자동으로 <code>switch(x) { case ...: }</code> 형태로 예쁘게 디컴파일해주는데 그 근거가 되는 원본 어셈블리를 이해하고 싶을 때</li><li>메뉴 선택형 크랙미("1. 입력 2. 확인 3. 종료")에서 옵션 처리 로직이 어디서 갈라지는지 빠르게 찾고 싶을 때</li><li>IDA가 점프 테이블을 자동으로 인식하지 못해서 <code>jmp rax</code> 아래 코드가 함수처럼 안 보이고 깨져 있을 때(수동으로 테이블을 지정해야 하는 상황)</li></ul>
+<h2>핵심 개념</h2>
+<h3>switch가 항상 점프 테이블이 되는 건 아니다</h3>
+<p>컴파일러는 <code>switch</code>의 case 값 분포를 보고 세 가지 전략 중 하나를 고른다.</p>
+<ol><li><strong>점프 테이블(Jump Table)</strong>: case 값들이 촘촘하게 이어져 있을 때(예: <code>case 0</code>~<code>case 7</code>처럼 연속되거나 빈틈이 적을 때). 인덱스 하나로 O(1) 시간에 목적지를 찾는다.</li><li><strong>이진 탐색(binary search) 트리</strong>: case 값이 듬성듬성(sparse) 흩어져 있을 때. <code>cmp</code>/<code>jg</code>/<code>jl</code>을 이용해 값의 범위를 절반씩 좁혀가며 분기한다(REV-0069 참고).</li><li><strong>혼합형</strong>: 값이 몇 개의 촘촘한 구간으로 뭉쳐 있으면, 구간별로는 점프 테이블을 쓰고 구간 사이는 이진 탐색이나 순차 비교로 연결한다.</li></ol>
+<p>즉 어셈블리에 점프 테이블이 안 보인다고 해서 원본 코드에 <code>switch</code>가 없었다고 단정하면 안 된다 — case 값 분포에 따라 완전히 다른 모양으로 컴파일된다.</p>
+<h3>전형적인 어셈블리 구조 (x64 SysV, PIE)</h3>
+<pre><code class="language-asm">; switch (x) { case 0: ... case 1: ... ... case 4: ... default: ... }
+cmp     edi, 4
+ja      default_case          ; unsigned 비교 한 방으로 "0보다 작음"과 "4보다 큼"을 동시에 걸러냄
+movsxd  rax, edi               ; 인덱스를 64비트로 부호 확장(REV-0041)
+lea     rdx, [rip+jump_table]  ; 테이블 시작 주소(RIP 상대, REV-0439)
+movsxd  rax, dword ptr [rdx+rax*4]  ; 테이블에서 "RIP 기준 상대 오프셋"을 읽음 (PIE 표준 패턴)
+add     rax, rdx               ; 상대 오프셋 + 테이블 주소 = 실제 목적지
+jmp     rax                    ; 계산된 주소로 점프
+
+jump_table:
+    dd  case0 - jump_table
+    dd  case1 - jump_table
+    dd  case2 - jump_table
+    dd  case3 - jump_table
+    dd  case4 - jump_table</code></pre>
+<p>핵심 순서는 항상 <strong>① 범위 체크(<code>cmp</code>+<code>ja</code>/<code>jbe</code>) → ② 인덱스 확장/스케일 → ③ 테이블에서 목적지 읽기 → ④ 간접 <code>jmp</code></strong> 다. 범위 체크에서 <code>unsigned</code> 비교(<code>ja</code>, REV-0070)를 쓰는 이유는, <code>x</code>가 음수인 경우도 <code>unsigned</code>로 보면 아주 큰 값이 되어 "범위를 벗어남" 조건 하나로 자연스럽게 걸러지기 때문이다(부호 있는 값의 하한/상한을 따로 검사할 필요가 없어짐).</p>
+<h3>32비트/비-PIE 바이너리에서는 더 단순하다</h3>
+<p>재배치가 자유로운 32비트나 PIE가 아닌 바이너리에서는 테이블이 <strong>절대 주소</strong>를 직접 담고, 계산도 더 짧다.</p>
+<pre><code class="language-asm">cmp     eax, 4
+ja      default_case
+jmp     dword ptr [eax*4 + jump_table]   ; 테이블 원소 = 목적지의 절대 주소</code></pre>
+<p>x64 PIE 바이너리가 굳이 "RIP 상대 오프셋을 읽고 더하는" 한 단계를 더 거치는 이유는, 테이블 자체도 재배치 없이 위치 독립적으로 만들기 위해서다(절대 주소를 담으면 로드 위치가 바뀔 때마다 테이블도 재배치해야 함).</p>
+<h3>IDA/Ghidra에서의 인식과 표시</h3>
+<p>IDA는 이 패턴(범위 체크 + 계산된 <code>jmp</code>)을 자동으로 인식하면, <code>jmp</code>가 있던 자리에 <strong>점프 테이블(jtable_xxx로 이름 붙은 배열)</strong> 을 만들고, 디스어셈블리 화면에 "switch jump table for switch statement"라는 주석과 함께 각 case로 가는 화살표들을 보여준다. F5로 디컴파일하면 완전히 자연스러운 <code>switch (x) { case 0: ...; case 1: ...; default: ...; }</code> 형태로 재구성된다. Ghidra도 동일하게 자동 switch 분석 기능이 있다.</p>
+<p><strong>자동 인식이 실패하는 경우</strong>도 흔하다 — 테이블이 암호화/난독화되어 있거나, 컴파일러가 흔치 않은 스케일을 쓰거나, 코드가 손으로 짜여진 경우다. 이럴 때는 <code>jmp rax</code> 아래 코드가 하나의 이어진 함수로 인식되지 않고 조각조각 끊겨 보인다. 수동으로 고치려면:</p>
+<ol><li>테이블로 추정되는 데이터 영역에서 <code>D</code> 키로 데이터를 재해석하거나, 배열로 지정한다.</li><li><code>jmp</code>가 있는 라인에서 우클릭 → <strong>"Create Switch/jump table"</strong>(IDA) 또는 Edit → Other → Specify New/Edit jump table을 선택해서, IDA에게 테이블의 시작 주소, 원소 개수, 원소 크기, base 조정 방식을 직접 알려준다.</li><li>완료하면 나머지는 자동 인식된 것과 동일하게 표시된다.</li></ol>
+<h3>다른 패턴과 헷갈리지 않기 — vtable과의 차이</h3>
+<p>점프 테이블과 vtable(REV-0444)은 둘 다 "메모리에서 주소를 읽어 간접 분기"한다는 점에서 겉보기에 비슷하지만 본질이 다르다.</p>
+<ul><li><strong>점프 테이블</strong>: 원소들이 <strong>같은 함수 내부</strong>의 여러 기본 블록(basic block) 주소를 가리킨다. 대상은 <code>jmp</code>(반환 주소를 남기지 않음)로 이동한다.</li><li><strong>vtable</strong>: 원소들이 <strong>서로 다른, 완전히 독립적인 함수</strong>의 시작 주소를 가리킨다. 대상은 <code>call</code>(반환 주소를 남김)로 호출된다.</li></ul>
+<p><code>jmp [reg*4+addr]</code>이면 점프 테이블, <code>call [reg*8+addr]</code>이나 이중 역참조(<code>mov rax,[rcx]; call [rax+offset]</code>)면 vtable일 가능성이 높다는 규칙으로 우선 구분하고, 애매하면 테이블 원소가 가리키는 주소들이 한 함수 안에 몰려있는지(점프 테이블) 서로 다른 함수 시작 지점들인지(vtable) 직접 확인한다.</p>
+<h3>리버싱 관점에서의 의미</h3>
+<p>CTF 크랙미의 "메뉴 선택" 로직(<code>1) 입력 2) 검증 3) 종료</code>)은 거의 항상 switch문으로 짜여지고, 옵션 개수가 적으면 점프 테이블로 컴파일된다. 점프 테이블을 찾으면 <strong>한 번에 모든 case 핸들러의 시작 주소를 알 수 있어서</strong>, 문자열이나 xref를 일일이 따라가지 않고도 전체 메뉴 구조를 빠르게 파악할 수 있다. 또한 범위 체크(<code>cmp</code>+<code>ja</code>)가 없거나 우회 가능하다면(버그가 있는 코드), 잘못된 인덱스로 테이블 범위 밖의 임의 주소로 점프하는 취약점(out-of-bounds jump)이 될 수 있다는 점도 pwn 계열 문제에서 중요하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>cmp reg, N</code> 다음에 <code>ja</code>/<code>jbe</code>/<code>jnbe</code> 같은 unsigned 분기가 곧바로 이어짐(범위 체크)</li><li>그 직후 <code>jmp [reg*4+addr]</code> 또는 <code>movsxd</code>/<code>add</code>를 거쳐 <code>jmp reg</code>로 마무리</li><li><code>.rodata</code>/<code>.text</code>에 <code>dd</code>(4바이트) 값들이 촘촘히 나열된 데이터 블록(테이블 그 자체)</li><li>IDA 그래프 뷰에서 하나의 블록에서 여러 개의 화살표가 동시에 뻗어나가는 모양</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>jmp</code>(또는 <code>call</code>) 대상이 레지스터/메모리 계산식인지 확인하고, 그 앞에 범위 체크(<code>cmp</code>+<code>ja</code>류)가 있는지 찾는다.</li><li>범위 체크의 상수(N)를 확인해서 case 개수(대략 N+1개, default 포함)를 가늠한다.</li><li>IDA가 이미 자동으로 <code>switch</code> 문으로 디컴파일했는지 F5로 먼저 확인하고, 실패했으면 수동 지정이 필요하다고 판단한다.</li></ol>
+<h2>단계별 절차</h2>
+<ol><li><code>cmp</code>/<code>ja</code> 같은 범위 체크가 점프 테이블 직전에 있는지 확인한다(case 값 범위를 벗어나면 default로 감).</li><li><code>jmp [table + idx*8]</code>(또는 4) 형태의 간접 점프를 찾는다.</li><li>테이블 시작 주소(<code>table</code>)를 Hex View/데이터 뷰로 열어 8(또는 4)바이트씩 끊어 읽으며 각 항목이 가리키는 코드 주소를 나열한다.</li><li>각 코드 주소로 이동해 그 case의 실제 동작을 확인하고, 인덱스 0부터 순서대로 어떤 case에 대응하는지 표로 정리한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>jmp</code> 라인에서 우클릭 → <strong>"Create Switch/jump table"</strong>, 함수 목록에서 <code>jtable_</code> 접두사로 자동 생성된 테이블 확인. 그래프 뷰는 <code>스페이스바</code>로 전환.</li><li>Ghidra: Analysis → Auto Analyze로 switch 분석기가 자동 실행되며, 실패 시 테이블 데이터를 우클릭 → "Data" → 배열로 재정의 후 <code>Override Jump Table</code>.</li><li>x64dbg: <code>jmp rax</code> 지점에 브레이크포인트를 걸고 RAX 값을 확인해 실제 목적지를 동적으로 검증.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>점프 테이블을 vtable/함수 포인터 배열과 같은 것으로 착각하는 것 — 앞서 설명한 대로 대상이 같은 함수 내부인지, 여러 다른 함수인지로 구분해야 한다.</li><li>x64 PIE 바이너리의 테이블 원소를 <strong>절대 주소</strong>로 착각해서 그대로 읽고 마는 것 — 실제로는 "테이블 시작 기준 상대 오프셋(32비트)"이 들어있으므로, 반드시 테이블 base를 더해야 진짜 목적지가 나온다.</li><li>범위 체크(<code>cmp</code>+<code>ja</code>/<code>jbe</code>)를 못 보고 지나쳐서, 각 case가 왜 "0~4"로 제한되는지 놓치는 것 — 이 비교문이 사실상 switch의 case 개수와 default 분기 조건을 알려주는 핵심 단서다.</li><li>IDA가 점프 테이블을 자동 인식하지 못했을 때 "이 코드는 분석 불가능하다"고 포기하는 것 — 수동으로 "Create Switch/jump table"을 지정하면 대부분 정상 인식된다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>테이블 원소가 함수가 아니라 다른 함수 시작 주소들처럼 보이면 → vtable(REV-0444)일 가능성을 다시 검토한다.</li><li>테이블 base 계산에 쓰인 RIP 상대 주소 계산이 헷갈리면 → REV-0439.</li><li>범위 체크에 쓰인 unsigned 비교(<code>ja</code>)의 의미가 헷갈리면 → REV-0070.</li><li>IDA 그래프 뷰에서 여러 분기가 뒤엉켜 보여 구조 파악이 힘들면 → REV-0150.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 원본 C 코드</strong></p>
+<pre><code class="language-c">switch (choice) {
+    case 0: do_add();    break;
+    case 1: do_sub();    break;
+    case 2: do_mul();    break;
+    case 3: do_div();    break;
+    case 4: do_exit();   break;
+    default: puts("invalid"); break;
+}</code></pre>
+<p><strong>예제 2 — x64 PIE 어셈블리 (전체)</strong></p>
+<pre><code class="language-asm">cmp     edi, 4
+ja      .default
+movsxd  rax, edi
+lea     rdx, [rip+jtable]
+movsxd  rax, dword ptr [rdx+rax*4]
+add     rax, rdx
+jmp     rax
+
+case0: call do_add
+       jmp .end
+case1: call do_sub
+       jmp .end
+; ...
+.default:
+       lea rdi, [rip+invalid_str]
+       call puts
+.end:
+       ret
+
+jtable:
+    dd case0 - jtable
+    dd case1 - jtable
+    dd case2 - jtable
+    dd case3 - jtable
+    dd case4 - jtable</code></pre>
+<p><strong>예제 3 — IDA Hex-Rays 디컴파일 결과</strong></p>
+<pre><code class="language-c">switch ( choice )
+{
+  case 0: do_add(); break;
+  case 1: do_sub(); break;
+  case 2: do_mul(); break;
+  case 3: do_div(); break;
+  case 4: do_exit(); break;
+  default: puts("invalid"); break;
+}</code></pre>
+<p>원본과 사실상 동일하게 복원된다 — IDA가 자동 인식에 성공한 대표적인 경우다.</p>
+<p><strong>예제 4 — 비-PIE/32비트 단순형</strong></p>
+<pre><code class="language-asm">cmp     eax, 4
+ja      default_case
+jmp     dword ptr [eax*4 + 00403010h]   ; 테이블 원소가 절대 주소 그 자체</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0442-stack-canary-check.html">REV-0442 — 스택 카나리(Stack Canary) 체크 시퀀스 분석</a></li><li><a href="rev-0444-vtable-virtual-call.html">REV-0444 — vtable과 가상함수 호출 패턴 분석</a></li><li><a href="rev-0066-jmp.html">REV-0066 — JMP: 무조건 분기</a></li><li><a href="rev-0070-ja-jae-jb-jbe.html">REV-0070 — JA JAE JB JBE: Unsigned 비교 분기</a></li><li><a href="rev-0439-rip-relative-addressing.html">REV-0439 — RIP 상대 주소 지정 방식(RIP-relative addressing)</a></li><li><a href="rev-0150-ida-graph-view.html">REV-0150 — IDA Graph View에서 분기 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>간접 점프와 SIB 기반 테이블 인덱싱(<code>jmp [reg*scale+table]</code>) 인코딩: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "JMP—Jump" 및 "2.1.5 Addressing-Mode Encoding of ModR/M and SIB Bytes" 기준 (2026-09-09 검증).</li><li>switch문의 점프 테이블 vs 이진 탐색 vs 혼합 전략 선택: GCC/Clang(LLVM) 공식 최적화 문서 및 IDA/Ghidra의 switch 자동 인식(jump table analysis) 공식 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>성공/실패 문자열에서 역참조 따라가는 방법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>성공/실패 문자열에서 역참조 따라가는 방법</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>IDA/Ghidra에서 결과 문자열을 찾은 뒤 그 문자열 위에서 <strong>X 키(Cross-references)</strong> 를 누르면 "이 문자열을 사용하는 코드 위치" 목록이 뜨고, 그 위치로 이동하면 검증 로직의 분기 지점에 바로 도달한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Strings 창에서 "Correct!", "Wrong password" 같은 결과 문자열은 찾았는데 그다음에 뭘 눌러야 할지 모를 때</li><li><code>X</code>를 눌렀는데 아무것도 안 뜨거나, 에러가 나서 당황할 때</li><li>xref 결과가 여러 개 나와서 어떤 걸 봐야 할지 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<p>xref(cross-reference, 상호 참조)는 "이 주소/데이터를 누가 참조하는가"를 IDA/Ghidra가 자동으로 계산해서 보여주는 기능이다. 문자열은 메모리상의 데이터일 뿐이고, 코드 어딘가에서 그 문자열의 <strong>주소를 레지스터/스택에 로드해서 <code>printf</code>나 <code>puts</code> 같은 함수에 넘기는 명령어</strong>가 반드시 존재한다(그렇지 않으면 그 문자열은 애초에 실행 중 출력될 수 없다). xref는 바로 그 "주소를 로드하는 명령어"들을 찾아서 보여주는 것이다.</p>
+<p>이 기법이 강력한 이유는, 프로그램 전체를 위에서 아래로 읽지 않고 <strong>"결과가 나오는 지점" → "그 결과를 만든 조건" → "그 조건을 계산한 로직"</strong> 순서로 거꾸로(reverse) 거슬러 올라갈 수 있기 때문이다. 이게 "리버스" 엔지니어링이라는 이름에 잘 어울리는 접근이다: 끝에서부터 원인을 추적한다.</p>
+<p>x64/x86 어셈블리에서 문자열은 보통 다음과 같이 참조된다.</p>
+<pre><code class="language-asm">lea rax, aCorrect      ; "Correct!" 문자열의 주소를 rax에 로드 (x64)
+mov rcx, rax
+call puts</code></pre>
+<p>또는 32비트/구형 코드에서는</p>
+<pre><code class="language-asm">push offset aCorrect
+call printf</code></pre>
+<p>IDA는 이런 패턴을 자동 인식해서 <code>aCorrect</code>처럼 문자열 내용 기반의 이름을 붙여주고, xref 목록에 이 <code>lea</code>/<code>push</code> 명령어의 위치를 보여준다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Strings 창(Shift+F12)에서 항목을 더블클릭하면 <code>.rdata</code>(Windows) 또는 <code>.rodata</code>(Linux) 섹션의 해당 주소로 IDA View가 이동한다.</li><li>그 위치에 <code>aCorrectFlag db 'Correct! Here is your flag', 0</code>처럼 데이터 정의가 보인다.</li><li><code>X</code>를 눌렀을 때 아무 반응이 없다면, 커서가 데이터 라인이 아니라 그 옆 빈 공간이나 다른 곳에 있을 가능성이 높다 — 문자열이 정의된 줄 자체에 커서를 정확히 놓아야 한다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>Shift+F12로 Strings 창을 열고, 결과 메시지로 의심되는 문자열(<code>Correct</code>, <code>Wrong</code>, <code>Success</code>, <code>Fail</code>, <code>Access granted</code>, <code>flag</code>, 한글 문제면 <code>정답</code>, <code>틀렸습니다</code>, <code>축하합니다</code> 등)을 Ctrl+F로 검색한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) Strings 창에서 후보 찾기</strong></p>
+<ul><li>IDA: <code>Shift+F12</code> → 목록이 뜨면 <code>Ctrl+F</code>로 키워드 검색(대소문자 구분 없이 부분 일치).</li><li>Ghidra: <code>Window → Defined Strings</code> (또는 <code>Search → For Strings</code>로 먼저 문자열을 스캔해야 할 수도 있다) → 필터 박스에 키워드 입력.</li></ul>
+<p><strong>2) 문자열 위치로 이동</strong> 목록에서 항목을 더블클릭하면 해당 데이터가 정의된 주소로 뷰가 이동한다.</p>
+<p><strong>3) xref 실행</strong></p>
+<ul><li>IDA: 그 데이터 라인에 커서를 놓고 <strong>X</strong> 키(또는 상단 메뉴 View → Cross references to). "xref to..." 창이 뜨고 이 데이터를 참조하는 명령어 주소 목록이 나온다.</li><li>Ghidra: 문자열 라인을 우클릭 → <code>References → Show References to Address</code>, 또는 단축키로 목록 하단에 References 패널이 이미 떠 있을 수도 있다.</li></ul>
+<p><strong>4) 목록에서 적절한 참조 선택</strong></p>
+<ul><li>참조가 1개뿐이면 바로 더블클릭해서 그 코드 위치로 이동.</li><li>참조가 여러 개면, 함수 이름이 <code>main</code>에 가깝거나 이름이 <code>check</code>/<code>verify</code>/<code>validate</code>처럼 보이는 것을 우선 확인한다.</li></ul>
+<p><strong>5) 도착한 코드에서 위로 거슬러 올라가기</strong> 문자열을 출력하는 코드(<code>call puts</code> 등) 주변에서 시작해, 이 코드 블록으로 들어오는 조건 분기(<code>je</code>, <code>jne</code>, <code>jz</code>, <code>jnz</code>)를 찾는다. IDA 그래프 뷰(Space bar로 텍스트뷰/그래프뷰 전환)를 쓰면 어떤 분기 조건에서 이 블록으로 들어오는지 화살표로 시각적으로 바로 보인다.</p>
+<p><strong>6) 조건의 근원 찾기</strong> 그 분기 조건 직전의 <code>cmp</code>/<code>test</code> 명령어가 무엇을 비교하는지 확인한다. 비교 대상이 함수 리턴값이면 그 함수(진짜 검증 함수)로 더 들어간다. 비교 대상이 이미 계산된 지역 변수면, 그 변수가 어디서 계산됐는지 위로 계속 거슬러 올라간다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>Shift+F12</code>(Strings 창), <code>Ctrl+F</code>(창 내 검색), <code>X</code>(xref to), <code>Space</code>(그래프뷰 ↔ 텍스트뷰 전환), <code>Esc</code>(이전 위치로 돌아가기 — 여러 번 이동했을 때 매우 유용)</li><li>Ghidra: <code>Window → Defined Strings</code>, 우클릭 <code>References → Show References to Address</code>, <code>Ctrl+Alt+←</code>(이전 위치로)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>xref 목록의 각 줄은 <code>Up</code>(코드) 또는 <code>Down</code>(다른 데이터)으로 구분된다. 우리가 찾는 건 대부분 <code>Up</code>(코드에서의 참조)이다.</li><li>목록에 함수 이름과 오프셋이 같이 나온다(<code>sub_401500+1A</code>). <code>+1A</code>는 그 함수 시작부터 0x1A바이트 떨어진 위치라는 뜻 — 함수 시작이 아니라 중간이라는 걸 알 수 있다.</li><li>Esc로 원래 있던 위치로 돌아갈 수 있다는 걸 기억해두면, 여러 갈래를 탐색하다가 원점으로 복귀하기 편하다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>문자열이 정의된 줄이 아니라 그 문자열을 감싼 구조체나 배열의 시작 주소에 커서를 놓고 X를 눌러서 원하는 결과가 안 나오는 것.</li><li>xref 목록에 나온 첫 번째 결과만 보고 이동했는데 그게 <code>main</code>이 아니라 사용법 출력 함수(<code>usage()</code>)여서 헛수고하는 것 — 항상 함수 이름과 주변 코드를 먼저 훑어 타당한지 확인한다.</li><li>그래프뷰에서 화살표 방향을 반대로 읽어서(어디서 들어오는 분기인지) 조건을 거꾸로 해석하는 것.</li><li>문자열이 통째로 하나의 상수가 아니라 여러 조각을 이어붙여 만들어지는 경우(스택에 바이트 단위로 채워 넣는 경우)를 못 알아채는 것 — 이때는 Strings 창에 아예 안 뜬다. 이 경우 <a href="rev-0007-trace-from-input.html">rev-0007-trace-from-input.md</a>의 입력 추적 방식으로 전환한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>Strings 창에 원하는 문자열이 아예 없다 → 암호화/조립형 문자열일 수 있음, <a href="rev-0007-trace-from-input.html">rev-0007-trace-from-input.md</a>로 전환</li><li>xref가 하나도 안 뜬다 → 문자열이 실제로는 사용되지 않는 죽은 데이터이거나, 커서 위치가 잘못됐을 수 있음. 몇 바이트 앞/뒤 줄에서 다시 시도.</li><li>도착한 함수가 이해가 안 된다 → <a href="rev-0011-when-to-trust-asm.html">rev-0011-when-to-trust-asm.md</a></li><li>5분째 못 찾았다 → <a href="rev-0015-five-minute-checklist.html">rev-0015-five-minute-checklist.md</a></li></ul>
+<h2>미니 예제</h2>
+<p><a href="rev-0001-first-30-seconds.html">rev-0001-first-30-seconds.md</a>의 예제를 이어서 보면:</p>
+<pre><code>$ strings -n 6 crackme | grep -i -E "correct|wrong"
+Correct! Here is your flag:
+Wrong password, try again.</code></pre>
+<ol><li>IDA에서 Shift+F12 → <code>Correct</code> 검색 → <code>aCorrectHereIs</code> 항목 더블클릭.</li><li>데이터 정의 줄에서 <code>X</code> → xref 목록에 <code>sub_401220+45</code> 하나만 뜸.</li><li>더블클릭해서 이동 → 그 줄 바로 위에 <code>test eax, eax</code> / <code>jnz short loc_401260</code>이 보임.</li><li><code>eax</code>가 어디서 왔는지 위로 스크롤 → <code>call check_password</code> 호출을 발견 → <code>check_password</code>가 진짜 검증 함수.</li></ol>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0001-first-30-seconds.html">rev-0001-first-30-seconds.md</a></li><li><a href="rev-0006-finding-check-function.html">rev-0006-finding-check-function.md</a></li><li><a href="rev-0007-trace-from-input.html">rev-0007-trace-from-input.md</a></li><li><a href="rev-0009-finding-main.html">rev-0009-finding-main.md</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>IDA Pro Cross-reference 기능: Hex-Rays 공식 문서(IDA Help) 기준.</li><li>Ghidra References 기능: Ghidra 공식 문서(ghidra_docs) 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

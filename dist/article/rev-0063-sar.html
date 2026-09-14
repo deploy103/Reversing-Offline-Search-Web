@@ -1,0 +1,136 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SAR: 산술 오른쪽 시프트 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>SAR: 산술 오른쪽 시프트</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>SAR</code>(Shift Arithmetic Right)는 오퍼랜드를 오른쪽으로 밀되 <strong>원래의 부호 비트(최상위 비트)를 그대로 복제해서 빈 왼쪽 자리를 채우는</strong> 명령어로, 음수의 부호를 유지한 채 오른쪽 시프트를 수행한다 — 부호 있는(signed) 정수를 2의 거듭제곱으로 나누는 데 쓰인다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>sar eax, 1</code>처럼 음수도 다뤄야 하는 나눗셈 코드를 만났을 때</li><li><a href="rev-0062-shr.html"><code>SHR</code></a>과 <code>SAR</code>이 왜 다른 결과를 내는지 구체적인 숫자로 이해하고 싶을 때</li><li><code>sar eax, 31</code> 처럼 시프트량이 레지스터 폭-1인 코드를 만나서 뭘 하는지 모를 때</li><li>분기 없이 절댓값(<code>abs()</code>)을 계산하는 코드에서 <code>sar</code>이 왜 등장하는지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>SAR dest, count</code></pre>
+<ul><li><code>dest</code>는 레지스터 또는 메모리, <code>count</code>는 즉시값 또는 <code>CL</code> 레지스터.</li><li><code>dest = dest &gt;&gt; count</code> (<strong>산술적</strong> 오른쪽 시프트: 빈 상위 비트를 원래 최상위 비트(부호 비트) 값으로 채움 — 부호 확장)</li><li>예: <code>sar eax, 1</code>, <code>sar eax, 31</code>, <code>sar eax, cl</code>.</li><li><code>count</code>는 32비트에서 <code>&amp; 0x1F</code>, 64비트에서 <code>&amp; 0x3F</code>로 마스킹 (<a href="rev-0061-shl-sal.html">SHL/SAL</a>, <a href="rev-0062-shr.html">SHR</a>과 동일한 규칙).</li></ul>
+<h3>레지스터/메모리에 미치는 효과 — "산술적"의 의미와 왜 부호가 보존되는가</h3>
+<pre><code>eax = 1111 1111 1111 1111 1111 1111 1111 1110   (0xFFFFFFFE, signed -2)
+sar eax, 1
+eax = 1111 1111 1111 1111 1111 1111 1111 1111   (0xFFFFFFFF, signed -1)</code></pre>
+<p><code>SAR</code>은 시프트하기 <strong>전</strong> 값의 최상위 비트(부호 비트)를 확인해서, 그 비트와 <strong>똑같은 값</strong>을 빈 상위 자리에 계속 채워 넣는다. 원래 값이 음수(부호 비트=1)였다면 채워지는 비트도 전부 1이 되고, 원래 값이 양수(부호 비트=0)였다면 SHR과 똑같이 0으로 채워진다. 이렇게 부호 비트를 그대로 복제해서 채우는 것을 <strong>부호 확장(sign extension)</strong>이라 부르며, 이것이 "산술적"이라는 이름의 의미다 — 2의 보수 정수의 부호를 산술적으로 올바르게 보존한다.</p>
+<p><strong>왜 이 방식이 "올바른 부호 있는 나눗셈"인가</strong>: 2의 보수 표현에서 오른쪽으로 1비트 시프트하면서 부호 비트를 복제하는 것은 정확히 "2로 나누고 내림(floor, 음의 무한대 방향으로 반올림)"과 같은 결과를 낸다. <code>-2를 2로 나누면 -1</code>이 정확히 나오는 이유다.</p>
+<h3>플래그 변화</h3>
+<ul><li><strong>CF</strong>: 마지막으로 밀려 나간 비트(최하위 쪽에서 빠져나간 비트) 값이 그대로 들어감</li><li><strong>OF</strong>: <code>count == 1</code>일 때 <strong>항상 0</strong>으로 세팅됨 (SDM 명시: 산술 오른쪽 시프트는 정의상 부호를 보존하므로 오버플로가 발생할 수 없음). <code>count &gt; 1</code>이면 undefined.</li><li><strong>SF/ZF/PF</strong>: 결과값 기준으로 세팅</li><li><strong>AF</strong>: 정의되지 않음</li><li><strong>count == 0</strong>이면 플래그 전혀 변화 없음</li></ul>
+<h3>신호 있음/없음(signed/unsigned) — SAR이 signed 전용인 이유</h3>
+<p><a href="rev-0062-shr.html"><code>SHR</code></a> 문서에서 다룬 것과 정확히 대칭되는 예시로 다시 확인하자. <code>eax = 0xFFFFFFFE</code>(-2)에 <code>sar eax, 1</code>을 적용하면:</p>
+<pre><code>0xFFFFFFFE = 1111 1111 1111 1111 1111 1111 1111 1110
+sar eax, 1 (오른쪽으로 1칸, 부호 비트 1을 복제해서 채움)
+결과       = 1111 1111 1111 1111 1111 1111 1111 1111 = 0xFFFFFFFF (-1)</code></pre>
+<p><code>-2 / 2 = -1</code>, signed 나눗셈과 정확히 일치한다. 만약 여기서 <code>SHR</code>을 썼다면 <code>0x7FFFFFFF</code>(2147483647)이라는 전혀 엉뚱한 값이 나왔을 것이다(<a href="rev-0062-shr.html">REV-0062</a> 참고).</p>
+<p><strong>정리하면</strong>: 값이 부호 있는(signed) 정수일 가능성이 있다면 나눗셈용 시프트는 반드시 <code>SAR</code>이어야 하고, 순수 unsigned 값이라면 <code>SHR</code>이 쓰인다. <strong>컴파일러가 SAR을 선택했다는 사실 자체가 해당 변수가 signed(<code>int</code> 등)라는 강력한 증거</strong>이며, 반대도 마찬가지다.</p>
+<h3>정확하지 않은 반올림 — 컴파일러의 보정 코드</h3>
+<p><code>SAR</code>은 나눗셈에서 항상 "내림(floor)"으로 반올림하지만, C의 정수 나눗셈(<code>/</code>)은 "0 방향으로 절삭(truncate toward zero)"한다. 이 둘은 <strong>나눠지는 값이 음수이고 나머지가 있을 때</strong> 다르게 동작한다. 예: <code>-3 / 2</code>는 C에서 <code>-1</code>(0 방향 절삭)이지만, <code>SAR eax, 1</code>을 그냥 적용하면 <code>-2</code>(내림)가 나와 서로 다르다. 그래서 컴파일러는 signed 나눗셈을 SAR로 최적화할 때 <strong>부호가 음수인 경우를 보정하는 코드</strong>(시프트 전에 <code>(2^n - 1)</code>을 더하는 형태)를 추가로 생성한다:</p>
+<pre><code class="language-asm">; int y = x / 4; (x가 음수일 수도 있는 경우의 전형적인 컴파일러 출력)
+mov  eax, [x]
+cdq                 ; eax를 64비트로 부호 확장해서 edx:eax 준비 (사실상 부호 비트를 edx 전체에 복제)
+and  edx, 3         ; edx = (x가 음수면) 0x3, (양수면) 0
+add  eax, edx        ; 음수일 때만 보정값 더함
+sar  eax, 2          ; 이제 SAR로 나눠도 0 방향 절삭과 결과가 일치</code></pre>
+<p>이 <code>cdq</code>+<code>and</code>+<code>add</code>+<code>sar</code> 조합을 통째로 보면 "signed 나눗셈을 시프트로 최적화한 컴파일러 코드"라고 바로 인식할 수 있다.</p>
+<h3>스택/RSP/RIP 변화</h3>
+<p>없음.</p>
+<h3>부호 비트 브로드캐스트 — <code>sar reg, 31</code>(또는 <code>63</code>)</h3>
+<p>시프트량을 레지스터 폭에서 1을 뺀 값(32비트면 31, 64비트면 63)으로 주면, 결과는 <strong>원래 값이 양수/0이면 전부 0(<code>0x00000000</code>), 음수면 전부 1(<code>0xFFFFFFFF</code>)</strong>이 된다 — 즉 부호 비트 하나를 레지스터 전체에 "복사(broadcast)"하는 효과를 낸다. 이건 분기 없이(branchless) 부호에 따른 마스크를 만드는 매우 흔한 관용구다. 대표적으로 분기 없는 <code>abs()</code> 구현에 쓰인다:</p>
+<pre><code class="language-asm">; int abs(int x)
+mov  eax, [x]
+mov  edx, eax
+sar  edx, 31        ; edx = 0(양수/0일 때) 또는 0xFFFFFFFF(음수일 때)
+xor  eax, edx        ; 음수면 모든 비트 반전(1의 보수), 양수면 그대로
+sub  eax, edx        ; 음수면 +1 더함(2의 보수 완성) = -x, 양수면 그대로</code></pre>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>sar eax, 1</code> — signed <code>x / 2</code></li><li><code>sar eax, n</code> 앞에 <code>cdq</code>/<code>and</code>/<code>add</code>가 붙는 조합 — 음수 보정이 포함된 정확한 signed 나눗셈</li><li><code>sar eax, 31</code> (또는 <code>sar rax, 63</code>) — 부호 비트를 전체 레지스터로 브로드캐스트 (분기 없는 abs/min/max/부호 판정 코드)</li><li><code>sar eax, cl</code> — 가변 시프트 (드묾, 커스텀 알고리즘)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>니모닉이 <code>SAR</code>인지 <code>SHR</code>인지부터 정확히 확인 (한 글자 차이지만 의미가 완전히 다름)</li><li><code>SAR</code> 앞에 <code>cdq</code>+<code>and</code>+<code>add</code> 보정 코드가 있는지 확인 (있으면 정확한 signed 나눗셈)</li><li>시프트량이 31/63이면 부호 브로드캐스트 패턴을 의심</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 단순 signed 나눗셈(음수가 아니라고 컴파일러가 증명 가능한 경우) 인식</strong></p>
+<pre><code class="language-asm">mov eax, [x]
+sar eax, 1     ; x / 2, 보정 코드가 없다면 x가 항상 짝수이거나 음수가 아님을 컴파일러가 알고 있는 경우</code></pre>
+<p><strong>2) 완전한 signed 나눗셈(보정 코드 포함) 인식</strong></p>
+<pre><code class="language-asm">mov  eax, [x]
+cdq
+and  edx, 3
+add  eax, edx
+sar  eax, 2      ; x / 4, 음수 절삭까지 정확히 재현</code></pre>
+<p><strong>3) 부호 브로드캐스트(abs 구현) 인식</strong></p>
+<pre><code class="language-asm">mov edx, eax
+sar edx, 31
+xor eax, edx
+sub eax, edx</code></pre>
+<p>→ <code>eax = abs(eax)</code>로 해석.</p>
+<p><strong>4) SHR과 직접 대조해서 signed/unsigned 판단</strong> 같은 소스 값에 SHR을 적용한 코드와 SAR을 적용한 코드를 나란히 보면, 컴파일러가 그 변수를 어떤 타입으로 봤는지 바로 알 수 있다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>Python으로 SAR 재현: <code>x &gt;&gt; n</code> (파이썬 정수는 원래 부호를 자동으로 보존하므로 그대로 SAR과 동일하게 동작 — 단, 32/64비트 폭 안에서 봐야 한다면 먼저 signed로 해석하는 변환 필요)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>IDA/Ghidra는 변수 타입이 <code>int</code>(signed)로 추론되면 <code>sar</code>을 <code>x / N</code> 또는 <code>x &gt;&gt; N</code>으로 보여주며, <code>cdq</code>+보정 코드 전체를 알아서 하나의 나눗셈 표현식으로 정리해준다(사람이 손으로 그 조합을 다 풀어볼 필요가 없다).</li><li><code>sar eax, 31</code> 패턴은 Ghidra에서 종종 <code>(x &gt;&gt; 0x1f)</code> 형태 그대로 남거나, 문맥에 따라 <code>abs()</code> 패턴으로 인식되어 더 단순화되기도 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>SAR</code>과 <code>SHR</code>을 혼동하는 것 — 이 두 명령어의 차이가 x86에서 signed/unsigned를 구분하는 가장 대표적인 사례다. 반드시 니모닉을 한 글자씩 정확히 읽어야 한다.</li><li><code>sar eax, n</code>(count &gt; 1)의 OF 값을 신뢰하는 것 — count가 1이 아니면 OF는 undefined다. (참고로 count=1일 때는 SDM이 OF=0으로 명시하므로 이 경우만 신뢰 가능.)</li><li><code>SAR</code>로 계산한 나눗셈이 C의 <code>/</code> 연산자와 완전히 동일하다고 가정하는 것 — 음수이면서 나누어떨어지지 않는 경우, 순수 SAR은 "내림"이라 C의 "0 방향 절삭"과 다르다. 컴파일러가 보정 코드(<code>cdq</code>+<code>and</code>+<code>add</code>)를 안 붙였다면, 그 값은 항상 나누어떨어지거나 항상 양수라는 걸 컴파일러가 증명했다는 뜻이다.</li><li><code>sar eax, 31</code>을 그냥 "쓸모없는 코드"로 넘기는 것 — 분기 없는 abs/min/max/부호 마스크 생성의 핵심 빌딩 블록이므로 CTF의 최적화된 코드에서 자주 나온다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>SAR</code>인지 <code>SHR</code>인지 헷갈리면 → 이 문서와 <a href="rev-0062-shr.html">REV-0062</a>의 동일한 값(<code>0xFFFFFFFE</code>) 예시를 나란히 비교해서 기억을 되짚는다.</li><li><code>sar</code> 앞에 이상한 <code>cdq</code>/<code>and</code>/<code>add</code> 조합이 보이면 → 이 문서의 "정확하지 않은 반올림" 절을 참고해 signed 나눗셈 보정 패턴임을 확인.</li><li><code>sar eax, 31</code> 뒤에 <code>xor</code>/<code>sub</code>가 이어지면 → 분기 없는 <code>abs()</code> 구현 관용구임을 확인.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — signed 나눗셈 (보정 없음, 컴파일러가 항상 비음수임을 증명한 경우)</strong></p>
+<pre><code class="language-c">int y = x / 2;   // x가 항상 짝수이거나 음수가 아님이 증명된 경우</code></pre>
+<pre><code class="language-asm">mov eax, [x]
+sar eax, 1</code></pre>
+<p><strong>예제 2 — 완전한 signed 나눗셈 (음수 보정 포함)</strong></p>
+<pre><code class="language-c">int y = x / 4;   // x가 음수일 수 있음</code></pre>
+<pre><code class="language-asm">mov  eax, [x]
+cdq
+and  edx, 3
+add  eax, edx
+sar  eax, 2</code></pre>
+<p><strong>예제 3 — SHR과의 극명한 대조</strong></p>
+<pre><code class="language-c">int a = -2;
+int r = a &gt;&gt; 1;   // -1 (컴파일러는 SAR 사용)</code></pre>
+<pre><code class="language-asm">mov eax, 0FFFFFFFEh
+sar eax, 1        ; 0xFFFFFFFF (-1) — SHR이었다면 0x7FFFFFFF</code></pre>
+<p><strong>예제 4 — 분기 없는 abs()</strong></p>
+<pre><code class="language-c">int abs_x = (x &lt; 0) ? -x : x;</code></pre>
+<pre><code class="language-asm">mov  eax, [x]
+mov  edx, eax
+sar  edx, 31       ; 부호 비트 브로드캐스트
+xor  eax, edx
+sub  eax, edx</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0062-shr.html">REV-0062 — SHR: 논리 오른쪽 시프트</a></li><li><a href="rev-0061-shl-sal.html">REV-0061 — SHL과 SAL: 왼쪽 시프트</a></li><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li><li><a href="rev-0053-idiv.html">REV-0053 — IDIV: Signed 나눗셈</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>SAR 명령어의 오퍼랜드/플래그 동작(부호 확장, count=1 시 OF=0 명시): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "SAL/SAR/SHL/SHR—Shift" 섹션 기준 (2026-09-08 검증).</li><li>signed 나눗셈에 대한 컴파일러의 CDQ+SAR 보정 최적화 패턴: Agner Fog, "Optimizing subroutines in assembly language" 기준.</li><li>분기 없는 abs() 구현(부호 비트 브로드캐스트) 관용구: Henry S. Warren Jr., "Hacker's Delight" 2장(정수 비트 트릭) 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

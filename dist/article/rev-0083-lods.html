@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LODS 문자열 로드 명령 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>LODS 문자열 로드 명령</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>LODS</code>(및 <code>LODSB</code>/<code>LODSW</code>/<code>LODSD</code>/<code>LODSQ</code>)는 <code>[RSI]</code>가 가리키는 메모리에서 값을 하나 읽어 <code>AL</code>/<code>AX</code>/<code>EAX</code>/<code>RAX</code>에 넣고 <code>RSI</code>를 자동으로 전진(또는 후진)시키는 명령이다. 다섯 개의 문자열 명령 중 유일하게 <strong>REP와 함께 쓰이는 경우가 드물며</strong>, 대신 한 바이트씩 읽어서 즉시 검사/가공하는 손으로 짠 루프(수제 파서, 커스텀 strlen/hash 등)에서 자주 보인다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>lodsb</code>, <code>lodsd</code> 같은 명령이 루프 안에서 반복되는데 <code>rep</code> 접두사가 안 붙어 있어서 헷갈릴 때</li><li><code>RSI</code>가 계속 증가하면서 <code>AL</code>에 새 값이 들어가고, 그 값으로 뭔가 비교/연산을 하는 코드를 볼 때</li><li>손으로 최적화한(hand-optimized) 문자열 처리 루틴이나 CTF의 커스텀 인코딩/해시 루틴을 분석할 때</li><li><code>lods</code> 뒤에 <code>AL</code>을 검사하는 <code>cmp</code>/<code>test</code>/<code>jcc</code>가 바로 이어지는 패턴을 볼 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>lodsb          ; AL  &lt;- BYTE PTR [RSI]
+lodsw          ; AX  &lt;- WORD PTR [RSI]
+lodsd          ; EAX &lt;- DWORD PTR [RSI]
+lodsq          ; RAX &lt;- QWORD PTR [RSI]   (x64 전용)</code></pre>
+<p>오퍼랜드는 암묵적으로 <code>RSI</code>(소스 주소)와 <code>AL</code>/<code>AX</code>/<code>EAX</code>/<code>RAX</code>(목적지 레지스터)를 사용한다.</p>
+<h3>방향 및 레지스터 효과</h3>
+<ul><li><strong>소스</strong>: <code>RSI</code>가 가리키는 메모리.</li><li><strong>목적지</strong>: <code>AL</code>/<code>AX</code>/<code>EAX</code>/<code>RAX</code> — 크기에 맞는 누산기 레지스터.</li><li>실행 후 <code>DF</code>(방향 플래그, REV-0080 참고)에 따라 <code>RSI</code>만 증가 또는 감소한다.</li><li><code>DF=0</code>: <code>RSI += size</code></li><li><code>DF=1</code>: <code>RSI -= size</code></li><li><code>RDI</code>는 <code>LODS</code>와 무관하며 변하지 않는다.</li></ul>
+<h3>왜 REP와 잘 안 어울리는가</h3>
+<p><code>REP LODSB</code>도 문법적으로는 가능하지만 실무에서는 거의 안 쓰인다. 이유는 간단하다 — <code>REP</code>로 반복시키면 매번 <code>AL</code>에 새 값이 덮어써지므로, <strong>반복이 끝난 시점에는 마지막으로 읽은 1바이트만 <code>AL</code>에 남고 나머지는 다 사라진다.</strong> <code>memcpy</code>처럼 "전체를 어딘가에 다 옮겨야" 의미가 있는 <code>MOVS</code>/<code>STOS</code>와 달리, <code>LODS</code>는 "읽은 값을 즉시 그 자리에서 써먹어야" 의미가 있는 명령이라서, 보통 <code>REP</code> 없이 <strong>직접 만든 루프(<code>loop</code>, <code>dec</code>+<code>jnz</code>, 또는 조건 분기)</strong> 안에 넣고 매 반복마다 <code>lodsb</code> 한 번 → 읽은 <code>AL</code> 검사/가공 → 다시 반복, 형태로 쓴다.</p>
+<h3>플래그 변화</h3>
+<p><code>LODS</code>는 <strong>플래그를 바꾸지 않는다.</strong> 단순 로드이기 때문이다.</p>
+<h3>스택/RIP 변화</h3>
+<p>직접적인 영향 없음.</p>
+<h2>컴파일러 패턴 — "한 바이트씩 읽어서 즉시 처리하는 루프"로 인식하기</h2>
+<pre><code class="language-asm">loop_start:
+    lodsb                  ; AL = [RSI], RSI += 1
+    test    al, al          ; NUL 문자인지 검사
+    jz      loop_end
+    ; ... AL로 뭔가 처리 (해시 갱신, 대소문자 변환, 카운트 등) ...
+    jmp     loop_start
+loop_end:</code></pre>
+<p>이 패턴은 C로 치면 대략:</p>
+<pre><code class="language-c">while (*p != '\0') {
+    unsigned char c = *p++;
+    // c로 무언가 처리
+}</code></pre>
+<p>에 해당한다. 최신 컴파일러(GCC -O2, MSVC /O2)는 사실 <code>LODS</code>류를 잘 안 쓰고 일반 <code>mov al, [rsi]</code> + <code>inc rsi</code>로 풀어서 컴파일하는 경우가 더 흔하다 — <code>LODS</code>가 실제로 등장하면 (1) 손으로 짠 어셈블리, (2) 매우 오래된/비최적화 컴파일러 산출물, (3) 크랙미/CTF에서 의도적으로 삽입한 코드일 가능성이 높다.</p>
+<h2>IDA/Ghidra 디컴파일에서 보이는 방식</h2>
+<p><code>REP</code> 없는 단독 <code>lodsb</code> 루프는 함수 호출로 뭉쳐지지 않고, 대부분 그대로 <strong>포인터 역참조 + 증가 + 조건 분기</strong>로 이루어진 <code>while</code>/<code>for</code> 루프 형태의 C 코드로 디컴파일된다:</p>
+<pre><code class="language-c">while ( (c = *p++) != 0 ) {
+    ...
+}</code></pre>
+<p>IDA/Ghidra가 <code>memcpy</code>처럼 통째로 라이브러리 함수로 뭉뚱그려 인식하는 경우는 거의 없다 — 이 루프 안에서 <code>AL</code>로 무엇을 하는지가 실제 로직이므로 직접 읽어야 한다.</p>
+<h2>리버싱 관점에서의 의미</h2>
+<ul><li><code>lodsb</code> + 조건 분기 조합은 <strong>strlen, 문자열 파서, 커스텀 인코더/디코더, 간단한 해시 함수(체크섬)</strong> 등에서 자주 보인다. CTF 크랙미에서 "입력 문자열을 한 글자씩 읽어 XOR/회전/누적합 등을 적용하는 검증 로직"의 전형적인 뼈대다.</li><li><code>RSI</code> 시작 주소를 확인하면 어떤 버퍼(보통 사용자 입력)를 순회하는지 알 수 있고, 루프 안에서 <code>AL</code>이 어떻게 쓰이는지 추적하면 검증 알고리즘 전체를 재구성할 수 있다.</li><li>루프 종료 조건(<code>test al, al</code> / <code>jz</code>, 또는 카운터 비교)을 확인하면 몇 바이트까지 처리하는지(전체 문자열 vs 고정 길이) 알 수 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>lods</code>/<code>lodsb</code>/<code>lodsd</code>(REP 없이 루프 안에 있는 경우가 대부분)를 봤다면 가장 먼저 확인할 것:</p>
+<ol><li><strong>이 명령이 어떤 루프 안에 있는가</strong> — 루프의 시작/끝 레이블과 반복 조건(<code>dec</code>+<code>jnz</code>, <code>loop</code>, 비교+<code>jcc</code> 등)을 먼저 파악한다.</li><li><strong><code>RSI</code>가 가리키는 시작 주소</strong> — 어떤 버퍼(대개 사용자 입력 문자열)를 순회하는지.</li><li><strong><code>lodsb</code> 직후 <code>AL</code>로 무엇을 하는지</strong> — <code>test al,al</code>/<code>jz</code>로 끝을 검사하는지, 아니면 <code>xor</code>/<code>add</code>/<code>rol</code> 등으로 값을 가공하는지. 이게 바로 알고리즘의 본체이므로 반드시 읽어야 한다.</li></ol>
+<h2>단계별 절차</h2>
+<ol><li>IDA 그래프뷰에서 <code>lodsb</code>가 포함된 루프 블록 전체(시작 레이블부터 조건 분기로 되돌아가는 지점까지)를 먼저 눈으로 훑는다.</li><li><code>lodsb</code> 직전에서 <code>RSI</code> 초기값이 어디서 오는지(함수 인자, 전역 버퍼 등) 역추적한다.</li><li><code>lodsb</code> 직후 몇 줄을 읽으면서 <code>AL</code>이 어떤 연산에 쓰이는지 순서대로 적어둔다 — 이것이 곧 문자 단위 처리 알고리즘이다.</li><li><strong>F5로 디컴파일</strong>해서 <code>while (*p) { ... }</code> 형태의 C 유사 루프로 재구성되었는지 확인하고, 어셈블리에서 읽은 연산과 대조한다.</li><li>루프 종료 조건(<code>test al,al</code>/<code>jz</code> 또는 카운터 비교)을 확인해서 전체 문자열을 처리하는지, 고정 길이만 처리하는지 판단한다.</li><li>알고리즘이 복잡해서 손으로 따라가기 힘들면, 루프 시작 지점에 브레이크포인트를 걸고(<code>F2</code>) 한 바퀴씩 <code>F9</code>/<code>F8</code>(Step Over)로 실행하며 매 반복마다 <code>AL</code>과 관련 누적 변수가 어떻게 바뀌는지 직접 관찰한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>F5</code>(디컴파일), <code>X</code>(Xrefs to — RSI가 가리키는 버퍼가 어디서 채워지는지 추적), <code>F2</code>(브레이크포인트), <code>F9</code>(실행), <code>F8</code>(Step Over로 루프 한 바퀴씩)</li><li>x64dbg: 루프 상단에 브레이크포인트를 걸고 <code>F9</code>로 반복 진입 → 우측 레지스터 패널에서 <code>AL</code>/<code>RSI</code> 값을 반복마다 기록, "Run to selection" 기능으로 특정 반복 횟수까지 빠르게 건너뛰기</li><li>GDB/Pwndbg: <code>break *0x&lt;루프시작주소&gt;</code>, <code>commands</code>로 매 히트마다 <code>p $al</code> 자동 출력하도록 설정하거나, Pwndbg의 <code>context</code>로 루프를 돌 때마다 레지스터 변화를 관찰</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>LODS</code>도 <code>MOVS</code>/<code>STOS</code>처럼 <code>REP</code>가 항상 붙어 있을 거라 기대하는 것 — 대부분 <code>REP</code> 없이 커스텀 루프 안에 있다.</li><li><code>AL</code>에 남은 값을 "이 루프가 다룬 전체 데이터"라고 착각하는 것 — <code>AL</code>은 매 반복마다 덮어써지는 임시 값일 뿐이고, 실제 결과는 루프 안에서 다른 변수(레지스터/메모리)에 누적되는 경우가 대부분이다.</li><li>이 루프를 <code>rep movsb</code>처럼 "그냥 복사"라고 지레짐작하고 안의 로직을 안 읽는 것 — <code>LODS</code> 루프는 안의 처리 로직이 핵심이므로 반드시 읽어야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>RSI</code>가 가리키는 시작 주소가 무엇인지 궁금하면 → 루프 진입 전 <code>RSI</code> 세팅 지점을 역추적(대개 함수 인자로 받은 문자열 포인터).</li><li>루프가 언제 끝나는지 궁금하면 → <code>lodsb</code> 직후의 <code>test</code>/<code>cmp</code>와 그에 따른 <code>jcc</code>를 확인.</li><li><code>AL</code>로 어떤 연산을 하는지 궁금하면 → 루프 바디에서 <code>AL</code>/<code>EAX</code>가 관여하는 <code>xor</code>/<code>add</code>/<code>rol</code> 등의 명령을 순서대로 따라간다 — 이게 곧 알고리즘이다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 직접 짠 strlen 스타일 루프</strong></p>
+<pre><code class="language-asm">    lea     rsi, [str]
+    xor     ecx, ecx
+count_loop:
+    lodsb
+    test    al, al
+    jz      done
+    inc     ecx
+    jmp     count_loop
+done:
+    ; ecx = 문자열 길이</code></pre>
+<p><strong>예제 2 — 한 바이트씩 XOR 디코딩 (CTF에서 흔한 패턴)</strong></p>
+<pre><code class="language-asm">    lea     rsi, [enc_buf]
+    lea     rdi, [dec_buf]
+    mov     ecx, 20
+decode_loop:
+    lodsb
+    xor     al, 0x5A
+    stosb            ; 디코딩한 값을 바로 저장 (STOS와 조합되는 대표 사례)
+    loop    decode_loop</code></pre>
+<p><strong>예제 3 — REP LODSB (문법적으로 가능하지만 실무에서 드묾)</strong></p>
+<pre><code class="language-asm">    lea     rsi, [buf]
+    mov     rcx, 4
+    rep lodsb          ; AL에는 buf의 마지막 바이트만 남는다 (앞의 3바이트는 버려짐)</code></pre>
+<p>이 예제는 "왜 <code>LODS</code>에 <code>REP</code>를 잘 안 쓰는지" 보여주기 위한 것으로, 실제 유용한 코드는 아니다.</p>
+<p><strong>예제 4 — LODSD로 4바이트 단위 체크섬 누적</strong></p>
+<pre><code class="language-asm">    lea     rsi, [data]
+    mov     rcx, 8         ; 8 * 4바이트 = 32바이트 처리
+    xor     edx, edx        ; 누적 체크섬
+sum_loop:
+    lodsd
+    add     edx, eax
+    loop    sum_loop
+    ; edx = 32바이트에 대한 단순 합 체크섬</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0080-rep-prefix.html">rev-0080-rep-prefix.md</a> — REP Prefix와 반복 문자열 명령</li><li><a href="rev-0081-movs.html">rev-0081-movs.md</a> — MOVS/MOVSB/MOVSW/MOVSD/MOVSQ</li><li><a href="rev-0082-stos.html">rev-0082-stos.md</a> — STOS/STOSB/STOSD/STOSQ (LODS+STOS 조합 패턴)</li><li><a href="rev-0084-scas.html">rev-0084-scas.md</a> — SCAS와 문자열 검색 패턴</li><li><a href="rev-0085-cmps.html">rev-0085-cmps.md</a> — CMPS와 문자열 비교 패턴</li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>LODS</code>/<code>LODSB</code>/<code>LODSW</code>/<code>LODSD</code>/<code>LODSQ</code> 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "LODS/LODSB/LODSW/LODSD/LODSQ—Load String" 섹션 기준 (2026-09-08 검증).</li><li><code>REP LODS</code>가 실무에서 드문 이유(반복마다 누산기 덮어쓰기): 동 매뉴얼의 문자열 명령 일반 설명 및 일반적인 컴파일러/어셈블리 관례 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

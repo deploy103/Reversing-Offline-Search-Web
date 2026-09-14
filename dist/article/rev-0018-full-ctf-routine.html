@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>대회장에서 리버싱 문제 하나를 끝까지 추적하는 실전 루틴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>대회장에서 리버싱 문제 하나를 끝까지 추적하는 실전 루틴</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">file</span><span class="tag">Detect It Easy</span><span class="tag">strings</span><span class="tag">checksec</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>리버싱 문제 하나를 끝까지 추적하는 실전 루틴은 <strong>① 문제/파일 정찰 → ② 형식·보호기법 확인 → ③ 정적 분석으로 지도 그리기 → ④ 검증 로직 추적 → ⑤ 필요시 동적 분석으로 값 확인 → ⑥ 상수/가설 기록 → ⑦ 로직 복원 및 역산 설계 → ⑧ 솔버 작성 및 검증 → ⑨ flag 제출 및 후기 정리</strong>의 9단계이며, 이 문서는 지금까지의 개별 문서(REV-0001~0017)를 하나의 흐름으로 엮은 것이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>CTF 대회 중 리버싱 문제를 받았고, 지금까지 배운 개별 기법들을 실제로 어떤 순서로 조합해야 할지 감이 안 잡힐 때</li><li>개별 기법(문자열 추적, 상수 기록 등)은 알겠는데 "그래서 처음부터 끝까지 어떻게 하나"가 궁금할 때</li><li>이미 여러 문제를 풀어봤지만 매번 즉흥적으로 접근해서 비효율이 느껴져 체계를 잡고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>지금까지의 문서들(REV-0001, 0003~0017)은 각각 리버싱의 "한 조각"을 다뤘다. 실전에서는 이 조각들을 순서대로, 그리고 <strong>필요하면 되돌아가면서</strong> 조합해서 쓴다. 이 문서는 그 전체 그림을 처음부터 끝까지 순서대로 보여준다. 각 단계에서 더 자세한 내용이 필요하면 해당 단계의 개별 문서로 이동하면 된다.</p>
+<p>리버싱 실전 루틴의 핵심 철학은 세 가지다.</p>
+<ol><li><strong>가장 정보가 많이 나오는 곳부터 본다</strong> — 코드를 순서대로 읽지 않고, 파일 형식/문자열/임포트처럼 적은 노력으로 많은 정보를 주는 곳부터 훑는다.</li><li><strong>가설을 세우고 검증하되, 기록한다</strong> — 매 단계에서 확신 없는 가설을 세워도 괜찮지만, 반드시 기록해서 나중에 검증하거나 뒤집을 수 있게 한다.</li><li><strong>막히면 이전 단계로 돌아간다</strong> — 루틴은 일직선이 아니라 순환이다. 동적 분석 중 새로운 문자열을 발견하면 다시 정적 분석 단계로 돌아가고, 로직 복원 중 상수가 이상하면 상수 기록 단계로 돌아간다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>이 문서는 전체 흐름이므로 "징후"보다는 "각 단계에서 다음 단계로 넘어가야 하는 신호"가 중요하다. 아래 단계별 절차에서 각 단계마다 명시한다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>타이머를 하나 켜둔다(정신적으로라도). 리버싱 문제 하나에 얼마나 시간을 쓰고 있는지 감각을 유지하는 것이 실전에서 매우 중요하다. 그리고 <code>notes.md</code> 파일을 하나 새로 만든다 — 이 루틴 전체의 기록이 여기 쌓인다.</p>
+<h2>단계별 절차</h2>
+<h3>1단계: 문제/파일 정찰 (1~2분)</h3>
+<p>문제 설명을 처음부터 끝까지 읽고, 첨부된 모든 파일 목록을 확인한다. 실행파일 외의 파일(<code>libc.so.6</code>, <code>Dockerfile</code>, <code>README</code> 등)도 빠짐없이 연다. flag 형식, 실행 방법(인자 필요 여부), 힌트가 될 만한 문장을 노트 맨 위에 옮겨 적는다.</p>
+<p>→ 자세한 내용: <a href="rev-0012-hints-from-problem.html">rev-0012-hints-from-problem.md</a></p>
+<h3>2단계: 파일 형식과 보호 기법 확인 (2~3분)</h3>
+<p>플랫폼에 맞게 진행한다.</p>
+<ul><li>Windows PE: Detect It Easy로 컴파일러/패커 확인 → .NET이면 dnSpyEx로 경로 변경, 네이티브면 계속 진행.</li><li>Linux ELF: <code>file</code>, <code>checksec</code>, <code>readelf -d</code>로 비트수/PIE/링킹 방식/strip 여부 확인.</li></ul>
+<p>이 단계에서 "정적 분석이 가능한 평범한 바이너리"인지 "패킹/난독화되어 다른 접근이 필요한 바이너리"인지가 갈린다.</p>
+<p>→ 자세한 내용: <a href="rev-0003-first-exe.html">rev-0003-first-exe.md</a>, <a href="rev-0004-first-elf.html">rev-0004-first-elf.md</a>, <a href="rev-0001-first-30-seconds.html">rev-0001-first-30-seconds.md</a></p>
+<h3>3단계: 정적 분석으로 지도 그리기 (5~10분)</h3>
+<p>IDA/Ghidra로 파일을 열고 다음을 순서대로 훑는다.</p>
+<ol><li>Shift+F12로 문자열 창을 열어 결과 메시지 후보를 찾는다.</li><li>Ctrl+P로 함수 목록을 훑어 <code>main</code>이 자동으로 잡혔는지 확인한다. 안 잡혔으면 entry point부터 따라간다.</li><li>Imports 탭에서 <code>scanf</code>, <code>strcmp</code>, 안티디버깅 관련 함수가 있는지 확인한다.</li></ol>
+<p>이 단계가 끝나면 "이 프로그램이 대략 무엇을 하는지"에 대한 1차 그림이 그려진다.</p>
+<p>→ 자세한 내용: <a href="rev-0009-finding-main.html">rev-0009-finding-main.md</a>, <a href="rev-0010-stripped-entry-point.html">rev-0010-stripped-entry-point.md</a></p>
+<h3>4단계: 검증 로직 추적 (5~15분)</h3>
+<p>3단계에서 찾은 결과 문자열을 xref(X 키)로 역추적하거나, <code>strcmp</code>/<code>memcmp</code> xref로 역추적한다. 둘 다 실패하면 입력 함수(<code>scanf</code> 등)부터 순방향으로 데이터 흐름을 추적한다.</p>
+<p>→ 자세한 내용: <a href="rev-0008-trace-from-strings.html">rev-0008-trace-from-strings.md</a>, <a href="rev-0006-finding-check-function.html">rev-0006-finding-check-function.md</a>, <a href="rev-0007-trace-from-input.html">rev-0007-trace-from-input.md</a></p>
+<p><strong>이 단계에서 판단할 것</strong>: 디컴파일 코드(F5)가 상식적으로 읽히는가? 만약 이상한 매크로(<code>LOBYTE</code>, <code>HIDWORD</code>)나 SIMD 함수가 섞여 헷갈리면 어셈블리 원문으로 내려가서 직접 확인한다.</p>
+<p>→ <a href="rev-0011-when-to-trust-asm.html">rev-0011-when-to-trust-asm.md</a></p>
+<h3>5단계: 정적이냐 동적이냐 재판단 (즉시)</h3>
+<p>검증 로직을 찾았다면, 그 코드가 정적으로 완전히 이해되는지 판단한다.</p>
+<ul><li>상수가 그대로 보이고 산술 연산이 단순하다 → 정적 분석 계속.</li><li>안티디버깅, 시간 기반 값, 런타임 계산이 섞여 있다 → x64dbg/GDB로 전환해서 실제 값을 확인한다.</li></ul>
+<p>→ 자세한 내용: <a href="rev-0005-static-vs-dynamic.html">rev-0005-static-vs-dynamic.md</a></p>
+<p>동적 분석으로 전환했다면, 검증 함수 시작 지점에 브레이크포인트를 걸고(x64dbg <code>F2</code>, GDB <code>break</code>) 실행(<code>F9</code>/<code>run</code>)한 뒤 스텝 오버(<code>F8</code>/<code>next</code>)로 따라가며 실제 값을 레지스터/메모리 창에서 읽는다.</p>
+<h3>6단계: 상수·문자열·가설 기록 (매 발견 즉시, 누적)</h3>
+<p>여기까지 오는 동안 발견한 모든 상수(비교값, 배열, 키), 함수 이름 가설을 그때그때 IDA 주석(<code>:</code>)과 리네임(<code>N</code>)으로 남기고, 동시에 <code>notes.md</code>에 표로 정리한다. 배열은 손으로 옮기지 말고 export/dump 기능으로 정확히 추출한다.</p>
+<p>→ 자세한 내용: <a href="rev-0013-record-constants-first.html">rev-0013-record-constants-first.md</a>, <a href="rev-0014-reversing-notes.html">rev-0014-reversing-notes.md</a></p>
+<p>이 단계는 사실 1~5단계 내내 병행되어야 하는 작업이다. 이 루틴에서 번호를 따로 매긴 이유는 "잊지 말고 기록하라"는 걸 강조하기 위함이다.</p>
+<h3>7단계: 로직 복원 및 역산 설계 (5~20분)</h3>
+<p>찾은 로직을 의사코드로 정리하고, 작은 값으로 손 검증한 뒤, 각 연산을 역방향으로 뒤집을 수 있는지 판단한다.</p>
+<ul><li>전부 역산 가능(XOR, 덧셈/뺄셈, 비트 회전 등) → 역산 공식을 그대로 설계.</li><li>일부/전부 역산 불가능(해시, 정보 손실 연산) → 키 공간을 계산해서 브루트포스 가능 여부를 판단.</li></ul>
+<p>→ 자세한 내용: <a href="rev-0017-recover-logic-before-solver.html">rev-0017-recover-logic-before-solver.md</a>, <a href="rev-0016-when-bruteforce-works.html">rev-0016-when-bruteforce-works.md</a></p>
+<h3>8단계: 솔버 작성 및 검증 (5~15분)</h3>
+<p>Python으로 역산 로직 또는 브루트포스 로직을 작성한다. 기록해둔 상수를 그대로 붙여넣는다(다시 옮겨 적지 않는다 — 오타 방지). 계산된 flag 후보를 실제 바이너리에 입력해서 "Correct!" 같은 성공 메시지가 나오는지 반드시 확인한다.</p>
+<pre><code class="language-python"># 예시 뼈대
+key = bytes([0x01, 0x03, 0x03, 0x07, 0x0C, 0x0A, 0x0F, 0x0E])
+target = bytes.fromhex("...")  # notes.md에서 그대로 복사
+flag_bytes = bytes(t ^ k for t, k in zip(target, key))
+print(flag_bytes)</code></pre>
+<p>바이너리로 실제 검증:</p>
+<pre><code class="language-bash">echo -n "복원한값" | ./chall</code></pre>
+<p>또는 pwntools로:</p>
+<pre><code class="language-python">from pwn import process
+p = process(['./chall'])
+p.sendline(flag_bytes)
+print(p.recvall())</code></pre>
+<h3>9단계: flag 제출 및 후기 정리 (1~2분)</h3>
+<p>flag를 제출한다. 성공했든 실패했든, <code>notes.md</code>의 "다음 할 일" 항목을 지우고 "결론" 섹션에 최종 로직과 걸린 시간을 한두 줄 남긴다. 이 기록은 다음 문제를 풀 때, 또는 나중에 비슷한 패턴을 다시 만났을 때 큰 자산이 된다.</p>
+<h2>명령어/단축키 (전체 요약)</h2>
+<pre><code class="language-bash"># 1~2단계
+unzip -l challenge.zip
+file ./chall
+checksec --file=./chall
+readelf -d ./chall
+
+# 3~4단계 (IDA)
+# Shift+F12 문자열, Ctrl+P 함수목록, X xref, F5 디컴파일, N 리네임, : 주석
+
+# 5단계 (동적)
+# x64dbg: F2 브레이크포인트, F9 실행, F7 스텝인투, F8 스텝오버
+# GDB: break &lt;위치&gt;, run, next, step, info registers
+
+# 8단계 (Python 검증)
+python3 solve.py
+echo -n "$(python3 solve.py)" | ./chall</code></pre>
+<h2>출력 해석</h2>
+<ul><li>각 단계는 독립적인 "성공/실패"가 아니라 다음 단계로 넘어갈 정보를 얻었는지가 기준이다. 예를 들어 4단계에서 검증 함수를 못 찾았다고 실패가 아니라, "문자열 경로가 막혔으니 입력 추적 경로로 전환"이라는 정보를 얻은 것이다.</li><li>8단계에서 솔버가 계산한 값을 바이너리에 넣었는데 실패하면, 7단계(역산 설계)나 6단계(상수 기록)로 돌아가 재검증한다. 처음부터 다시 시작할 필요는 없다 — 루틴은 순환 구조이므로 문제가 생긴 단계로만 돌아가면 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>1~2단계(정찰)를 생략하고 바로 IDA부터 켜서, 나중에 문제 설명에 있던 결정적 힌트를 놓치는 것.</li><li>6단계(기록)를 매 단계 병행하지 않고 "나중에 한꺼번에"로 미루다가 상수를 잊어버리는 것.</li><li>5단계 판단 없이 무조건 정적 분석만 고집하거나 무조건 디버거부터 켜는 것 — 상황에 맞게 판단해야 한다(<a href="rev-0005-static-vs-dynamic.html">rev-0005-static-vs-dynamic.md</a>).</li><li>8단계에서 솔버 결과를 실제 바이너리로 재검증하지 않고 "논리적으로 맞으니까 이게 flag겠지"라며 그대로 제출하는 것 — 반드시 실행 검증을 거친다.</li><li>시간 감각 없이 한 단계에 무한정 머무는 것 — 특정 단계에서 15~20분 넘게 진전이 없으면 <a href="rev-0015-five-minute-checklist.html">rev-0015-five-minute-checklist.md</a>로 점검하거나 접근 방법 자체를 재고한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>지금 몇 단계에 있는지조차 헷갈린다 → <code>notes.md</code>를 다시 읽고 마지막으로 기록한 항목부터 재개</li><li>특정 단계에서 막혔다 → 해당 단계의 링크된 개별 문서로 이동</li><li>전체적으로 진전이 없다 → <a href="rev-0015-five-minute-checklist.html">rev-0015-five-minute-checklist.md</a></li><li>로직이 너무 복잡해서 손으로 역산이 안 된다 → <a href="rev-0016-when-bruteforce-works.html">rev-0016-when-bruteforce-works.md</a>로 브루트포스 가능성 검토</li></ul>
+<h2>미니 예제</h2>
+<p>가상의 문제 <code>xor_lock</code>을 처음부터 끝까지 따라가 보자.</p>
+<ol><li><strong>정찰</strong>: 문제 설명 "8글자 flag를 찾으세요 (CTF{...} 형식 아님, 순수 8글자)". 첨부파일은 <code>xor_lock</code> 하나.</li><li><strong>형식 확인</strong>: <code>file xor_lock</code> → <code>ELF 64-bit LSB pie executable, not stripped</code>. <code>checksec</code> → Canary/NX/PIE 모두 켜짐(리버싱에는 큰 영향 없음).</li><li><strong>정적 분석</strong>: IDA로 열자마자 <code>main</code>이 바로 보임(not stripped). Shift+F12 → <code>Correct!</code>, <code>Wrong!</code> 문자열 발견.</li><li><strong>검증 로직 추적</strong>: <code>Correct!</code> 더블클릭 → X → <code>main+0x40</code>으로 이동 → 바로 위에 <code>call check_flag</code> 발견.</li><li><strong>정적/동적 판단</strong>: <code>check_flag</code> F5 디컴파일 결과가 단순한 XOR 반복문으로 상식적으로 읽힘 → 동적 분석 불필요, 정적 분석 계속.</li><li><strong>기록</strong>: <code>key[8]</code> 배열과 <code>target[8]</code> 배열을 각각 IDA에서 export → <code>notes.md</code>에 16진수로 기록.</li><li><strong>로직 복원</strong>: 의사코드 작성 → <code>input[i] XOR key[i] == target[i]</code> → XOR는 자기 역함수이므로 <code>input[i] = target[i] XOR key[i]</code>로 바로 역산 가능.</li><li><strong>솔버 작성 및 검증</strong>:</li></ol>
+<pre><code class="language-python">   key = bytes.fromhex("0103030 70c0a0f0e")  # notes.md에서 복사(실제로는 공백 없이)
+   target = bytes.fromhex("...")
+   flag = bytes(t ^ k for t, k in zip(target, key))
+   print(flag)</code></pre>
+<p>출력된 값을 <code>./xor_lock</code>에 실제로 입력해서 <code>Correct!</code> 확인.</p>
+<ol><li><strong>제출 및 정리</strong>: flag 제출, <code>notes.md</code>에 "XOR 8바이트, 5분 만에 해결" 한 줄 기록.</li></ol>
+<p>전체적으로 이 문제는 1단계부터 9단계까지 약 15~20분이면 충분한 난이도다. 더 복잡한 문제는 4~7단계 사이를 여러 번 왕복하게 된다는 점만 다르고, 루틴의 큰 틀은 동일하다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0001-first-30-seconds.html">rev-0001-first-30-seconds.md</a></li><li><a href="rev-0003-first-exe.html">rev-0003-first-exe.md</a></li><li><a href="rev-0004-first-elf.html">rev-0004-first-elf.md</a></li><li><a href="rev-0005-static-vs-dynamic.html">rev-0005-static-vs-dynamic.md</a></li><li><a href="rev-0006-finding-check-function.html">rev-0006-finding-check-function.md</a></li><li><a href="rev-0007-trace-from-input.html">rev-0007-trace-from-input.md</a></li><li><a href="rev-0008-trace-from-strings.html">rev-0008-trace-from-strings.md</a></li><li><a href="rev-0009-finding-main.html">rev-0009-finding-main.md</a></li><li><a href="rev-0010-stripped-entry-point.html">rev-0010-stripped-entry-point.md</a></li><li><a href="rev-0011-when-to-trust-asm.html">rev-0011-when-to-trust-asm.md</a></li><li><a href="rev-0012-hints-from-problem.html">rev-0012-hints-from-problem.md</a></li><li><a href="rev-0013-record-constants-first.html">rev-0013-record-constants-first.md</a></li><li><a href="rev-0014-reversing-notes.html">rev-0014-reversing-notes.md</a></li><li><a href="rev-0015-five-minute-checklist.html">rev-0015-five-minute-checklist.md</a></li><li><a href="rev-0016-when-bruteforce-works.html">rev-0016-when-bruteforce-works.md</a></li><li><a href="rev-0017-recover-logic-before-solver.html">rev-0017-recover-logic-before-solver.md</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>전체 루틴 구성: 본 위키의 REV-0001~0017 개별 문서를 통합한 방법론 요약이며, 각 단계의 세부 근거는 해당 개별 문서의 출처를 따른다 (2026-09-08 검증).</li><li>pwntools <code>process</code>/<code>sendline</code>/<code>recvall</code>: pwntools 공식 문서(docs.pwntools.com) 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

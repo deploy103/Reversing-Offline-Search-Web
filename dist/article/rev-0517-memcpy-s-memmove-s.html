@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Windows CRT 메모리 함수 사전: memcpy_s memmove_s · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>Windows CRT 메모리 함수 사전: memcpy_s memmove_s</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>memcpy</code>/<code>memcpy_s</code>/<code>memmove</code>/<code>memmove_s</code>는 문자열이 아니라 지정한 바이트 수만큼 원시 메모리를 그대로 복사하는 함수이며, 겹치는 영역을 안전하게 처리하는지(<code>memmove</code>) 여부와 대상 버퍼 크기를 검증하는지(<code>_s</code> 버전) 여부만 다르므로, 리버싱 시에는 세 번째 인자(복사할 바이트 수)와 소스/대상 버퍼 주소만 정확히 짚으면 대부분 분석이 끝난다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>임포트 목록에서 <code>memcpy</code>, <code>memcpy_s</code>, <code>memmove</code>, <code>memmove_s</code>, <code>memset</code>을 발견해서 어떤 데이터가 어디로 복사되는지 추적해야 할 때</li><li><code>memcpy_s</code>가 인자를 4개 받는 이유(일반 <code>memcpy</code>는 3개)를 확인하고 싶을 때</li><li>스택 버퍼에 고정 크기 데이터가 복사되는 지점을 찾아 오버플로 취약점을 분석할 때</li><li><code>memcpy</code>와 <code>memmove</code>를 같은 것으로 착각해서 소스/대상 겹침 여부를 놓쳤을 때</li></ul>
+<h2>핵심 개념</h2>
+<pre><code class="language-c">void *memcpy(void *dest, const void *src, size_t count);
+errno_t memcpy_s(void *dest, size_t destSize, const void *src, size_t count);
+void *memmove(void *dest, const void *src, size_t count);
+errno_t memmove_s(void *dest, size_t destSize, const void *src, size_t count);
+void *memset(void *dest, int value, size_t count);</code></pre>
+<ul><li><code>memcpy(dest, src, count)</code>: <code>src</code>부터 <code>count</code>바이트를 <code>dest</code>로 복사한다. <code>dest</code>와 <code>src</code>가 겹치면(overlap) 동작이 정의되지 않는다(undefined behavior) — 겹치는 경우 데이터가 깨질 수 있다.</li><li><code>memmove(dest, src, count)</code>: <code>memcpy</code>와 기능은 같지만 내부적으로 임시 버퍼나 방향을 조정해 <code>dest</code>와 <code>src</code>가 겹쳐도 항상 올바르게 동작한다. 같은 버퍼 내에서 앞/뒤로 데이터를 밀 때(예: 배열 중간에 원소 삽입) 사용한다.</li><li><code>memcpy_s</code>/<code>memmove_s</code>: 보안 강화 버전으로, 두 번째 인자 <code>destSize</code>(대상 버퍼의 실제 크기)를 받아 <code>count &gt; destSize</code>이면 복사를 중단하고 <code>errno_t</code>(0이 아니면 오류 코드)를 반환한다. 인자 순서가 <code>dest, destSize, src, count</code> 순서임에 주의해야 한다(3번째가 아니라 4번째 인자가 복사 바이트 수).</li><li><code>memset(dest, value, count)</code>: <code>dest</code>부터 <code>count</code>바이트를 모두 <code>value</code>(하위 1바이트만 사용)로 채운다. 버퍼 초기화(0으로 채우기)나 스택 클리어에 흔히 쓰인다.</li></ul>
+<p>x64 호출 규약 기준으로 <code>memcpy(dest, src, count)</code>는 <code>RCX</code>=dest, <code>RDX</code>=src, <code>R8</code>=count 순서로 들어가며, <code>memcpy_s(dest, destSize, src, count)</code>는 <code>RCX</code>=dest, <code>RDX</code>=destSize, <code>R8</code>=src, <code>R9</code>=count 순서다. 인자 개수가 다르다는 점을 놓치면 <code>memcpy_s</code>의 3번째 인자를 <code>memcpy</code>처럼 count로 오인해 버퍼 크기(destSize)와 실제 소스 주소(src)를 뒤바꿔 읽는 실수를 하게 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Hex-Rays 디컴파일에서 <code>memcpy(&amp;local_buf, a1, v3)</code>처럼 세 인자가 나열되고, 세 번째 인자가 고정 상수(예: <code>0x100</code>)이면 고정 크기 버퍼 복사이므로 오버플로 여부를 점검할 대상</li><li><code>memcpy_s</code>가 보이는데 인자가 4개이고, 그중 두 번째와 네 번째가 비슷한 값(둘 다 버퍼 크기 관련)으로 보이는 경우</li><li>배열 삭제/삽입 로직 근처에서 <code>memmove</code>가 나타나는 경우(같은 버퍼 안에서 데이터를 앞뒤로 미는 패턴)</li><li>함수 시작부에서 <code>memset</code>으로 스택 버퍼를 0으로 초기화하는 코드(컴파일러가 자동 삽입하기도 함, <code>/RTC</code> 디버그 빌드에서 흔함)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>함수 이름이 <code>memcpy</code>인지 <code>memcpy_s</code>인지부터 확인해서 인자가 3개인지 4개인지 헷갈리지 않는다.</li><li>세 번째(또는 <code>_s</code> 버전의 네 번째) 인자인 "복사할 바이트 수"가 고정 상수인지 변수인지 확인한다. 변수라면 그 값이 사용자 입력에서 온 것인지 추적해 오버플로 가능성을 판단한다.</li><li><code>dest</code> 버퍼가 스택 지역 변수인지 힙 버퍼인지 IDA의 스택 뷰(<code>Ctrl+K</code> 또는 함수 프레임 확인)로 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 정적 분석(IDA)</strong></p>
+<ul><li>임포트 목록에서 <code>memcpy</code>/<code>memcpy_s</code>/<code>memmove</code> 를 찾아 <code>X</code>로 교차 참조를 나열한다.</li><li><code>F5</code>로 디컴파일해 세 번째(또는 네 번째) 인자가 상수인지, 변수라면 어디서 오는지(예: 사용자 입력 길이) 상위로 거슬러 올라간다.</li></ul>
+<p><strong>2) 동적 분석(x64dbg)</strong></p>
+<ul><li><code>bp memcpy_s</code>로 브레이크포인트를 건다.</li><li>진입 직후 <code>RCX</code>(dest), <code>RDX</code>(destSize), <code>R8</code>(src), <code>R9</code>(count)를 확인한다.</li><li><code>R8</code>(src)을 Follow in Dump 해서 실제로 복사되는 원본 데이터를 확인하고, <code>count</code>(<code>R9</code>)가 <code>destSize</code>(<code>RDX</code>)보다 크면 오버플로가 발생할 조건임을 바로 알 수 있다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp memcpy</code>, <code>bp memcpy_s</code>, <code>bp memmove</code></li><li>x64dbg 스택/레지스터 창에서 <code>RCX</code>/<code>RDX</code>/<code>R8</code>/<code>R9</code> 직접 확인, 우클릭 → "Follow in Dump"</li><li>IDA: <code>X</code>(교차 참조), <code>F5</code>(디컴파일), <code>Ctrl+K</code>(스택 프레임 뷰)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>memcpy</code>/<code>memmove</code>의 반환값은 <code>dest</code> 포인터 그대로(성공/실패 개념 없음).</li><li><code>memcpy_s</code>/<code>memmove_s</code>의 반환값(<code>errno_t</code>)이 <code>0</code>이면 성공, <code>0</code>이 아니면 오류(예: <code>ERANGE</code>는 count가 destSize를 초과한 경우)다. 반환값을 검사하지 않는 코드가 있다면 오류가 나도 그냥 넘어가는 취약한 경로일 수 있다.</li><li><code>count</code>(복사 바이트 수)가 <code>destSize</code>보다 큰 상태로 <code>memcpy_s</code>가 호출되면 함수 내부에서 대상 버퍼를 0으로 채우고 <code>errno_t</code>를 오류로 반환하는 동작을 하므로, 크래시 대신 "조용한 실패"가 나는 경우가 있다는 점도 함께 봐야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>memcpy</code>와 <code>strcpy</code>를 혼동해서 <code>memcpy</code>가 NUL을 만나면 멈춘다고 착각하는 것. <code>memcpy</code>는 지정한 바이트 수만큼 무조건 복사하며 NUL과 무관하다.</li><li><code>memcpy_s</code>의 인자 순서를 <code>dest, src, count</code>(일반 <code>memcpy</code> 순서)로 착각해서 2번째 인자(destSize)를 src로 오인하는 것.</li><li>겹치는 버퍼에 <code>memcpy</code>가 쓰인 코드를 보고 "정상 동작한다"고 가정하는 것. 실제로는 undefined behavior이므로 겹치는 경우라면 원래 <code>memmove</code>를 써야 했던 버그일 수 있다.</li><li><code>memset</code>으로 민감한 데이터(비밀번호 등)를 지우는 코드를 컴파일러가 최적화로 제거해버려 실제로는 메모리에 값이 남아있는 경우를 놓치는 것(<code>SecureZeroMemory</code> 같은 최적화 방지 함수와 구분해야 함).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>문자열이 아닌 순수 바이트 복사가 아니라 와이드 문자열 복사라면 → REV-0516(wcscpy wcscat 계열)을 본다.</li><li>ANSI 문자열 복사 함수의 안전 버전 규약이 궁금하면 → REV-0515(strcpy_s sprintf_s)를 본다.</li><li>복사된 데이터가 힙 메모리와 관련 있다면 → REV-0510(HeapAlloc HeapFree)를 함께 본다.</li></ul>
+<h2>미니 예제</h2>
+<p>x64dbg에서 <code>bp memcpy_s</code> 후 실행하니 다음처럼 멈췄다.</p>
+<pre><code class="language-text">RCX = 0x000000000021FA20   (dest, 스택 버퍼)
+RDX = 0x0000000000000010   (destSize = 16)
+R8  = 0x00000221A3B05000   (src)
+R9  = 0x0000000000000010   (count = 16)</code></pre>
+<p><code>count</code>(16)가 <code>destSize</code>(16)와 정확히 같으므로 정상적인 경계 내 복사이다. <code>R8</code>을 Follow in Dump 하면 실제 복사되는 16바이트(예: 사용자 입력 문자열)를 확인할 수 있다. 만약 <code>R9</code>가 <code>0x20</code>(32)처럼 <code>destSize</code>보다 크게 나온다면 오버플로 조건이 성립하는 것이므로, 취약점 분석 관점에서 이 호출을 중점적으로 파고들어야 한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0516-wcscpy-wcscat.html">REV-0516 — Windows CRT 문자열 함수 사전: wcscpy wcscat 계열(와이드 문자)</a></li><li><a href="rev-0515-strcpy-s-sprintf-s.html">REV-0515 — Windows CRT 문자열 함수 사전: strcpy_s sprintf_s</a></li><li><a href="rev-0510-heapalloc-heapfree.html">REV-0510 — WinAPI 메모리 함수 사전: HeapAlloc HeapFree</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>memcpy</code>/<code>memcpy_s</code>/<code>memmove</code>/<code>memmove_s</code>/<code>memset</code>의 함수 시그니처, 인자 순서, <code>errno_t</code> 반환 동작은 Microsoft C 런타임 라이브러리(CRT) 공식 문서 기준이다.</li><li><code>memcpy</code>가 겹치는 메모리에서 undefined behavior라는 점과 <code>memmove</code>가 이를 안전하게 처리한다는 점은 C 표준 라이브러리 일반 사양 기준이다.</li><li>위 미니 예제의 주소와 값은 설명용으로 구성한 예시이며 실제 특정 문제의 데이터가 아니다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinAPI 동기화 함수 사전: CreateMutex CreateEvent · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>WinAPI 동기화 함수 사전: CreateMutex CreateEvent</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>CreateMutexW</code>/<code>CreateEventW</code>는 여러 스레드(또는 여러 프로세스 인스턴스) 사이의 동기화를 위한 커널 객체를 만드는 함수로, 리버싱에서는 주로 "프로그램이 이미 실행 중인지 검사하는 단일 인스턴스(single instance) 체크"나 "특정 조건이 될 때까지 스레드를 대기시키는 이벤트 기반 트리거"를 찾는 단서로 쓰인다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>프로그램을 두 번 실행하면 바로 종료되거나 "이미 실행 중입니다" 메시지가 뜨는 원인을 찾을 때</li><li>임포트 목록에서 <code>CreateMutexW</code>, <code>CreateEventW</code>, <code>WaitForSingleObject</code>, <code>SetEvent</code>를 발견했을 때</li><li>특정 이벤트가 발생(예: 디버거 감지, 특정 파일 생성)해야만 다음 로직이 실행되는 구조를 분석할 때</li><li>안티디버깅/안티멀티인스턴스 우회를 시도해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<pre><code class="language-c">HANDLE CreateMutexW(
+    LPSECURITY_ATTRIBUTES lpMutexAttributes, // 1. 보안 속성(대개 NULL)
+    BOOL                   bInitialOwner,     // 2. TRUE면 생성 즉시 호출 스레드가 소유
+    LPCWSTR                lpName             // 3. 뮤텍스 이름(NULL이면 이름 없는 뮤텍스)
+);
+
+HANDLE CreateEventW(
+    LPSECURITY_ATTRIBUTES lpEventAttributes, // 1. 보안 속성(대개 NULL)
+    BOOL                   bManualReset,      // 2. TRUE=수동 리셋, FALSE=자동 리셋
+    BOOL                   bInitialState,     // 3. TRUE=처음부터 signaled 상태
+    LPCWSTR                lpName             // 4. 이벤트 이름(NULL이면 이름 없는 이벤트)
+);</code></pre>
+<p><code>CreateMutexW</code>는 이름(<code>lpName</code>)이 주어지면 이미 같은 이름의 뮤텍스가 존재하는지 확인하고, 존재하면 새로 만들지 않고 기존 핸들을 반환한다. 이 경우 <code>GetLastError()</code>가 <code>ERROR_ALREADY_EXISTS</code>(183)를 반환하므로, 프로그램은 이 값을 검사해서 "내가 이미 실행 중이구나"를 판단하고 즉시 종료하는 패턴을 자주 쓴다. 이것이 흔히 보는 "이미 실행 중입니다" 안내창의 정체다.</p>
+<p><code>CreateEventW</code>는 특정 시점에 "신호(signal)"를 보내는 용도의 객체를 만든다. <code>bManualReset</code>이 <code>FALSE</code>면 <code>WaitForSingleObject</code>로 대기하던 스레드가 깨어나는 즉시 자동으로 non-signaled 상태로 돌아가고(한 번에 한 스레드만 깨움), <code>TRUE</code>면 <code>ResetEvent</code>를 명시적으로 호출할 때까지 signaled 상태가 유지된다(여러 스레드가 동시에 깨어날 수 있음). 이벤트를 신호 상태로 만드는 함수는 <code>SetEvent</code>, 대기하는 함수는 <code>WaitForSingleObject</code>/<code>WaitForMultipleObjects</code>다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>프로그램 시작 직후(<code>WinMain</code>/<code>main</code> 초반)에 <code>CreateMutexW</code> 호출이 있고, 바로 뒤에 <code>GetLastError</code> 호출 및 <code>cmp eax, 0B7h</code>(183, <code>ERROR_ALREADY_EXISTS</code>) 비교가 나오는 패턴</li><li>비교 결과가 참이면 <code>MessageBoxW</code>로 안내창을 띄우고 <code>ExitProcess</code>/<code>return</code>으로 종료하는 흐름</li><li>별도 스레드가 <code>WaitForSingleObject(hEvent, INFINITE)</code>로 멈춰 있다가, 특정 조건에서 다른 스레드가 <code>SetEvent(hEvent)</code>를 호출하면 진행되는 구조</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>CreateMutexW</code> 호출 직후 <code>GetLastError</code>가 호출되는지, 그 반환값이 <code>ERROR_ALREADY_EXISTS</code>(183)와 비교되는지부터 확인한다.</li><li>뮤텍스/이벤트의 이름 문자열(4번째 또는 3번째 인자)을 확인해서 어떤 이름으로 단일 인스턴스를 체크하는지 파악한다(이 이름을 알면 x64dbg나 별도 도구로 미리 같은 이름의 뮤텍스를 만들어 우회 테스트를 할 수 있다).</li><li>단일 인스턴스 체크가 목적이 아니라면, 이 동기화 객체가 어느 스레드와 어느 스레드 사이를 조율하는지부터 파악한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 정적 분석(IDA)</strong></p>
+<ul><li>임포트 목록에서 <code>CreateMutexW</code>(또는 A)를 찾아 <code>X</code>로 교차 참조한다.</li><li>호출 직후 코드 흐름을 따라가 <code>GetLastError</code> 비교 및 분기(<code>je</code>/<code>jne</code>)를 확인한다.</li></ul>
+<p><strong>2) 동적 분석(x64dbg)</strong></p>
+<ul><li><code>bp CreateMutexW</code> 후 실행, <code>RDX</code>(x64, bInitialOwner)/<code>R8</code>(lpName 문자열 포인터, 정확히는 3번째 인자 위치) 등을 확인한다. x64에서 <code>CreateMutexW</code>는 <code>RCX</code>=lpMutexAttributes, <code>RDX</code>=bInitialOwner, <code>R8</code>=lpName 순서다.</li><li><code>R8</code>을 Follow in Dump 후 UTF-16으로 보면 뮤텍스 이름 문자열을 읽을 수 있다.</li><li>함수 리턴 직후(<code>ret</code> 다음 줄, 또는 F8로 스텝오버 후) <code>EAX</code>/<code>RAX</code>(반환된 핸들)와 <code>GetLastError</code> 결과를 확인한다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp CreateMutexW</code>, <code>bp CreateEventW</code>, <code>bp SetEvent</code>, <code>bp WaitForSingleObject</code></li><li>x64dbg: F8(스텝오버)로 <code>GetLastError</code> 호출 결과까지 진행 후 <code>EAX</code> 확인</li><li>IDA: <code>X</code>(교차 참조), <code>F5</code>(디컴파일)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>CreateMutexW</code> 반환값이 <code>NULL</code>이면 생성 자체가 실패한 것(권한 문제 등).</li><li>반환값이 유효한 핸들이지만 <code>GetLastError() == ERROR_ALREADY_EXISTS</code>(183)이면 "이미 같은 이름의 뮤텍스가 존재했다"는 뜻 — 단일 인스턴스 체크의 핵심 판단 지점이다.</li><li><code>CreateEventW</code>에서 <code>bInitialState</code>가 <code>TRUE</code>면 만들어지자마자 이미 signaled 상태이므로 첫 <code>WaitForSingleObject</code> 호출은 즉시 반환된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>CreateMutexW</code> 반환값이 <code>NULL</code>이 아니면 무조건 성공이라고 판단하는 것. <code>ERROR_ALREADY_EXISTS</code>여도 핸들 자체는 유효하게 반환되므로 반드시 <code>GetLastError</code>까지 함께 봐야 한다.</li><li>뮤텍스 이름이 없는(<code>lpName = NULL</code>) 경우인데도 단일 인스턴스 체크 대상으로 착각하는 것. 이름이 없으면 프로세스 간 공유가 안 되므로 단순 스레드 동기화 목적일 가능성이 높다.</li><li><code>CreateEvent</code>와 <code>CreateMutex</code>의 용도를 혼동하는 것. 뮤텍스는 "상호 배제(한 번에 하나만 소유)"가 목적이고, 이벤트는 "신호 전달(조건 알림)"이 목적으로 서로 다른 문제를 푼다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>뮤텍스/이벤트 핸들을 다 쓴 뒤 정리하는 방식이 궁금하면 → REV-0519(CloseHandle DuplicateHandle GetLastError)를 본다.</li><li>동기화 이후 이어지는 흐름이 다른 모듈 로드와 관련 있다면 → REV-0520(LoadLibraryEx FreeLibrary GetModuleHandle)을 본다.</li><li>안티디버깅 목적의 다른 API 흔적이 궁금하면 → REV-0130(IsDebuggerPresent 안티디버깅 식별)을 본다.</li></ul>
+<h2>미니 예제</h2>
+<p>x64dbg에서 <code>bp CreateMutexW</code> 후 실행하니 다음처럼 멈췄다.</p>
+<pre><code class="language-text">RCX = 0x0000000000000000   (lpMutexAttributes = NULL)
+RDX = 0x0000000000000001   (bInitialOwner = TRUE)
+R8  = 0x00000221A3B01000   (lpName)</code></pre>
+<p><code>R8</code>을 Follow in Dump, UTF-16으로 전환하면 <code>L"Global\\MyAppSingleInstance123"</code>가 보인다. 함수 리턴 후 <code>GetLastError</code>를 호출한 결과가 <code>183</code>(<code>0xB7</code>)이라면, 이 프로그램은 이미 같은 이름의 뮤텍스가 있다는 뜻이므로 곧이어 "이미 실행 중" 메시지 박스와 종료 코드가 따라올 가능성이 높다.</p>
+<p>추가로 <code>CreateSemaphoreW</code>나 <code>CreateWaitableTimerW</code> 같은 다른 동기화 객체 생성 함수도 이름/인자 구조가 비슷하며, 모두 <code>WaitForSingleObject</code>/<code>WaitForMultipleObjects</code>로 대기할 수 있는 커널 객체를 만든다는 공통점이 있다. 뮤텍스는 "한 번에 하나의 소유자"라는 상호 배제 규칙을 강제하지만 세마포어는 지정한 개수까지 동시 소유를 허용한다는 점에서 목적이 다르다. 리버싱 관점에서는 정확한 동기화 의미론까지 몰라도, "이 API가 등장하면 스레드 간 또는 프로세스 간 조율 지점"이라는 사실만 인지해도 분석 우선순위를 정하는 데 충분하다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0519-closehandle-duplicatehandle-getlasterror.html">REV-0519 — WinAPI 핸들 함수 사전: CloseHandle DuplicateHandle GetLastError</a></li><li><a href="rev-0520-loadlibraryex-freelibrary-getmodulehandle.html">REV-0520 — WinAPI 모듈 함수 사전: LoadLibraryEx FreeLibrary GetModuleHandle</a></li><li><a href="rev-0130-isdebuggerpresent.html">REV-0130 — IsDebuggerPresent 안티디버깅 식별</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>CreateMutexW</code>/<code>CreateEventW</code>의 함수 시그니처, 인자 순서, <code>ERROR_ALREADY_EXISTS</code>(183) 동작은 Microsoft Win32 API(동기화 객체) 공식 문서 기준이다.</li><li>x64 호출 규약(<code>RCX</code>/<code>RDX</code>/<code>R8</code>)은 Microsoft x64 소프트웨어 규약 공식 문서 기준이다.</li><li>위 미니 예제의 주소와 이름 문자열은 설명을 위해 구성한 예시이며 실제 특정 문제의 데이터가 아니다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

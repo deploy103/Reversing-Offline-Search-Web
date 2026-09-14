@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>시간 복잡도로 브루트포스 가능 여부 판단하는 실전 기준 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>시간 복잡도로 브루트포스 가능 여부 판단하는 실전 기준</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>REV-0219가 "이미 확정된 키스페이스 크기"에서 브루트포스 여부를 계산하는 것이라면, 이 글은 그보다 한 단계 앞서 코드의 반복 구조(중첩 루프 개수, 재귀 분기 수)만 보고 "이 알고리즘/검증 로직 자체가 입력 크기에 따라 다항 시간으로 크는지 지수 시간으로 크는지"를 빠르게 판별해, 브루트포스가 아예 불필요한 다항 시간 지름길이 있는지부터 먼저 점검하는 실전 기준을 다룬다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>코드에 중첩 루프나 재귀가 있는데, 입력 크기 <code>n</code>이 커질 때 실행 시간이 얼마나 늘어날지 감이 안 잡힐 때</li><li>REV-0219로 브루트포스 키스페이스는 계산했는데, 애초에 검증 로직 자체를 다항 시간에 직접 계산하는 더 빠른 방법(동적 계획법, 분할 정복)이 있는 게 아닌지 궁금할 때</li><li>REV-0910의 재귀 함수가 트리형 재귀인지 확인했는데, 그 재귀의 시간 복잡도가 실제로 얼마나 나쁜지 정량적으로 판단하고 싶을 때</li><li>"이 정도 크기의 루프면 그냥 실행해도 되나, 아니면 최적화가 필요한가"를 판단해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>시간 복잡도를 코드에서 직접 읽는 법</h3>
+<p>Big-O 표기법은 입력 크기 <code>n</code>이 커질 때 실행 시간이 어떤 함수 형태로 증가하는지를 나타낸다. 디스어셈블리/디컴파일에서 복잡도를 판단하는 가장 실용적인 방법은 루프 중첩 구조와 재귀 분기 수를 세는 것이다.</p>
+<table><thead><tr><th>코드 패턴</th><th>복잡도</th><th>실전 의미</th></tr></thead><tbody><tr><td>단일 <code>for</code> 루프 (n번 반복)</td><td>O(n)</td><td>입력이 아무리 커져도 선형적으로만 느려짐 — 사실상 항상 실행 가능</td></tr><tr><td>이중 중첩 루프 (n×n)</td><td>O(n²)</td><td>n=1000이면 100만 회 — 여전히 순식간</td></tr><tr><td>삼중 중첩 루프 (n×n×n)</td><td>O(n³)</td><td>n=1000이면 10억 회 — 몇 초~몇십 초 수준, 규모에 따라 느려질 수 있음</td></tr><tr><td>재귀가 매 호출마다 2번씩 자기 자신 호출 (트리형, REV-0910)</td><td>O(2^n)</td><td>n=30만 되어도 약 10억 회, n=40이면 1조 회 — 지수적으로 폭발</td></tr><tr><td>정렬 알고리즘(분할 정복)</td><td>O(n log n)</td><td>매우 빠름, 대부분의 입력 크기에서 실용적</td></tr><tr><td>브루트포스 전수 탐색(charset^length)</td><td>O(c^n)</td><td>REV-0219에서 다루는 바로 그 지수적 증가</td></tr></tbody></table>
+<p>이 표에서 가장 중요한 실전 감각은 <strong>다항 시간(O(n), O(n²), O(n³) 등, 지수가 고정된 경우)과 지수 시간(O(2^n), O(c^n), 밑이나 지수에 입력 크기가 들어가는 경우)의 경계</strong>다. 다항 시간 알고리즘은 입력이 커져도 감당 가능한 속도로 유지되지만, 지수 시간 알고리즘은 입력이 조금만 커져도 우주의 나이를 넘는 시간이 걸릴 수 있다(REV-0219의 예제 3 참고).</p>
+<h3>검증 로직의 복잡도와 브루트포스의 복잡도는 다른 문제다</h3>
+<p>여기서 중요한 구분이 있다. REV-0219는 "브루트포스 자체의 복잡도"(문자셋^길이)를 계산하는 것이고, 이 글에서 다루는 것은 "검증 함수 한 번을 실행하는 데 걸리는 복잡도"다. 브루트포스를 실행하려면 후보 하나마다 검증 함수를 호출해야 하므로, 전체 소요 시간은 다음과 같이 두 복잡도의 곱이다.</p>
+<pre><code>전체 브루트포스 시간 ≈ (후보 개수) × (검증 함수 1회 호출 시간)
+                    = O(charset^length) × O(검증 함수의 복잡도)</code></pre>
+<p>만약 검증 함수 자체가 O(n²)이나 O(n³)처럼 입력 길이에 따라 비싸다면(예: 문자열 안에서 다른 문자열을 이중 루프로 찾는 로직이 포함된 경우), REV-0219가 가정한 "초당 시도 횟수"가 실제로는 훨씬 낮아질 수 있다. 따라서 브루트포스 가능성을 판단하기 전에 검증 함수 자체의 복잡도부터 먼저 확인하는 것이 REV-0219 계산의 정확도를 높여준다.</p>
+<h3>지수 시간처럼 보이지만 다항 시간으로 줄일 수 있는 경우</h3>
+<p>일부 재귀/브루트포스처럼 보이는 알고리즘은 사실 동적 계획법(memoization)이나 분할 정복으로 다항 시간에 풀 수 있다. 예를 들어 REV-0910에서 다룬 트리형 재귀가 사실은 같은 부분 문제를 반복 계산하고 있다면, 메모이제이션만 추가해도 O(2^n)이 O(n)이나 O(n²)으로 극적으로 줄어들 수 있다. 이 경우 "이 문제는 브루트포스가 불가능하다"고 성급히 결론짓기 전에, 재귀 구조를 다시 살펴 반복 계산을 없앨 수 있는지부터 확인하는 것이 REV-0219의 브루트포스 계산으로 바로 넘어가는 것보다 훨씬 좋은 전략일 수 있다.</p>
+<h3>실전 판단 절차 요약</h3>
+<ol><li>검증 함수 자체의 복잡도(루프 중첩 수)를 먼저 확인한다.</li><li>검증 함수가 다항 시간이라면 REV-0219의 "초당 시도 횟수" 추정에 이 복잡도를 반영해 더 정확한 예상 시간을 계산한다.</li><li>검증 로직 자체가 지수 시간(트리형 재귀, 전수 탐색 로직이 검증 함수 안에 내장)이라면, 먼저 메모이제이션이나 분할 정복으로 다항 시간화가 가능한지 검토한다.</li><li>다항 시간화가 불가능하다고 판단되면 그제서야 REV-0219 계산으로 넘어가 브루트포스 자체의 실현 가능성을 판단한다.</li></ol>
+<h3>실전 규모 감각 — 어느 정도면 "빠르다"고 느끼는가</h3>
+<p>경험적으로 다음 규모까지는 일반적인 CTF 환경(수 분~수 시간 예산)에서 대체로 문제없이 실행된다.</p>
+<ul><li>O(n): n이 10^9 정도까지도 수 초 안에 끝남</li><li>O(n log n): n이 10^7~10^8까지도 실용적</li><li>O(n²): n이 10^4~10^5 정도까지 실용적(10^4²=10^8)</li><li>O(n³): n이 10^3 정도까지 실용적(10^3³=10^9)</li><li>O(2^n): n이 30을 넘으면 이미 부담스럽고, 40을 넘으면 사실상 불가능(REV-0219 예제 2 참고)</li></ul>
+<p>이 감각표는 REV-0219의 키스페이스 계산과 함께 쓰면, "이 코드를 그냥 실행해도 되는지" 아니면 "알고리즘을 개선해야 하는지"를 코드를 읽는 즉시 직관적으로 판단하는 데 도움이 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>for</code> 루프 안에 또 <code>for</code> 루프가 있고, 그 안에 또 <code>for</code> 루프가 있는 삼중 이상 중첩 구조</li><li>재귀 함수가 한 호출에서 자기 자신을 2번 이상 호출(REV-0910의 트리형 재귀)</li><li>검증 함수 내부에 이미 "모든 조합을 시도"하는 듯한 전수 탐색 루프가 포함되어 있어, 이 함수 자체가 이미 지수 시간</li><li>입력 크기가 커질수록(디버깅 중 관찰) 실행 시간이 눈에 띄게 비선형적으로 늘어남</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>검증 함수와 그 하위 호출 함수들의 루프 중첩 깊이를 센다. 재귀가 있다면 한 호출에서 자기 자신을 몇 번 호출하는지(REV-0910) 확인한다. 이 두 가지만으로 다항 시간인지 지수 시간인지 대부분 즉시 판별된다.</p>
+<h2>단계별 절차</h2>
+<ol><li>검증 함수의 전체 호출 그래프에서 루프와 재귀를 모두 찾아 중첩 깊이/분기 수를 센다.</li><li>표를 참고해 전체 복잡도를 O(n^k) 또는 O(c^n) 형태로 분류한다.</li><li>지수 시간으로 분류되면, 같은 결과를 내는 다항 시간 알고리즘(메모이제이션, 분할 정복)이 있는지 먼저 검토한다(REV-0910).</li><li>다항 시간화가 안 되면, 이 복잡도를 REV-0219의 "초당 시도 횟수" 추정에 반영해 더 정확한 브루트포스 소요 시간을 계산한다.</li><li>실제 코드로 벤치마크해서(입력 크기를 두 배로 늘려가며 실행 시간 증가 배율을 관찰) 이론적으로 추정한 복잡도와 실측이 일치하는지 검증한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python">import time
+
+def benchmark_complexity(func, sizes=(10, 20, 40, 80)):
+    for n in sizes:
+        data = list(range(n))
+        start = time.perf_counter()
+        func(data)
+        elapsed = time.perf_counter() - start
+        print(f"n={n}, time={elapsed:.6f}s")
+    # n이 2배가 될 때 시간이 몇 배가 되는지 보면 복잡도 추정 가능:
+    # 시간도 약 2배 -&gt; O(n), 약 4배 -&gt; O(n^2), 약 8배 -&gt; O(n^3), 급격히 폭증 -&gt; O(2^n) 계열</code></pre>
+<h2>출력 해석</h2>
+<ul><li>입력 크기를 2배로 늘렸을 때 실행 시간이 약 2배로 늘면 O(n), 약 4배면 O(n²), 약 8배면 O(n³)이다.</li><li>실행 시간이 입력 크기를 조금만 늘려도(예: n=20에서 n=30으로) 감당 안 될 정도로 폭증한다면 지수 시간(O(2^n) 계열)이 거의 확실하다.</li><li>벤치마크 결과가 이론적 추정과 다르게 나온다면(예: 중첩 루프를 3개 셌는데 실측은 O(n) 처럼 나옴), 안쪽 루프의 실제 반복 횟수가 상수이거나 조기 종료(break) 조건이 있어 최악의 경우가 실제로는 거의 발생하지 않는 구조일 수 있다 — 이 경우 실측을 신뢰하고 이론적 최악 케이스보다 낙관적으로 판단해도 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>중첩 루프 개수만 세고 각 루프의 실제 반복 횟수(고정 상수인지, 입력 크기에 비례하는지)를 확인하지 않는 것 — 안쪽 루프가 입력과 무관하게 항상 8번만 도는 것이라면 이는 사실상 O(n) 상수 배일 뿐 O(n²)이 아니다.</li><li>재귀의 분기 수를 확인하지 않고 "재귀니까 무조건 느리다"고 단정하는 것 — 단순 선형 재귀(REV-0910)는 O(n)일 뿐 지수 시간이 아니다.</li><li>검증 함수 자체의 복잡도를 확인하지 않고 REV-0219의 "초당 시도 횟수"를 무작정 10^8/s 같은 일반값으로만 가정하는 것 — 검증 함수가 O(n²)이면 입력 길이가 늘어날수록 실제 초당 시도 횟수가 크게 떨어진다.</li><li>지수 시간처럼 보이는 재귀에서 메모이제이션 가능성을 검토하지 않고 바로 "브루트포스가 답이다"로 건너뛰는 것 — 다항 시간 지름길이 있다면 그게 항상 브루트포스보다 낫다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>재귀 구조의 분기 수와 메모이제이션 적용 가능성을 다시 확인하려면 → REV-0910 재귀적으로 정의된 검증 함수 풀어내기</li><li>검증 함수 복잡도를 반영해 정확한 브루트포스 소요 시간을 계산하려면 → REV-0219 Brute Force가 가능한 입력 공간 계산</li><li>탐색 공간이 두 독립적인 절반으로 나뉘어 각각 다항 시간에 처리 가능한 구조라면 → REV-0220 Meet-in-the-middle를 고려할 상황</li><li>여러 조건을 조합해 애초에 탐색 공간 자체를 줄이는 법이 궁금하면 → REV-0918 다중 조건을 만족하는 입력 공간 좁히는 실전 절차</li></ul>
+<h2>미니 예제</h2>
+<p>어떤 검증 함수가 다음처럼 구현되어 있다고 하자.</p>
+<pre><code class="language-c">int verify(const char *s, int len) {
+    for (int i = 0; i &lt; len; i++) {
+        for (int j = 0; j &lt; len; j++) {
+            if (i != j &amp;&amp; s[i] == s[j]) {
+                return 0;   // 중복 문자가 있으면 실패
+            }
+        }
+    }
+    return 1;
+}</code></pre>
+<p>이중 중첩 루프이므로 O(n²)이다. 길이 8짜리 입력에 대해 이 함수를 브루트포스 후보마다 호출한다면, 실측으로 복잡도를 확인해보자.</p>
+<pre><code class="language-python">import time
+import os
+
+def verify(s: bytes) -&gt; bool:
+    n = len(s)
+    for i in range(n):
+        for j in range(n):
+            if i != j and s[i] == s[j]:
+                return False
+    return True
+
+for n in (100, 200, 400, 800):
+    data = os.urandom(n)
+    start = time.perf_counter()
+    verify(data)
+    print(n, time.perf_counter() - start)
+# 예상 결과: n이 2배가 될 때마다 실행 시간이 약 4배씩 증가 -&gt; O(n^2) 확인</code></pre>
+<p>이렇게 O(n²)임을 확인했다면, REV-0219의 "초당 시도 횟수" 추정에서 길이 8 정도는 이 검증 함수 자체의 오버헤드가 무시할 만한 수준(8²=64회 비교)이라는 것도 함께 확인할 수 있다 — 검증 함수 복잡도가 브루트포스 전체 시간에 실질적인 영향을 주려면 보통 입력 길이가 수백~수천 단위로 커야 체감된다.</p>
+<h3>완전한 예제 스크립트 — O(n²)를 실측으로 확실히 증명하기 (그리고 흔히 빠지는 함정도 같이 보기)</h3>
+<p>루프 중첩 수만 세서 "O(n²)일 것이다"라고 짐작하는 것과, 실제로 벤치마크를 돌려서 숫자로 확인하는 것은 다르다. 아래 스크립트는 입력 크기를 두 배씩 늘려가며 실행 시간이 정말 약 4배씩 늘어나는지(= O(n²)의 특징) 직접 측정한다.</p>
+<pre><code class="language-python">import time    # 실행 시간을 정밀하게 측정하기 위한 표준 라이브러리
+import random  # 무작위로 섞기 위한 표준 라이브러리
+
+
+def verify(s) -&gt; bool:
+    """REV-0920 본문의 예제와 동일한 O(n^2) 검증 함수: 중복 문자가 있으면 실패."""
+    n = len(s)
+    for i in range(n):           # 바깥쪽 루프: n번 반복
+        for j in range(n):       # 안쪽 루프: 바깥쪽 루프 한 번당 다시 n번 반복 -&gt; 총 n*n번
+            if i != j and s[i] == s[j]:
+                return False      # 중복을 찾으면 즉시 반환 (조기 종료)
+    return True
+
+
+def timeit_once(n: int) -&gt; float:
+    """길이 n인, 중복이 전혀 없는 데이터를 만들어서 verify() 실행 시간을 측정한다."""
+    # 0부터 n-1까지의 고유한 정수를 만들어 무작위로 섞는다.
+    # 모든 값이 서로 다르므로 verify()는 절대 조기 종료하지 못하고 항상 최악의 경우(n*n번 비교)까지 실행된다.
+    data = list(range(n))
+    random.shuffle(data)
+
+    start = time.perf_counter()   # 측정 시작 시각
+    verify(data)                   # 실제로 실행
+    return time.perf_counter() - start  # 걸린 시간(초)
+
+
+sizes = (500, 1000, 2000, 4000)   # 입력 크기를 2배씩 늘려간다
+times = []
+for n in sizes:
+    t = timeit_once(n)
+    times.append(t)
+    print(f"n={n:5d}, 걸린 시간={t:.6f}초")
+
+print()
+for i in range(1, len(sizes)):
+    ratio = times[i] / times[i - 1]
+    print(f"n {sizes[i-1]} -&gt; {sizes[i]} (2배): 시간이 {ratio:.2f}배로 늘어남")</code></pre>
+<p>실제로 측정한 결과 (환경에 따라 절대 시간은 다르지만 비율은 비슷하게 나온다):</p>
+<pre><code>n=  500, 걸린 시간=0.011835초
+n= 1000, 걸린 시간=0.049769초
+n= 2000, 걸린 시간=0.212067초
+n= 4000, 걸린 시간=0.946710초
+
+n 500 -&gt; 1000 (2배): 시간이 4.21배로 늘어남
+n 1000 -&gt; 2000 (2배): 시간이 4.26배로 늘어남
+n 2000 -&gt; 4000 (2배): 시간이 4.46배로 늘어남</code></pre>
+<p>입력 크기가 2배가 될 때마다 실행 시간이 약 4배(2²배)로 늘어난다 — 이것이 정확히 O(n²)의 정의다. 데이터를 "중복이 전혀 없는 고유한 값들"로 일부러 만들었기 때문에, <code>verify()</code>가 조기 종료(<code>return False</code>) 없이 항상 최악의 경우까지 실행되어서 이론적인 O(n²)가 그대로 실측에 반영됐다.</p>
+<h3>조기 종료가 실측 결과를 완전히 바꿔버리는 함정</h3>
+<p>같은 함수를 이번에는 완전히 무작위인 바이트(<code>os.urandom</code>)로 테스트하면 어떻게 될까? 바이트는 값의 종류가 256가지뿐이라서, 길이가 조금만 길어져도(생일 문제, birthday paradox) 중복이 매우 빨리 발생해 <code>verify()</code>가 대부분 첫 몇 번의 비교 안에 조기 종료해버린다.</p>
+<pre><code class="language-python">import os
+
+def timeit_random_bytes(n: int) -&gt; float:
+    data = os.urandom(n)   # 256가지 값 중에서 무작위로 뽑으므로 중복이 금방 발생한다
+    start = time.perf_counter()
+    verify(data)
+    return time.perf_counter() - start
+
+for n in (500, 1000, 2000, 4000):
+    print(f"n={n:5d}, 걸린 시간={timeit_random_bytes(n):.6f}초 (조기 종료로 인해 매우 불규칙함)")</code></pre>
+<p>이 버전을 실행하면 시간이 2배, 4배로 깔끔하게 늘어나지 않고 거의 무작위로 들쭉날쭉한 값이 나온다 — 이것이 바로 본문 "출력 해석"에서 설명한 "안쪽 루프에 조기 종료(break) 조건이 있으면 실측이 이론적 최악 케이스보다 훨씬 낙관적으로 나올 수 있다"는 현상을 직접 겪어보는 것이다. 실전 리버싱에서 어떤 코드의 복잡도를 벤치마크할 때는, 조기 종료 조건이 걸리지 않는 "최악의 입력"을 일부러 만들어서 측정해야 진짜 O(n²)인지 아닌지 정확히 알 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0219-bruteforce-feasibility.html">REV-0219 — Brute Force가 가능한 입력 공간 계산</a></li><li><a href="rev-0220-meet-in-the-middle.html">REV-0220 — Meet-in-the-middle를 고려할 상황</a></li><li><a href="rev-0910-recursive-validation-function.html">REV-0910 — 재귀적으로 정의된 검증 함수 풀어내기</a></li><li><a href="rev-0918-multi-constraint-narrowing-workflow.html">REV-0918 — 다중 조건을 만족하는 입력 공간 좁히는 실전 절차</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Big-O 표기법과 다항 시간/지수 시간의 구분, 중첩 루프·재귀 분기 수로부터 복잡도를 도출하는 방법: 알고리즘 및 자료구조 표준 교재(Big-O 분석) 수준의 정의 기준.</li><li>메모이제이션(memoization)을 통한 지수 시간 재귀의 다항 시간 축소(Dynamic Programming): 알고리즘 설계 표준 이론(동적 계획법) 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

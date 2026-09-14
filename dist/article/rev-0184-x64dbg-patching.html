@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>x64dbg CTF용 간단 패치와 저장 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>x64dbg CTF용 간단 패치와 저장</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>x64dbg에서 명령어를 바꾸려면 디스어셈블리 줄에서 <strong>Space bar(Assemble)</strong>로 새 명령어를 어셈블하거나 Dump 창에서 바이트를 직접 편집한 뒤, <strong>File → Patch File</strong> 메뉴로 변경된 바이트 목록을 확인하고 새 파일로 저장해야 실행 파일 자체에 영구 반영된다. 이 문서는 CTF·워게임·자기 소유 크랙미를 대상으로 한 학습용 패치 실습만 다루며, 상용 소프트웨어의 라이선스 보호를 우회하는 목적으로 사용해서는 안 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>CTF 크랙미에서 조건 분기(<code>je</code>/<code>jne</code> 등)를 반대로 뒤집어서 원하는 경로로 흘러가는지 실험하고 싶을 때</li><li>특정 명령어를 통째로 무력화하고 싶어서 <code>NOP</code>(0x90)으로 채우고 싶을 때</li><li>디버거 안에서 값을 바꿔 실험한 결과가 마음에 들어서, 매번 디버거를 켜지 않아도 되도록 파일 자체에 반영하고 싶을 때</li><li>"패치했는데 다시 실행하면 원래대로 돌아온다"는 문제를 겪고 있을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>x64dbg에서 디스어셈블리나 Dump 창의 값을 바꾸는 것은 기본적으로 <strong>메모리 상의 변경</strong>이다. 즉, 지금 디버깅 중인 프로세스의 메모리에만 반영되고, 디스크에 있는 원본 실행 파일은 전혀 바뀌지 않는다. 그래서 디버깅을 끝내고 파일을 다시 실행하면 모든 변경이 사라진 원본 상태로 돌아온다.</p>
+<p>이 메모리 변경을 디스크 파일에 영구적으로 반영하려면 x64dbg의 <strong>패치(Patch)</strong> 기능을 써야 한다. x64dbg는 지금까지 메모리에서 바꾼 모든 바이트를 내부적으로 추적하고 있다가, <code>File → Patch File</code> 메뉴를 실행하면 그 변경 목록을 보여주는 대화상자를 띄운다. 여기서 원하는 변경 사항을 선택하고 "Patch File" 버튼을 누르면, 원본 파일 대신 <strong>새 이름의 파일</strong>로 패치된 실행 파일이 저장된다. x64dbg는 원본 파일을 직접 덮어쓰지 않으므로, 항상 다른 파일명으로 저장해야 한다.</p>
+<p>패치는 크게 두 가지 방식으로 만든다.</p>
+<ol><li><strong>어셈블(Assemble)</strong> — 디스어셈블리 줄에서 Space bar를 누르면 그 자리에 새 명령어를 어셈블리 텍스트로 입력할 수 있는 대화상자가 뜬다. 예를 들어 <code>je 0040101A</code>를 <code>jmp 0040101A</code>로 바꾸거나, 아예 <code>nop</code>으로 바꿀 수 있다. 새 명령어의 바이트 길이가 원래 명령어보다 짧으면 남는 공간은 자동으로 <code>NOP</code>으로 채워지는 것이 일반적이다(길면 다음 명령어를 덮어써서 코드가 깨질 수 있으므로 주의해야 한다).</li><li><strong>Dump에서 직접 바이트 편집</strong> — Dump 창에서 헥스 바이트를 더블클릭해 원하는 값으로 직접 바꾼다. 명령어 단위가 아니라 순수 데이터(비교할 상수, 문자열 등)를 바꿀 때 유용하다.</li></ol>
+<p>CTF 관점에서 패치는 "코드를 완전히 이해하지 않고도, 분기 하나를 뒤집어서 정답 검증 로직이 어떻게 반응하는지 실험해보는" 용도로 가장 많이 쓰인다. 다만 이 문서는 어디까지나 자기 소유의 CTF 바이너리·워게임·학습용 크랙미를 대상으로 한 실습을 전제로 하며, 상용 소프트웨어의 정품 인증/라이선스 검사를 우회하는 목적의 패치는 다루지 않는다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Space bar로 명령어를 바꾸면 그 줄의 원본 바이트가 즉시 바뀌고, 디스어셈블리 텍스트도 새 명령어로 갱신된다. 바뀐 줄은 보통 배경색이 달라져서(주황/노란 계열) 원본과 다르다는 것을 표시해준다.</li><li>Dump 창에서 바이트를 수정하면 그 바이트도 비슷하게 강조색으로 표시된다.</li><li><code>File → Patch File</code>을 열면 지금까지의 모든 변경이 <code>주소 / 원본 바이트 / 새 바이트</code> 형태의 표로 나열된다.</li><li>패치를 적용해서 새 파일로 저장하면, 원본 파일명 대신 사용자가 지정한 새 파일명으로 저장된다. x64dbg는 열려 있는 원본 파일을 자동으로 덮어쓰지 않는다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>패치를 시도하기 전에, 먼저 F8/F7로 코드를 따라가며 <strong>어느 명령어를 바꾸면 원하는 결과가 나올지</strong> 디버거 안에서 레지스터/플래그 값을 직접 바꿔가며(또는 조건부 브레이크포인트로) 충분히 실험한다. 메모리에서 값을 바꿔보고 원하는 동작이 확인된 뒤에, 그 변경을 파일에 영구 반영하는 순서로 진행하는 것이 안전하다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 바꿀 명령어 찾기</strong></p>
+<p>문자열 참조나 조건부 브레이크포인트 등으로 정답 검사 로직의 핵심 분기(예: <code>je</code>/<code>jne</code> 등 조건 점프)를 찾는다.</p>
+<p><strong>2) Space bar로 어셈블하기</strong></p>
+<p>바꾸고 싶은 명령어 줄에 커서를 놓고 <strong>Space bar</strong>를 누른다. "Assemble at 주소" 대화상자가 뜨며, 현재 명령어가 기본값으로 채워져 있다. 이 텍스트를 원하는 명령어로 바꾼다.</p>
+<pre><code class="language-text">원본: je 00401050
+변경: jmp 00401050</code></pre>
+<p>또는 분기 자체를 없애고 싶다면 <code>nop</code>을 입력한다. OK를 누르면 즉시 메모리에 반영된다.</p>
+<p><strong>3) 바뀐 동작을 F9로 확인하기</strong></p>
+<p>F9로 실행을 이어가며 원하는 대로 흐름이 바뀌었는지(예: 실패 메시지 대신 성공 메시지가 뜨는지) 확인한다. 원하는 결과가 아니면 Ctrl+Z 계열 되돌리기 기능이 항상 보장되지는 않으므로, <code>Ctrl+F2</code>(Restart)로 처음부터 다시 시작해서 재실험하는 편이 안전하다.</p>
+<p><strong>4) 여러 바이트를 NOP으로 채우기</strong></p>
+<p>명령어 전체를 무력화하고 싶다면, 해당 명령어(들)를 드래그로 선택한 뒤 우클릭 → <code>Binary → Fill with NOPs</code>를 사용한다. 선택한 범위 전체가 <code>0x90</code>(NOP, 아무 동작도 하지 않음) 바이트로 채워진다.</p>
+<p><strong>5) Dump에서 데이터 바이트 직접 바꾸기</strong></p>
+<p>명령어가 아니라 비교 대상 상수나 문자열 같은 데이터를 바꾸고 싶다면 Dump 창에서 해당 바이트를 더블클릭해 새 값을 입력한다.</p>
+<p><strong>6) File → Patch File로 변경 목록 확인하기</strong></p>
+<p>원하는 변경이 다 끝났으면 상단 메뉴에서 <code>File → Patch File</code>을 연다. 지금까지 메모리에서 바꾼 모든 바이트가 표로 나열된다. 각 항목 앞의 체크박스로 파일에 반영할 항목을 고를 수 있고, <code>Select All</code>로 전부 선택할 수도 있다.</p>
+<p><strong>7) 새 파일로 저장하기</strong></p>
+<p>원하는 항목을 선택한 상태에서 <code>Patch File</code> 버튼을 누르면 저장 대화상자가 뜬다. 원본 파일명을 그대로 덮어쓸 수 없으므로 <code>sample_patched.exe</code>처럼 새로운 파일명을 지정해서 저장한다.</p>
+<p><strong>8) 패치된 파일 단독 실행으로 검증하기</strong></p>
+<p>x64dbg를 완전히 벗어나서, 저장한 새 파일을 디버거 없이 직접 더블클릭 실행해 패치가 의도대로 반영됐는지 확인한다. 디버거 안에서만 잘 되고 실제 파일 실행에서 다르게 동작한다면, 패치 목록에서 빠뜨린 변경이 있는지(예: NOP 채운 범위가 일부만 선택됨) 다시 확인한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li><code>Space</code> (디스어셈블리에서) : 현재 명령어를 새 어셈블리 명령으로 교체(Assemble)</li><li>선택 후 우클릭 → <code>Binary → Fill with NOPs</code> : 선택 범위를 NOP(0x90)으로 채우기</li><li>Dump 창 값 더블클릭 : 헥스 바이트 직접 편집</li><li><code>File → Patch File</code> : 지금까지의 모든 메모리 변경을 확인하고 새 파일로 저장</li><li><code>Ctrl+F2</code> : 디버깅 대상을 처음부터 재시작(패치 전 상태로 되돌리고 싶을 때 유용)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Patch File 대화상자에 목록이 비어 있다면, 아직 메모리 상에서 아무것도 바꾸지 않았다는 뜻이다. Space bar 어셈블이나 Dump 편집이 실제로 적용됐는지 다시 확인한다.</li><li>패치 후 저장한 파일을 실행했는데 원본과 똑같이 동작한다면, Patch File 대화상자에서 해당 변경 항목의 체크박스가 실제로 선택되지 않은 채 저장됐을 가능성이 크다.</li><li>패치된 파일을 실행했더니 프로그램이 곧바로 죽거나 깨진다면, 명령어 길이가 원본과 달라져서 뒤따르는 다른 명령어의 바이트를 침범했을 가능성이 있다. 이런 경우 <code>nop</code>으로 남는 바이트를 채우는 방식이 더 안전하다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>메모리에서 값을 바꾸고 실행 결과만 확인한 뒤, <code>File → Patch File</code>로 저장하는 과정을 잊어버려서 "패치했는데 다시 켜면 원래대로 돌아온다"고 헷갈리는 경우 — 디버거 세션 안의 변경은 파일에 저장하기 전까지는 임시일 뿐이다.</li><li>원본 명령어보다 긴 명령어로 바꿔서 다음 명령어의 앞부분 바이트까지 덮어써 버리는 경우 — 명령어 길이가 다르면 디스어셈블리가 깨질 수 있으므로, 길이가 같은 명령어로 바꾸거나 남는 공간을 NOP으로 채우는 방식을 우선 고려한다.</li><li>Patch File 대화상자에서 일부 항목만 체크된 걸 모르고 <code>Select All</code>을 누르지 않아, 의도한 변경 중 일부가 저장에서 빠지는 경우.</li><li>저장할 때 원본 파일명을 그대로 쓰려다가 실패하거나, 실수로 원본을 덮어써서 원본 바이너리를 잃어버리는 경우 — 항상 원본 파일의 백업 사본을 별도로 남겨두는 습관을 들인다.</li><li>이 기능을 상용 소프트웨어의 라이선스 검사나 인증 우회에 사용하려는 경우 — 이 문서와 관련 실습은 CTF, 워게임, 자기 소유 학습용 바이너리에 한정된다. 상용 소프트웨어 보호를 우회하는 용도로는 사용하지 않아야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>어디를 패치해야 할지 아직 못 찾았다면 → ./rev-0179-x64dbg-string-references.md, ./rev-0180-x64dbg-find-assembly.md 문서로 먼저 대상을 찾는다.</li><li>패치할 지점에서 값을 조사하고 싶다면 → ./rev-0181-x64dbg-dump-stack-view.md 문서를 참고한다.</li><li>특정 조건에서만 멈춰서 패치 대상을 더 정확히 좁히고 싶다면 → ./rev-0183-x64dbg-conditional-breakpoints.md 문서를 참고한다.</li><li>패치 후에도 프로그램이 이상하게 동작한다면 → ./rev-0178-x64dbg-breakpoints.md 문서로 패치한 지점 근처에 브레이크포인트를 걸어 실제 실행 흐름을 다시 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p>CTF 크랙미에서 비밀번호 검사 분기를 항상 "성공" 쪽으로 가도록 실험하는 흐름이다(자기 소유 학습용 바이너리 기준).</p>
+<pre><code class="language-text">1. String references로 "Wrong password!" 참조 위치를 찾고, 그 근처의 cmp/je(또는 jne) 확인
+2. je 00401050 줄에서 Space bar → jmp 00401050으로 변경 (항상 성공 분기로 이동)
+3. F9로 실행해 실제로 성공 메시지가 뜨는지 확인
+4. 원하는 동작이면 File → Patch File 열기
+5. 변경 목록에서 해당 항목 체크 확인 후 Patch File 버튼 클릭
+6. sample_patched.exe로 저장 → x64dbg를 닫고 새 파일을 직접 실행해 패치가 유지되는지 검증</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0179-x64dbg-string-references.html">REV-0179 — x64dbg String References 찾기</a></li><li><a href="rev-0180-x64dbg-find-assembly.html">REV-0180 — x64dbg Find Assembly 사용법</a></li><li><a href="rev-0181-x64dbg-dump-stack-view.html">REV-0181 — x64dbg Dump와 Stack View</a></li><li><a href="rev-0183-x64dbg-conditional-breakpoints.html">REV-0183 — x64dbg 조건부 Breakpoint 기초</a></li><li><a href="rev-0174-before-conditional-branch.html">REV-0174 — 조건 분기 직전에 무엇을 봐야 하는가</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>File → Patch File</code> 메뉴의 동작("패치 목록을 확인하고 파일에 적용하는 대화상자를 연다")은 공식 문서 help.x64dbg.com의 File 메뉴 페이지(gui/menus/File.html)에 근거했다(2026-09-08 조사, 원문 확인).</li><li>Space bar를 이용한 인라인 어셈블(Assemble) 기능과 "Executable patching"이 x64dbg의 기본 기능임은 Feature-set 페이지에 명시되어 있다(2026-09-08 조사).</li><li>원본 파일을 직접 덮어쓸 수 없고 항상 새 파일명으로 저장해야 한다는 동작과 <code>Binary → Fill with NOPs</code> 메뉴 문구는 x64dbg 커뮤니티 튜토리얼 및 일반적으로 통용되는 사용 경험에 근거했으며, 공식 문서에서 문구 단위로 재확인하지는 못했다. 실습 환경에서 정확한 메뉴 위치를 직접 확인할 것을 권장한다.</li><li>이 문서의 범위는 CTF/워게임/학습용 바이너리 패치로 한정하며, 상용 소프트웨어 라이선스 보호 우회는 다루지 않는다(본 저장소의 Scope 정책에 따름).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

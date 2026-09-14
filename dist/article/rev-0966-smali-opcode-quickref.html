@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>smali 명령어(opcode) 빠른 참조 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dotnet-android</div>
+<article class="article-body">
+<h1>smali 명령어(opcode) 빠른 참조</h1>
+<div class="article-meta"><span class="tag">dotnet-android</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">APK</span><span class="tag">smali</span><span class="tag">apktool</span></div>
+<h2>한 줄 요약</h2>
+<p>smali 명령어는 대략 데이터 이동, 산술/논리 연산, 필드/배열 접근, 메서드 호출, 분기/스위치, 객체 생성/타입 검사 여섯 갈래로 나뉘며, <a href="rev-0252-smali-basics.html">REV-0252</a>에서 다룬 핵심 문법 외에 나머지 명령어도 이 표 하나로 즉시 뜻을 찾아 읽을 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>.smali</code> 파일을 읽다가 <a href="rev-0252-smali-basics.html">REV-0252</a>에 안 나온 명령어(<code>aget-object</code>, <code>sget-boolean</code>, <code>packed-switch</code>, <code>check-cast</code> 등)를 만났을 때</li><li>필드 접근(<code>iget</code>/<code>sput</code> 계열)과 배열 접근(<code>aget</code>/<code>aput</code> 계열)이 헷갈릴 때</li><li><code>packed-switch</code>/<code>sparse-switch</code> 블록의 문법을 모를 때</li><li><code>check-cast</code>, <code>instance-of</code>, <code>new-instance</code>, <code>new-array</code>처럼 타입 관련 명령어의 차이를 모를 때</li><li>산술 명령어 접미사(<code>-int</code>, <code>-long</code>, <code>-float</code>, <code>/lit8</code>, <code>/2addr</code>)의 의미를 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<p>smali 명령어 이름은 대부분 <strong>동작_타입</strong> 또는 <strong>동작-타입/서식</strong> 형태로 조합되어 있어서, 접두사/접미사 규칙만 알면 처음 보는 opcode도 뜻을 추측할 수 있다. 타입 접미사는 <code>-object</code>(객체 참조), <code>-boolean</code>, <code>-byte</code>, <code>-char</code>, <code>-short</code>, <code>-int</code>, <code>-long</code>, <code>-float</code>, <code>-double</code>, <code>-wide</code>(64비트 값 전반, long/double 공용)로 구성된다. 서식 접미사는 <code>/2addr</code>(레지스터 2개로 압축된 형태, 결과를 첫 인자에 덮어씀), <code>/lit8</code>, <code>/lit16</code>(리터럴 상수를 명령어에 직접 인코딩), <code>/from16</code>, <code>/jumbo</code>(더 큰 레지스터/오프셋 범위)처럼 같은 의미의 명령어를 크기별로 나눈 것이다. 즉 <code>add-int/2addr v0, v1</code>은 <code>add-int v0, v0, v1</code>과 같은 뜻이며 단지 바이트코드가 더 짧을 뿐이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p><code>smali/</code> 폴더의 <code>.smali</code> 파일 본문 어디서나 아래 표에 나오는 명령어들이 섞여 나타난다. JADX의 "Smali" 보기 모드에서도 동일한 표기를 볼 수 있다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>명령어 이름의 접두사(동작)와 접미사(타입/서식)를 분리해서 읽는다. 예를 들어 <code>sget-object</code>를 봤다면 "sget"(정적 필드 읽기) + "object"(참조 타입)로 나눠 "정적 필드에서 객체 참조를 읽어온다"고 바로 해석할 수 있다.</p>
+<h2>단계별 절차</h2>
+<ol><li>명령어를 동작 부분과 타입/서식 접미사로 분리한다.</li><li>아래 표에서 동작 부분을 찾아 기본 의미를 확인한다.</li><li>피연산자 순서(대상 레지스터가 먼저 오는지, 나중에 오는지)를 표의 "형식" 열로 확인한다.</li><li><code>packed-switch</code>/<code>sparse-switch</code>처럼 별도 데이터 블록을 참조하는 명령어는 <code>.method</code> 끝부분의 <code>:pswitch_data_...</code> 또는 <code>:sswitch_data_...</code> 레이블 블록을 함께 찾아 대응 케이스를 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash"># 특정 opcode가 쓰인 곳을 전부 찾기
+grep -rn "packed-switch" out/smali/
+
+# 필드 접근 명령어만 모아보기
+grep -rnE '^\s*[si](get|put)' out/smali/com/example/</code></pre>
+<h2>출력 해석</h2>
+<h3>데이터 이동 / 상수</h3>
+<table><thead><tr><th>명령어</th><th>형식</th><th>의미</th></tr></thead><tbody><tr><td><code>move vA, vB</code></td><td>레지스터→레지스터</td><td><code>vB</code> 값을 <code>vA</code>로 복사(32비트)</td></tr><tr><td><code>move-object vA, vB</code></td><td>레지스터→레지스터</td><td>객체 참조 복사</td></tr><tr><td><code>move-wide vA, vB</code></td><td>레지스터쌍→레지스터쌍</td><td>long/double(64비트) 복사</td></tr><tr><td><code>move-result vA</code></td><td>invoke 직후</td><td>방금 호출의 32비트 반환값을 <code>vA</code>에 저장</td></tr><tr><td><code>move-result-object vA</code></td><td>invoke 직후</td><td>반환된 객체 참조를 <code>vA</code>에 저장</td></tr><tr><td><code>move-result-wide vA</code></td><td>invoke 직후</td><td>반환된 long/double을 <code>vA</code>에 저장</td></tr><tr><td><code>move-exception vA</code></td><td>catch 블록 시작</td><td>예외 객체를 <code>vA</code>에 저장</td></tr><tr><td><code>const/4 vA, #lit4</code></td><td>즉시값</td><td>작은 정수 상수 대입</td></tr><tr><td><code>const/16 vA, #lit16</code></td><td>즉시값</td><td>16비트 범위 정수 상수 대입</td></tr><tr><td><code>const vA, #lit32</code></td><td>즉시값</td><td>32비트 정수/float 비트패턴 대입</td></tr><tr><td><code>const-wide vA, #lit64</code></td><td>즉시값</td><td>64비트 long/double 대입</td></tr><tr><td><code>const-string vA, "s"</code></td><td>즉시값</td><td>문자열 상수 참조 대입</td></tr><tr><td><code>const-class vA, Lfoo;</code></td><td>즉시값</td><td>클래스 리터럴(<code>Foo.class</code>) 대입</td></tr></tbody></table>
+<h3>필드 접근</h3>
+<table><thead><tr><th>명령어</th><th>의미</th></tr></thead><tbody><tr><td><code>iget vA, vB, Lclass;-&gt;field:T</code></td><td>인스턴스 필드 읽기 (<code>vB</code> 객체의 <code>field</code>를 <code>vA</code>로)</td></tr><tr><td><code>iput vA, vB, Lclass;-&gt;field:T</code></td><td>인스턴스 필드 쓰기 (<code>vA</code> 값을 <code>vB</code> 객체의 <code>field</code>에)</td></tr><tr><td><code>sget vA, Lclass;-&gt;field:T</code></td><td>정적(static) 필드 읽기</td></tr><tr><td><code>sput vA, Lclass;-&gt;field:T</code></td><td>정적 필드 쓰기</td></tr><tr><td>(접미사) <code>-object</code>/<code>-boolean</code>/<code>-byte</code>/<code>-char</code>/<code>-short</code>/<code>-wide</code></td><td>필드 타입에 맞춰 붙는 접미사</td></tr></tbody></table>
+<h3>배열 접근</h3>
+<table><thead><tr><th>명령어</th><th>의미</th></tr></thead><tbody><tr><td><code>array-length vA, vB</code></td><td><code>vB</code> 배열의 길이를 <code>vA</code>에 저장</td></tr><tr><td><code>new-array vA, vB, [I</code></td><td>길이 <code>vB</code>인 <code>int[]</code> 배열을 새로 만들어 <code>vA</code>에 저장</td></tr><tr><td><code>aget vA, vB, vC</code></td><td><code>vB[vC]</code> 값을 <code>vA</code>에 저장(배열 읽기)</td></tr><tr><td><code>aput vA, vB, vC</code></td><td><code>vA</code> 값을 <code>vB[vC]</code>에 저장(배열 쓰기)</td></tr><tr><td>(접미사) <code>-object</code>/<code>-boolean</code>/<code>-byte</code>/<code>-char</code>/<code>-short</code>/<code>-wide</code></td><td>배열 원소 타입별 접미사</td></tr><tr><td><code>fill-array-data vA, :arr_data</code></td><td>리터럴 배열 데이터를 <code>vA</code> 배열에 한 번에 채움</td></tr></tbody></table>
+<h3>메서드 호출 / 반환</h3>
+<table><thead><tr><th>명령어</th><th>의미</th></tr></thead><tbody><tr><td><code>invoke-virtual {인자...}, Lc;-&gt;m(P)R</code></td><td>가상 메서드(오버라이드 가능) 호출</td></tr><tr><td><code>invoke-direct {인자...}, Lc;-&gt;m(P)R</code></td><td>생성자/private 메서드 호출</td></tr><tr><td><code>invoke-static {인자...}, Lc;-&gt;m(P)R</code></td><td>static 메서드 호출(<code>this</code> 없음)</td></tr><tr><td><code>invoke-super {인자...}, Lc;-&gt;m(P)R</code></td><td>부모 클래스의 메서드를 명시적으로 호출</td></tr><tr><td><code>invoke-interface {인자...}, Lc;-&gt;m(P)R</code></td><td>인터페이스 타입으로 선언된 메서드 호출</td></tr><tr><td><code>return vA</code> / <code>return-wide vA</code> / <code>return-object vA</code></td><td>값 반환 후 메서드 종료</td></tr><tr><td><code>return-void</code></td><td>값 없이 메서드 종료</td></tr></tbody></table>
+<h3>분기 / 스위치</h3>
+<table><thead><tr><th>명령어</th><th>의미</th></tr></thead><tbody><tr><td><code>goto :label</code></td><td>무조건 분기</td></tr><tr><td><code>if-eq/if-ne/if-lt/if-ge/if-gt/if-le vA, vB, :label</code></td><td>두 레지스터 비교 후 분기</td></tr><tr><td><code>if-eqz/if-nez/if-ltz/if-gez/if-gtz/if-lez vA, :label</code></td><td>레지스터를 0과 비교 후 분기</td></tr><tr><td><code>packed-switch vA, :pswitch_data_0</code></td><td><code>vA</code> 값에 따라 연속된 정수 케이스로 분기(테이블 점프)</td></tr><tr><td><code>sparse-switch vA, :sswitch_data_0</code></td><td><code>vA</code> 값에 따라 불연속 정수 케이스로 분기</td></tr><tr><td><code>:pswitch_data_0 .packed-switch 시작값 :case1 :case2 ... .end packed-switch</code></td><td>packed-switch용 케이스 테이블 정의</td></tr></tbody></table>
+<h3>산술 / 논리</h3>
+<table><thead><tr><th>명령어</th><th>의미</th></tr></thead><tbody><tr><td><code>add-int</code>, <code>sub-int</code>, <code>mul-int</code>, <code>div-int</code>, <code>rem-int</code></td><td>정수 사칙연산/나머지</td></tr><tr><td><code>and-int</code>, <code>or-int</code>, <code>xor-int</code>, <code>not-int</code>, <code>neg-int</code></td><td>비트 논리 연산/부호 반전</td></tr><tr><td><code>shl-int</code>, <code>shr-int</code>, <code>ushr-int</code></td><td>왼쪽/오른쪽(부호 유지)/오른쪽(논리) 시프트</td></tr><tr><td><code>add-int/2addr vA, vB</code></td><td><code>vA = vA + vB</code> (압축 서식)</td></tr><tr><td><code>add-int/lit8 vA, vB, #lit8</code></td><td><code>vA = vB + 리터럴상수</code> (상수가 명령어에 직접 포함)</td></tr><tr><td><code>int-to-long</code>, <code>long-to-int</code>, <code>int-to-float</code> 등</td><td>형변환(cast)</td></tr></tbody></table>
+<h3>타입 / 객체</h3>
+<table><thead><tr><th>명령어</th><th>의미</th></tr></thead><tbody><tr><td><code>new-instance vA, Lclass;</code></td><td>객체를 위한 메모리만 할당(생성자는 아직 안 부름)</td></tr><tr><td><code>check-cast vA, Lclass;</code></td><td><code>vA</code>가 <code>Lclass;</code> 타입인지 검사, 아니면 <code>ClassCastException</code></td></tr><tr><td><code>instance-of vA, vB, Lclass;</code></td><td><code>vB</code>가 <code>Lclass;</code> 인스턴스인지 boolean으로 <code>vA</code>에 저장</td></tr><tr><td><code>throw vA</code></td><td><code>vA</code>(예외 객체)를 던진다</td></tr><tr><td><code>monitor-enter vA</code> / <code>monitor-exit vA</code></td><td><code>synchronized</code> 블록의 락 획득/해제</td></tr></tbody></table>
+<h2>흔한 실수</h2>
+<ul><li><code>new-instance</code>만 보고 생성자까지 다 실행됐다고 착각하는 것. 실제로는 메모리만 할당되며, 바로 뒤에 <code>invoke-direct {...}, Lclass;-&gt;&lt;init&gt;(...)</code> 호출이 있어야 생성자가 실행된다.</li><li><code>/2addr</code> 서식을 별도 명령어로 착각해서 온전한 3-피연산자 버전과 다르게 해석하는 것. 둘은 완전히 같은 연산이고 인코딩 크기만 다르다.</li><li><code>packed-switch</code>의 케이스 데이터 블록(<code>:pswitch_data_0</code>)을 못 찾고 각 <code>:case</code> 레이블이 어디서 오는지 헷갈리는 것 — 항상 메서드 끝부분에 <code>.packed-switch</code> 블록이 별도로 있다.</li><li><code>if-eqz</code> 계열을 두 레지스터 비교 명령(<code>if-eq</code>)과 혼동하는 것. 끝의 <code>z</code>는 "0과 비교"라는 뜻으로 피연산자가 하나뿐이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>레지스터(<code>v</code>/<code>p</code>)와 기본 문법 자체가 헷갈리면 → <a href="rev-0252-smali-basics.html">REV-0252 smali 기초 문법</a></li><li>코틀린/자바 코드와 smali를 나란히 대조하고 싶으면 → <a href="rev-0253-smali-to-java-kotlin.html">REV-0253 Java Kotlin 코드와 smali 연결</a></li><li>smali를 뽑고 다시 조립하는 절차가 궁금하면 → <a href="rev-0251-apktool-basics.html">REV-0251 apktool 기본 사용법</a></li><li>apktool/JADX 옵션 자체가 궁금하면 → REV-0968 JADX/apktool 옵션 빠른 참조</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-smali">:pswitch_data_0
+.packed-switch 0x1
+    :case_one
+    :case_two
+    :case_three
+.end packed-switch
+
+.method public grade(I)Ljava/lang/String;
+    .locals 1
+    packed-switch p1, :pswitch_data_0
+    const-string v0, "unknown"
+    return-object v0
+
+    :case_one
+    const-string v0, "one"
+    return-object v0
+
+    :case_two
+    const-string v0, "two"
+    return-object v0
+
+    :case_three
+    const-string v0, "three"
+    return-object v0
+.end method</code></pre>
+<p><code>packed-switch p1, :pswitch_data_0</code>은 <code>p1</code> 값에서 시작값(<code>0x1</code>)을 뺀 인덱스로 케이스 테이블을 찾아간다. <code>p1</code>이 1이면 <code>:case_one</code>, 2면 <code>:case_two</code>, 3이면 <code>:case_three</code>로 분기하고, 그 범위를 벗어나면 <code>packed-switch</code> 바로 다음 줄(<code>const-string v0, "unknown"</code>)로 그대로 흘러간다(fall-through). 이 구조는 자바의 <code>switch(grade)</code> 문이 정수 케이스가 연속적일 때 컴파일되는 전형적인 형태다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0252-smali-basics.html">REV-0252 — smali 기초 문법</a></li><li><a href="rev-0253-smali-to-java-kotlin.html">REV-0253 — Java Kotlin 코드와 smali 연결</a></li><li><a href="rev-0251-apktool-basics.html">REV-0251 — apktool 기본 사용법</a></li><li><a href="rev-0968-jadx-apktool-options-quickref.html">REV-0968 — JADX/apktool 옵션 빠른 참조</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>smali/baksmali 명령어 목록과 서식(<code>/2addr</code>, <code>/lit8</code>, <code>/lit16</code> 등) 표기는 공식 저장소(<code>JesusFreke/smali</code>, GitHub) 문서 및 wiki 기준으로 정리했다.</li><li>Dalvik 바이트코드 명령어 집합(opcode) 의미는 Android 오픈소스 프로젝트(AOSP)의 Dalvik bytecode 명세 문서를 기준으로 확인했다 (2026-09-09 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

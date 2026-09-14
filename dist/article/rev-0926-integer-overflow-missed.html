@@ -1,0 +1,167 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>정수 오버플로를 빼먹어서 계산이 계속 안 맞을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>정수 오버플로를 빼먹어서 계산이 계속 안 맞을 때</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>파이썬으로 옮긴 해시/체크섬 루프가 <strong>짧은 입력에서는 맞다가 입력이 길어지면(또는 반복 횟수가 늘면) 갑자기 틀리기 시작</strong>한다면, 십중팔구 원본이 32비트(또는 8/16/64비트) 레지스터에서 자동으로 일어나는 오버플로우 랩어라운드를 파이썬의 무한정밀도 정수가 흉내내지 못해서 생기는 문제이며, 매 연산 직후 <code>&amp; 0xFFFFFFFF</code>(또는 해당 비트폭 마스크)를 걸어주면 해결된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>짧은 테스트 문자열(<code>"AB"</code>, <code>"test"</code>)로는 재구현 결과가 원본과 맞는데, 실제 목표 길이의 긴 입력에서는 틀릴 때</li><li>누산 변수(해시값, 체크섬, 카운터)가 루프를 돌면서 계속 커지기만 하는 구조일 때</li><li>곱셈이나 왼쪽 시프트가 반복적으로 들어가는 루프를 파이썬으로 옮겼을 때</li><li>원본 C/어셈블리 코드에 <code>unsigned int</code>, <code>uint32_t</code>, <code>DWORD</code>처럼 크기가 고정된 타입이 쓰였을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>C의 <code>unsigned int</code>(보통 32비트)나 어셈블리의 32비트 레지스터(<code>eax</code>, <code>ecx</code> 등)는 연산 결과가 표현 가능한 범위(<code>0 ~ 0xFFFFFFFF</code>)를 넘으면 <strong>자동으로 초과분을 버리고 나머지만 남기는(모듈러 연산, 랩어라운드) 동작</strong>을 CPU 차원에서 수행한다. 이건 버그가 아니라 정의된 정상 동작이다.</p>
+<p>반면 파이썬의 <code>int</code>는 <strong>임의 정밀도(arbitrary precision)</strong>를 지원해서, 아무리 곱하고 더해도 절대 자동으로 잘리지 않는다. 그래서 원본 로직을 파이썬으로 그대로 옮기면서 매 연산 뒤에 <code>&amp; 0xFFFFFFFF</code>를 걸어주지 않으면, 값이 32비트를 넘어서는 순간부터 두 계산이 완전히 다른 길을 가게 된다.</p>
+<p><strong>언제 이 문제가 드러나는가가 핵심이다.</strong> 누산값이 32비트를 넘기 전까지는 파이썬 값과 원본 레지스터 값이 우연히 정확히 일치한다(마스킹을 안 해도 아직 잘릴 게 없으므로). 그래서 짧은 입력이나 초반 몇 반복에서는 "맞는 것처럼" 보이다가, 누산값이 <code>0xFFFFFFFF</code>를 넘어서는 시점부터 갑자기 완전히 다른 값이 나온다. 이 "처음엔 맞다가 어느 순간부터 틀림"이라는 패턴 자체가 오버플로우 마스킹 누락의 강력한 증거다.</p>
+<p><strong>구체적 숫자로 확인</strong>: 초기값 <code>5381</code>에서 시작해 매 바이트마다 <code>h = h * 33 + byte</code>를 반복하는 djb2류 해시에 <code>b"AAAAAAAAAA"</code>(0x41이 10개)를 넣어보자.</p>
+<table><thead><tr><th>i</th><th>마스킹 없음(파이썬 기본)</th><th><code>&amp; 0xFFFFFFFF</code> 적용</th><th>32비트 초과 여부</th></tr></thead><tbody><tr><td>0</td><td><code>0x2b5e6</code></td><td><code>0x2b5e6</code></td><td>아니오</td></tr><tr><td>1</td><td><code>0x5972e7</code></td><td><code>0x5972e7</code></td><td>아니오</td></tr><tr><td>2</td><td><code>0xb87d008</code></td><td><code>0xb87d008</code></td><td>아니오</td></tr><tr><td>3</td><td><code>0x17c81d149</code></td><td><code>0x7c81d149</code></td><td><strong>예 (여기서부터 갈라짐)</strong></td></tr><tr><td>4</td><td><code>0x310cbbfaaa</code></td><td><code>0xcbbfaaa</code></td><td>예</td></tr></tbody></table>
+<p><code>i=0</code>부터 <code>i=2</code>까지는 마스킹 여부와 무관하게 값이 완전히 같다 — 아직 32비트(<code>0xFFFFFFFF</code>, 약 42억)를 넘지 않았기 때문이다. <code>i=3</code>에서 마스킹 없는 값(<code>0x17c81d149</code>, 약 640억)이 32비트를 넘어서면서 두 계산이 완전히 갈라진다. 실제 CPU의 <code>imul</code>/<code>add</code>는 항상 32비트 레지스터에만 결과를 담으므로 <code>&amp; 0xFFFFFFFF</code> 쪽이 진짜 동작과 일치한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-python">h = 5381
+for b in data:
+    h = h * 33 + b     # 마스킹 없음 -&gt; 파이썬 정수가 무한정 커짐</code></pre>
+<ul><li>위처럼 곱셈/덧셈/시프트 뒤에 <code>&amp; 0xFFFFFFFF</code>(또는 <code>0xFF</code>, <code>0xFFFF</code>, <code>2**64-1</code> 등 다른 비트폭 마스크)가 전혀 없는 코드</li><li><code>print(h)</code>로 중간값을 찍어보면 값이 10자리, 20자리로 한없이 길어짐(32비트 레지스터라면 최대 10자리 십진수, <code>4294967295</code>를 넘을 수 없어야 정상)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>누산 변수가 선언된 원본 타입(<code>unsigned int</code> 32비트인지, <code>unsigned char</code> 8비트인지, <code>unsigned long long</code> 64비트인지)을 다시 확인하고, 파이썬 코드에서 그 변수가 갱신되는 모든 줄 뒤에 해당 비트폭 마스크가 걸려 있는지 하나하나 점검한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 원본 변수 비트폭 확인</strong></p>
+<p>디스어셈블리에서 누산 변수가 쓰이는 레지스터 크기(<code>al</code>=8비트, <code>ax</code>=16비트, <code>eax</code>=32비트, <code>rax</code>=64비트)를 확인한다.</p>
+<p><strong>2) 파이썬 코드의 모든 갱신 지점에 마스킹 추가</strong></p>
+<pre><code class="language-python">MASK32 = 0xFFFFFFFF
+
+def check(data: bytes) -&gt; int:
+    h = 5381
+    for b in data:
+        h = (h * 33 + b) &amp; MASK32   # 매 반복 직후 즉시 마스킹
+    return h</code></pre>
+<p><strong>3) 짧은 입력과 긴 입력 둘 다로 재검증</strong></p>
+<p>짧은 입력에서만 테스트하고 끝내지 말고, 실제 목표 길이(또는 그보다 긴 입력)로도 반드시 재검증한다. 오버플로우 버그는 짧은 테스트에서는 절대 드러나지 않는다.</p>
+<p><strong>4) 중간 임시 변수도 놓치지 않기</strong></p>
+<p><code>(a * b + c) * d</code>처럼 한 줄에 연산이 여러 개 섞여 있으면, 파이썬은 이를 한 번에 계산해서 최종 결과만 마스킹하기 쉽지만, 원본 CPU는 <code>a*b</code>의 결과부터 이미 32비트로 잘렸을 수 있다. 원본 어셈블리가 실제로 몇 단계로 나눠 계산하는지 확인하고, 그 단계마다 마스킹 위치를 맞춰야 한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python">MASK8, MASK16, MASK32, MASK64 = 0xFF, 0xFFFF, 0xFFFFFFFF, 0xFFFFFFFFFFFFFFFF
+x = (x + y) &amp; MASK32
+x = (x * y) &amp; MASK32
+x = (x &lt;&lt; n) &amp; MASK32     # 왼쪽 시프트는 특히 마스킹을 빼먹기 쉬움</code></pre>
+<h2>출력 해석</h2>
+<ul><li>마스킹 전/후 값을 나란히 출력해서, 두 값이 갈라지는 정확한 반복 인덱스를 확인한다(위 표처럼). 그 인덱스에서 누산값이 처음으로 32비트를 넘는다는 뜻이다.</li><li>마스킹을 추가한 뒤에도 여전히 안 맞으면, 비트폭 자체를 잘못 잡았을 가능성이 있다(8비트인데 32비트로 마스킹했다든가) — 원본 타입을 재확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>최종 반환값에만 마스킹을 걸고 루프 중간의 임시 계산에는 마스킹을 빼먹는 것 — 중간에 이미 오버플로우가 나면 최종 마스킹으로는 되돌릴 수 없다.</li><li>짧은 문자열 하나로만 테스트하고 "맞았다"고 결론짓는 것 — 위 표에서 보듯 초반 몇 반복은 마스킹 여부와 무관하게 우연히 같은 값이 나온다.</li><li>시프트 연산(<code>&lt;&lt;</code>) 뒤에 마스킹을 빼먹는 것 — 왼쪽 시프트는 곱셈보다도 더 빨리 비트 수가 늘어나서 오버플로우가 훨씬 일찍 발생한다.</li><li>8비트/32비트가 섞인 식에서 전부 32비트로 통일해서 마스킹하는 것 — 중간에 8비트로 잘려야 하는 지점이 있다면 그 지점만 <code>&amp; 0xFF</code>를 따로 걸어야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>마스킹을 다 걸었는데도 여전히 특정 인덱스부터 틀린다면 → REV-0921 알고리즘을 복원했는데 출력이 원본과 안 맞을 때(이진 탐색으로 재확인)</li><li>회전/시프트 자체를 파이썬으로 옮기는 표준 방법이 필요하다면 → REV-0222 검증 루틴을 Python으로 그대로 재현하기</li><li>Z3로 이 로직을 풀어야 한다면 비트폭 처리를 Z3 쪽에서도 동일하게 신경 써야 한다 → REV-0270 Z3에서 8비트 32비트 Overflow 다루기</li><li>오버플로우 자체가 검증 로직의 트릭으로 의도적으로 쓰인 경우라면 → REV-0205 Modulo와 오버플로를 이용한 검증</li></ul>
+<h2>미니 예제</h2>
+<p>초기값 <code>5381</code>, 곱셈 상수 <code>33</code>인 djb2류 해시에 10바이트(<code>b"AAAAAAAAAA"</code>)를 넣었을 때:</p>
+<pre><code class="language-python">MASK32 = 0xFFFFFFFF
+
+def check_wrong(data: bytes) -&gt; int:
+    h = 5381
+    for b in data:
+        h = h * 33 + b        # 마스킹 없음
+    return h
+
+def check_right(data: bytes) -&gt; int:
+    h = 5381
+    for b in data:
+        h = (h * 33 + b) &amp; MASK32
+    return h
+
+data = b"AAAAAAAAAA"
+print(hex(check_wrong(data)))  # 0x726a7b35f4922f6f (32비트를 한참 넘음)
+print(hex(check_right(data)))  # 0xf4922f6f (실제 32비트 레지스터가 갖는 값)</code></pre>
+<p><code>check_right</code>가 반환하는 <code>0xf4922f6f</code>만이 실제 바이너리의 <code>eax</code> 레지스터 값과 일치한다.</p>
+<h3>추가 예제 — 곱셈 상수가 클수록 오버플로우가 훨씬 더 빨리 시작된다</h3>
+<p>앞의 예제는 곱셈 상수(33)가 작아서 오버플로우가 3바이트째부터 시작됐다. 이번엔 FNV-1a라는 실제로 널리 쓰이는 해시 알고리즘(초기값 <code>0x811c9dc5</code>, 곱셈 상수 <code>0x01000193</code>)으로 같은 문제를 재현해본다. 곱셈 상수가 훨씬 크기 때문에 <strong>첫 바이트를 처리하는 순간부터 이미 32비트를 넘어선다.</strong></p>
+<pre><code class="language-python">MASK32 = 0xFFFFFFFF          # 32비트 마스크 (2**32 - 1)
+FNV_PRIME = 0x01000193        # FNV-1a의 곱셈 상수
+FNV_OFFSET = 0x811C9DC5       # FNV-1a의 초기값(offset basis)
+
+
+def fnv1a_wrong(data: bytes) -&gt; int:
+    """[틀린 코드] 마스킹을 전혀 하지 않은 FNV-1a."""
+    h = FNV_OFFSET             # 초기값으로 시작
+    for b in data:             # 입력 바이트를 하나씩 처리
+        h = h ^ b               # 1) 현재 바이트와 XOR
+        h = h * FNV_PRIME       # 2) 큰 상수를 곱함 (마스킹 없음 -&gt; 파이썬 정수가 계속 커짐)
+    return h
+
+
+def fnv1a_right(data: bytes) -&gt; int:
+    """[고친 코드] 매 곱셈 직후 32비트로 마스킹한 FNV-1a."""
+    h = FNV_OFFSET
+    for b in data:
+        h = h ^ b
+        h = (h * FNV_PRIME) &amp; MASK32   # 곱한 직후 즉시 32비트로 잘라냄 (진짜 CPU 동작과 동일)
+    return h
+
+
+data = b"pwntools"   # 8바이트 테스트 입력
+
+wrong = fnv1a_wrong(data)
+right = fnv1a_right(data)
+
+print("마스킹 없음:", hex(wrong))   # 0x8122f7d861706cf680fc1ef753ed1b5552e1aaa2cad22ce1d1abe5dd (32비트를 한참 초과)
+print("마스킹 적용:", hex(right))   # 0xd1abe5dd (실제 32비트 레지스터가 갖는 값)
+
+# 마스킹 없이 계산한 값을 마지막에만 잘라내도 같은 결과가 나오는지 확인
+print("마지막에만 마스킹:", hex(wrong &amp; MASK32))
+print("두 값이 같은가?:", (wrong &amp; MASK32) == right)</code></pre>
+<p>실행해보면 <code>마지막에만 마스킹</code>한 값이 <code>right</code>와 정확히 같게 나온다 — XOR와 곱셈만 반복되는 이 구조에서는 우연이 아니라, "매 단계 32비트로 자르기"와 "맨 마지막에 한 번만 32비트로 자르기"가 수학적으로 같은 결과를 주기 때문이다(곱셈과 XOR는 32비트 모듈러 연산과 잘 맞물린다).</p>
+<p><strong>하지만 시프트(<code>&lt;&lt;</code>, <code>&gt;&gt;</code>)가 섞이면 이 우연이 깨진다.</strong> 오른쪽 시프트(<code>&gt;&gt;</code>)는 "지금 몇 비트짜리 값인가"에 따라 완전히 다른 비트를 끌어오기 때문이다.</p>
+<pre><code class="language-python">MASK32 = 0xFFFFFFFF
+
+def mixer_wrong(data: bytes) -&gt; int:
+    h = 0x12345678
+    for b in data:
+        h = h ^ b
+        h = (h &lt;&lt; 13) ^ (h &gt;&gt; 7)              # [틀린 코드] 왼쪽 시프트 뒤 마스킹을 빼먹음
+    return h
+
+def mixer_right(data: bytes) -&gt; int:
+    h = 0x12345678
+    for b in data:
+        h = h ^ b
+        h = ((h &lt;&lt; 13) &amp; MASK32) ^ (h &gt;&gt; 7)   # [고친 코드] 왼쪽 시프트 직후 즉시 마스킹
+    return h
+
+data = b"pwntools"
+w = mixer_wrong(data)
+r = mixer_right(data)
+print("마스킹 없음(끝에서만 자름):", hex(w &amp; MASK32))
+print("매 단계 마스킹:            ", hex(r))
+print("두 값이 같은가?:", (w &amp; MASK32) == r)
+# 출력: 두 값이 같은가?: False</code></pre>
+<p><code>mixer_wrong</code>은 <code>h &lt;&lt; 13</code> 뒤에 마스킹을 안 했기 때문에 <code>h</code>가 32비트보다 훨씬 커진 상태에서 <code>h &gt;&gt; 7</code>을 계산하게 되고, 이는 실제 32비트 레지스터가 <code>shl</code>/<code>shr</code>을 수행할 때 참조하는 비트와 전혀 다르다. 그래서 최종 결과를 아무리 <code>&amp; MASK32</code>로 잘라내도 원본과 절대 같아질 수 없다 — <strong>시프트가 섞인 코드는 반드시 그 시프트 연산 바로 뒤에서 마스킹해야 하며, "마지막에만 마스킹"으로는 절대 대체할 수 없다.</strong></p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0921-recovered-algorithm-output-mismatch.html">REV-0921 — 알고리즘을 복원했는데 출력이 원본과 안 맞을 때</a></li><li><a href="rev-0205-modulo-overflow-check.html">REV-0205 — Modulo와 오버플로를 이용한 검증</a></li><li><a href="rev-0222-reimplement-in-python.html">REV-0222 — 검증 루틴을 Python으로 그대로 재현하기</a></li><li><a href="rev-0270-z3-overflow-handling.html">REV-0270 — Z3에서 8비트 32비트 Overflow 다루기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>C 언어에서 부호 없는 정수 타입의 오버플로우는 undefined behavior가 아니라 모듈러(2^n) 연산으로 정의된 well-defined 동작이라는 규정 및 x86 32비트 레지스터의 연산 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 1 기준 (2026-09-09 검증).</li><li>파이썬 <code>int</code>가 임의 정밀도 정수라는 사양: Python 공식 문서(내장 타입 <code>int</code>) 기준.</li><li>본문의 djb2류 해시 계산 수치는 Python으로 직접 실행해 검산됨.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

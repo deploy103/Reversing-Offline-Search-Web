@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shadow Space가 무엇인지 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>Shadow Space가 무엇인지</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>Windows x64(Microsoft x64 calling convention)에서는 함수를 호출하는 쪽(caller)이 인자 개수와 무관하게 <strong>항상 최소 32바이트(4×8)의 스택 공간</strong>을 미리 확보해야 하는데, 이를 Shadow Space(또는 Home Space)라고 부르며 콜리(callee)가 레지스터 인자(<code>RCX, RDX, R8, R9</code>)를 필요할 때 이 공간에 "스필(spill, 대피)"시켜 쓸 수 있게 하기 위한 것이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리에서 함수 프롤로그에 <code>sub rsp, 0x28</code>이나 <code>sub rsp, 0x38</code>처럼 애매한 크기의 스택 감소가 반복적으로 보일 때</li><li>인자가 1~2개뿐인 짧은 함수인데도 <code>call</code> 직전에 스택을 미리 줄이는 코드가 있는 이유가 궁금할 때</li><li>IDA/x64dbg에서 함수 시작 부분에 <code>[rsp+8]</code>, <code>[rsp+0x10]</code>, <code>[rsp+0x18]</code>, <code>[rsp+0x20]</code>처럼 낮은 고정 오프셋에 레지스터를 저장하는 코드가 보일 때</li><li>Linux SysV x64(<code>../linux-elf/rev-0106-sysv-amd64-calling-convention.md</code>)와 비교했을 때 Windows x64가 스택을 유독 더 많이 미리 까는 이유가 궁금할 때</li><li>REV-0122(Microsoft x64 호출 규약)를 읽다가 "Shadow Space"라는 용어만 따로 더 깊이 알고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Windows x64 호출 규약의 인자 전달</h3>
+<p>Microsoft x64 calling convention은 정수/포인터 인자를 처음 4개까지 <code>RCX, RDX, R8, R9</code> 순서로 레지스터에 담아 전달한다(자세한 전체 규약은 REV-0122 참고). SysV AMD64(리눅스)가 정수 인자에 6개 레지스터(<code>RDI, RSI, RDX, RCX, R8, R9</code>)를 쓰는 것과 달리, Windows는 4개뿐이고 5번째 인자부터 스택을 쓴다.</p>
+<h3>왜 4개뿐인데 32바이트를 예약하나</h3>
+<p>여기서 초보자가 가장 헷갈리는 부분이 나온다. 함수가 인자를 1개만 받든, 아예 안 받든, <strong>caller는 <code>call</code> 명령 실행 전에 항상 최소 32바이트(0x20)의 스택 공간을 확보해야 한다</strong>는 것이 Microsoft x64 ABI의 강제 규칙이다. 이 32바이트는 정확히 <code>RCX, RDX, R8, R9</code> 4개 레지스터를 각각 8바이트씩 담을 수 있는 크기다.</p>
+<p>이 공간이 존재하는 이유는 <strong>callee(호출된 함수)가 레지스터로 받은 인자를 다시 메모리에 "대피(spill)"시켜야 할 수도 있기 때문</strong>이다. 예를 들어 함수 내부에서:</p>
+<ul><li>레지스터 인자 값을 디버거로 보기 쉽게 스택에 복사해두거나(디버그 빌드에서 흔함),</li><li>그 레지스터를 다른 계산에 쓰기 위해 잠깐 비워야 하거나,</li><li>인자의 주소(<code>&amp;</code>)를 다른 함수에 넘겨야 하는 경우(레지스터는 주소를 가질 수 없으므로 반드시 메모리에 있어야 함)</li></ul>
+<p>콜리 입장에서는 "인자가 들어있던 레지스터를 스택 어딘가에 저장할 공간"이 항상 보장되어 있다고 가정하고 코드를 짤 수 있다. 그 "항상 보장된 공간"이 바로 caller가 미리 깔아둔 이 32바이트다. <strong>호출된 함수가 이 공간을 실제로 쓰는지 안 쓰는지는 상관없다</strong> — 디버그 빌드는 거의 항상 쓰고, 최적화된 릴리즈 빌드는 레지스터에서 바로 계산을 끝내버려서 이 공간을 아예 안 쓰는 경우도 많다. 그래도 caller는 규약을 지키기 위해 항상 이 공간을 예약해야 한다.</p>
+<h3>왜 "Shadow"라는 이름인가</h3>
+<p>이 32바이트 영역이 레지스터 인자 <code>RCX, RDX, R8, R9</code>의 값을 "그림자처럼" 그대로 복사해 둘 수 있는 자리라는 의미에서 Shadow Space라고 부른다. 다른 문서에서는 Home Space(레지스터가 "집처럼" 돌아갈 수 있는 자리)라고도 부르는데 같은 개념이다.</p>
+<h3>sub rsp, 0x28 / sub rsp, 0x38의 의미</h3>
+<p>함수 프롤로그에서 흔히 보이는 <code>sub rsp, 0x28</code>(=40바이트)이나 <code>sub rsp, 0x38</code>(=56바이트) 같은 값은 다음 두 가지를 합친 크기다.</p>
+<ol><li>Shadow Space 32바이트(0x20) — ABI가 강제하는 최소값</li><li>스택 정렬 보정 + 로컬 변수 — <code>call</code> 명령 실행 직전 <code>RSP</code>가 16의 배수여야 한다는 규칙(SysV와 동일한 정렬 규칙) 때문에, <code>call</code>이 8바이트 리턴 주소를 push하는 것까지 고려해서 8바이트 단위로 크기를 맞춘다.</li></ol>
+<p>가장 흔한 패턴은 <code>sub rsp, 0x28</code>이다: 로컬 변수가 거의 없는 짧은 leaf가 아닌 함수(다른 함수를 호출하는 함수)가 32바이트 Shadow Space + 8바이트 정렬 보정만 확보하는 경우다. 로컬 변수가 더 있다면 그만큼 더 커져서 <code>0x38</code>, <code>0x48</code>처럼 늘어난다.</p>
+<h3>Leaf 함수는 예외</h3>
+<p>다른 함수를 전혀 호출하지 않는 leaf 함수(맨 끝단 함수)는 애초에 <code>call</code>을 실행하지 않으므로 Shadow Space를 확보할 필요가 없다. 이런 함수는 <code>sub rsp</code>가 아예 없거나, 있어도 순수하게 자기 로컬 변수용으로만 스택을 줄인다. Shadow Space는 어디까지나 <strong>"내가 다른 함수를 부를 때, 그 함수를 위해 내가 미리 깔아주는 공간"</strong>이라는 점을 기억하면 헷갈리지 않는다 — 정확히는 caller가 자신이 호출할 callee를 위해 까는 것이므로, 함수 A가 함수 B를 부른다면 "A의 스택 프레임 안에" B를 위한 32바이트가 생기는 것이다.</p>
+<h3>SysV(Linux x64)와의 차이</h3>
+<p>Linux SysV AMD64는 이런 강제 Shadow Space 규칙이 없다. 대신 leaf 함수에 한해 <code>RSP</code> 아래 128바이트를 자유롭게 쓸 수 있는 Red Zone이라는 별개의 개념이 있다(<code>../linux-elf/rev-0106-sysv-amd64-calling-convention.md</code> 참고). Windows x64 디스어셈블리를 처음 보는 사람이 리눅스 배경지식만 있으면 "왜 함수 시작마다 스택을 저렇게 많이 까지?"라고 의아해하는 경우가 많은데, 그 답이 바로 이 Shadow Space다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>함수 프롤로그 초반에 <code>sub rsp, 0x28</code>, <code>sub rsp, 0x38</code>, <code>sub rsp, 0x48</code>처럼 8의 배수이면서 0x20 이상인 값이 반복적으로 등장</li><li>함수 시작부에서 <code>mov [rsp+8], rcx</code> / <code>mov [rsp+0x10], rdx</code> / <code>mov [rsp+0x18], r8</code> / <code>mov [rsp+0x20], r9</code>처럼 낮은 고정 오프셋에 인자 레지스터를 저장하는 코드(주로 디버그 빌드)</li><li><code>call</code> 직전에는 별도로 스택을 더 줄이지 않고, 함수 진입 시 한 번에 확보해둔 그 32바이트+α 공간을 그대로 재사용</li><li>IDA 디컴파일러(F5)에서는 이 스택 조작이 대부분 자동으로 걸러져서 안 보이고, 디스어셈블리(그래프/텍스트 뷰)에서만 직접 확인 가능</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>함수 프롤로그에서 <code>sub rsp, N</code> 값을 보면 곧바로 "이 함수가 인자를 몇 개 받는가"로 넘어가지 말고, 먼저 <code>N</code>이 최소 0x20(32) 이상인지 확인한다. 0x20 이상이면 그 중 32바이트는 Shadow Space일 가능성이 높으므로, 나머지 <code>N - 0x20</code>만 실제 로컬 변수/추가 정렬용 공간으로 계산하면 스택 프레임을 훨씬 정확하게 읽을 수 있다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 함수 프롤로그에서 sub rsp 값 확인</strong></p>
+<p>IDA나 x64dbg의 디스어셈블리에서 함수 시작 부근의 <code>sub rsp, N</code>을 찾는다.</p>
+<p><strong>2) N에서 0x20을 빼서 실제 로컬 변수 공간 추정</strong></p>
+<p><code>N - 0x20</code>이 0이면 이 함수는 Shadow Space만 확보하고 로컬 변수는 거의 없는 함수다. <code>N - 0x20</code>이 8이면 스택 정렬 보정 8바이트만 추가된 것이고, 그 이상이면 실제 로컬 변수(버퍼, 임시 변수 등)가 있다는 뜻이다.</p>
+<p><strong>3) 낮은 오프셋 <code>[rsp+8]</code>~<code>[rsp+0x20]</code> 접근 코드 찾아보기</strong></p>
+<p>함수 초반에 <code>mov [rsp+8], rcx</code>처럼 4개 인자 레지스터를 이 영역에 저장하는 코드가 있는지 본다. 있다면 디버그 빌드이거나, 함수 내부에서 인자의 주소가 필요해서 스택에 대피시킨 경우다. 이후 함수 본문에서 <code>rcx</code> 대신 <code>[rsp+8]</code>을 계속 읽고 쓴다면, 이 값이 바로 원래 첫 번째 인자였다는 것을 기억해두고 분석을 이어간다.</p>
+<p><strong>4) x64dbg에서 실제 값 확인 (동적 검증)</strong></p>
+<p>함수 진입 직후에 브레이크포인트를 걸고, 스택 창에서 <code>RSP</code> 기준으로 <code>[rsp+8]</code>~<code>[rsp+0x20]</code>을 살펴보면 각각 <code>RCX, RDX, R8, R9</code>가 저장되기 전/후의 실제 값을 눈으로 비교할 수 있다.</p>
+<pre><code class="language-text">bp &lt;함수시작주소&gt;
+run
+; Registers 창에서 RCX, RDX, R8, R9 확인
+; Stack 창에서 [RSP+8] ~ [RSP+20] 값이 아직 쓰이기 전인지 확인</code></pre>
+<p><strong>5) call 직전 부분도 대칭적으로 확인</strong></p>
+<p>함수가 다른 함수를 부르는 지점(<code>call some_func</code>) 앞에서, 그 <code>call</code>을 위한 인자(<code>RCX, RDX, R8, R9</code>)를 세팅하는 코드만 있고 스택을 추가로 줄이는 코드는 없다면, 이미 프롤로그에서 확보한 Shadow Space를 재사용하고 있는 것이다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 함수 프롤로그를 볼 때는 그래프 뷰(Space)보다 텍스트 뷰가 오프셋을 한눈에 비교하기 편하다.</li><li>x64dbg: <code>bp &lt;주소&gt;</code>(브레이크포인트), Stack 창에서 <code>RSP</code> 기준 오프셋 확인, Registers 창에서 <code>RCX/RDX/R8/R9</code> 확인.</li><li>x64dbg 커맨드바: <code>dq rsp</code> 로 스택 상단 8바이트씩(QWORD) 여러 줄 덤프해서 Shadow Space 영역 값을 한 번에 확인 가능.</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>sub rsp, 0x20</code>만 있고 그 이상이 없다면: 로컬 변수 없이 Shadow Space만 쓰는 아주 단순한 함수.</li><li><code>sub rsp, 0x28</code>: Shadow Space 0x20 + 정렬 보정 8바이트. 매우 흔한 패턴.</li><li><code>sub rsp, 0x40</code> 이상: Shadow Space 외에 로컬 버퍼/구조체가 스택에 있다는 뜻이므로, 이후 <code>[rsp+0x30]</code> 같은 더 높은 오프셋 접근이 로컬 변수 접근일 가능성이 높다.</li><li>함수 진입 직후 <code>[rsp+8]</code>~<code>[rsp+0x20]</code>에 값이 저장되는데 함수 본문에서 그 값을 전혀 다시 읽지 않는다면, 디버그 정보용으로만 저장해둔 것(최적화되면 사라짐)이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>sub rsp, N</code>의 <code>N</code>을 전부 "로컬 변수 크기"로 오해해서 스택 프레임 그림을 잘못 그리는 것 — 최소 0x20은 거의 항상 Shadow Space 몫이다.</li><li>Shadow Space를 "콜리가 인자를 저장하기 위해 반드시 써야 하는 공간"으로 오해하는 것 — 사실은 caller가 규약상 의무적으로 확보해주는 것뿐이고, callee가 실제로 그 공간에 값을 저장하는지는 컴파일러 최적화에 따라 다르다.</li><li>SysV(Linux) 배경지식으로 x64 Windows 코드를 보면서 Red Zone과 Shadow Space를 같은 것으로 착각하는 것 — 방향이 정반대다. Red Zone은 caller가 미리 까는 게 아니라 leaf 함수가 자기 스택 아래를 몰래 쓰는 것이고, Shadow Space는 caller가 callee를 위해 의무적으로 미리 까는 것이다.</li><li>인자가 5개 이상인 함수에서 5번째 인자부터는 Shadow Space 32바이트 "다음" 스택 위치(<code>[rsp+0x20]</code> 이후, 함수에 따라 계산 방식이 다름)에 있다는 것을 놓치고 계속 레지스터에서만 인자를 찾으려는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>Windows x64 호출 규약 전체(레지스터 순서, 부동소수점 인자, 스택 정렬)를 더 보고 싶다면 → REV-0122 Microsoft x64 호출 규약</li><li>Linux SysV와 정확히 어떻게 다른지 대조표가 필요하다면 → REV-0106 SysV AMD64 Calling Convention</li><li>지금 보고 있는 스택 프레임을 x64dbg에서 직접 관찰하며 확인하고 싶다면 → REV-0127 x64dbg로 EXE 첫 분석 시작</li><li><code>call</code> 직전에 <code>GetProcAddress</code>/<code>LoadLibrary</code> 같은 API 호출 인자를 확인하려는 상황이라면 → REV-0129 GetProcAddress LoadLibrary 동적 API 해석</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">int add_two(int a, int b) { return a + b; }</code></pre>
+<p>릴리즈 빌드에서도 <code>add_two</code>를 호출하는 쪽 코드는 다음과 비슷하게 나타난다.</p>
+<pre><code class="language-asm">; caller
+sub  rsp, 0x28        ; Shadow Space(0x20) + 정렬 보정(8)
+mov  edx, 2            ; b = 2
+mov  ecx, 1            ; a = 1
+call add_two
+add  rsp, 0x28
+; eax에 결과(3)
+
+; add_two 본문 (디버그 빌드 예시, 인자를 스택에 대피시키는 경우)
+mov  [rsp+8], ecx      ; a를 Shadow Space에 저장
+mov  [rsp+0x10], edx   ; b를 Shadow Space에 저장
+mov  eax, [rsp+8]
+add  eax, [rsp+0x10]
+ret</code></pre>
+<p><code>add_two</code>는 인자가 2개뿐이지만 caller는 여전히 0x20(32)바이트를 규약대로 예약했고, 디버그 빌드의 <code>add_two</code>는 그 공간의 앞부분(<code>[rsp+8]</code>, <code>[rsp+0x10]</code>)을 실제로 활용해 <code>RCX</code>, <code>RDX</code> 값을 대피시켰다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0122-ms-x64-calling-convention.html">REV-0122 — Microsoft x64 Calling Convention</a></li><li><a href="rev-0106-sysv-amd64-calling-convention.html">REV-0106 — SysV AMD64 Calling Convention</a></li><li><a href="rev-0127-x64dbg-first-analysis.html">REV-0127 — x64dbg로 EXE 첫 분석 시작</a></li><li><a href="rev-0129-getprocaddress-loadlibrary.html">REV-0129 — GetProcAddress LoadLibrary 동적 API 해석</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Shadow Space(Home Space) 32바이트 강제 예약 규칙과 스택 정렬 요구사항은 Microsoft Learn "x64 calling convention" / "x64 prolog and epilog" 공식 문서 기준.</li><li>SysV Red Zone과의 대조는 x86-64 psABI(AMD64 Architecture Processor Supplement) "The Stack Frame" 절 기준(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>INT와 INT 0x80: 인터럽트 기반 시스템 콜 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>INT와 INT 0x80: 인터럽트 기반 시스템 콜</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>INT 0x80</code>은 "소프트웨어 인터럽트를 발생시켜 커널에게 시스템 콜을 요청하는" 32비트 리눅스의 옛날 방식이다. <code>EAX</code>에 시스템 콜 번호를, <code>EBX/ECX/EDX/ESI/EDI/EBP</code>에 인자를 담아 실행하면 커널 코드로 제어가 넘어간다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>32비트 CTF pwn 바이너리나 쉘코드에서 <code>int 0x80</code> 이 보이는데 <code>syscall</code> 명령어와 뭐가 다른지 모를 때</li><li><code>mov eax, 4</code> / <code>int 0x80</code> 같은 코드를 보고 4번이 무슨 시스템 콜인지 모를 때 (i386 시스템 콜 번호표가 x86-64와 다르다는 걸 모를 때)</li><li>디버거에서 <code>int 0x80</code> 실행 직후 프로그램이 커널로 "사라졌다가" 돌아오는 게 이해 안 될 때</li><li>x64 바이너리인데 왜인지 <code>int 0x80</code>이 등장해서 당황스러울 때 (32비트 compat 모드 syscall)</li></ul>
+<h2>핵심 개념</h2>
+<h3>INT 명령어 자체의 동작</h3>
+<p><code>INT imm8</code>은 범용 소프트웨어 인터럽트 명령이다. 오퍼랜드는 0~255 사이의 <strong>인터럽트 벡터 번호</strong>이며, 이 번호는 <strong>IDT(Interrupt Descriptor Table)</strong>의 인덱스로 쓰인다.</p>
+<p><code>INT n</code> 실행 시 CPU가 하는 일:</p>
+<ol><li>현재 <code>EFLAGS</code>, <code>CS</code>, <code>EIP</code>(x64에서는 확장된 형태)를 커널 스택에 PUSH한다.</li><li>IDT에서 n번 엔트리를 찾아 그 안에 등록된 핸들러 주소로 점프한다.</li><li>이 과정에서 CPU 권한 수준이 사용자 모드(Ring 3)에서 커널 모드(Ring 0)로 바뀐다.</li><li>핸들러가 끝나면 <code>IRET</code> 명령으로 저장해뒀던 <code>EFLAGS/CS/EIP</code>를 복원해서 인터럽트가 발생한 바로 다음 명령으로 돌아온다.</li></ol>
+<p>즉 <code>INT</code>는 "CALL과 비슷하지만 목적지가 커널이 미리 등록해둔 IDT 테이블을 거치고, 권한 레벨까지 바뀌는" 특수한 CALL이라고 이해하면 된다. <code>CALL</code>/<code>RET</code> 관계는 REV-0071 참고, <code>INT</code>/<code>IRET</code>가 그 커널 버전이다.</p>
+<p><code>INT</code>는 시스템 콜 전용이 아니다. 예를 들어 <code>INT3</code>(오퍼랜드 없이 1바이트 <code>0xCC</code>)는 디버거 브레이크포인트에 쓰이는 별도 벡터이고, 옛날 DOS에서는 <code>INT 21h</code>가 DOS 서비스 호출에 쓰였다. <strong>리눅스에서 <code>INT 0x80</code> 벡터만 커널 부팅 시 "시스템 콜 게이트"로 등록</strong>되어 있어서, 이 벡터로 인터럽트를 걸면 커널의 시스템 콜 디스패처(<code>system_call</code> 핸들러)로 들어가게 되는 것이다.</p>
+<h3>INT 0x80: 32비트 리눅스 시스템 콜 규약</h3>
+<p><code>INT 0x80</code>을 시스템 콜로 쓸 때 레지스터 규약은 다음과 같다 (i386, 즉 32비트 ABI):</p>
+<pre><code>EAX = 시스템 콜 번호
+EBX = 1번째 인자
+ECX = 2번째 인자
+EDX = 3번째 인자
+ESI = 4번째 인자
+EDI = 5번째 인자
+EBP = 6번째 인자</code></pre>
+<p>실행 후 반환값도 <strong>EAX</strong>에 담겨 돌아온다. <code>RDI/RSI/RDX/RCX/R8/R9</code>를 쓰는 SysV x64 함수 호출 규약(REV-0071 참고)과 이름이 겹치는 레지스터가 있어도 <strong>완전히 다른 규약</strong>이니 혼동하지 않는다.</p>
+<h3>SYSCALL과의 결정적 차이</h3>
+<p>64비트 리눅스에서는 시스템 콜을 걸 때 보통 <code>SYSCALL</code> 명령어(REV-0077 참고)를 쓴다. <code>INT 0x80</code>과 비교하면:</p>
+<table><thead><tr><th>구분</th><th><code>INT 0x80</code></th><th><code>SYSCALL</code></th></tr></thead><tbody><tr><td>대상</td><td>32비트(i386) 리눅스, 또는 64비트 커널의 32비트 호환 모드</td><td>64비트(x86-64) 네이티브</td></tr><tr><td>메커니즘</td><td>소프트웨어 인터럽트 (IDT 조회 + 권한 전환, 상대적으로 느림)</td><td>전용 명령어, MSR(<code>STAR</code>/<code>LSTAR</code>)에 미리 등록된 핸들러로 즉시 진입 (빠름)</td></tr><tr><td>시스템 콜 번호 규약</td><td><code>EAX</code>, <strong>i386 시스템 콜 테이블</strong> 사용 (예: <code>write</code> = 4)</td><td><code>RAX</code>, <strong>x86-64 시스템 콜 테이블</strong> 사용 (예: <code>write</code> = 1)</td></tr><tr><td>인자 레지스터</td><td><code>EBX,ECX,EDX,ESI,EDI,EBP</code></td><td><code>RDI,RSI,RDX,R10,R8,R9</code></td></tr><tr><td>반환</td><td><code>EAX</code></td><td><code>RAX</code></td></tr></tbody></table>
+<p><strong>가장 흔한 초보자 실수</strong>가 바로 이 표의 "시스템 콜 번호 규약" 줄이다. i386 테이블과 x86-64 테이블은 같은 이름의 시스템 콜이라도 번호가 다르다(<code>write</code>가 i386에서는 4번, x86-64에서는 1번). <code>int 0x80</code> 코드를 분석하면서 x86-64용 시스템 콜 번호표를 찾아보면 완전히 엉뚱한 답이 나온다 — 반드시 <strong>32비트(i386) 시스템 콜 번호표</strong>를 봐야 한다.</p>
+<p>64비트 커널도 하위 호환을 위해 <code>int 0x80</code> 벡터를 여전히 지원하며, 이때는 i386 시스템 콜 번호표와 32비트 레지스터(<code>EAX/EBX/...</code>, 상위 32비트는 무시)가 그대로 적용된다. 그래서 64비트 프로세스 안에서도 <code>int 0x80</code>을 쓴 32비트 호환 셸코드를 종종 볼 수 있다.</p>
+<h3>플래그, 스택, RIP</h3>
+<ul><li><strong>플래그</strong>: <code>INT</code> 실행 자체는 <code>EFLAGS</code>를 스택에 PUSH해서 커널이 보게 하지만, 사용자 코드 입장에서 CF/ZF/SF/OF 같은 산술 플래그를 직접 바꾸지는 않는다. (일부 게이트 타입에서 <code>IF</code> 플래그가 클리어될 수 있으나 이는 커널 내부 동작이다.)</li><li><strong>스택</strong>: 사용자 스택(<code>ESP</code>/<code>RSP</code>)은 <code>INT 0x80</code> 실행으로 직접 변하지 않는다 — 컨텍스트 저장은 <strong>커널 스택</strong>에서 일어난다. <code>IRET</code>로 복귀하면 사용자 스택은 그대로다.</li><li><strong>RIP/EIP</strong>: <code>INT 0x80</code> 다음 명령의 주소가 저장되고, 커널 처리가 끝나면 정확히 그 다음 명령으로 실행이 이어진다. <code>CALL</code>처럼 "돌아온다"는 점은 같지만 돌아오는 경로가 <code>RET</code>이 아니라 <code>IRET</code>이라는 차이가 있다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>mov eax, 4</code> / <code>mov ebx, 1</code> / ... / <code>int 0x80</code> 형태의 블록 — i386 write 시스템 콜 패턴</li><li><code>mov eax, 1</code> / <code>int 0x80</code> — i386 exit 시스템 콜 (번호 1)</li><li><code>int $0x80</code> (AT&amp;T 문법, GDB/objdump 출력에서 자주 보임) — Intel 문법의 <code>int 0x80</code>과 동일</li><li>32비트 ELF(<code>file</code> 명령으로 <code>ELF 32-bit</code>) 안에서 반복적으로 등장</li><li>64비트 ELF인데 <code>int 0x80</code>이 나오면 32비트 호환 셸코드이거나 의도적으로 삽입된 레거시 코드</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>바이너리/코드 조각이 32비트인지 64비트인지 먼저 확인한다(<code>file</code> 명령 또는 IDA 상단 아키텍처 표시).</li><li><code>int 0x80</code> 직전 <code>EAX</code>에 들어간 값을 확인한다.</li><li>그 값을 <strong>i386 시스템 콜 번호표</strong>(예: 1=exit, 3=read, 4=write, 5=open, 11=execve 등)에서 찾는다. x86-64 번호표와 절대 혼동하지 않는다.</li><li><code>EBX/ECX/EDX/ESI/EDI/EBP</code> 순서로 인자를 읽는다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 시스템 콜 번호 확인</strong></p>
+<pre><code class="language-asm">mov eax, 4        ; sys_write (i386)
+mov ebx, 1        ; fd = 1 (stdout)
+mov ecx, msg       ; buf 주소
+mov edx, 13        ; count
+int 0x80</code></pre>
+<p>→ <code>write(1, msg, 13)</code>로 해석.</p>
+<p><strong>2) exit 패턴 확인</strong></p>
+<pre><code class="language-asm">mov eax, 1         ; sys_exit (i386)
+xor ebx, ebx       ; status = 0
+int 0x80</code></pre>
+<p>→ <code>exit(0)</code>로 해석. <code>int 0x80</code>을 실행하면 이 프로세스는 여기서 종료되므로 이 지점 이후 코드는 실행되지 않는다.</p>
+<p><strong>3) GDB/Pwndbg에서 실제로 확인</strong> <code>int 0x80</code> 명령 주소에 브레이크포인트(<code>b *addr</code>)를 걸고 <code>i r eax ebx ecx edx esi edi ebp</code>로 레지스터를 직접 확인한다. <code>si</code>(stepi)로 한 명령씩 진행하며 커널로 넘어갔다가 돌아오는 것도 관찰 가능하다(사용자 모드 디버거에서는 커널 내부는 안 보이고 명령 실행 전후 상태만 비교 가능).</p>
+<p><strong>4) SYSCALL 코드와 구분해서 읽기</strong> 같은 바이너리 안에 <code>int 0x80</code>과 <code>syscall</code>이 섞여 있다면 어느 쪽이 어느 아키텍처/모드용인지 우선 구분한다. 뒤섞여 있는 경우는 드물지만, 32/64비트 셸코드를 함께 넣어둔 "universal shellcode"에서 볼 수 있다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>GDB/Pwndbg: <code>b *0xADDR</code>(브레이크포인트), <code>i r</code>(레지스터 확인), <code>si</code>(1개 명령어 step), <code>catch syscall</code>(시스템 콜 진입 시 자동 중단, gdb 7.x 이상)</li><li>IDA: 시스템 콜 번호 상수 위에서 우클릭 → 필요 시 자동 열거형(enum)으로 표시 가능하지만 기본적으로는 자동 인식 안 됨 — i386 syscall 번호표를 따로 참고해야 함</li><li>objdump/GDB에서 AT&amp;T 문법으로 보일 때 <code>int $0x80</code>으로 표시되는데 Intel 문법의 <code>int 0x80</code>과 완전히 같은 명령이다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>int 0x80</code> 실행 직후 <code>EAX</code>에 새 값이 들어와 있다면 그것이 시스템 콜의 반환값이다. 음수(예: <code>0xFFFFFFxx</code>)면 대부분 <code>-errno</code> 형태의 에러를 뜻한다(리눅스 시스템 콜의 공통 관례).</li><li>디버거로 <code>int 0x80</code> 전후 스택 포인터를 비교하면 변화가 없어야 정상이다 — 사용자 스택은 시스템 콜로 인해 불균형해지지 않는다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>x86-64 시스템 콜 번호표를 <code>int 0x80</code> 코드에 그대로 적용하는 것 — i386과 x86-64는 번호 체계가 다르다. 반드시 i386용 표를 찾는다.</li><li>인자 레지스터를 <code>RDI/RSI/RDX/...</code>(SYSCALL/함수 호출 규약)로 착각하는 것 — <code>int 0x80</code>은 <code>EBX/ECX/EDX/ESI/EDI/EBP</code> 순서다.</li><li><code>int 0x80</code>과 <code>int3</code>(<code>0xCC</code>, 디버거 브레이크포인트)을 혼동하는 것 — 오퍼랜드 유무와 값이 다르다(<code>int3</code>은 전용 1바이트 인코딩, <code>int 0x80</code>은 <code>CD 80</code> 2바이트).</li><li>64비트 바이너리에 <code>int 0x80</code>이 있는 걸 보고 "이 바이너리는 32비트다"라고 단정하는 것 — 64비트 프로세스 안에서도 32비트 호환 셸코드로 의도적으로 삽입될 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>시스템 콜 번호를 찾았는데 동작이 이해 안 되면 → i386 <code>unistd_32.h</code> 계열 번호표(예: 리눅스 커널 소스의 <code>arch/x86/entry/syscalls/syscall_32.tbl</code> 오프라인 사본)를 확보해서 대조한다.</li><li><code>syscall</code>과 <code>int 0x80</code>이 같은 파일에 섞여 있어 헷갈리면 → 각 블록이 32비트 코드 세그먼트인지 64비트 코드 세그먼트인지(주변 레지스터가 <code>E</code>로 시작하는지 <code>R</code>로 시작하는지) 먼저 구분한다.</li><li>반환값(<code>EAX</code>)이 음수인데 무슨 에러인지 모르겠다면 → 절댓값을 <code>errno</code> 번호표에서 찾는다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 고전 "Hello" 쉘코드 (32비트 i386)</strong></p>
+<pre><code class="language-asm">section .text
+global _start
+_start:
+    mov eax, 4          ; sys_write
+    mov ebx, 1           ; fd = stdout
+    mov ecx, msg
+    mov edx, msg_len
+    int 0x80
+
+    mov eax, 1           ; sys_exit
+    xor ebx, ebx
+    int 0x80</code></pre>
+<p><strong>예제 2 — execve 쉘코드 (<code>/bin/sh</code> 실행, i386)</strong></p>
+<pre><code class="language-asm">; eax = 11 (sys_execve)
+; ebx = "/bin/sh" 문자열 주소
+; ecx = argv 배열 주소 (또는 0)
+; edx = envp 배열 주소 (또는 0)
+mov eax, 11
+int 0x80</code></pre>
+<p>C로 대응하면 <code>execve("/bin/sh", NULL, NULL)</code>.</p>
+<p><strong>예제 3 — 64비트 바이너리 안의 32비트 호환 int 0x80 (드문 케이스)</strong></p>
+<pre><code class="language-asm">; 64비트 프로세스지만 32비트 레지스터로 int 0x80 호출
+mov eax, 4         ; 여전히 i386 write 번호 사용, RAX 아님
+mov ebx, 1
+mov ecx, esi
+mov edx, 10
+int 0x80</code></pre>
+<p>64비트 컨텍스트라도 <code>int 0x80</code> 벡터로 들어가는 순간 커널은 i386 시스템 콜 테이블/레지스터 규약으로 처리한다.</p>
+<p><strong>예제 4 — SYSCALL과 나란히 비교</strong></p>
+<pre><code class="language-asm">; --- 32비트: int 0x80 ---
+mov eax, 1          ; sys_exit (i386 번호)
+xor ebx, ebx
+int 0x80
+
+; --- 64비트: syscall ---
+mov rax, 60          ; sys_exit (x86-64 번호, 60번!)
+xor rdi, rdi
+syscall</code></pre>
+<p>같은 "exit(0)"인데 번호(1 vs 60)와 인자 레지스터(EBX vs RDI)가 완전히 다르다는 점이 이 명령어의 핵심 함정이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0077-syscall.html">rev-0077-syscall.md</a> — SYSCALL: x86-64 시스템 콜 (INT 0x80의 64비트 대체 명령, 번호/레지스터 규약 차이 상세 비교)</li><li><a href="rev-0071-call.html">rev-0071-call.md</a> — CALL: 함수 호출, 반환 주소, 인자 추적 (일반 함수 호출 규약과의 차이 비교용)</li><li><a href="rev-0078-sysenter-sysexit.html">rev-0078-sysenter-sysexit.md</a> — SYSENTER와 SYSEXIT 기초 (또 다른 레거시 빠른 시스템 콜 진입 메커니즘)</li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>INT</code>/<code>IRET</code> 명령어 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "INT n/INTO/INT3/INT1—Call to Interrupt Procedure" 섹션 기준 (2026-09-08 검증).</li><li>리눅스 <code>int 0x80</code> 시스템 콜 게이트, i386 레지스터 규약(EAX/EBX/ECX/EDX/ESI/EDI/EBP): 리눅스 커널 문서 및 <code>man 2 syscall</code> (Linux man-pages) 기준.</li><li>i386 vs x86-64 시스템 콜 번호 차이(예: write=4 vs 1, exit=1 vs 60): 리눅스 커널 소스 <code>syscall_32.tbl</code> / <code>syscall_64.tbl</code> 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

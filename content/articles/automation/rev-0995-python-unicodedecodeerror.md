@@ -49,7 +49,7 @@ UnicodeDecodeError: 'utf-8' codec can't decode byte 0x90 in position 4: invalid 
 b'Correct!\n'
 >>> if response == 'Correct!\n':   # str과 bytes를 == 비교
 ...     print('match')
-... 
+...
 # 항상 False가 되어 print가 실행되지 않음 (예외는 안 나지만 로직 버그)
 ```
 

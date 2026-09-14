@@ -1,0 +1,108 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NtQueryInformationProcess로 하는 안티디버깅 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>NtQueryInformationProcess로 하는 안티디버깅</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>NtQueryInformationProcess</code>는 <code>ntdll.dll</code>이 제공하는 범용 프로세스 정보 조회 함수로, 세 번째 인자로 넘기는 <code>PROCESSINFOCLASS</code> 열거값에 따라 완전히 다른 정보를 반환하는데, 그중 <code>ProcessDebugPort</code>(7), <code>ProcessDebugObjectHandle</code>(30), <code>ProcessDebugFlags</code>(31) 세 가지는 커널 레벨에서 디버거 연결 여부를 직접 확인하는 값이라 <code>IsDebuggerPresent</code>보다 훨씬 후킹하기 까다로운 안티디버깅 수단으로 쓰인다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Import Table에 <code>IsDebuggerPresent</code>, <code>CheckRemoteDebuggerPresent</code>는 안 보이는데 여전히 디버거로 열면 동작이 달라지는 바이너리를 만났을 때</li><li><code>ntdll.dll</code>에서 <code>NtQueryInformationProcess</code>를 동적으로 로드(<code>GetProcAddress</code>)하는 코드를 발견했을 때</li><li>함수 호출 시 세 번째 인자로 <code>7</code>, <code>30</code>, <code>31</code> 같은 낯선 상수가 들어가는 것을 보고 그 의미를 확인하고 싶을 때</li><li>ScyllaHide로 <code>IsDebuggerPresent</code>류를 우회했는데도 여전히 감지되는 이유를 찾고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>함수 시그니처</h3>
+<pre><code class="language-c">NTSTATUS NtQueryInformationProcess(
+  HANDLE           ProcessHandle,
+  PROCESSINFOCLASS ProcessInformationClass,
+  PVOID            ProcessInformation,
+  ULONG            ProcessInformationLength,
+  PULONG           ReturnLength
+);</code></pre>
+<p>이 함수는 마이크로소프트가 공식적으로 "완전히 문서화하지 않은(partially documented)" Native API에 속한다 — <code>ntdll.dll</code>이 내보내지만, 모든 <code>PROCESSINFOCLASS</code> 값이 공개 문서에 정리되어 있지는 않다. <code>winternl.h</code> 헤더에 함수 원형과 일부 상수가 선언되어 있어 개발자가 직접 가져다 쓸 수는 있지만, 향후 버전에서 동작이 바뀔 수 있다는 점을 마이크로소프트가 명시하고 있다.</p>
+<h3>안티디버깅에 쓰이는 세 가지 ProcessInformationClass</h3>
+<table><thead><tr><th>값(10진수)</th><th>이름</th><th>반환되는 정보와 의미</th></tr></thead><tbody><tr><td><code>7</code></td><td><code>ProcessDebugPort</code></td><td>디버거가 프로세스에 연결될 때 커널이 만드는 디버그 포트 핸들 값. 디버거가 없으면 <code>0</code>, 있으면 <code>-1</code>(모든 비트 1, 즉 <code>0xFFFFFFFFFFFFFFFF</code>)이 반환됨</td></tr><tr><td><code>30</code></td><td><code>ProcessDebugObjectHandle</code></td><td>프로세스와 연결된 디버그 객체(Debug Object)의 핸들. 디버거가 없으면 <code>STATUS_PORT_NOT_SET</code>(<code>0xC0000353</code>) 오류와 함께 핸들 값이 <code>0</code>으로 나옴</td></tr><tr><td><code>31</code></td><td><code>ProcessDebugFlags</code></td><td>디버거 없이 실행 중이면 <code>1</code>(<code>PROCESS_DEBUG_INHERIT</code>가 아닌 상태), 디버거가 붙어 있으면 <code>0</code>이 반환됨(다른 두 값과 반대로 "0이면 디버거 있음"이라는 점에 주의)</td></tr></tbody></table>
+<p>세 값 모두 커널 오브젝트 관리자 수준에서 디버그 연결 상태를 추적하는 정보이므로, <code>IsDebuggerPresent</code>처럼 단순히 PEB의 1바이트를 읽는 것보다 근본적으로 조작하기 어렵다. PEB만 패치해서는 이 값들이 바뀌지 않는다.</p>
+<h3>ProcessDebugPort(7) 값의 특이점</h3>
+<p><code>ProcessDebugPort</code>가 반환하는 값은 <code>BOOL</code>이 아니라 <code>DWORD_PTR</code> 크기의 값이며, 디버거가 붙어 있으면 관례적으로 <code>0xFFFFFFFF</code>(32비트에서는 이 값, 64비트에서도 확장된 형태)가 반환된다는 점이 특징이다. 단순히 "0이 아니면 참"으로 처리하는 코드가 많아, 검사 자체는 <code>test</code>/<code>cmp</code> 이후 분기로 이어지는 익숙한 패턴을 따른다.</p>
+<h3>ProcessDebugObjectHandle(30)의 반환값 해석</h3>
+<p>이 클래스는 <code>NTSTATUS</code> 반환값 자체도 함께 확인해야 한다. 디버거가 없을 때는 함수가 <code>STATUS_PORT_NOT_SET</code>을 반환하면서 출력 버퍼에 핸들 값 <code>0</code>을 채운다. 디버거가 있을 때는 <code>STATUS_SUCCESS</code>(<code>0</code>)와 함께 유효한 핸들 값이 채워진다. 즉 이 검사는 출력 버퍼 값뿐 아니라 함수 자체의 리턴 코드(<code>EAX</code>/<code>RAX</code>)도 함께 봐야 정확히 판단할 수 있는, 세 가지 중 가장 정교한 방식이다.</p>
+<h3>ProcessDebugFlags(31)의 반대 방향 논리</h3>
+<p>이 값은 "디버거가 없으면 1(<code>EPROCESS_DEBUG_INHERIT</code> 관련 플래그가 세팅되지 않은 정상 상태), 디버거가 있으면 0"으로, 앞선 두 값과 논리가 반대(0이 "디버거 있음")라는 점에서 코드를 읽을 때 특히 헷갈리기 쉽다. 분기 방향을 반드시 직접 따라가서 확인해야 한다.</p>
+<h3>왜 이 API가 골치 아픈가</h3>
+<p><code>NtQueryInformationProcess</code>는 단일 함수 이름 아래 수십 가지 <code>PROCESSINFOCLASS</code>를 처리하므로, Import Table이나 xref만으로는 "이게 안티디버깅용 호출인지 아니면 그냥 프로세스 기본 정보(<code>ProcessBasicInformation</code>, 값 <code>0</code>) 조회인지" 바로 구분되지 않는다. 반드시 각 호출부에서 두 번째 인자 값을 직접 확인해야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>ntdll.dll</code>을 <code>GetModuleHandle</code>/<code>LoadLibrary</code>로 로드한 뒤 <code>GetProcAddress(hNtdll, "NtQueryInformationProcess")</code>로 함수 포인터를 얻는 코드가 있음(정적 임포트 없이 동적 로딩되는 경우가 흔함).</li><li>호출 직전 두 번째 인자(<code>RDX</code>)에 <code>7</code>, <code>1Eh</code>(30), <code>1Fh</code>(31) 같은 상수가 채워짐.</li><li>세 번째 인자로 <code>lea</code>를 이용해 스택 변수 주소를 만들어 넘기는 패턴이 <code>CheckRemoteDebuggerPresent</code>(REV-0131/REV-0532)와 유사하게 나타남.</li><li>호출 이후 <code>NTSTATUS</code> 반환값(<code>EAX</code>)과 출력 버퍼 값 두 가지를 모두 검사하는 코드가 이어짐.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>NtQueryInformationProcess</code> 호출을 발견하면 가장 먼저 두 번째 인자(<code>ProcessInformationClass</code>) 값을 확인한다. <code>7</code>, <code>30</code>, <code>31</code> 중 하나라면 안티디버깅 목적일 가능성이 매우 높고, 그 외의 값(예: <code>0</code> = <code>ProcessBasicInformation</code>)이라면 단순 정보 조회일 가능성이 크다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 동적 로딩 여부 확인</strong></p>
+<p>Imports 목록에 <code>NtQueryInformationProcess</code>가 정적으로 없다면, <code>GetProcAddress</code> 호출부(REV-0129)를 먼저 찾아 <code>"NtQueryInformationProcess"</code> 문자열이 넘어가는 지점을 확인한다.</p>
+<p><strong>2) 호출 지점 나열</strong></p>
+<p>IDA에서 함수 포인터를 통해 호출되는 간접 호출(<code>call rax</code> 형태)이라면 xref가 바로 안 잡힐 수 있으므로, 함수 포인터가 저장된 전역/지역 변수를 추적해 실제 호출 지점을 찾는다.</p>
+<p><strong>3) 두 번째 인자 값 확인</strong></p>
+<p>각 호출 직전 <code>RDX</code>(x64) 값을 역추적해 <code>7</code>/<code>30</code>/<code>31</code> 중 하나인지 확인한다.</p>
+<p><strong>4) 세 번째 인자(출력 버퍼) 주소 기록</strong></p>
+<p><code>lea r8, [주소]</code> 형태로 준비되는 출력 버퍼 주소를 기록해둔다. 이 값이 실제 결과가 쓰이는 위치다.</p>
+<p><strong>5) 호출 이후 검사 로직 파악</strong></p>
+<p><code>ProcessDebugPort</code>/<code>ProcessDebugObjectHandle</code>은 "0이 아니면 감지", <code>ProcessDebugFlags</code>는 "0이면 감지"라는 반대 논리를 가지므로, 실제 분기(<code>je</code>/<code>jne</code>)를 직접 따라가 어느 쪽이 감지 경로인지 확정한다.</p>
+<p><strong>6) x64dbg로 동적 확인</strong></p>
+<pre><code class="language-text">bp ntdll.NtQueryInformationProcess
+run
+; RDX 값 확인하여 어떤 ProcessInformationClass인지 판단
+Ctrl+F9
+; 출력 버퍼(세 번째 인자가 가리키는 주소)의 값을 Dump 창에서 확인</code></pre>
+<p><strong>7) 우회가 필요하면 출력 버퍼/반환값 조작</strong></p>
+<p>REV-0532에서 다룬 것과 같은 방식으로, 함수 실행 후 출력 버퍼 값을 직접 덮어쓰거나(<code>ProcessDebugPort</code>는 0으로, <code>ProcessDebugFlags</code>는 1로), <code>ProcessDebugObjectHandle</code>의 경우 <code>NTSTATUS</code> 반환값(<code>EAX</code>)까지 함께 <code>STATUS_PORT_NOT_SET</code>으로 맞춰야 한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>Alt+T</code>로 <code>"NtQueryInformationProcess"</code> 문자열 검색, 함수 포인터 변수에 <code>X</code>(xref)로 사용처 추적</li><li>x64dbg: <code>bp ntdll.NtQueryInformationProcess</code>, <code>Ctrl+F9</code>(Execute till return), Dump 창에서 출력 버퍼 값 확인</li><li>x64dbg: Registers 창에서 <code>RDX</code>(ProcessInformationClass), <code>R8</code>(출력 버퍼 주소) 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>ProcessDebugPort</code> 값이 <code>0</code>이 아니면(대개 <code>-1</code>) 디버거가 연결된 상태다.</li><li><code>ProcessDebugObjectHandle</code> 호출의 반환값(<code>NTSTATUS</code>)이 <code>STATUS_SUCCESS</code>(<code>0</code>)이면 디버거가 있다는 뜻이고, <code>STATUS_PORT_NOT_SET</code>(<code>0xC0000353</code>)이면 없다는 뜻이다 — 출력 버퍼 값만 보지 말고 반환값도 함께 확인해야 한다.</li><li><code>ProcessDebugFlags</code>가 <code>0</code>이면 디버거가 있다는 뜻(다른 두 값과 반대 논리)이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>ProcessDebugFlags</code>(31)를 다른 두 값과 같은 논리(0=없음, 1=있음)로 착각해서 분기를 반대로 해석하는 것.</li><li><code>ProcessDebugObjectHandle</code>을 확인할 때 출력 버퍼 값만 보고, <code>NTSTATUS</code> 반환값을 놓쳐서 잘못된 결론을 내리는 것.</li><li>PEB <code>BeingDebugged</code>만 패치하면 이 API도 함께 속을 것이라고 가정하는 것 — 이 값들은 커널이 직접 관리하는 별도 정보이므로 PEB 패치와 무관하게 정확한 값을 반환한다.</li><li><code>NtQueryInformationProcess</code>가 다른 <code>PROCESSINFOCLASS</code>(예: <code>ProcessBasicInformation</code>, 단순 PEB 주소나 PID 조회용)로 호출된 경우까지 전부 안티디버깅으로 오해하는 것 — 반드시 두 번째 인자 값을 확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>이 API로도 여전히 안 막히는 다른 검사가 있는지 전체 목록을 다시 보고 싶다면 → REV-0529 Windows 안티디버깅 기법 종류 빠른 참조표</li><li>더 기본적인 <code>IsDebuggerPresent</code>/<code>CheckRemoteDebuggerPresent</code>부터 순서대로 복습하고 싶다면 → REV-0130, REV-0131</li><li>출력 인자를 직접 조작하는 우회 절차의 기본형이 궁금하다면 → REV-0532 CheckRemoteDebuggerPresent 우회 실습 개념</li><li>스레드 단위로 디버거 이벤트를 회피하는 관련 기법이 궁금하다면 → REV-0534 NtSetInformationThread ThreadHideFromDebugger 기법</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-asm">; NtQueryInformationProcess(GetCurrentProcess(), ProcessDebugPort(7), &amp;debugPort, sizeof(debugPort), NULL)
+call GetCurrentProcess
+mov  rcx, rax
+mov  edx, 7                    ; ProcessDebugPort
+lea  r8,  [rbp-0x8]             ; &amp;debugPort (출력 버퍼)
+mov  r9d, 8                     ; ProcessInformationLength
+call NtQueryInformationProcess
+mov  rax, [rbp-0x8]
+test rax, rax
+jne  detected_branch            ; 0이 아니면(대개 -1) 디버거 있음으로 판단</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0130-isdebuggerpresent.html">REV-0130 — IsDebuggerPresent 안티디버깅 식별</a></li><li><a href="rev-0131-checkremotedebuggerpresent.html">REV-0131 — CheckRemoteDebuggerPresent 식별</a></li><li><a href="rev-0532-checkremotedebuggerpresent-bypass-concept.html">REV-0532 — CheckRemoteDebuggerPresent 우회 실습 개념</a></li><li><a href="rev-0534-ntsetinformationthread-threadhidefromdebugger.html">REV-0534 — NtSetInformationThread ThreadHideFromDebugger 기법</a></li><li><a href="rev-0529-windows-anti-debugging-techniques-quickref.html">REV-0529 — Windows 안티디버깅 기법 종류 빠른 참조표</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>NtQueryInformationProcess</code> 함수 시그니처는 Microsoft 공식 문서(learn.microsoft.com, "NtQueryInformationProcess function")에 부분 문서화되어 있음(2026-09-08 확인). <code>ProcessDebugPort</code>(7), <code>ProcessDebugObjectHandle</code>(30), <code>ProcessDebugFlags</code>(31) 값과 안티디버깅 활용 방식은 공식 문서에 전부 명시되지는 않으며, 리버싱/보안 커뮤니티에서 널리 검증되고 통용되는 값을 기준으로 정리했다. 마이크로소프트는 이 API가 향후 변경될 수 있는 미문서화 영역을 포함한다고 명시하고 있다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

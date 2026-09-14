@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>최적화로 사라진 변수를 디버거에서 복원하는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>최적화로 사라진 변수를 디버거에서 복원하는 법</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>-O2</code> 이상에서 컴파일러는 변수를 레지스터에만 잠깐 담거나 아예 상수로 접어버려서(constant folding) 소스상 "변수"가 런타임에 대응하는 메모리 위치를 갖지 못하는 경우가 흔하며, 이때 GDB/x64dbg가 <code>&lt;optimized out&gt;</code>을 표시하는 것은 버그가 아니라 정직한 보고이므로, 값을 알아내려면 디버그 정보의 위치 리스트(location list)를 읽거나 디스어셈블리에서 마지막으로 그 값을 쓴 지점을 직접 추적해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>GDB에서 <code>print variable</code>을 했는데 <code>$1 = &lt;optimized out&gt;</code>이 나와서 값을 확인할 수 없을 때</li><li>x64dbg의 Locals 창에 특정 변수가 아예 안 보이거나 값이 계속 이상하게(다른 변수 값처럼) 보일 때</li><li>릴리즈 빌드(<code>-O2</code>, <code>/O2</code>)로 컴파일된 바이너리를 디버깅하면서 로컬 변수 흐름을 따라가야 하는데 계속 막힐 때</li><li>IDA/Ghidra의 디컴파일 결과에는 값이 보이는데 실제 디버거로 확인하면 안 보이는 괴리가 생겨서 어느 쪽을 믿어야 할지 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>최적화된 빌드에서 "변수"는 원래 없다</h3>
+<p>디버거가 보여주는 "변수 이름"은 사실 디버그 정보(DWARF의 경우 <code>.debug_info</code>, Windows의 경우 PDB)에 기록된 <strong>소스 레벨 메타데이터</strong>일 뿐이다. <code>-O0</code>에서는 컴파일러가 모든 지역 변수를 스택의 고정된 위치에 저장하고 절대 재사용하지 않으므로, 함수 어느 지점에서 멈추더라도 그 변수의 값을 항상 같은 스택 오프셋에서 읽을 수 있다. 반면 <code>-O2</code>에서는:</p>
+<ul><li><strong>레지스터 할당</strong>: 변수는 자신이 실제로 "살아있는(live)" 구간에서만 특정 레지스터에 담긴다. 그 구간이 끝나면 컴파일러는 즉시 그 레지스터를 다른 값을 위해 재사용한다. 따라서 함수의 특정 PC(현재 실행 위치)에서 그 변수가 어느 레지스터에 있는지는 <strong>구간에 따라 달라지며, 아예 어디에도 없는 구간도 있다.</strong></li><li><strong>상수 전파/폴딩(constant propagation/folding)</strong>: 컴파일러가 컴파일 타임에 값을 완전히 계산해버리면, 그 "변수"는 런타임에 계산되는 값이 아니라 이미 다른 명령어의 즉시값(immediate)으로 흡수되어 사라진다. 이 경우는 애초에 복원할 "런타임 값"이라는 개념 자체가 없다 — 그 값은 디스어셈블리의 상수 그대로가 정답이다.</li><li><strong>공통 부분식 제거/중복 제거</strong>: 두 변수가 사실상 같은 값을 갖는다는 걸 컴파일러가 증명하면 하나의 레지스터/계산으로 합쳐버려서, 원래 두 개였던 변수 중 하나의 "독자적인 자리"가 사라진다.</li></ul>
+<p><code>&lt;optimized out&gt;</code>은 정확히 이 상황, 즉 "현재 멈춰있는 PC 지점에서는 그 변수에 대응하는 레지스터나 메모리 위치가 디버그 정보상 정의되어 있지 않다"는 것을 정직하게 알려주는 메시지다.</p>
+<h3>디버그 정보는 "위치 리스트(location list)"로 이를 기록한다</h3>
+<p>DWARF(Linux/GCC/Clang)는 변수 하나에 대해 <strong>PC 범위별로 다른 위치</strong>를 기술할 수 있는 <code>.debug_loc</code>/<code>.debug_loclists</code> 섹션을 갖는다. 예를 들어 변수 <code>x</code>가:</p>
+<ul><li>PC 0x1000~0x1010 구간에서는 <code>RAX</code>에 있고</li><li>PC 0x1010~0x1030 구간에서는 <code>[RBP-0x18]</code>(스택)에 있고</li><li>PC 0x1030 이후로는 (레지스터가 재사용되어) <strong>어디에도 없음</strong></li></ul>
+<p>이라면, GDB는 세 번째 구간에서 멈췄을 때만 <code>&lt;optimized out&gt;</code>을 보여준다. 즉 <strong>같은 변수도 멈춘 위치에 따라 보였다 안 보였다 할 수 있다.</strong> Windows의 PDB(CodeView 포맷)도 유사하게 변수별 위치 정보를 구간별로 기록한다.</p>
+<h3>복원 전략 1 — 위치 리스트 직접 읽기</h3>
+<pre><code class="language-bash">readelf --debug-dump=loc &lt;binary&gt;       # DWARF location list 원문 확인
+objdump --dwarf=loc &lt;binary&gt;</code></pre>
+<p>GDB 안에서도 <code>info address &lt;var&gt;</code>나 <code>info scope &lt;function&gt;</code>으로 변수가 어느 PC 구간에서 어디에 위치하는지 확인할 수 있다. 지금 멈춘 PC가 "위치 없음" 구간이라면, 그 변수가 마지막으로 유효했던 PC로 되돌아가거나(예: 한 단계 앞에서 다시 멈춤) 애초에 그 변수가 살아있는 구간에 브레이크포인트를 다시 건다.</p>
+<h3>복원 전략 2 — 디스어셈블리에서 마지막 대입 지점 역추적</h3>
+<p>디버그 정보가 아예 없거나 신뢰할 수 없을 때(스트립된 릴리즈 바이너리)는, 그 변수가 원래 있었을 만한 레지스터/스택 슬롯을 현재 멈춘 지점에서 위로 거슬러 올라가며 <strong>가장 최근에 그 위치에 값을 쓴 명령어</strong>를 찾는다. 이것이 IDA/Ghidra의 디컴파일러가 내부적으로 하는 일과 본질적으로 같은 작업(데이터 흐름 분석)을 수작업으로 하는 것이다.</p>
+<h3>복원 전략 3 — 더 이른 지점에서 값을 붙잡기</h3>
+<p>변수가 특정 구간에서만 레지스터에 살아있다면, 그 구간 안(레지스터가 아직 재사용되기 전)에 브레이크포인트를 옮겨서 값이 사라지기 전에 확인하는 것이 가장 확실하다.</p>
+<h3>복원 전략 4 — Ghidra/IDA 디컴파일러 활용</h3>
+<p>Ghidra의 디컴파일러는 DWARF 위치 리스트에 의존하지 않고 <strong>자체 정적 데이터 흐름 분석(P-code SSA)</strong>으로 지역 변수를 재구성하기 때문에, 같은 최적화 수준에서도 GDB가 <code>&lt;optimized out&gt;</code>이라고 하는 값을 Ghidra의 <code>local_28</code>류 의사변수로는 여전히 볼 수 있는 경우가 많다. 즉 동적 디버거가 막히면 정적 디컴파일러로 전환하는 것이 실전에서 가장 자주 쓰이는 우회법이다. 단, 이는 "그 변수가 현재 실행 시점에 어떤 값인지"가 아니라 "그 변수가 어떻게 계산되는 수식인지"를 보여주는 것이므로, 실제 런타임 값을 알려면 그 수식에 등장하는 입력 레지스터들의 실제 값을 디버거로 읽어서 직접 계산해야 한다.</p>
+<h3>상수로 완전히 접힌 경우는 "복원"이 아니라 "확인"</h3>
+<p>컴파일 타임에 상수로 완전히 계산되어버린 변수는애초에 "runtime value"라는 게 없다. 이 경우 디버거로 아무리 찾아도 나오지 않는 게 정상이며, 정답은 디스어셈블리에 박힌 즉시값(immediate)을 그대로 읽는 것이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>GDB <code>print</code>에 <code>&lt;optimized out&gt;</code> 표시</li><li>x64dbg Locals 창에 변수가 아예 나타나지 않거나 회색으로 비활성화되어 표시</li><li>같은 변수를 다른 브레이크포인트 위치에서 확인했더니 값이 보였다 안 보였다 함</li><li>Ghidra/IDA 디컴파일 결과에는 명확한 계산식이 있는데 실제 디버거로는 대응하는 위치를 못 찾음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>지금 멈춘 지점이 해당 변수의 "살아있는 구간" 안인지부터 확인한다 (<code>info address</code>/<code>info scope</code>).</li><li>구간 밖이라면 구간 안으로 브레이크포인트를 옮긴다.</li><li>그래도 안 되면 정적 디스어셈블리/디컴파일러로 전환해 값을 수식으로 역추적한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) GDB에서 위치 정보 확인</strong></p>
+<pre><code class="language-text">(gdb) info address i
+Symbol "i" is a variable with multiple locations.
+(gdb) info scope func
+Scope for func:
+Symbol i is a variable, length 4.</code></pre>
+<p><strong>2) 위치 리스트 원문 확인</strong></p>
+<pre><code class="language-bash">readelf --debug-dump=loc a.out | grep -A5 "Offset.*&lt;i&gt;"</code></pre>
+<p>각 구간의 시작/끝 PC와 그 구간에서의 위치(레지스터 번호 또는 스택 오프셋)를 확인한다.</p>
+<p><strong>3) 살아있는 구간에 브레이크포인트 재설정</strong> 변수가 사용되는(값이 읽히거나 쓰이는) 소스 라인/주소에 정확히 브레이크포인트를 걸어 그 값이 여전히 유효할 때 멈추도록 한다.</p>
+<pre><code class="language-text">(gdb) break *0x401025    # 변수가 아직 레지스터에 살아있는 구간 안의 주소
+(gdb) print $eax          # 변수 이름 대신 실제 레지스터를 직접 읽음</code></pre>
+<p><strong>4) 정적 역추적으로 전환</strong> 디스어셈블리에서 현재 PC부터 위로 올라가며 관심 레지스터/스택 슬롯에 마지막으로 쓰여진 명령을 찾는다.</p>
+<pre><code class="language-asm">mov   eax, [rbp-0x18]   ; 후보 변수 위치로 추정되는 마지막 로드
+add   eax, ecx
+mov   [rbp-0x18], eax    ; 여기가 최근에 그 값이 쓰인 지점</code></pre>
+<p><strong>5) 디컴파일러로 수식 확인 후 직접 계산</strong> Ghidra F5로 재구성된 수식을 확인하고, 그 수식에 필요한 입력값들을 디버거로 각각 읽어 손으로 계산한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>GDB: <code>info address &lt;var&gt;</code>, <code>info scope &lt;func&gt;</code>, <code>print $&lt;reg&gt;</code>, <code>x/4xb &lt;addr&gt;</code>(메모리 직접 확인)</li><li>readelf/objdump: <code>readelf --debug-dump=loc &lt;binary&gt;</code>, <code>objdump --dwarf=loc &lt;binary&gt;</code></li><li>x64dbg: Locals 창 대신 CPU 레지스터 창과 Stack 창을 직접 열어 현재 값을 확인, <code>Ctrl+G</code>로 특정 주소로 이동해 근처 명령 확인</li><li>IDA/Ghidra: <code>F5</code>(디컴파일)로 재구성된 지역 변수 확인, IDA에서 변수 위에 커서를 놓고 사용처 하이라이트로 데이터 흐름 추적</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>&lt;optimized out&gt;</code>은 "그 변수가 현재 PC에서 유효한 위치 정보가 없다"는 뜻이지 "프로그램에 버그가 있다"는 뜻이 아니다.</li><li>Ghidra의 <code>local_XX</code> 변수 이름은 원본 소스 변수명이 아니라 디컴파일러가 임의로 붙인 이름이므로, 같은 이름이 여러 함수에서 반복돼도 서로 무관하다.</li><li>위치 리스트에서 한 변수가 여러 구간에 걸쳐 서로 다른 레지스터에 나타난다면, 이는 레지스터 재할당이 일어난 것이지 값이 바뀐 게 아니다(값은 같고 담긴 곳만 바뀜).</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>&lt;optimized out&gt;</code>을 보고 즉시 포기하거나 "이 변수는 이 함수에서 안 쓰인다"고 오판하는 것 — 실제로는 그 특정 PC에서만 위치 정보가 없을 뿐, 다른 지점에서는 확인 가능한 경우가 대부분이다.</li><li>재컴파일 없이 최적화된 바이너리에서 소스 코드 줄 단위로 한 줄씩 정확히 스텝(step)할 수 있다고 기대하는 것 — 최적화된 코드는 명령어 순서가 재배치/병합되어 소스 줄과 1:1 대응이 깨지는 경우가 흔하다.</li><li>디컴파일러가 보여주는 값을 "지금 이 순간의 실제 런타임 값"이라고 착각하는 것 — 디컴파일러는 정적 분석 결과(수식)를 보여줄 뿐이며, 실제 값은 그 수식의 입력을 디버거로 읽어야 알 수 있다.</li><li>상수로 완전히 폴딩된 값을 디버거에서 찾으려고 계속 헤매는 것 — 애초에 런타임에 존재하지 않는 값이므로 디스어셈블리의 즉시값을 그대로 읽는 게 정답이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>소스 코드가 있다면 → 같은 소스를 <code>-O0</code>/<code>-Og</code>로 재컴파일해서 디버깅 친화적인 빌드로 로직을 먼저 이해한 뒤, 최적화된 바이너리로 대조한다(REV-0464 참고).</li><li>위치 리스트를 읽는 게 너무 번거로우면 → Ghidra/IDA 디컴파일러의 데이터 흐름 재구성 결과를 1차 판단 근거로 삼고, 필요한 지점만 디버거로 검증한다.</li><li>값이 레지스터에 있는지 스택에 있는지조차 모르겠다면 → 그 변수가 관여하는 것으로 보이는 연산(비교, 산술) 직전 명령을 디스어셈블리에서 찾아 역으로 위치를 추정한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — <code>&lt;optimized out&gt;</code>이 뜨는 전형적 상황</strong></p>
+<pre><code class="language-c">int compute(int a, int b) {
+    int sum = a + b;    // sum이 레지스터에만 잠깐 존재
+    return sum * 2;
+}</code></pre>
+<pre><code class="language-asm">compute:
+    lea   eax, [rdi+rsi]   ; sum = a + b가 별도 저장 없이 eax에만 존재
+    add   eax, eax           ; sum * 2, sum이라는 별도 위치는 애초에 없음
+    ret</code></pre>
+<p>GDB에서 <code>return</code> 직전(예: <code>add eax, eax</code> 실행 후) 멈춰서 <code>print sum</code>을 하면, <code>sum</code>이 이미 <code>eax*2</code>로 소모되어 별도 위치가 없으므로 <code>&lt;optimized out&gt;</code>이 뜰 수 있다 — 이 경우 <code>sum</code>의 원래 값은 <code>print $eax / 2</code>처럼 역산하거나, <code>lea</code> 직후로 브레이크포인트를 옮겨야 확인 가능하다.</p>
+<p><strong>예제 2 — 완전히 상수로 접힌 경우 (복원 대상 자체가 없음)</strong></p>
+<pre><code class="language-c">int get_magic(void) {
+    int x = 40;
+    int y = 2;
+    return x + y;          // 컴파일러가 컴파일 타임에 42로 계산
+}</code></pre>
+<pre><code class="language-asm">get_magic:
+    mov   eax, 42            ; x, y라는 변수는 어디에도 없음, 42만 존재
+    ret</code></pre>
+<p>이 경우 <code>x</code>, <code>y</code>를 아무리 찾아도 안 나온다 — 애초에 런타임 계산이 사라졌으므로 정상이다.</p>
+<p><strong>예제 3 — 위치 리스트로 구간별 위치가 다른 경우</strong></p>
+<pre><code class="language-text">$ readelf --debug-dump=loc a.out
+    Offset   Begin      End        Expression
+    0x0000   0x401010   0x40101a   DW_OP_reg0 (rax)
+    0x0000   0x40101a   0x401030   DW_OP_fbreg -24</code></pre>
+<p>0x401010~0x40101a 구간에서는 <code>RAX</code>, 0x40101a~0x401030 구간에서는 스택(<code>rbp-24</code>)에 있다는 뜻이다. 0x401030 이후로 항목이 없으면 그 이후로는 위치가 없다는 의미이며, 그 구간에서 멈추면 <code>&lt;optimized out&gt;</code>이 뜬다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0464-o0-vs-o2-comparison.html">REV-0464 — -O0과 -O2 컴파일 결과를 나란히 비교하는 법</a></li><li><a href="rev-0151-positive-sp-value.html">REV-0151 — IDA Positive SP Value Has Been Detected 경고</a></li><li><a href="rev-0167-compiler-vs-problem-logic.html">REV-0167 — Compiler Generated Code와 실제 문제 로직 구분</a></li><li><a href="rev-0176-return-value-after-call.html">REV-0176 — CALL 직후 반환값 확인하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>DWARF 변수 위치 표현과 위치 리스트(<code>DW_AT_location</code>, <code>.debug_loc</code>/<code>.debug_loclists</code>): DWARF Debugging Information Format 공식 표준 문서 기준.</li><li>GDB의 <code>&lt;optimized out&gt;</code> 표시 동작과 <code>info address</code>/<code>info scope</code>: GNU GDB 공식 매뉴얼(Debugging with GDB) 기준.</li><li>Ghidra 디컴파일러의 정적 데이터 흐름 기반 지역 변수 재구성(P-code/Varnode): NSA Ghidra 공식 문서 기준. (2026-09-08 검증)</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

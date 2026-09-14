@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>원격 디버깅(gdbserver) 연결이 안 될 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>원격 디버깅(gdbserver) 연결이 안 될 때</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>target remote HOST:PORT</code>가 실패하는 원인은 거의 항상 "네트워크 경로가 막혀 있음", "포트/주소를 잘못 지정함", "gdbserver가 이미 죽어 있거나 다른 세션이 점유 중임", "GDB와 gdbserver 버전/아키텍처가 안 맞음" 네 가지 중 하나이며, 에러 메시지 문구만 봐도 어느 쪽인지 대부분 구분된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>(gdb) target remote HOST:PORT</code>를 쳤는데 몇 초~몇십 초 그대로 멈춰 있다가 <code>Connection timed out</code>이 뜰 때</li><li>즉시 <code>Connection refused</code>가 뜰 때</li><li>연결은 됐다가 바로 <code>Remote connection closed</code>로 끊길 때</li><li>도커 컨테이너나 원격 서버 안의 <code>gdbserver</code>에 붙으려는 상황에서 위 증상 중 하나라도 겪을 때</li></ul>
+<h2>핵심 개념</h2>
+<p><code>gdbserver</code> 연결은 TCP 3-way handshake(네트워크 경로) → GDB Remote Serial Protocol 핸드셰이크(프로토콜 호환성) 두 단계를 순서대로 통과해야 완성된다. 두 단계 중 어디서 실패하느냐에 따라 에러 메시지가 다르게 나오므로, 메시지를 원인 분류표처럼 활용할 수 있다.</p>
+<ul><li><strong><code>Connection timed out</code></strong>: TCP 패킷 자체가 목적지에 도달하지 못하고 있다는 뜻이다. 방화벽이 SYN 패킷을 그냥 드롭(응답 없이 버림)하고 있거나, 라우팅이 안 되는 네트워크(다른 서브넷, 도커 브릿지 네트워크 미개방)이거나, 대상 머신에서 <code>gdbserver</code>가 아예 그 포트로 리스닝하고 있지 않은 경우다.</li><li><strong><code>Connection refused</code></strong>: TCP 패킷은 도달했지만 그 포트에서 리스닝하는 프로세스가 없다는 뜻이다. <code>gdbserver</code>가 실행되지 않았거나, 다른 포트 번호로 떴거나, 이미 죽어서 포트가 닫힌 경우다.</li><li><strong><code>Remote connection closed</code></strong>: TCP 연결과 초기 핸드셰이크까지는 됐지만 이후 프로토콜 교환 중 상대가 연결을 끊은 것. <code>gdbserver</code> 프로세스가 중간에 죽었거나(대상 프로그램 자체가 크래시), 이미 다른 GDB 세션이 붙어 있어서 두 번째 연결을 거부한 경우다.</li><li><strong>아키텍처/버전 불일치</strong>: 연결 자체는 되는데 <code>Remote 'g' packet reply is too long</code> 같은 프로토콜 레벨 에러가 나거나 레지스터 값이 전부 깨져 보이는 경우로, GDB가 대상 아키텍처를 모르거나 GDB와 gdbserver 버전 차이가 너무 큰 것이다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code>(gdb) target remote 192.168.1.50:1234
+192.168.1.50:1234: Connection timed out.</code></pre>
+<pre><code>(gdb) target remote 192.168.1.50:1234
+192.168.1.50:1234: Connection refused.</code></pre>
+<pre><code>(gdb) target remote 192.168.1.50:1234
+Remote debugging using 192.168.1.50:1234
+Remote connection closed</code></pre>
+<h2>가장 먼저 할 것</h2>
+<p>대상 머신(원격/컨테이너)에 직접 접속해 <code>gdbserver</code>가 실제로 그 포트에 살아서 리스닝 중인지부터 확인한다.</p>
+<pre><code class="language-bash"># 대상 머신에서
+ps aux | grep gdbserver
+ss -tlnp | grep 1234</code></pre>
+<p>프로세스가 없거나 포트가 안 보이면 네트워크 문제가 아니라 "애초에 떠 있지 않은 것"이므로 먼저 <code>gdbserver :1234 ./chall</code>부터 다시 실행한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 대상에서 리스닝 상태 확인</strong></p>
+<pre><code class="language-bash">ss -tlnp | grep 1234
+# 또는
+netstat -tlnp | grep 1234</code></pre>
+<p><code>LISTEN</code> 상태로 안 보이면 gdbserver를 아직 안 띄웠거나 다른 포트를 썼다는 뜻이다.</p>
+<p><strong>2) 로컬에서 대상까지 경로가 열려 있는지 확인</strong></p>
+<pre><code class="language-bash"># 로컬 머신에서
+nc -zv 192.168.1.50 1234
+telnet 192.168.1.50 1234</code></pre>
+<p><code>nc: connect timed out</code> → 방화벽/라우팅 차단. <code>Connection refused</code> → 포트 자체가 안 열림(1번으로 돌아가서 확인).</p>
+<p><strong>3) 도커/컨테이너 환경이면 포트 매핑 확인</strong></p>
+<pre><code class="language-bash">docker ps
+# PORTS 컬럼에 0.0.0.0:1234-&gt;1234/tcp 형태로 노출돼 있는지 확인</code></pre>
+<p><code>-p 1234:1234</code> 없이 컨테이너를 띄웠다면 호스트에서 절대 접근할 수 없다. 컨테이너를 재시작하며 포트를 명시적으로 열어야 한다.</p>
+<p><strong>4) 로컬 방화벽 확인</strong></p>
+<pre><code class="language-bash"># Linux 로컬 머신
+sudo iptables -L -n | grep 1234
+# Windows 로컬 머신에서 원격에 붙는 경우
+netsh advfirewall firewall show rule name=all | findstr 1234</code></pre>
+<p><strong>5) 이미 다른 GDB 세션이 붙어 있는지 확인</strong> <code>gdbserver</code>는 기본적으로 한 번에 하나의 GDB 연결만 받는다. 이전에 비정상 종료한 GDB 세션이 소켓을 붙잡고 있을 수 있으니, 대상 머신에서 <code>gdbserver</code> 프로세스를 완전히 죽이고 새로 띄운다.</p>
+<pre><code class="language-bash">pkill gdbserver
+gdbserver :1234 ./chall</code></pre>
+<p><strong>6) 아키텍처/버전 문제 확인</strong></p>
+<pre><code class="language-bash">gdb --version
+gdbserver --version
+file ./chall   # 대상 아키텍처 확인</code></pre>
+<p>로컬 GDB가 대상 아키텍처를 모른다면(예: 로컬은 x86-64 전용 GDB인데 대상은 ARM) <code>gdb-multiarch</code>를 설치하거나 <code>(gdb) set architecture &lt;arch&gt;</code>로 명시한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">ss -tlnp | grep &lt;PORT&gt;            # 대상: 리스닝 확인
+nc -zv HOST PORT                  # 로컬: 포트 도달 여부 확인
+docker ps                         # 컨테이너 포트 매핑 확인
+pkill gdbserver                   # 좀비 gdbserver 정리
+gdb-multiarch ./chall             # 크로스 아키텍처 GDB</code></pre>
+<pre><code>(gdb) target remote HOST:PORT
+(gdb) set architecture ARCH
+(gdb) show remote-timeout</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>Connection timed out</code> → 응답 자체가 없음. 네트워크 경로(방화벽/라우팅/포트 매핑) 문제. 대상에 리스닝 프로세스가 있는지부터 확인.</li><li><code>Connection refused</code> → 상대가 "그 포트엔 아무도 없다"고 즉시 답한 것. gdbserver를 안 띄웠거나 죽었을 가능성이 가장 크다.</li><li><code>Remote connection closed</code> → 초반 연결은 됐지만 곧바로 끊김. gdbserver가 이미 다른 GDB에 물려 있거나, 대상 프로그램이 실행 중 죽어서 gdbserver 자체가 종료된 경우다. 대상 머신 콘솔에 <code>gdbserver</code>가 남긴 마지막 로그를 확인한다.</li><li><code>Remote 'g' packet reply is too long</code> → 레지스터 셋 크기가 다르다는 뜻으로, 아키텍처 불일치가 원인이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>IP 대신 컨테이너 내부 이름(<code>localhost</code>)을 호스트에서 그대로 써서 접속하는 것 — 컨테이너 네트워크 네임스페이스가 다르면 호스트의 <code>localhost</code>는 컨테이너를 가리키지 않는다.</li><li>방화벽 규칙을 원격 서버에만 확인하고 자기 로컬 머신의 아웃바운드 방화벽/보안 프로그램은 확인하지 않는 것.</li><li><code>gdbserver</code>가 크래시로 죽었는데 GDB 쪽 에러 메시지만 보고 "연결 설정이 잘못됐다"고 오판하는 것 — 대상 머신 터미널에 남은 gdbserver 자체 로그를 먼저 봐야 한다.</li><li>이전 세션의 <code>gdbserver</code>가 좀비로 남아 포트를 계속 붙잡고 있는데 모르고 새 <code>gdbserver</code>를 다른 포트 없이 재실행해서 계속 실패하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>연결 자체는 됐고 이제 실제 디버깅 흐름을 알고 싶다면 → REV-0658 GDB 원격 디버깅(gdbserver) 기초.</li><li>로컬 프로세스인데도 <code>attach</code>가 permission denied로 막힌다면 → REV-0692 GDB attach가 permission denied로 실패할 때(ptrace_scope).</li><li>PIE 바이너리라 원격에서도 브레이크포인트 주소가 안 맞는다면 → REV-0194 PIE 바이너리 GDB 브레이크포인트 잡기.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash"># 로컬에서 첫 시도
+$ gdb -q ./chall
+(gdb) target remote 172.18.0.2:1234
+172.18.0.2:1234: Connection timed out.</code></pre>
+<pre><code class="language-bash"># 대상 컨테이너 확인
+$ docker ps
+CONTAINER ID   PORTS
+a1b2c3d4e5f6   1234/tcp</code></pre>
+<p><code>PORTS</code>에 <code>0.0.0.0:1234-&gt;1234/tcp</code>가 아니라 <code>1234/tcp</code>만 있다는 것은 호스트로 노출되지 않았다는 뜻이다. 컨테이너를 <code>-p 1234:1234</code>로 재시작한 뒤 다시 연결하니 정상적으로 붙었다.</p>
+<pre><code>(gdb) target remote 127.0.0.1:1234
+Remote debugging using 127.0.0.1:1234
+0x00007f... in ?? ()</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0658-gdb-remote-debugging-gdbserver.html">REV-0658 — GDB 원격 디버깅(gdbserver) 기초</a></li><li><a href="rev-0692-gdb-attach-permission-denied-ptrace-scope.html">REV-0692 — GDB attach가 permission denied로 실패할 때(ptrace_scope)</a></li><li><a href="rev-0194-gdb-pie-breakpoints.html">REV-0194 — PIE 바이너리 GDB 브레이크포인트 잡기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>target remote</code>/<code>gdbserver</code> 연결 실패 메시지(<code>Connection timed out</code>, <code>Connection refused</code>, <code>Remote connection closed</code>)의 의미: GDB 공식 매뉴얼 "Debugging Remote Programs" 챕터 및 <code>gdbserver(1)</code> man page 기준.</li><li>도커 포트 매핑(<code>-p</code>)과 컨테이너 네트워크 네임스페이스 동작: Docker 공식 문서(Networking overview) 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

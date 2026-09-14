@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Reversing 오프라인 위키 &mdash; 오프라인 리버싱 지식베이스</title>
+<link rel="stylesheet" href="assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="index.html">처음 시작</a></li><li><a href="index.html?cat=triage">30초 트리아지</a></li><li><a href="index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="index.html?stuck=1">증상으로 찾기</a></li><li><a href="index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="index.html?q=PE">Windows / PE</a></li><li><a href="index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="index.html?cat=static-analysis">정적 분석</a></li><li><a href="index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="index.html?cat=tools">툴 사용법</a></li><li><a href="index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="index.html?cat=automation">자동화 / Solver</a></li><li><a href="index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<section class="hero">
+  <h1>오프라인 리버싱 지식베이스</h1>
+  <p>인터넷 없이 CTF / 워게임 리버싱 문제를 풀 때 바로 찾아보는 한국어 검색 위키입니다.</p>
+  <form class="big-search" id="search-form">
+    <input type="search" id="search-input" placeholder="예: call, positive sp value, 16777619, main 어디, rsp 뭐임" autofocus>
+    <button type="submit">검색</button>
+  </form>
+  <div class="stuck-toggle">
+    <label><input type="checkbox" id="stuck-mode"> 막혔을 때 모드 (증상 · 에러 글 우선)</label>
+  </div>
+</section>
+
+<div id="search-results"></div>
+
+<section class="entry-callouts">
+  <div class="callout">
+    <h2>파일 받았을 때 30초 트리아지</h2>
+    <p>처음 보는 문제 파일을 받았을 때 무엇부터 확인해야 하는지 순서대로 정리했습니다.</p>
+    <a href="article/rev-0001-first-30-seconds.html">30초 트리아지 읽기 →</a>
+  </div>
+  <div class="callout">
+    <h2>처음이라 아무것도 모르겠음</h2>
+    <p>리버싱이 처음이라면 여기서부터 시작하세요. 파일 형식 확인부터 main 찾기까지 이어집니다.</p>
+    <a href="article/rev-0001-first-30-seconds.html">시작하기 →</a>
+  </div>
+</section>
+
+<section class="home-section">
+  <h2>빠른 카테고리</h2>
+  <div class="quick-links">
+    <a href="index.html?q=PE">PE / EXE</a>
+    <a href="index.html?cat=linux-elf">ELF</a>
+    <a href="index.html?cat=assembly">Assembly Dictionary</a>
+    <a href="index.html?q=IDA">IDA</a>
+    <a href="index.html?q=Ghidra">Ghidra</a>
+    <a href="index.html?q=x64dbg">x64dbg</a>
+    <a href="index.html?q=GDB">GDB / Pwndbg</a>
+    <a href="index.html?q=UPX">패킹</a>
+    <a href="index.html?cat=algorithms">알고리즘 패턴</a>
+    <a href="index.html?stuck=1">막힌 상황 모음 (stuck mode)</a>
+  </div>
+</section>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="assets/search-index.js"></script>
+<script src="assets/js/theme.js"></script>
+<script src="assets/js/search.js"></script>
+</body>
+</html>

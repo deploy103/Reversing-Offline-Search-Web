@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Write-up] Simple Crack Me 2 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / writeup</div>
+<article class="article-body">
+<h1>[Write-up] Simple Crack Me 2</h1>
+<div class="article-meta"><span class="tag">writeup</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>Simple Crack Me 2는 정확히 32바이트 길이의 입력을 받아 XOR와 증가(INC)/감소(DEC) 연산을 여러 차례 조합해 변형한 뒤 하드코딩된 정답 배열과 <code>memcmp</code>로 비교하는 리눅스 ELF 크랙미이며, 각 변환 단계를 반대 순서·반대 연산으로 되돌리는 스크립트를 작성하면 원래 입력값을 그대로 복원할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Ghidra로 열었을 때 <code>XORWithParam2</code>, <code>INCWithParam2</code>, <code>DECWithParam2</code>처럼 이름이 붙은(또는 그와 유사한) 여러 개의 변환 함수가 순서대로 호출되는 구조를 발견했을 때</li><li>입력값을 아무렇게나 넣으면 "your input length is wrong" 같은 길이 오류가 먼저 뜨고, 정확한 길이를 맞춰야 다음 단계로 넘어가는 걸 확인했을 때</li><li>여러 단계의 변환을 역순으로 되돌려야 하는데 자바스크립트/파이썬으로 이 순서를 어떻게 정리해야 할지 막막할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Simple Crack Me 2는 이름에서 알 수 있듯 원작 Simple Crack Me(REV-1012)의 심화 버전이다. 파일은 리눅스 ELF 실행 파일이라서 macOS나 Windows에서는 바로 실행되지 않고, 실제 풀이 과정에서도 우분투 가상머신(예: OrbStack으로 만든 인텔 아키텍처 우분투 VM) 환경이 필요했다는 점이 확인된다. 검증 흐름은 크게 세 단계로 나뉜다. 첫째, <code>GetStrLen</code>류 함수로 입력 길이가 정확히 32바이트인지 확인한다. 둘째, <code>XORWithParam2</code>로 입력 버퍼 전체를 특정 고정 배열과 XOR한다. 셋째, <code>INCWithParam2</code>와 <code>DECWithParam2</code>로 각 바이트에 특정 값을 더하거나 빼는 연산을 여러 차례 반복 적용한다. 이 XOR-INC-DEC 조합이 한 번이 아니라 여러 차례 순서대로 이어지며, 마지막에 변환이 끝난 버퍼를 하드코딩된 정답 배열(<code>PTR_DAT_00404050</code> 류 심볼로 참조됨)과 <code>memcmp</code>로 비교해서 일치하면 통과한다.</p>
+<p>이 구조를 역으로 풀 때 핵심은 "각 연산의 역함수는 무엇이고, 적용 순서를 반대로 밟아야 한다"는 점이다. XOR는 같은 값으로 다시 XOR하면 원래 값이 돌아오는 자기 역함수(self-inverse)이고, INC(더하기)의 역연산은 같은 값만큼 빼는 DEC이다. 따라서 정답 배열에서부터 시작해서, 프로그램이 마지막에 적용한 연산부터 거꾸로 하나씩 반대 연산을 적용해 나가면 최초 입력값에 도달한다. 실제 풀이에서는 이 역연산 체인을 자바스크립트로 구현했으며, Ghidra에서 배열 데이터를 뽑아낼 때 "우클릭 → Copy Special → Python List" 기능을 사용해 배열 값을 그대로 코드로 옮겼다는 점이 확인된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>실행하면 "your input length is wrong" 같은 길이 오류 메시지가 먼저 출력됨(입력이 32바이트가 아닐 때)</li><li>Ghidra 디컴파일 결과에 <code>XORWithParam2</code>, <code>INCWithParam2</code>, <code>DECWithParam2</code>처럼 역할이 이름에 드러나거나, strip되어 있다면 비슷한 패턴(루프 안에서 <code>^=</code>, <code>+=</code>, <code>-=</code> 연산이 반복되는 형태)의 함수가 순서대로 호출됨</li><li>마지막에 <code>memcmp(buf, &amp;DAT_00404050, 32)</code> 형태로 변환된 버퍼와 고정 배열을 비교하는 코드</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>Ghidra Auto Analyze를 마친 뒤 함수 목록에서 변환 관련 함수들을 호출 순서대로 나열해 적어둔다. 이때 각 함수가 XOR인지 INC인지 DEC인지, 그리고 몇 번째로 호출되는지 순서를 정확히 기록하는 것이 가장 먼저 해야 할 일이다. 순서를 하나라도 잘못 적으면 역연산 체인 전체가 틀어진다.</p>
+<h2>단계별 절차</h2>
+<ol><li>리눅스(또는 우분투 VM) 환경에서 실행해 "your input length is wrong" 메시지로 정확한 요구 길이(32바이트)를 확인한다.</li><li>Ghidra로 열어 Auto Analyze 후 <code>main</code>(또는 진입 함수)에서 호출되는 변환 함수들의 순서를 나열한다.</li><li>각 변환 함수를 디컴파일해 XOR 대상 배열, INC/DEC에 사용되는 상수를 확인하고 "우클릭 → Copy Special → Python List"로 배열 데이터를 그대로 추출한다.</li><li>최종 비교 대상인 정답 배열(<code>PTR_DAT_00404050</code> 류)도 동일하게 추출한다.</li><li>정답 배열에서 시작해 마지막에 적용된 연산부터 역순으로 반대 연산(INC↔DEC 서로 반대로, XOR는 동일하게 재적용)을 코드로 작성한다.</li><li>역연산 체인을 끝까지 적용해 32바이트 원본 입력값을 복원한다.</li><li>복원한 값을 실제 바이너리에 입력해 정답 메시지가 나오는지 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<p>Ghidra: 배열 심볼 위에서 우클릭 → Copy Special → Python List(또는 유사 데이터 추출 메뉴)로 상수 배열을 코드로 바로 옮길 수 있다.</p>
+<pre><code class="language-javascript">// 역연산 체인 예시 (실제 코드는 변환 순서와 상수에 따라 달라짐)
+let buf = [...answerArray]; // memcmp 대상 정답 배열
+// 마지막에 적용된 연산부터 역순으로 되돌린다
+for (let i = 0; i &lt; buf.length; i++) {
+    buf[i] = (buf[i] - decConst[i] + 256) % 256; // DEC의 역연산은 다시 더하기
+    buf[i] = (buf[i] + incConst[i]) % 256;       // INC의 역연산은 다시 빼기(부호 주의)
+    buf[i] = buf[i] ^ xorKey[i];                  // XOR는 같은 키로 다시 XOR
+}</code></pre>
+<h2>출력 해석</h2>
+<p>복원된 32바이트를 ASCII로 변환하면 사람이 읽을 수 있는 문자열이 나오고, 이를 실제 프로그램에 입력하면 "Correct" 계열 메시지가 출력된다. 실제 풀이에서 복원된 값은 <code>DH{9ce745c0d5faaf29b7aecd1a4a72bc86}</code> 형태의 플래그였으며, 이는 곧 이 문제의 최종 플래그이기도 하다(입력값 자체가 플래그 형식을 이미 포함하고 있는 구조).</p>
+<h2>흔한 실수</h2>
+<ul><li>변환 함수의 호출 순서를 실행 순서 그대로 역연산에 적용하는 것 — 반드시 마지막에 실행된 함수부터 거꾸로 역연산해야 한다.</li><li>INC와 DEC를 혼동해서 반대 연산을 적용하는 것(원본에서 INC였다면 역연산은 DEC여야 한다).</li><li>32바이트 길이 제한을 무시하고 임의 길이 문자열로 계속 실행해 "input length is wrong"만 반복해서 보는 것.</li><li>8비트 범위(<code>% 256</code>)를 넘어가는 계산을 그대로 방치해 음수나 256 이상 값이 남아 있는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>원작 문제의 더 단순한 형태가 궁금하면 → REV-1012 [Write-up] Simple Crack Me</li><li>XOR 역연산의 원리 자체가 헷갈리면 → REV-0199 XOR 반복 변환 역산</li><li>여러 알고리즘이 순서대로 합성된 문제를 일반적으로 어떻게 풀어야 하는지 궁금하면 → REV-0911 여러 알고리즘이 순차적으로 합성된 문제 풀어내기</li><li>memcmp 기반 비교 패턴 자체를 더 알고 싶으면 → REV-0197 memcmp 기반 Flag 검증 패턴</li></ul>
+<h2>미니 예제</h2>
+<p>변환 함수들의 개념적 골격은 다음과 같다.</p>
+<pre><code class="language-c">void XORWithParam2(char *buf, char *key, int len) {
+    for (int i = 0; i &lt; len; i++) buf[i] ^= key[i];
+}
+void INCWithParam2(char *buf, char *delta, int len) {
+    for (int i = 0; i &lt; len; i++) buf[i] += delta[i];
+}</code></pre>
+<p>이런 함수들이 <code>main</code>에서 XOR → INC → DEC 순서(또는 그 조합)로 여러 번 호출된 뒤, 마지막 결과를 <code>memcmp</code>로 정답 배열과 비교하는 것이 이 문제의 전체 흐름이다.</p>
+<h2>관련 글</h2>
+<ul><li>[REV-1012 — [Write-up] Simple Crack Me](rev-1012-writeup-simple-crack-me.html)</li><li><a href="rev-0199-xor-loop-inversion.html">REV-0199 — XOR 반복 변환 역산</a></li><li><a href="rev-0911-chained-algorithm-composition.html">REV-0911 — 여러 알고리즘이 순차적으로 합성된 문제 풀어내기</a></li><li><a href="rev-0197-memcmp-check-pattern.html">REV-0197 — memcmp 기반 Flag 검증 패턴</a></li><li><a href="rev-0218-length-check-backtrace.html">REV-0218 — 길이 검증부터 역추적하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>파일 형식(ELF), 우분투 VM 필요 사실, <code>GetStrLen</code>/<code>XORWithParam2</code>/<code>INCWithParam2</code>/<code>DECWithParam2</code> 함수 구조, Ghidra의 "Copy Special → Python List" 데이터 추출 방법, 최종 복원 플래그(<code>DH{9ce745c0d5faaf29b7aecd1a4a72bc86}</code>)는 velog 블로그 글 "[드림핵] Simple Crack Me 2 풀이"(https://velog.io/@hamham/드림핵-Simple-Crack-Me-2-풀이)를 참고해 본 문서에서 새로운 문장과 구조로 재서술했다.</li><li>원문 작성자는 역연산 코드를 자바스크립트로 작성했다고 밝혔으며, 본 문서의 "명령어/단축키" 코드는 그 방식을 참고해 재구성한 예시이지 원문 코드를 그대로 복사한 것이 아니다.</li><li>아키텍처(32/64비트)는 원문에서 명확히 특정되지 않아 함수 오프셋 표기 스타일(<code>0x00401390</code>, <code>0x00404050</code>)에 근거해 x86 계열로 표기했으며, 100% 확정된 정보는 아니다.</li><li>2026-09-10 기준으로 위 velog 글이 접근 가능함을 확인했다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

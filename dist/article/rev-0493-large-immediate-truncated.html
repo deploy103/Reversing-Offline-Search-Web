@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>매우 큰 즉시값(Immediate)이 이상하게 잘려 보일 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>매우 큰 즉시값(Immediate)이 이상하게 잘려 보일 때</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>x64에서 대부분의 명령은 <strong>32비트까지만</strong> 즉시값(리터럴 상수)을 명령어 인코딩에 직접 담을 수 있어서, 64비트 레지스터에 진짜 64비트짜리 큰 값을 통째로 넣으려면 <code>MOVABS</code>(또는 <code>mov reg64, imm64</code> 형태) 같은 특별한 인코딩이 필요하며, 일반 <code>MOV</code>/<code>ADD</code>/<code>CMP</code>에 큰 상수가 오면 그 32비트 값이 <strong>부호 확장(sign-extend)</strong>되어 레지스터에 들어가기 때문에 의도와 다른 음수처럼 보일 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>mov rax, 0xffffffff</code> 같은 코드가 실행됐는데 <code>RAX</code>가 예상한 <code>0x00000000FFFFFFFF</code>가 아니라 <code>0xFFFFFFFFFFFFFFFF</code>(음수, -1)로 나올 때</li><li>64비트 레지스터에 큰 상수를 넣는 코드에서 <code>mov</code>가 아니라 <code>movabs</code>라는 낯선 니모닉이 보일 때</li><li><code>add rsp, 0x...</code>나 <code>cmp rax, 0x...</code>에 쓸 수 있는 즉시값 크기의 한계가 궁금할 때</li><li>디스어셈블리에서 같은 값을 넣는데 어떤 곳은 <code>mov eax, imm32</code>, 어떤 곳은 <code>movabs rax, imm64</code>로 다르게 나오는 이유가 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>명령어 인코딩에는 즉시값 크기 제한이 있다</h3>
+<p>x86/x64 명령어는 가변 길이 인코딩을 쓰지만, 즉시값(operand로 직접 박혀 들어가는 상수) 필드의 크기는 명령마다 정해져 있다. x64에서 가장 흔한 패턴은:</p>
+<ul><li><strong>대부분의 산술/논리/비교 명령</strong>(<code>ADD</code>, <code>SUB</code>, <code>CMP</code>, <code>AND</code>, <code>OR</code>, <code>XOR</code> 등)은 오퍼랜드가 64비트 레지스터여도 즉시값은 <strong>최대 32비트(imm32)</strong>까지만 인코딩할 수 있다.</li><li>인코딩된 32비트 즉시값은 실제 연산 시 <strong>부호 확장되어 64비트로 늘어난 뒤</strong> 64비트 레지스터와 연산된다.</li><li>진짜 64비트 임의의 상수(부호 확장으로 표현 불가능한 값, 예: 포인터 주소나 64비트 매직 넘버)를 레지스터에 곧바로 넣으려면 <strong><code>MOV</code>의 특수 형태(흔히 <code>MOVABS</code>로 표기)</strong>를 써야 하며, 이건 명령어 인코딩 자체가 imm64 전체를 담는 유일한 예외적인 형태다.</li></ul>
+<h3>왜 부호 확장(sign-extend)이 문제를 일으키는가</h3>
+<pre><code class="language-asm">mov     rax, 0xffffffff     ; 이 리터럴이 imm32로 인코딩된다고 가정</code></pre>
+<p><code>0xFFFFFFFF</code>(32비트 전부 1)을 <strong>부호 있는 32비트 값으로 보면 <code>-1</code></strong>이다. 이 값을 64비트로 부호 확장하면 상위 32비트도 전부 1이 채워져서 결과는 <code>0xFFFFFFFFFFFFFFFF</code>(64비트 -1)가 된다. 만약 코드 작성자가 "하위 32비트만 전부 1이고 상위는 0인 <code>0x00000000FFFFFFFF</code>"를 의도했다면, 이는 <strong>부호 확장 때문에 완전히 다른 값</strong>이 되어버린 것이다.</p>
+<p>실제로 어셈블러(NASM, MASM)와 컴파일러는 이런 상황을 자동으로 처리해서, 부호 확장으로 표현 안 되는 64비트 값을 <code>mov reg64, imm64</code>(=<code>movabs</code>)로 자동 변환해준다. 하지만 리버서 입장에서는 <strong>디스어셈블리에 나온 니모닉과 값을 보고, 이게 부호 확장된 결과인지 원본 그대로인지 직접 판단</strong>해야 하는 상황이 자주 생긴다.</p>
+<h3>MOV의 세 가지 즉시값 인코딩 형태</h3>
+<pre><code>mov  eax, imm32          ; 32비트 레지스터에 imm32를 그대로 로드 (부호확장 없음, 상위 32비트는 자동으로 0)
+mov  rax, imm32          ; 64비트 레지스터지만 imm32가 부호확장되어 로드됨 (REX.W + 0xC7 인코딩)
+movabs rax, imm64         ; 64비트 레지스터에 imm64 전체를 그대로 로드 (REX.W + 0xB8 인코딩, 유일하게 imm64를 통째로 담는 형태)</code></pre>
+<p><code>mov eax, imm32</code>(32비트 대상 레지스터)는 특이하게 <strong>상위 32비트가 자동으로 0으로 채워지는 "제로 확장" 동작</strong>을 한다 — 이는 x64 아키텍처의 일반 규칙("32비트 레지스터에 쓰면 상위 32비트가 항상 0으로 지워진다")을 따르는 것이며, 부호 확장이 아니다. 반면 <code>mov rax, imm32</code>(64비트 레지스터에 32비트 즉시값)는 <strong>부호 확장</strong>이 적용된다. 이 둘을 헷갈리면 안 된다.</p>
+<h3>AT&amp;T/Intel 어셈블러의 표기: mov vs movabs</h3>
+<p><code>MOVABS</code>라는 이름은 사실 GNU 어셈블러(AT&amp;T 계열 도구)가 imm64 인코딩임을 명시적으로 구분해서 부르는 이름이고, Intel 공식 매뉴얼상으로는 그냥 <code>MOV</code>의 한 형태(옵코드 <code>B8+rd io</code>)일 뿐이다. IDA/Ghidra 등 Intel 문법을 쓰는 도구도 관례적으로 <code>mov rax, imm64</code> 형태를 <code>movabs</code>로 표시해주는 경우가 많다(도구에 따라 그냥 <code>mov</code>로 표시하기도 함).</p>
+<h3>플래그와 스택/RIP</h3>
+<p><code>MOV</code>/<code>MOVABS</code> 계열은 데이터 이동 명령이므로 <strong><code>EFLAGS</code>를 전혀 바꾸지 않는다</strong>. 스택이나 <code>RIP</code>에도 영향이 없다(다음 명령으로 순차 진행). 반면 즉시값이 들어간 <code>ADD</code>/<code>SUB</code>/<code>CMP</code>류는 해당 명령 고유의 플래그 변화 규칙을 그대로 따른다(예: <code>CMP rax, 0xffffffff</code>는 부호 확장된 <code>-1</code>과 비교하는 것과 같으므로, <code>RAX</code>가 실제로 <code>0xFFFFFFFFFFFFFFFF</code>일 때만 <code>ZF=1</code>이 된다).</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">mov     eax, 0xffffffff       ; EAX = 0xFFFFFFFF, 그리고 RAX 상위 32비트는 0으로 초기화됨 (RAX = 0x00000000FFFFFFFF)
+mov     rax, 0xffffffff        ; RAX = 0xFFFFFFFFFFFFFFFF (부호확장! 완전히 다른 값)
+movabs  rax, 0x1122334455667788  ; RAX = 0x1122334455667788 (imm64 그대로, 부호확장 없음)</code></pre>
+<h2>가장 먼저 할 것</h2>
+<p>디스어셈블리에서 큰 리터럴 상수를 만나면, 그 명령이 <strong>몇 비트 레지스터를 대상으로 하는지</strong>와 <strong><code>movabs</code>인지 일반 <code>mov</code>인지</strong>를 먼저 확인한다. 이 두 가지만 확인하면 실제 값을 정확히 계산할 수 있다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 니모닉과 대상 레지스터 크기 확인</strong></p>
+<p><code>mov e**</code>(32비트 레지스터)인지 <code>mov r**</code>(64비트 레지스터)인지, 그리고 <code>movabs</code>가 붙어있는지 본다.</p>
+<p><strong>2) 32비트 레지스터 대상이면 값 그대로 + 상위 0</strong></p>
+<p><code>mov eax, 0x...</code>라면 <code>EAX</code>에 그 값이 그대로 들어가고, <code>RAX</code>의 상위 32비트는 자동으로 0이 된다(제로 확장). 별도 계산 필요 없음.</p>
+<p><strong>3) 64비트 레지스터 + 일반 mov(imm32)면 부호 확장 계산</strong></p>
+<p>즉시값의 최상위 비트(32비트 기준 비트 31)가 1이면(즉 <code>0x80000000</code> 이상) 부호 확장으로 상위 32비트가 전부 <code>F</code>로 채워진다. 최상위 비트가 0이면(즉 <code>0x7FFFFFFF</code> 이하) 상위는 그대로 0이다.</p>
+<pre><code>0x7fffffff -&gt; RAX = 0x000000007fffffff  (부호 확장해도 그대로, 최상위비트 0)
+0x80000000 -&gt; RAX = 0xffffffff80000000  (부호 확장으로 상위가 F로 채워짐, 최상위비트 1)</code></pre>
+<p><strong>4) movabs면 imm64를 그대로 사용</strong></p>
+<p>부호 확장이나 별도 변환 없이 인코딩된 값 그대로 레지스터에 들어간다.</p>
+<p><strong>5) 디버거로 실제 값 재확인</strong></p>
+<p>계산이 헷갈리면 그냥 그 명령 직후에 브레이크포인트를 걸고 실제 레지스터 값을 확인하는 것이 가장 확실하다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: 명령어 실행 후 레지스터 패널에서 <code>RAX</code> 값을 직접 hex로 확인, 우클릭 → "Follow in Dump"로 관련 메모리도 확인 가능</li><li>GDB: <code>p/x $rax</code>(16진수로 출력), <code>stepi</code> 후 <code>info registers rax</code></li><li>IDA 디버거: <code>F7</code>/<code>F8</code>로 스텝 후 레지스터 창에서 값 확인</li><li>Python으로 부호 확장 직접 계산: <code>x = 0xffffffff; signed32 = x - 0x100000000 if x &amp; 0x80000000 else x; result = signed32 &amp; 0xFFFFFFFFFFFFFFFF</code></li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>mov eax, N</code> 형태 뒤 <code>RAX</code> 상위가 항상 0이면 → 정상(32비트 대상 레지스터에 쓰면 자동으로 상위가 지워지는 x64 규칙).</li><li><code>mov rax, N</code> (movabs 아님) 뒤 <code>RAX</code> 상위가 전부 <code>F</code>로 채워져 있으면 → 즉시값이 음수(최상위 비트 1)라서 부호 확장된 것. 버그가 아니라 인코딩 규칙에 따른 정상 동작이다.</li><li><code>movabs rax, N</code>은 항상 imm64 그대로이므로 부호 확장 계산이 필요 없다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>mov rax, 0xffffffff</code>를 실행하면 당연히 <code>RAX = 0x00000000FFFFFFFF</code>일 거라고 가정하는 것 — 실제로는 부호 확장되어 <code>0xFFFFFFFFFFFFFFFF</code>(즉 -1)가 된다.</li><li><code>mov eax, N</code>과 <code>mov rax, N</code>(imm32)의 상위 비트 처리 방식(제로 확장 vs 부호 확장)을 같은 걸로 착각하는 것 — 32비트 대상은 제로 확장, 64비트 대상의 imm32는 부호 확장으로 서로 다르다.</li><li><code>CMP rax, 0xffffffff</code>가 "RAX와 4294967295(부호 없는 32비트 최댓값)를 비교하는 것"이라고 착각하는 것 — 실제로는 부호 확장된 <code>-1</code>(즉 <code>0xFFFFFFFFFFFFFFFF</code>)과 비교하는 것이다.</li><li><code>movabs</code>가 특별한 별도 명령이라고 생각하는 것 — Intel 매뉴얼상으로는 그냥 <code>MOV</code>의 imm64 인코딩 형태일 뿐이며, <code>movabs</code>는 어셈블러/디스어셈블러가 구분을 위해 붙이는 관례적 이름이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>값이 예상과 다르게 나온다면 → 최상위 비트(비트 31 또는 63)를 확인해서 부호 확장이 적용됐는지부터 계산.</li><li><code>movabs</code>가 왜 필요한지 여전히 헷갈리면 → 명령어 인코딩 길이 제한(즉시값 필드가 최대 32비트)이라는 하드웨어적 제약이 원인이라는 점을 기억.</li><li>정수 부호/비부호 해석 자체가 헷갈리면 → REV-0060(CMP)이나 관련 flags-overview(REV-0088) 문서를 함께 참고.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 32비트 레지스터: 제로 확장 (정상, 헷갈릴 것 없음)</strong></p>
+<pre><code class="language-asm">mov     eax, 0x12345678
+; RAX = 0x0000000012345678 (상위 32비트는 자동으로 0)</code></pre>
+<p><strong>예제 2 — 64비트 레지스터 + imm32: 부호 확장 함정</strong></p>
+<pre><code class="language-asm">mov     rax, 0xffffffff
+; RAX = 0xFFFFFFFFFFFFFFFF  (0xffffffff의 최상위 비트가 1이라 부호확장됨, 즉 -1)</code></pre>
+<p>C로 의도했을 법한 코드와 실제 어셈블리 결과가 다를 수 있다는 뜻이다. <code>unsigned long long x = 0xffffffff;</code>처럼 상위가 0이길 기대했다면, 실제 코드에서는 <code>mov eax, 0xffffffff</code>(그 다음 자동 제로확장)를 써야 의도대로 동작한다.</p>
+<p><strong>예제 3 — 진짜 64비트 상수: movabs</strong></p>
+<pre><code class="language-asm">movabs  rax, 0x1122334455667788
+; RAX = 0x1122334455667788 (그대로, 부호확장 없음)</code></pre>
+<p>포인터 주소나 매직 넘버, XOR 키처럼 상위/하위가 뒤섞인 임의의 64비트 값은 이 형태로만 한 번에 로드할 수 있다.</p>
+<p><strong>예제 4 — 부호 확장이 CMP 결과를 바꾸는 경우</strong></p>
+<pre><code class="language-asm">mov     rax, 0xffffffff       ; RAX = 0xFFFFFFFFFFFFFFFF (부호확장으로 -1)
+cmp     rax, -1                 ; -1은 imm32로 인코딩되면서 마찬가지로 부호확장된 0xFFFFFFFFFFFFFFFF
+je      equal_label              ; RAX == -1 이므로 이 분기를 탄다</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0039-mov.html">REV-0039 — MOV: 값 복사와 레지스터 메모리 이동</a></li><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li><li><a href="rev-0053-idiv.html">REV-0053 — IDIV: Signed 나눗셈</a></li><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>x64 즉시값 인코딩 크기 제한(대부분 imm32, MOV의 imm64 예외)과 부호/제로 확장 규칙: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "MOV—Move" 및 Volume 1 "Operand Size and Address Size" 섹션 기준 (2026-09-08 검증).</li><li>32비트 레지스터 쓰기 시 상위 32비트 자동 제로화 규칙: 동 매뉴얼 Volume 1, "General-Purpose Registers in 64-Bit Mode" 섹션 기준.</li><li><code>movabs</code> 니모닉 관례: GNU Assembler(<code>as</code>) 공식 문서(AT&amp;T x86-64 문법) 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

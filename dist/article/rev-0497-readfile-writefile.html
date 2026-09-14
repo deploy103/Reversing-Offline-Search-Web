@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinAPI 파일 입출력 함수 사전: ReadFile WriteFile 상세 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>WinAPI 파일 입출력 함수 사전: ReadFile WriteFile 상세</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>ReadFile</code>과 <code>WriteFile</code>은 인자 구조가 완전히 대칭인 5-인자 함수로, 반환값(<code>BOOL</code>)은 "호출 자체가 성공했는가"만 알려주고 실제로 처리된 바이트 수는 반드시 4번째 인자(<code>lpNumberOfBytesRead</code>/<code>Written</code>)가 가리키는 <code>DWORD</code>를 따로 읽어야 알 수 있다는 점이 이 두 함수를 분석할 때 가장 중요하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>ReadFile</code>/<code>WriteFile</code>의 정확한 인자 순서와 반환값 의미를 다시 확인하고 싶을 때</li><li><code>ReadFile</code>이 <code>TRUE</code>를 반환했는데 실제로 읽은 바이트가 몇 개인지 알아내야 할 때</li><li><code>ReadFileEx</code>/<code>WriteFileEx</code>나 <code>OVERLAPPED</code> 구조체가 왜 등장하는지 궁금할 때</li><li>x64dbg에서 <code>WriteFile</code> 호출 직전 버퍼 내용을 가로채고 싶은데 어느 레지스터를 봐야 하는지 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<pre><code class="language-c">BOOL ReadFile(
+    HANDLE       hFile,
+    LPVOID       lpBuffer,
+    DWORD        nNumberOfBytesToRead,
+    LPDWORD      lpNumberOfBytesRead,
+    LPOVERLAPPED lpOverlapped
+);
+
+BOOL WriteFile(
+    HANDLE       hFile,
+    LPCVOID      lpBuffer,
+    DWORD        nNumberOfBytesToWrite,
+    LPDWORD      lpNumberOfBytesWritten,
+    LPOVERLAPPED lpOverlapped
+);</code></pre>
+<p>두 함수는 2번 인자(버퍼)의 방향만 반대다 — <code>ReadFile</code>은 버퍼가 "채워지는 곳", <code>WriteFile</code>은 버퍼가 "읽혀 나가는 곳"이다.</p>
+<p><strong>반환값과 4번째 인자는 서로 다른 정보다.</strong></p>
+<ul><li>반환값(<code>BOOL</code>, <code>EAX</code>/<code>RAX</code>): 0이면 호출 자체 실패(<code>GetLastError()</code>로 원인 확인), 0이 아니면 성공.</li><li>4번째 인자가 가리키는 <code>DWORD</code>: 실제로 읽거나 쓴 바이트 수. 파일 끝(EOF)에 가까워서 요청한 <code>nNumberOfBytesToRead</code>보다 적게 읽혔어도 반환값은 여전히 <code>TRUE</code>일 수 있다. 즉 "성공 여부"와 "몇 바이트나 처리됐는가"는 반드시 따로 확인해야 한다.</li></ul>
+<p><strong>동기 vs 비동기(<code>OVERLAPPED</code>)</strong></p>
+<ul><li>동기 호출: 5번째 인자에 <code>NULL</code>을 넘긴다. 함수가 리턴할 때 이미 입출력이 끝나 있고, 4번째 인자에 실제 바이트 수가 들어 있다.</li><li>비동기 호출: <code>FILE_FLAG_OVERLAPPED</code>로 열린 핸들에 대해 <code>OVERLAPPED</code> 구조체 포인터를 5번째 인자로 넘기면, 함수가 즉시 리턴하고(반환값 <code>FALSE</code>, <code>GetLastError() == ERROR_IO_PENDING</code>) 입출력은 백그라운드에서 계속된다. <code>GetOverlappedResult</code>로 나중에 완료 여부와 바이트 수를 확인한다. <code>OVERLAPPED</code> 구조체는 파일 위치를 지정하는 <code>Offset</code>/<code>OffsetHigh</code> 필드도 겸한다.</li><li><code>ReadFileEx</code>/<code>WriteFileEx</code>는 완료 시 실행될 콜백 함수(<code>LPOVERLAPPED_COMPLETION_ROUTINE</code>)를 추가로 받는 비동기 전용 변형이며, 콜백이 등록된 스레드가 alertable 대기 상태(<code>SleepEx</code>, <code>WaitForSingleObjectEx</code> 등)일 때만 콜백이 실행된다는 점이 특징이다.</li></ul>
+<p><strong>호출 규약별 인자 위치</strong></p>
+<ul><li>x86(stdcall): <code>[esp+4]</code>=hFile, <code>[esp+8]</code>=lpBuffer, <code>[esp+0Ch]</code>=바이트 수, <code>[esp+10h]</code>=바이트 수 저장 주소, <code>[esp+14h]</code>=lpOverlapped.</li><li>x64: <code>RCX</code>=hFile, <code>RDX</code>=lpBuffer, <code>R8</code>=바이트 수, <code>R9</code>=바이트 수 저장 주소, 5번째 인자(lpOverlapped)는 섀도우 스페이스 뒤 <code>[rsp+28h]</code>(함수 진입 직후 기준).</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>call WriteFile</code> 직후 <code>test eax, eax</code> / <code>je fail</code> 패턴.</li><li><code>lpNumberOfBytesRead</code>로 쓰인 지역 변수가 <code>ReadFile</code> 호출 이후 <code>cmp</code>로 요청 크기와 비교되는 코드(부분 읽기 감지).</li><li>5번째 인자가 <code>0</code>이 아니라 스택 변수 주소로 채워진 구조체를 가리키면 비동기 I/O를 의심해야 한다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>WriteFile</code>이라면 호출 직전(함수 진입 시점)에 <code>lpBuffer</code>가 가리키는 메모리를 먼저 본다. 이 시점이 곧 "이 프로그램이 파일에 쓰려는 데이터 원본"이다.</p>
+<h2>단계별 절차</h2>
+<ol><li>x64dbg에서 <code>bp ReadFile</code> 또는 <code>bp WriteFile</code>을 건다.</li><li>브레이크포인트가 걸리면 Registers 창에서 <code>RCX</code>(hFile), <code>RDX</code>(lpBuffer), <code>R8</code>(바이트 수)를 확인한다.</li><li><code>RDX</code>를 우클릭 → <code>Follow in Dump</code>로 실제 버퍼 내용을 확인한다. <code>WriteFile</code>이면 지금 이 값이 그대로 파일에 써질 데이터다.</li><li><code>Ctrl+F9</code>(Execute till return)로 함수가 끝날 때까지 실행한 뒤, <code>EAX</code>(반환값)와 4번째 인자가 가리키던 <code>DWORD</code> 메모리(주소는 3단계에서 <code>R9</code>로 미리 확인)를 함께 확인해 "성공 여부"와 "실제 바이트 수"를 분리해서 판단한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp ReadFile</code>, <code>bp WriteFile</code>, <code>Ctrl+F9</code>(리턴까지 실행), 메모리 우클릭 → <code>Follow in Dump</code></li><li>IDA: <code>F5</code>(디컴파일), <code>X</code>(xref)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>반환값 <code>0</code> = 호출 실패(<code>GetLastError()</code> 확인 필요). <code>0</code>이 아니면 성공.</li><li>4번째 인자 값 <code>&lt; nNumberOfBytesToRead/Write</code>이면 요청보다 적게 처리된 것(EOF 근접, 파이프 버퍼 부족 등).</li><li>비동기 호출에서 반환값 <code>FALSE</code>이면서 <code>GetLastError() == ERROR_IO_PENDING</code>(997)이면 이것은 실패가 아니라 "아직 진행 중"이라는 정상 신호다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>반환값만 보고 "성공했으니 요청한 바이트 수만큼 다 처리됐다"고 단정하는 것.</li><li>비동기 I/O의 <code>ERROR_IO_PENDING</code>을 실제 에러로 오인해서 흐름 추적을 멈추는 것.</li><li>x64에서 5번째 인자를 찾을 때 섀도우 스페이스 0x20을 빠뜨리고 스택 오프셋을 잘못 계산하는 것 — 함수 진입 직후 기준 5번째 인자는 <code>[rsp+28h]</code>다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>핸들을 여는 쪽(<code>CreateFile</code>)의 인자가 궁금하면 → REV-0496 확인.</li><li>파일 안에서 위치를 이동하거나 삭제/이동하는 API가 궁금하면 → REV-0498 확인.</li><li>데이터 흐름을 실제로 가로채는 실습형 절차가 궁금하면 → REV-0139(CreateFile ReadFile WriteFile 입력 데이터 추적)를 참고.</li></ul>
+<h2>미니 예제</h2>
+<p>x64dbg에서 <code>bp WriteFile</code> 후 멈췄을 때 <code>RDX = 0x1F2A3C04010</code>, <code>R8 = 0x20</code>(32바이트)이라면, <code>RDX</code>를 Follow in Dump해서 나온 32바이트가 곧 파일에 그대로 기록될 원본 데이터다. 이는 파일이 디스크에 실제로 써지기를 기다리지 않고도 값을 가로챌 수 있는 가장 빠른 방법이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0496-createfile-family.html">REV-0496 — WinAPI 파일 입출력 함수 사전: CreateFile 계열</a></li><li><a href="rev-0498-setfilepointer-deletefile-movefile.html">REV-0498 — WinAPI 파일 입출력 함수 사전: SetFilePointer DeleteFile MoveFile</a></li><li><a href="rev-0139-createfile-readfile-writefile.html">REV-0139 — CreateFile ReadFile WriteFile 입력 데이터 추적</a></li><li><a href="rev-0124-shadow-space.html">REV-0124 — Shadow Space가 무엇인지</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>ReadFile</code>/<code>WriteFile</code>/<code>ReadFileEx</code>/<code>WriteFileEx</code> 시그니처와 <code>OVERLAPPED</code> 구조체 동작, <code>ERROR_IO_PENDING</code> 의미는 Microsoft Win32 API 공식 문서 기준.</li><li>Microsoft x64 호출 규약(레지스터/섀도우 스페이스)은 Microsoft x64 소프트웨어 규약 공식 문서 기준(2026-09-08 확인 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

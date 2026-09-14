@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UD2: 의도적 예외 명령과 안티디버깅 활용 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>UD2: 의도적 예외 명령과 안티디버깅 활용</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>UD2</code>는 실행하면 항상 <code>#UD</code>(Invalid Opcode) 예외를 발생시키도록 Intel이 명시적으로 예약해 둔 "고의로 유효하지 않은" 명령으로, 컴파일러는 이를 "여기까지 오면 절대 안 되는 지점"(noreturn 함수 뒤, 도달 불가능한 코드)을 표시하는 안전장치로 쓰고, 일부 보호 기법은 예외 핸들러와 결합해 역공학 방해용 트랩으로도 활용한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>abort()</code>, <code>exit()</code> 같은 반환하지 않는(noreturn) 함수 호출 바로 뒤에 낯선 명령이나 <code>0F 0B</code> 바이트가 남아 있을 때</li><li>Ghidra 디컴파일 결과에 <code>halt_baddata()</code>라는 처음 보는 함수가 나타났을 때</li><li>디버거로 실행하다가 갑자기 <code>Invalid Opcode</code> 예외로 프로그램이 죽었는데 크래시 버그인지 의도된 동작인지 판단해야 할 때</li><li>프로그램에 예외(SEH/VEH, signal handler)를 이용한 이상한 제어 흐름이 있어서 역공학이 방해받고 있다고 의심될 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>UD2가 실제로 하는 일</h3>
+<p><code>UD2</code>는 오퍼랜드가 없고, 실행되면 <strong>항상 예외 없이 넘어가는 법 없이 무조건</strong> <code>#UD</code>(Invalid Opcode) 예외를 발생시킨다. 이름 자체가 "Undefined instruction 2"에서 왔으며, Intel SDM은 이 opcode(<code>0F 0B</code>)를 장래에도 절대 다른 명령으로 재사용하지 않고 "고의로 유효하지 않은 명령"의 자리로 영구히 예약해 두었다고 명시한다. 즉 다른 명령들이 실수로 잘못된 바이트를 만나 우연히 <code>#UD</code>를 내는 것과 달리, <code>UD2</code>는 <strong>일부러</strong> 예외를 내기 위해 존재하는 정식 명령이다.</p>
+<h3>오퍼랜드, 방향, 실행 후 흐름</h3>
+<pre><code>UD2     ; 오퍼랜드 없음</code></pre>
+<p>실행되면 그 즉시 <code>#UD</code> 예외가 발생하고 제어가 예외 핸들러로 넘어가므로, <strong><code>UD2</code> 다음 명령은 정상적인 순차 실행으로는 절대 도달하지 않는다.</strong> 이 명령 자체는 레지스터나 메모리를 바꾸지 않는다 — 예외를 일으키는 것 자체가 유일한 효과다.</p>
+<h3>플래그/스택/RIP 변화</h3>
+<p><code>UD2</code> 자신은 어떤 범용 플래그도 직접 세팅하지 않는다. 다만 <code>#UD</code> 예외가 발생하는 과정에서 CPU는 일반적인 예외 처리 절차대로 현재 <code>RFLAGS</code>, <code>CS</code>, <code>RIP</code> 등을 커널 스택(또는 SEH 프레임)에 저장하고 등록된 예외 핸들러로 제어를 넘긴다 — 이는 <code>UD2</code>만의 특별한 동작이 아니라 모든 예외의 공통 처리 절차다. 유저 모드 애플리케이션 입장에서는 SEH(Windows)나 시그널 핸들러(<code>SIGILL</code>, Linux)가 등록되어 있지 않으면 프로세스가 즉시 종료된다.</p>
+<h3>컴파일러가 만드는 전형적 패턴</h3>
+<ol><li><strong>noreturn 함수 뒤의 안전장치</strong>: <code>abort()</code>, <code>std::terminate()</code>, <code>panic!()</code>(Rust) 같이 "절대 반환하지 않는다"고 컴파일러가 알고 있는 함수를 호출한 바로 뒤에, 혹시라도(이론상) 실행이 이어지면 즉시 멈추도록 <code>UD2</code>를 하나 심어둔다. 이는 실제로 실행될 것을 기대하는 코드가 아니라 순수한 안전망이다.</li><li><strong><code>__builtin_trap()</code> / <code>__builtin_unreachable()</code></strong>: GCC/Clang에서 프로그래머가 명시적으로 "여기 도달하면 버그"라고 표시하면 <code>__builtin_trap()</code>은 <code>UD2</code>로, <code>__builtin_unreachable()</code>은 최적화 힌트로만 쓰이거나 디버그 빌드에서는 역시 <code>UD2</code>/<code>INT3</code>로 컴파일되곤 한다.</li><li><strong>어서션/컨트롤 플로우 가드 실패</strong>: 스택 카나리 검사 실패, Control Flow Guard(CFG) 위반, 컴파일러가 삽입한 UB(정의되지 않은 동작) 탐지 코드가 실패 처리 함수를 호출한 뒤 안전망으로 <code>UD2</code>를 붙이는 경우가 있다.</li></ol>
+<h3>IDA/Ghidra 디컴파일에서 보이는 모습</h3>
+<p>Ghidra는 <code>UD2</code>(및 도달 불가능한 코드 영역)를 만나면 종종 <code>halt_baddata()</code>라는 의사(pseudo) 함수 호출로 표시한다 — 이는 "이 지점은 정상적인 데이터 흐름으로 도달할 수 없다"는 것을 나타내는 Ghidra의 관례적 표기다. IDA는 대개 <code>UD2</code>를 그대로 원문 니모닉으로 보여주며, 함수의 마지막 기본 블록이 <code>UD2</code>로 끝나면 그 함수를 noreturn으로 자동 추론하는 데 참고 정보로 활용하기도 한다.</p>
+<h3>리버싱에서의 의미</h3>
+<ol><li><strong>죽은 코드(dead code) 식별</strong>: <code>UD2</code>가 보이면 그 지점은 컴파일러가 "여기 실행될 리 없다"고 확신한 자리이므로, 그 이후를 분석하느라 시간을 쓸 필요가 없다는 강한 힌트다.</li><li><strong>함수가 noreturn인지 판단하는 단서</strong>: 호출 직후 <code>UD2</code>가 붙어 있다면 그 호출 대상 함수가 반환하지 않는(예: <code>abort</code>, <code>exit</code>, <code>panic</code>) 성격일 가능성이 높다.</li><li><strong>예외 기반 난독화/안티디버깅 트릭</strong>: 일부 패커/프로텍터는 코드 흐름 중간에 고의로 <code>UD2</code>(또는 그냥 raw <code>0F 0B</code> 바이트)를 심어두고, SEH/VEH 예외 핸들러를 등록해 그 예외를 가로챈 뒤 핸들러 안에서 실제 로직(복호화, 분기 결정 등)을 수행한다. 이렇게 하면 선형 디스어셈블리나 단순 정적 분석으로는 진짜 실행 흐름이 보이지 않고, 디버거로 예외를 직접 추적해야만 진짜 로직을 알 수 있다 — "예외 기반 난독화(SEH 오파크 제어 흐름)"라 불리는 기법의 한 형태다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>call abort</code> 바로 다음 줄에 <code>ud2</code></li><li>Ghidra 디컴파일 결과에 <code>halt_baddata();</code></li><li>함수의 마지막 basic block이 조건 분기 없이 그냥 <code>ud2</code>로 끝남</li><li>디버거에서 실행 중 갑자기 <code>EXCEPTION_ILLEGAL_INSTRUCTION</code>(Windows) / <code>SIGILL</code>(Linux)로 멈춤</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>ud2</code> 바로 위에서 어떤 함수가 호출됐는지 확인한다 — noreturn 함수(assert 실패, abort, panic 등)일 가능성이 높다.</li><li><code>ud2</code> 근처에 예외 핸들러 등록 코드(SEH <code>try/except</code>, VEH <code>AddVectoredExceptionHandler</code>, Linux <code>sigaction(SIGILL, ...)</code>)가 있는지 확인한다 — 있다면 의도적 안티디버깅/난독화를 의심한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 단순 안전망(대부분의 경우) 판별</strong></p>
+<pre><code class="language-asm">call abort
+ud2            ; abort()가 절대 반환하지 않으므로 도달 불가 — 그냥 안전망</code></pre>
+<p>→ 별도 분석 없이 넘어가도 된다.</p>
+<p><strong>2) 예외 기반 난독화 의심 시 대응</strong></p>
+<pre><code class="language-asm">; 코드 중간에
+ud2             ; 고의로 예외 유발
+; 정상 실행 흐름은 여기서 끝난 것처럼 보이지만...</code></pre>
+<p>이런 경우 (a) 해당 모듈의 예외 핸들러 등록 위치(SEH 체인, VEH 목록)를 먼저 찾고, (b) 디버거에서 "예외 발생 시 자동으로 핸들러로 전달"하도록 설정(x64dbg: 옵션에서 예외 패스스루 활성화, 또는 예외 발생 시 Shift+F9/F9로 프로그램에 예외를 전달)한 뒤 핸들러 내부에서 실제로 무슨 일이 일어나는지 Step Into로 추적한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>ud2</code>가 함수 끝에 있으면 자동으로 해당 함수를 noreturn으로 표시하는 경우가 있음(함수 속성에서 확인 가능)</li><li>Ghidra: 디컴파일 창에서 <code>halt_baddata()</code>가 보이면 그 지점이 도달 불가능 코드임을 뜻함</li><li>x64dbg: 예외 발생 시 "Pass exception to program"(Shift+F9)으로 등록된 핸들러에 예외를 넘겨서 흐름을 계속 추적</li><li>GDB: <code>catch signal SIGILL</code>로 <code>#UD</code> 관련 시그널이 발생하는 지점에서 멈추도록 설정</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Windows에서 <code>UD2</code> 실행 시 디버거에 <code>Access violation</code> 대신 <code>Illegal Instruction</code>/<code>Invalid Opcode</code> 예외 코드(<code>0xC000001D</code>)가 뜬다.</li><li>Linux에서는 <code>SIGILL</code> 시그널로 나타나며, 핸들러가 없으면 코어 덤프와 함께 프로세스가 종료된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>UD2</code>를 보고 "바이너리가 손상됐다" 또는 "디스어셈블리가 잘못됐다"고 성급히 결론짓는 것 — 대부분은 컴파일러가 의도적으로 심어둔 정상적인 안전망이다.</li><li><code>UD2</code>를 실행 가능한 일반 명령처럼 취급해서 그 다음 줄부터 계속 선형으로 디스어셈블리를 해석하려는 것 — <code>UD2</code> 이후 바이트는 코드가 아니라 정렬용 패딩이거나 다른 함수의 시작일 수 있다.</li><li>예외 핸들러를 놓치고 "<code>UD2</code>가 나오면 프로그램이 그냥 죽는다"고 단정하는 것 — 안티디버깅/난독화 목적이라면 핸들러가 예외를 잡아 다른 곳으로 흐름을 이어간다.</li><li><code>UD2</code>(고의로 예약된 opcode)와, 그냥 디스어셈블러가 잘못된 오프셋에서 시작해 우연히 <code>#UD</code>처럼 보이는 쓰레기 바이트를 혼동하는 것 — <code>0F 0B</code>라는 정확한 2바이트 시퀀스인지 직접 바이트를 확인해서 구분한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>이 함수가 정말 noreturn인지 확신이 안 서면 → 이 함수를 호출하는 모든 xref 지점에서 반환값을 실제로 사용하는 코드가 있는지 확인한다(있으면 noreturn이 아닐 수 있음).</li><li>예외 핸들러가 어디 있는지 못 찾겠다면 → Windows PE는 <code>.pdata</code>/SEH 체인, ELF는 시그널 핸들러 등록 함수(<code>sigaction</code>, <code>signal</code>) 호출부의 xref를 먼저 찾는다.</li><li>스택 카나리 실패 처리부와 함께 나온 것이라면 → 스택 카나리 체크 시퀀스 자체는 REV-0442(예정)에서 별도로 다룬다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — noreturn 함수 뒤의 안전망</strong></p>
+<pre><code class="language-c">void fatal_error(const char *msg) {
+    fprintf(stderr, "%s\n", msg);
+    abort();
+}</code></pre>
+<pre><code class="language-asm">call fatal_error
+ud2              ; fatal_error가 절대 반환하지 않으므로 이론상 도달 불가
+; (이 함수의 나머지 코드는 이어지지 않음)</code></pre>
+<p><strong>예제 2 — assert 실패 처리 뒤의 UD2 (디버그 빌드 관용구)</strong></p>
+<pre><code class="language-c">assert(ptr != NULL);</code></pre>
+<pre><code class="language-asm">test rax, rax
+jnz  assert_ok
+lea  rcx, [rip+assert_msg]
+call __assert_fail    ; noreturn
+ud2
+assert_ok:</code></pre>
+<p><strong>예제 3 — 스위치문 default 케이스에서 컴파일러가 넣는 UD2 (도달 불가능 보장)</strong></p>
+<pre><code class="language-c">switch (state) {
+    case 0: ... break;
+    case 1: ... break;
+    default: __builtin_unreachable();
+}</code></pre>
+<pre><code class="language-asm">; ... 점프 테이블 처리 ...
+default_case:
+ud2               ; 컴파일러가 "여기 올 리 없다"고 확신하고 심어둔 트랩</code></pre>
+<p><strong>예제 4 — 예외 핸들러와 결합된 난독화(개념적 예시)</strong></p>
+<pre><code class="language-asm">; 정상 흐름
+mov  eax, 1
+ud2              ; 고의로 #UD 유발 -&gt; 등록된 VEH가 잡음
+; 디스어셈블리상으로는 여기서 끝난 것처럼 보이지만
+; VEH 핸들러 내부에서 RIP를 조작해 실제로는 다른 주소로 계속 실행됨</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0079-int-0x80.html">REV-0079 — INT와 INT 0x80: 인터럽트 기반 시스템 콜</a></li><li><a href="rev-0074-nop.html">REV-0074 — NOP: 아무것도 하지 않는 명령과 패치</a></li><li><a href="rev-0077-syscall.html">REV-0077 — SYSCALL: x86-64 시스템 콜</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>UD2</code>의 정의와 "장래에도 재사용되지 않는 고의로 유효하지 않은 opcode" 예약: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "UD2—Undefined Instruction" 섹션 기준 (2026-09-08 검증).</li><li><code>__builtin_trap()</code>/<code>__builtin_unreachable()</code>의 <code>UD2</code> 컴파일 관례: GCC/Clang 공식 문서(Other Builtins) 기준.</li><li>Ghidra의 <code>halt_baddata()</code> 의사 함수 표기: Ghidra 디컴파일러의 도달 불가능 코드 처리 관례 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

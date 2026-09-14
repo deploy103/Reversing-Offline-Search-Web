@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>공유 라이브러리(.so) 자체를 분석 대상으로 다루기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>공유 라이브러리(.so) 자체를 분석 대상으로 다루기</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">readelf</span><span class="tag">objdump</span></div>
+<h2>한 줄 요약</h2>
+<p>CTF나 실무에서 <code>.so</code> 파일 자체(또는 이를 로드하는 얇은 하니스 실행 파일과 함께)가 분석 대상으로 주어지는 경우가 있는데, <code>.so</code>는 그 자체로 독립 실행되지 않는 <code>ET_DYN</code> 오브젝트이므로 export된 함수 목록으로 진입점을 찾고, <code>dlopen</code>/<code>ctypes</code> 같은 방법으로 직접 로드해 실행하거나 GDB의 지연 브레이크포인트로 접근해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>CTF 문제 배포 파일이 <code>libchall.so</code>처럼 라이브러리 하나와 <code>chall</code>(하니스) 실행 파일 하나로 구성되어 있을 때</li><li><code>.so</code> 파일을 IDA/Ghidra로 열었는데 <code>main</code>이나 익숙한 진입점이 안 보여서 어디부터 봐야 할지 모를 때</li><li>문제에서 준 <code>.so</code>를 직접 실행하고 싶은데 <code>./libchall.so</code>가 그냥 실행이 안 될 때</li><li>GDB에서 아직 로드되지 않은 라이브러리 안의 함수에 미리 브레이크포인트를 걸고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>.so는 ET_DYN이다</h3>
+<p>공유 라이브러리는 ELF 헤더의 <code>e_type</code>이 <code>ET_DYN</code>(Shared object file)이다. 이는 사실 PIE 실행 파일(REV-0103)과 같은 타입이며, ELF 구조만으로는 "이게 실행용인지 라이브러리용인지" 완전히 구분되지 않는다. <code>readelf -h libchall.so</code>로 <code>Type: DYN (Shared object file)</code>을 확인할 수 있고, <code>readelf -d libchall.so</code>에서 <code>DT_SONAME</code> 태그(예: <code>Library soname: [libchall.so.1]</code>)가 있으면 이 파일이 다른 프로그램에 로드되도록 의도된 라이브러리라는 강한 신호다.</p>
+<h3>진입점이 있어도 의미가 다르다</h3>
+<p><code>.so</code>도 <code>e_entry</code> 필드에 값이 있을 수 있지만, 이는 프로그램의 <code>main</code>처럼 "실행 시작점"이 아니라 라이브러리가 로드될 때 실행되는 초기화 루틴(<code>.init</code>/<code>.init_array</code>, 생성자 함수)을 가리키는 경우가 많다. 실질적인 분석 대상은 <code>main</code>이 아니라 <strong>export된 함수들</strong>이다.</p>
+<h3>export 함수 목록 뽑기</h3>
+<p>동적 심볼 테이블에서 "정의됨(undefined 아님)" 심볼만 골라내면 이 라이브러리가 외부에 제공하는 함수 목록이 나온다.</p>
+<pre><code class="language-bash">readelf --dyn-syms libchall.so | grep -v UND
+nm -D --defined-only libchall.so
+objdump -T libchall.so | grep -v UND</code></pre>
+<p>CTF에서는 대개 하니스 프로그램(<code>chall</code>)이 <code>dlopen("./libchall.so", ...)</code> 후 <code>dlsym</code>으로 특정 함수를 찾아 호출하는 구조이거나, 컴파일 시점에 <code>-lchall</code>로 링크되어 있는 구조다. 후자라면 하니스의 Import 목록(REV-0101)에 <code>libchall.so</code>가 제공하는 함수 이름이 그대로 나타나므로, 하니스 쪽 분석이 오히려 더 쉬운 출발점이 될 수 있다.</p>
+<h3>.so를 직접 실행/로드하는 법</h3>
+<p>라이브러리 자체는 셸에서 <code>./libchall.so</code>로 바로 실행되지 않는다(실행 권한이 있어도 대개 즉시 종료되거나 에러). 함수 하나를 호출해보고 싶다면 작은 "드라이버"를 직접 만드는 것이 가장 빠르다.</p>
+<p><strong>Python ctypes 방식</strong> (컴파일 없이 즉석 테스트):</p>
+<pre><code class="language-python">import ctypes
+lib = ctypes.CDLL("./libchall.so")
+lib.check.restype = ctypes.c_int
+lib.check.argtypes = [ctypes.c_char_p]
+print(lib.check(b"test_input"))</code></pre>
+<p><strong>C 드라이버 방식</strong> (더 정교한 제어가 필요할 때):</p>
+<pre><code class="language-c">#include &lt;dlfcn.h&gt;
+#include &lt;stdio.h&gt;
+int main() {
+    void *h = dlopen("./libchall.so", RTLD_NOW);
+    int (*check)(const char *) = dlsym(h, "check");
+    printf("%d\n", check("test_input"));
+}</code></pre>
+<p>컴파일: <code>gcc driver.c -ldl -o driver</code></p>
+<h3>GDB에서 아직 로드 안 된 함수에 브레이크포인트 걸기</h3>
+<p><code>.so</code>가 실행 중간에 <code>dlopen</code>으로 로드되는 구조라면, 프로세스 시작 시점에는 그 함수의 주소를 알 수 없다. GDB는 이런 상황을 위한 지연 브레이크포인트(pending breakpoint)를 지원한다.</p>
+<pre><code class="language-gdb">set breakpoint pending on
+break libchall.so:check
+run</code></pre>
+<p>또는 심볼 이름만으로 <code>break check</code>를 걸어도, GDB가 "이 심볼을 아직 못 찾았는데 나중에 로드되면 걸까요?"라고 물으면 <code>y</code>로 답하면 된다. 라이브러리가 실제로 매핑되는 순간(공유 라이브러리 이벤트)에 GDB가 자동으로 브레이크포인트를 활성화한다. <code>set stop-on-solib-events 1</code>을 켜두면 새 라이브러리가 로드될 때마다 실행이 멈춰서 <code>info sharedlibrary</code>로 로드 상태를 확인할 수도 있다.</p>
+<h3>pwntools로 다루기</h3>
+<p>pwntools의 <code>ELF()</code> 클래스는 <code>.so</code>도 실행 파일과 동일하게 열어 심볼/함수 주소를 조회할 수 있다. <code>process()</code>로 하니스를 띄운 뒤 <code>proc.libs()</code>를 호출하면 실행 중 실제 로드된 각 라이브러리의 베이스 주소를 딕셔너리로 얻을 수 있어, ASLR이 켜진 상태에서도 <code>라이브러리_베이스 + 함수의_파일오프셋</code>으로 런타임 주소를 계산할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>file libchall.so</code> → <code>ELF 64-bit LSB shared object, x86-64, ...</code></li><li><code>readelf -h libchall.so</code> → <code>Type: DYN (Shared object file)</code></li><li><code>readelf -d libchall.so</code>에 <code>SONAME</code> 태그 존재</li><li>하니스 실행 파일(<code>chall</code>)의 strings에 <code>dlopen</code>, <code>dlsym</code> 문자열이나 <code>libchall.so</code>라는 파일명 문자열이 보임</li><li>IDA로 <code>.so</code>를 열면 Functions 창에 <code>main</code>은 없고 <code>check</code>, <code>verify</code> 등 도메인 특화 이름이 export로 보임</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>file</code>과 <code>readelf -h</code>로 <code>.so</code>임을 확인한 뒤, <code>readelf --dyn-syms libchall.so | grep -v UND</code>로 export 함수 목록부터 확보한다. 하니스 실행 파일이 함께 있다면 하니스의 Import 목록과 대조해서 실제로 호출되는 함수가 무엇인지 좁힌다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>file libchall.so</code>, <code>readelf -h libchall.so</code>로 타입 확인</li><li><code>readelf --dyn-syms libchall.so | grep -v UND</code>로 export 함수 목록 확보</li><li>하니스가 있다면 <code>strings chall | grep -E 'dlopen|libchall'</code>, <code>readelf --dyn-syms chall</code>로 연결 방식(정적 링크 vs <code>dlopen</code>) 파악</li><li>IDA/Ghidra로 <code>.so</code>를 열어 export 함수부터 분석 시작(진입점이 아니라 함수 목록이 출발점)</li><li>함수를 직접 호출해서 입출력을 관찰하고 싶다면 Python <code>ctypes</code> 드라이버로 빠르게 테스트</li><li>실제 실행 컨텍스트(하니스 안)에서 관찰해야 한다면 GDB <code>set breakpoint pending on</code> + <code>break 라이브러리이름:함수이름</code>으로 지연 브레이크포인트 설정</li><li>ASLR 환경에서 주소 계산이 필요하면 pwntools <code>process().libs()</code>로 런타임 베이스 확보</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">file libchall.so
+readelf -h libchall.so
+readelf -d libchall.so | grep SONAME
+readelf --dyn-syms libchall.so | grep -v UND
+nm -D --defined-only libchall.so</code></pre>
+<p>GDB: <code>set breakpoint pending on</code>, <code>break libchall.so:check</code>, <code>set stop-on-solib-events 1</code>, <code>info sharedlibrary</code></p>
+<h2>출력 해석</h2>
+<ul><li><code>readelf --dyn-syms</code>에서 <code>UND</code>가 아닌 줄(섹션 인덱스가 숫자로 채워진 줄)이 이 라이브러리가 실제로 정의(export)한 함수다. <code>UND</code>인 줄은 반대로 이 라이브러리가 외부(libc 등)에서 가져다 쓰는 함수다.</li><li><code>DT_SONAME</code>이 파일명과 다르면(예: 파일은 <code>libchall.so</code>인데 SONAME은 <code>libchall.so.1</code>), 실제 로딩 시 이 SONAME으로 심볼릭 링크나 캐시 등록이 되어 있어야 한다는 뜻이니 배포 스크립트를 확인한다.</li><li>GDB <code>info sharedlibrary</code> 출력에서 <code>Syms Read</code> 열이 <code>Yes</code>로 바뀌는 시점이 실제로 그 라이브러리의 디버그 심볼을 GDB가 다 읽어들인 시점이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>.so</code> 파일에서 <code>main</code> 함수를 찾으려고 헤매는 것 — 라이브러리에는 보통 <code>main</code>이 없다.</li><li><code>.so</code>를 <code>./libchall.so</code>로 그냥 실행해보고 "실행이 안 되네, 분석 불가"라고 결론짓는 것 — 드라이버(ctypes/dlopen)로 직접 함수를 호출해야 한다.</li><li><code>dlopen</code>으로 늦게 로드되는 라이브러리 함수에 프로세스 시작 직후 <code>break 함수이름</code>을 걸었다가 "심볼을 찾을 수 없다"는 에러를 보고 포기하는 것 — pending breakpoint 옵션을 켜야 한다.</li><li>하니스와 라이브러리 중 하나만 분석하고 나머지를 무시하는 것 — 인자 검증/흐름 제어는 하니스에, 핵심 로직은 라이브러리에 나뉘어 있는 경우가 많아 둘 다 봐야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>import/export 심볼 테이블의 기본 개념이 헷갈리면 → REV-0101 Dynamic Linking과 Import 함수 추적</li><li>라이브러리가 정확히 어디서 로드되는지 탐색 경로가 궁금하면 → REV-0651 LD_LIBRARY_PATH와 라이브러리 탐색 순서</li><li>라이브러리 함수 호출을 가로채서 관찰하고 싶다면 → REV-0650 LD_PRELOAD로 함수 후킹해서 관찰하기</li><li>이 라이브러리가 심볼 버전을 어떻게 export하는지 궁금하면 → REV-0653 ELF Symbol Versioning(GLIBC_2.x) 이해하기</li><li>PIE와 ET_DYN 타입의 관계가 헷갈리면 → REV-0103 PIE와 주소 계산</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ readelf -h libchall.so | grep Type
+  Type:                              DYN (Shared object file)
+
+$ readelf -d libchall.so | grep SONAME
+ 0x000000000000000e (SONAME)            Library soname: [libchall.so]
+
+$ readelf --dyn-syms libchall.so | grep -v UND | grep FUNC
+    45: 0000000000001189    98 FUNC    GLOBAL DEFAULT   13 check
+    52: 0000000000001210    45 FUNC    GLOBAL DEFAULT   13 init_state</code></pre>
+<p><code>check</code>와 <code>init_state</code>가 export된 함수이므로, 이 라이브러리를 분석할 때는 이 두 함수부터 시��하는 것이 올바른 진입점이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0101-dynamic-linking.html">REV-0101 — Dynamic Linking과 Import 함수 추적</a></li><li><a href="rev-0651-ld-library-path-search-order.html">REV-0651 — LD_LIBRARY_PATH와 라이브러리 탐색 순서</a></li><li><a href="rev-0650-ld-preload-function-hooking.html">REV-0650 — LD_PRELOAD로 함수 후킹해서 관찰하기</a></li><li><a href="rev-0653-elf-symbol-versioning.html">REV-0653 — ELF Symbol Versioning(GLIBC_2.x) 이해하기</a></li><li><a href="rev-0103-pie.html">REV-0103 — PIE와 주소 계산</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>ET_DYN</code> 타입과 <code>DT_SONAME</code> 구조: ELF Specification 및 System V ABI 기준.</li><li><code>dlopen</code>/<code>dlsym</code> API: <code>man 3 dlopen</code>, <code>man 3 dlsym</code> 공식 매뉴얼 기준.</li><li>GDB pending breakpoint(<code>set breakpoint pending on</code>) 및 <code>set stop-on-solib-events</code>: GDB 공식 매뉴얼(Shared Libraries, Set Breaks 챕터) 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

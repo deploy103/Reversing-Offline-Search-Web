@@ -1,0 +1,116 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>checksec 결과가 예상과 달라서 보호기법 판단이 헷갈릴 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>checksec 결과가 예상과 달라서 보호기법 판단이 헷갈릴 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">checksec</span><span class="tag">readelf</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>checksec</code>은 심볼 이름과 ELF 헤더/세그먼트 몇 가지 플래그만 보고 판단하는 <strong>휴리스틱 도구</strong>라서, strip된 바이너리에서 카나리가 실제로 있어도 <code>No canary found</code>로 나오거나, <code>GNU_RELRO</code> 세그먼트만 있고 <code>BIND_NOW</code>가 없으면 기대와 달리 <code>Partial RELRO</code>로만 표시되는 등 오탐이 흔하며, 진짜 보호기법 여부는 <code>readelf -d</code>(동적 태그)와 <code>readelf -l</code>(세그먼트) 원본 값, 그리고 디스어셈블리에서 직접 확인해야 확실하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>checksec</code>이 <code>No canary found</code>라고 했는데 디스어셈블리를 보니 <code>fs:0x28</code>을 읽는 스택 카나리 코드가 분명히 있을 때</li><li><code>Partial RELRO</code>라고 나왔는데 왜 <code>Full RELRO</code>가 아닌지, 익스플로잇 가능성에 어떤 차이가 있는지 헷갈릴 때</li><li>공유 라이브러리(<code>.so</code>) 파일을 <code>checksec</code>으로 돌렸더니 <code>PIE enabled</code>로 나와서 실행 파일처럼 착각할 때</li><li><code>checksec.sh</code>와 <code>pwn checksec</code>(pwntools) 결과가 서로 다르게 나올 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>checksec은 "증거"를 보는 것이지 "코드"를 실행해보는 게 아니다</h3>
+<p><code>checksec</code>(원조 <code>checksec.sh</code>, 또는 pwntools의 <code>pwn checksec</code>)은 바이너리를 실제로 실행하거나 디컴파일하지 않는다. 대신 다음과 같은 <strong>간접 증거</strong>만 빠르게 확인한다.</p>
+<ul><li><strong>Stack Canary</strong>: <code>.dynsym</code>에 <code>__stack_chk_fail</code>이라는 심볼 이름이 있는지 검사한다. 이름이 있으면 "있음", 없으면 "없음"으로 판정한다.</li><li><strong>NX</strong>: Program Header에서 <code>GNU_STACK</code> 세그먼트의 <code>PF_X</code>(실행 가능) 플래그가 꺼져 있는지 확인한다(REV-0090, REV-0105 참고).</li><li><strong>PIE</strong>: ELF 헤더의 <code>e_type</code>이 <code>ET_DYN</code>인지 확인한다.</li><li><strong>RELRO</strong>: <code>GNU_RELRO</code> Program Header가 있는지, 그리고 <code>.dynamic</code> 섹션에 <code>DT_BIND_NOW</code>(또는 <code>DT_FLAGS</code>/<code>DT_FLAGS_1</code>의 <code>BIND_NOW</code> 비트)가 있는지를 함께 본다.</li></ul>
+<p>이 방식은 대부분의 정상 컴파일된 바이너리에서는 잘 맞지만, <strong>심볼이 제거되었거나(strip)</strong>, <strong>바이너리 종류가 실행 파일이 아니라 라이브러리(.so)이거나</strong>, <strong>의도적으로 조작된 CTF 바이너리</strong>에서는 실제 보호기법 존재 여부와 checksec 판정이 어긋날 수 있다.</p>
+<h3><code>__stack_chk_fail</code> 심볼이 없으면 카나리를 못 찾는다</h3>
+<p><code>gcc -fstack-protector</code>로 컴파일된 바이너리는 함수 프롤로그에서 <code>fs:0x28</code>(TLS 영역의 카나리 값)을 스택에 복사하고, 에필로그에서 검증한 뒤 실패하면 <code>__stack_chk_fail</code>을 호출한다(REV-0105). <code>checksec</code>은 바로 이 <code>__stack_chk_fail</code> 심볼의 <strong>이름</strong>을 찾는다. 그런데 바이너리가 정적 링킹되어 있고 <code>strip</code>까지 되어 있으면, 카나리 검사 코드 자체(<code>fs:0x28</code> 읽기/비교/<code>call</code>)는 여전히 존재하지만 그 <code>call</code> 대상 함수의 이름표가 사라져서 checksec이 "이름을 못 찾았으니 카나리 없음"으로 잘못 판정한다.</p>
+<h3>Partial RELRO vs Full RELRO는 "두 가지 조건"의 AND다</h3>
+<p>RELRO(REV-0102)는 두 단계로 나뉜다.</p>
+<ol><li><code>GNU_RELRO</code> Program Header 존재 → 링크 시점에 알 수 있는 데이터 섹션(<code>.init_array</code>, <code>.got</code> 등)을 <code>mprotect</code>로 읽기 전용화하도록 준비됨(컴파일 옵션 <code>-Wl,-z,relro</code>).</li><li><code>DT_BIND_NOW</code>(또는 동일 효과의 <code>DT_FLAGS_1</code>의 <code>DF_1_NOW</code>) 존재 → 프로그램 시작 시 <strong>모든</strong> GOT 엔트리를 즉시 미리 resolve(컴파일 옵션 <code>-Wl,-z,now</code>).</li></ol>
+<p><strong>둘 다</strong> 있어야 <code>Full RELRO</code>다. 1번만 있고 2번이 없으면 <code>Partial RELRO</code>로 표시되며, 이 경우 아직 resolve되지 않은 <code>.got.plt</code> 엔트리는 실행 중에도 여전히 쓰기 가능한 상태로 남아있어 GOT 오버라이트 공격이 부분적으로 가능하다. "RELRO가 있으니 안전하다"고 단순화해서 판단하면 안 되는 이유다.</p>
+<h3><code>.so</code> 파일에 PIE enabled가 뜨는 건 오류가 아니다</h3>
+<p>공유 라이브러리는 어차피 어느 주소에든 로드될 수 있어야 하므로 항상 <code>ET_DYN</code>으로 컴파일된다. <code>checksec</code>은 <code>ET_DYN</code>만 보고 "PIE"라고 표시하므로, <code>.so</code> 파일을 checksec으로 돌리면 항상 <code>PIE enabled</code>가 뜬다 — 이건 그 라이브러리가 특별히 PIE 보호기법을 켰다는 뜻이 아니라 "공유 라이브러리는 원래 다 이렇다"는 것뿐이다. 반대로 <code>gcc -static-pie</code>로 만든 정적 PIE 실행 파일도 <code>ET_DYN</code>이라 checksec은 "동적 링킹된 PIE"와 구분 없이 표시할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-text">$ checksec --file=./chall
+RELRO           STACK CANARY      NX            PIE
+Partial RELRO   No canary found   NX enabled    PIE enabled</code></pre>
+<p>그런데 디스어셈블리(<code>objdump -d ./chall</code>)에는:</p>
+<pre><code class="language-asm">mov    rax, fs:0x28
+mov    [rbp-0x8], rax
+...
+mov    rax, [rbp-0x8]
+sub    rax, fs:0x28
+je     &lt;ok&gt;
+call   0x401040   ; __stack_chk_fail 호출인데 이름이 안 보임</code></pre>
+<p>분명히 카나리 검사 코드가 있다.</p>
+<h2>가장 먼저 할 것</h2>
+<ol><li>checksec 결과 중 의심스러운 항목을 <strong>직접 원본 데이터로 재확인</strong>한다 — 아래 절차의 항목별 명령을 그대로 실행해본다.</li><li><code>file ./chall</code>로 strip 여부(<code>not stripped</code> / 표시 없으면 stripped 가능성)와 정적/동적 링킹 여부를 먼저 확인해 어떤 항목이 오탐일 가능성이 있는지 좁힌다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 카나리 직접 확인 (심볼 없이)</strong></p>
+<pre><code class="language-bash">objdump -d ./chall | grep -B2 "fs:0x28"</code></pre>
+<p><code>mov rax, fs:0x28</code> 패턴이 함수 프롤로그/에필로그에 보이면 카나리가 실제로 켜져 있는 것이다(REV-0105). checksec의 <code>No canary found</code>는 이름표만 없을 뿐 검사 로직은 있다는 뜻이다.</p>
+<p><strong>2) RELRO 세부 확인</strong></p>
+<pre><code class="language-bash">readelf -l ./chall | grep -A1 GNU_RELRO
+readelf -d ./chall | grep -i "BIND_NOW\|FLAGS"</code></pre>
+<p><code>GNU_RELRO</code> 세그먼트는 있는데 <code>BIND_NOW</code>/<code>FLAGS_1: NOW</code>가 안 보이면 정확히 Partial RELRO가 맞다. 둘 다 있으면 Full RELRO다.</p>
+<p><strong>3) PIE/실행 파일 종류 확인</strong></p>
+<pre><code class="language-bash">readelf -h ./chall | grep Type</code></pre>
+<p><code>Type: DYN (Position-Independent Executable file)</code>이면 PIE, <code>EXEC (Executable file)</code>이면 Non-PIE다. 다만 <code>.so</code> 파일은 <code>DYN (Shared object file)</code>로 표시되어 이름부터 구분이 가능하다.</p>
+<p><strong>4) NX 확인</strong></p>
+<pre><code class="language-bash">readelf -l ./chall | grep -A1 GNU_STACK</code></pre>
+<p><code>RWE</code>(또는 <code>RW E</code>)처럼 실행(<code>E</code>) 플래그가 있으면 스택이 실행 가능(NX 꺼짐), <code>RW</code>만 있으면 NX 활성화 상태다.</p>
+<p><strong>5) 서로 다른 checksec 버전 비교</strong></p>
+<pre><code class="language-bash">checksec --file=./chall           # 원조 checksec.sh 계열
+python3 -c "from pwn import *; print(ELF('./chall'))"   # pwntools의 자체 ELF 파싱 결과</code></pre>
+<p>pwntools의 <code>ELF()</code> 로드 시 자동으로 출력되는 보호기법 정보는 pwntools가 직접 ELF를 파싱한 결과라서, <code>objdump</code>/<code>readelf</code>의 텍스트 출력을 파싱하는 구버전 <code>checksec.sh</code>보다 binutils 버전 차이에 덜 취약하다. 두 결과가 다르면 <code>readelf</code> 원본값을 기준으로 삼는다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">checksec --file=./chall
+readelf -h ./chall
+readelf -l ./chall
+readelf -d ./chall
+objdump -d ./chall | grep "fs:0x28"
+python3 -c "from pwn import *; print(ELF('./chall'))"</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>readelf -d</code> 결과에서 <code>0x000000000000001e (FLAGS)  BIND_NOW</code> 또는 <code>0x000000006ffffffb (FLAGS_1) Flags: NOW</code>가 보이면 즉시 resolve(Full RELRO 조건 2번 충족)를 의미한다.</li><li><code>readelf -l</code>의 <code>GNU_STACK</code> 줄에서 <code>Flags: RW</code> = NX 활성화, <code>Flags: RWE</code> = NX 비활성화(스택에서 코드 실행 가능, 매우 오래된/특수 빌드에서만 흔함).</li><li>checksec이 <code>Canary: No</code>인데 <code>fs:0x28</code> 코드가 있다면, 심볼 스트립이 원인이지 컴파일 옵션(<code>-fstack-protector</code>) 자체가 꺼진 게 아니다 — 두 가지는 다른 문제이므로 혼동하지 않는다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>checksec 결과 하나만 보고 exploit 전략을 확정하는 것 — 특히 strip된 CTF 바이너리에서는 항상 <code>readelf</code>/디스어셈블리로 교차 검증해야 한다.</li><li>Partial RELRO를 "RELRO가 켜져 있으니 GOT는 절대 못 건드린다"고 오해하는 것 — Partial RELRO에서는 아직 resolve 안 된 GOT 엔트리가 여전히 쓰기 가능하다.</li><li><code>.so</code> 파일에 뜬 <code>PIE enabled</code>를 보고 "이 라이브러리가 특별히 보안 강화되었다"고 오해하는 것 — 공유 라이브러리는 원래 다 <code>ET_DYN</code>이다.</li><li>서로 다른 checksec 구현체(bash 스크립트 vs pwntools) 결과가 다를 때 어느 쪽이 맞는지 확인하지 않고 아무 쪽이나 믿는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>checksec의 기본 사용법과 정상 출력 형식이 헷갈린다면 → REV-0096 checksec 결과 읽는 법</li><li>Canary/NX/PIE/RELRO 각각의 원리를 다시 보고 싶다면 → REV-0105 Canary NX PIE RELRO 한 번에 이해</li><li>RELRO 자체의 의미와 exploit 관점에서의 중요성을 더 깊이 알고 싶다면 → REV-0102 RELRO가 리버싱에 의미하는 것</li><li>PIE에서 실제 주소를 계산하는 법이 궁금하다면 → REV-0103 PIE와 주소 계산</li><li>Program Header/Section Header 구조 자체가 헷갈린다면 → REV-0090 ELF Program Header와 Section Header 차이</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">$ checksec --file=./chall
+RELRO           STACK CANARY      NX            PIE
+Partial RELRO   No canary found   NX enabled    PIE enabled
+
+$ readelf -d ./chall | grep -i flags
+0x000000006ffffffb (FLAGS_1)           Flags: NOW
+
+$ objdump -d ./chall | grep -B1 "fs:0x28" | head -4
+  1189:	64 48 8b 04 25 28 00 	mov    rax,QWORD PTR fs:0x28
+  1190:	00 00 </code></pre>
+<p><code>readelf -d</code>에서 <code>FLAGS_1: NOW</code>가 실제로 보였다면 checksec의 <code>Partial RELRO</code> 표기가 이상하다는 신호이므로 <code>GNU_RELRO</code> 세그먼트 존재 여부도 함께 재확인해야 하고(둘 다 있어야 Full), <code>fs:0x28</code> 코드가 있는데도 <code>No canary found</code>가 떴다면 strip으로 인한 오탐임을 확정할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0096-checksec.html">REV-0096 — checksec 결과 읽는 법</a></li><li><a href="rev-0105-binary-protections-overview.html">REV-0105 — Canary NX PIE RELRO 한 번에 이해</a></li><li><a href="rev-0102-relro.html">REV-0102 — RELRO가 리버싱에 의미하는 것</a></li><li><a href="rev-0103-pie.html">REV-0103 — PIE와 주소 계산</a></li><li><a href="rev-0090-program-vs-section-header.html">REV-0090 — ELF Program Header와 Section Header 차이</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>checksec의 판정 방식(<code>__stack_chk_fail</code> 심볼 존재 여부로 카나리 판정, <code>GNU_RELRO</code>+<code>BIND_NOW</code> 조합으로 RELRO 등급 판정, <code>ET_DYN</code>으로 PIE 판정)은 checksec.sh 및 pwntools <code>ELF.checksec()</code> 구현에서 공개적으로 알려진 휴리스틱을 요약한 것이다.</li><li>RELRO의 두 단계 구조(<code>-z relro</code>, <code>-z now</code>)는 GNU ld(binutils) 링커 옵션 문서(<code>ld(1)</code>)에 기술되어 있다.</li><li><code>GNU_STACK</code> 세그먼트의 실행 플래그로 NX를 판정하는 방식은 ELF Program Header 사양(System V ABI) 기준이다.</li><li>checksec.sh와 pwntools checksec 구현 간의 세부 차이는 각 도구의 공개 소스 코드에 기반하며, 정확한 버전별 동작은 실제 설치된 버전에서 <code>--help</code>/소스를 재확인하는 것을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ELF Auxiliary Vector(auxv) 개요 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>ELF Auxiliary Vector(auxv) 개요</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>Auxiliary Vector(auxv)는 커널이 <code>execve</code> 직후 스택 맨 위(환경변수 배열 다음)에 심어주는 <code>(타입, 값)</code> 쌍의 배열로, 동적 로더와 glibc가 프로그램 헤더 위치·페이지 크기·랜덤값·vDSO 주소 같은 저수준 정보를 재계산 없이 바로 알 수 있게 해준다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>GDB에서 <code>info auxv</code>를 쳤는데 <code>AT_PHDR</code>, <code>AT_BASE</code>, <code>AT_SYSINFO_EHDR</code> 같은 줄이 무슨 뜻인지 모를 때</li><li><code>/proc/&lt;pid&gt;/auxv</code>라는 파일을 우연히 발견했는데 이게 뭔지 궁금할 때</li><li>glibc 소스나 CTF 익스플로잇 코드에서 <code>getauxval(AT_RANDOM)</code> 같은 함수 호출을 봤을 때</li><li>REV-0676(AT_RANDOM과 스택 카나리)을 읽다가 auxv 자체의 전체 구조가 궁금해졌을 때</li><li>스택 최상단 레이아웃(<code>argc</code> → <code>argv[]</code> → NULL → <code>envp[]</code> → NULL → auxv → 문자열 데이터)을 정확히 이해하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>auxv가 존재하는 이유</h3>
+<p>전통적으로 유닉스 프로그램은 <code>main(int argc, char **argv, char **envp)</code> 형태로 인자와 환경변수만 전달받았다. 하지만 동적 로더(<code>ld.so</code>)와 glibc 초기화 코드는 그보다 훨씬 많은 정보가 필요하다 — 예를 들어 자기 자신(실행 파일)의 ELF 프로그램 헤더가 메모리 어디에 매핑됐는지, 시스템 페이지 크기가 몇 바이트인지, CPU가 어떤 기능(HWCAP)을 지원하는지, vDSO(virtual dynamic shared object)가 어디에 매핑됐는지 등이다. 이런 정보를 매번 <code>/proc</code>을 파싱하거나 시스템 콜로 재계산하면 느리고 번거롭기 때문에, 커널이 프로세스를 처음 띄우는 시점에 이미 알고 있는 값들을 스택에 미리 박아두고 넘겨준다. 이 배열이 auxv다.</p>
+<h3>메모리 레이아웃</h3>
+<p>프로세스가 막 시작될 때 스택 최상단은 대략 다음 순서로 배치된다(주소가 높은 곳에서 낮은 곳 방향).</p>
+<pre><code>[문자열 데이터: argv/envp가 가리키는 실제 문자열들]
+[auxv[] : Elf64_auxv_t 배열, AT_NULL로 끝남]
+[envp[] : char* 배열, NULL로 끝남]
+[argv[] : char* 배열, NULL로 끝남]
+[argc]        &lt;- 스택 포인터가 처음 가리키는 위치 (_start 진입 시점)</code></pre>
+<p>각 auxv 엔트리는 다음과 같은 구조체다(64비트 기준).</p>
+<pre><code class="language-c">typedef struct {
+    long a_type;      // AT_* 상수
+    union {
+        long a_val;    // 정수 값
+        void *a_ptr;   // 포인터 값
+        void (*a_fcn)(void); // 함수 포인터 (거의 안 씀)
+    } a_un;
+} Elf64_auxv_t;</code></pre>
+<p>배열의 끝은 <code>a_type == AT_NULL</code>(0)인 엔트리로 표시된다.</p>
+<h3>자주 보이는 AT_* 타입들</h3>
+<table><thead><tr><th>타입 값</th><th>이름</th><th>의미</th></tr></thead><tbody><tr><td>3</td><td><code>AT_PHDR</code></td><td>실행 파일 프로그램 헤더 테이블의 메모리 주소</td></tr><tr><td>4</td><td><code>AT_PHENT</code></td><td>프로그램 헤더 엔트리 하나의 크기(바이트)</td></tr><tr><td>5</td><td><code>AT_PHNUM</code></td><td>프로그램 헤더 엔트리 개수</td></tr><tr><td>6</td><td><code>AT_PAGESZ</code></td><td>시스템 페이지 크기(보통 4096)</td></tr><tr><td>7</td><td><code>AT_BASE</code></td><td>동적 로더(<code>ld.so</code>) 자신이 로드된 베이스 주소</td></tr><tr><td>8</td><td><code>AT_FLAGS</code></td><td>예약된 플래그(현재 거의 0)</td></tr><tr><td>9</td><td><code>AT_ENTRY</code></td><td>실행 파일의 엔트리 포인트 주소</td></tr><tr><td>11</td><td><code>AT_UID</code> / 12 <code>AT_EUID</code></td><td>실제/유효 사용자 ID</td></tr><tr><td>13</td><td><code>AT_GID</code> / 14 <code>AT_EGID</code></td><td>실제/유효 그룹 ID</td></tr><tr><td>15</td><td><code>AT_PLATFORM</code></td><td>CPU 플랫폼 문자열 포인터(예: <code>"x86_64"</code>)</td></tr><tr><td>16</td><td><code>AT_HWCAP</code></td><td>CPU 기능 비트마스크(SSE, AVX 등 감지에 사용)</td></tr><tr><td>17</td><td><code>AT_CLKTCK</code></td><td><code>times()</code> 시스템 콜의 클럭 틱 주파수</td></tr><tr><td>23</td><td><code>AT_SECURE</code></td><td>setuid/setgid로 실행됐는지 여부(1이면 "보안 모드")</td></tr><tr><td>25</td><td><code>AT_RANDOM</code></td><td>커널이 제공한 16바이트 난수의 주소(REV-0676 참고)</td></tr><tr><td>31</td><td><code>AT_EXECFN</code></td><td>실행에 사용된 파일 경로 문자열의 주소</td></tr><tr><td>33</td><td><code>AT_SYSINFO_EHDR</code></td><td>vDSO(가짜 공유 라이브러리로 매핑된 커널 코드)의 ELF 헤더 주소</td></tr></tbody></table>
+<p>이 중 리버싱에서 특히 자주 쓰이는 것은 <code>AT_PHDR</code>(정적 바이너리에서 프로그램 헤더를 찾을 때), <code>AT_BASE</code>(PIE/ASLR 환경에서 ld.so의 실제 로드 주소를 알아내야 할 때), <code>AT_RANDOM</code>(카나리 leak), <code>AT_SYSINFO_EHDR</code>(vDSO 안의 <code>__kernel_vsyscall</code> 등을 찾을 때)이다.</p>
+<h3>누가 auxv를 읽는가</h3>
+<ul><li>동적 로더(<code>ld.so</code>)는 초기화 극초반에 auxv를 스캔해서 <code>_dl_phdr</code>, <code>_dl_phnum</code>, <code>_dl_platform</code>, <code>_dl_random</code> 등 내부 전역 변수를 채운다.</li><li>glibc는 <code>getauxval(unsigned long type)</code> 함수(<code>&lt;sys/auxv.h&gt;</code>)를 통해 사용자 코드에서도 auxv 값을 조회할 수 있게 해준다. 예를 들어 <code>getauxval(AT_RANDOM)</code>으로 카나리 재료로 쓰인 그 16바이트 주소를 직접 얻을 수 있다.</li><li>정적으로 링크된 실행 파일도 <code>_start</code> 진입 시점에 스택에서 직접 auxv를 읽어 자체 초기화를 수행한다(로더가 없으므로 스스로 해야 함).</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>GDB <code>info auxv</code> 출력에 <code>AT_PHDR</code>, <code>AT_BASE</code>, <code>AT_RANDOM</code>, <code>AT_SYSINFO_EHDR</code> 등의 줄이 보인다.</li><li><code>/proc/&lt;pid&gt;/auxv</code>라는 바이너리 파일이 존재하며, <code>xxd</code>로 열면 8바이트씩(타입, 값) 쌍이 반복되다가 8개의 0(AT_NULL)으로 끝난다.</li><li>정적 바이너리의 <code>_start</code> 디스어셈블리 초반부에서 <code>[rsp]</code>(argc), <code>[rsp+8]</code>(argv[0])에 이어 envp와 auxv 영역을 순회하는 루프 코드가 보일 수 있다.</li><li>소스코드에 <code>getauxval(AT_...)</code> 또는 <code>__libc_csu_irel</code>, <code>_dl_aux_init</code> 같은 심볼이 등장하면 auxv를 다루는 코드다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>분석 중인 바이너리가 정적 링크(static)인지, ASLR/PIE가 걸려 있는지 궁금하면 GDB에서 <code>break main</code> 후 <code>info auxv</code>를 가장 먼저 찍어본다. <code>AT_BASE</code>가 0이면 정적 바이너리(로더가 없음)이고, 0이 아니면 그 값이 <code>ld.so</code>의 실제 로드 주소다. <code>AT_RANDOM</code>을 확인해두면 이후 카나리/포인터 가드 분석에도 바로 활용할 수 있다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) GDB에서 auxv 전체 덤프</strong></p>
+<pre><code class="language-gdb">gdb ./chall
+break main
+run
+info auxv</code></pre>
+<p>출력 예:</p>
+<pre><code>33   AT_SYSINFO_EHDR      System-supplied DSO's ELF header  0x7ffff7fc9000
+16   AT_HWCAP              Machine-dependent CPU capability hints  0x1f8bfbff
+6    AT_PAGESZ              System page size                       4096
+9    AT_ENTRY               Entry point of program                 0x555555555110
+11   AT_UID                  Real user ID                          1000
+25   AT_RANDOM               Address of 16 random bytes             0x7fffffffe1c9
+31   AT_EXECFN                File name of executable                0x7fffffffefe4
+15   AT_PLATFORM               String identifying platform             0x7fffffffe1d9</code></pre>
+<p><strong>2) /proc/pid/auxv 원본 확인</strong></p>
+<pre><code class="language-bash">cat /proc/$(pgrep -n chall)/auxv | xxd</code></pre>
+<p>8바이트(타입) + 8바이트(값)이 반복되는 걸 직접 확인할 수 있다.</p>
+<p><strong>3) 프로그램 자체에서 값 얻기</strong></p>
+<pre><code class="language-c">#include &lt;sys/auxv.h&gt;
+#include &lt;stdio.h&gt;
+int main(void) {
+    printf("AT_RANDOM = %p\n", (void*)getauxval(AT_RANDOM));
+    printf("AT_PHDR   = %p\n", (void*)getauxval(AT_PHDR));
+    return 0;
+}</code></pre>
+<p><strong>4) ld.so 실제 베이스 확인(AT_BASE 활용)</strong></p>
+<pre><code class="language-gdb">p/x $auxv_at_base   # gdb 버전에 따라 직접 지원 안 하면 info auxv 출력값을 그대로 사용</code></pre>
+<p><code>info auxv</code>의 <code>AT_BASE</code> 줄에 나온 주소가 곧 <code>readelf -d</code>로 확인한 <code>ld-linux-x86-64.so.2</code>가 실제로 매핑된 시작 주소다.</p>
+<p><strong>5) Pwndbg로 더 보기 좋게</strong></p>
+<pre><code class="language-gdb">auxv</code></pre>
+<p>일부 Pwndbg 버전은 <code>auxv</code> 별칭으로 동일한 정보를 정리해서 보여준다(없으면 GDB 기본 <code>info auxv</code> 사용).</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-gdb">info auxv</code></pre>
+<pre><code class="language-bash">cat /proc/&lt;pid&gt;/auxv | xxd
+LD_SHOW_AUXV=1 ./chall</code></pre>
+<pre><code class="language-c">#include &lt;sys/auxv.h&gt;
+unsigned long getauxval(unsigned long type);</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>info auxv</code>의 각 줄은 "타입 번호 → 이름 → 설명 → 값" 순서로 표시된다. 값 칸이 포인터인 항목(<code>AT_PHDR</code>, <code>AT_RANDOM</code>, <code>AT_EXECFN</code>, <code>AT_PLATFORM</code>)은 그 주소를 다시 메모리에서 읽어야 실제 데이터가 나온다는 점에 주의한다.</li><li><code>AT_BASE</code>가 <code>0x0</code>이면 동적 로더가 관여하지 않은 정적 바이너리라는 뜻이다. 0이 아닌 값이면 PIE 여부와 무관하게 <code>ld.so</code>가 그 주소에 매핑되어 있다는 뜻이다.</li><li><code>AT_SYSINFO_EHDR</code>은 vDSO의 시작 주소다. <code>readelf -h</code>를 이 주소에서 직접 읽을 수는 없지만(파일이 아니라 메모리 매핑이므로) GDB의 <code>info sharedlibrary</code>나 <code>vmmap</code>(Pwndbg)로 <code>[vdso]</code> 영역과 대조하면 같은 주소임을 확인할 수 있다.</li><li><code>/proc/&lt;pid&gt;/auxv</code>를 <code>xxd</code>로 봤을 때 마지막 16바이트(8+8)가 전부 <code>00</code>이면 그것이 <code>AT_NULL</code> 종료 마커다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>auxv를 환경변수(<code>envp</code>)의 일부라고 착각하는 것 — envp는 <code>NULL</code> 포인터로 끝나고 그 바로 다음부터 별도의 auxv 배열이 시작된다. 둘은 서로 다른 배열이다.</li><li><code>AT_RANDOM</code>의 값(주소)과 그 주소가 가리키는 16바이트 데이터를 혼동하는 것 — <code>info auxv</code>에 나오는 숫자는 항상 주소이며, 실제 난수 바이트를 보려면 그 주소를 다시 덤프해야 한다.</li><li>모든 리눅스 프로세스에 동일한 auxv 항목이 다 존재한다고 가정하는 것 — 커널 버전, 아키텍처, 정적/동적 여부에 따라 일부 항목(<code>AT_SYSINFO_EHDR</code>은 vDSO가 없는 아키텍처/커널 설정에서는 누락 가능)은 빠질 수 있다.</li><li><code>getauxval()</code>이 실패 시 0을 반환할 수 있다는 걸 잊고 반환값을 곧바로 역참조하는 것 — 존재하지 않는 타입을 요청하면 0이 반환된다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>AT_RANDOM</code>이 스택 카나리와 정확히 어떻게 연결되는지 더 깊이 보고 싶다면 → REV-0676 AT_RANDOM과 스택 카나리 초기화 관계</li><li><code>AT_PHDR</code>이 가리키는 프로그램 헤더 구조 자체가 궁금하다면 → REV-0090 ELF Program Header와 Section Header 차이</li><li><code>_start</code>부터 초기화가 어떻게 진행되는지 전체 흐름이 궁금하다면 → REV-0098 _start 함수 읽는 법, REV-0097 ELF Entry Point에서 main까지</li><li><code>argc</code>/<code>argv</code>/<code>envp</code>가 스택에서 정확히 어디에 있는지 어셈블리로 확인하고 싶다면 → REV-0108 argc argv envp를 어셈블리에서 찾는 법</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ LD_SHOW_AUXV=1 ./chall
+AT_SYSINFO_EHDR: 0x7ffff7fc9000
+AT_HWCAP:        1f8bfbff
+AT_PAGESZ:        4096
+AT_BASE:           0x7ffff7fc4000
+AT_ENTRY:          0x555555555110
+AT_RANDOM:          0x7fffffffe1c9
+AT_EXECFN:           /home/user/chall</code></pre>
+<p>이 출력만으로도 이 바이너리가 동적 링크(<code>AT_BASE</code>가 0이 아님)이고, PIE(엔트리 주소가 <code>0x555...</code>처럼 낮은 고정 주소가 아니라 무작위 베이스 위에 얹힌 형태)임을 대략 짐작할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0676-at-random-stack-canary.html">REV-0676 — AT_RANDOM과 스택 카나리 초기화 관계</a></li><li><a href="rev-0090-program-vs-section-header.html">REV-0090 — ELF Program Header와 Section Header 차이</a></li><li><a href="rev-0098-start-function.html">REV-0098 — _start 함수 읽는 법</a></li><li><a href="rev-0099-libc-start-main.html">REV-0099 — __libc_start_main이 무엇이고 main을 찾는 법</a></li><li><a href="rev-0108-argc-argv-envp.html">REV-0108 — argc argv envp를 어셈블리에서 찾는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>Elf64_auxv_t</code> 구조체 및 <code>AT_*</code> 상수 목록: <code>&lt;elf.h&gt;</code>/<code>&lt;bits/auxv.h&gt;</code> 리눅스 시스템 헤더 및 관련 문서(LWN "getauxval() and the auxiliary vector") 기준.</li><li>auxv가 스택 최상단에 배치되는 레이아웃 및 커널이 채워 넣는 과정: Linux 커널 <code>fs/binfmt_elf.c</code>의 <code>create_elf_tables</code> 로직 기준.</li><li><code>getauxval()</code> API 및 <code>LD_SHOW_AUXV</code> 환경변수: glibc <code>man 3 getauxval</code>, <code>man 8 ld.so</code> 매뉴얼 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

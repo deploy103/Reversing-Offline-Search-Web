@@ -1,0 +1,126 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>부동소수점 레지스터 값이 이상하게 보일 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>부동소수점 레지스터 값이 이상하게 보일 때</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>디버거의 레지스터 창에서 <code>XMM0</code>이나 <code>ST0</code> 값이 <code>0x4014000000000000</code>처럼 "말이 안 되는 정수"로 보이는 것은 레지스터가 잘못된 게 아니라, 그 비트 패턴이 <strong>IEEE 754 부동소수점 인코딩</strong>이기 때문이며(이 예시는 <code>5.0</code>), 정수 레지스터처럼 10진수로 그냥 읽으면 안 되고 반드시 "부동소수점으로 해석"해서 봐야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>x64dbg/GDB에서 <code>XMM0</code> 레지스터 값을 봤는데 <code>0x4024000000000000</code> 같은 16진수만 나와서 실제 값을 모를 때</li><li>디컴파일 결과에 <code>double</code>/<code>float</code> 변수인데 이상하게 큰 정수처럼 표시될 때</li><li><code>movss</code>, <code>movsd</code>, <code>addsd</code>, <code>mulsd</code>, <code>cvtsi2sd</code>, <code>cvttsd2si</code> 같은 명령이 나와서 정수 연산과 뭐가 다른지 헷갈릴 때</li><li>오래된 32비트 바이너리에서 <code>ST0</code>, <code>ST1</code> 같은 x87 FPU 스택 레지스터를 만났을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>IEEE 754: 부동소수점은 정수와 완전히 다른 방식으로 비트를 쓴다</h3>
+<p><code>float</code>(32비트)와 <code>double</code>(64비트)은 정수처럼 "값 그대로"를 이진수로 담는 게 아니라, <strong>부호(sign) + 지수(exponent) + 가수(mantissa/fraction)</strong> 세 부분으로 나눠서 비트를 배치하는 IEEE 754 표준을 따른다.</p>
+<pre><code>double (64비트):  [부호 1비트][지수 11비트][가수 52비트]
+float  (32비트):  [부호 1비트][지수  8비트][가수 23비트]</code></pre>
+<p>그래서 <code>XMM0</code>에 <code>0x4014000000000000</code>이 들어있는 걸 정수로 읽으면 "약 4.6 x 10^18"이라는 터무니없이 큰 수처럼 보이지만, 이 비트 패턴을 IEEE 754 double로 해석하면 정확히 <code>5.0</code>이다. <strong>레지스터 값이 이상한 게 아니라, 보는 방식이 잘못된 것</strong>이라는 점이 이 문제의 핵심이다.</p>
+<h3>어디에 저장되는가: XMM(SSE) vs x87 FPU 스택</h3>
+<ul><li><strong>x64와 최신 x86 코드(SSE/SSE2 사용)</strong>: <code>float</code>/<code>double</code> 값은 <code>XMM0</code>~<code>XMM15</code> 레지스터에 저장된다. 함수의 부동소수점 반환값은 <strong><code>XMM0</code></strong>(정수 반환값이 <code>RAX</code>인 것과 대응)에 담긴다.</li><li><strong>오래된 32비트 코드(x87 FPU 사용)</strong>: <code>ST0</code>~<code>ST7</code>이라는 8단짜리 <strong>스택 구조</strong>의 레지스터에 저장된다. 일반 레지스터처럼 이름으로 직접 접근하는 게 아니라 <code>FLD</code>(push), <code>FSTP</code>(pop)처럼 스택 연산으로 값을 밀어넣고 빼낸다(REV-0436~0438 참고). 컴파일러 옵션(<code>/arch:SSE2</code> 등)이나 타겟 아키텍처에 따라 x87 대신 SSE를 쓰도록 강제할 수 있어서, 최신 컴파일러가 만든 32비트 코드도 SSE를 쓰는 경우가 많다.</li></ul>
+<h3>정수 ↔ 부동소수점 변환 명령</h3>
+<pre><code>cvtsi2sd  xmm0, eax     ; 정수(eax)를 double로 변환해서 xmm0에 저장 (Convert Signed Integer to Scalar Double)
+cvtsi2ss  xmm0, eax     ; 정수를 float로 변환
+cvttsd2si eax, xmm0      ; double을 정수로 변환(잘라내기, Truncate), 이름의 두 번째 t가 "truncate"를 의미
+cvtsd2si  eax, xmm0      ; double을 정수로 변환(반올림, 현재 반올림 모드 따름)</code></pre>
+<p>이름이 비슷해서 헷갈리기 쉬운데, <strong><code>cvtt</code>로 시작하면 소수점을 그냥 잘라버리는(truncate) 변환</strong>이고, <code>cvtt</code>가 아니라 그냥 <code>cvt</code>면 반올림 모드를 따른다는 차이를 기억해두면 좋다. C의 <code>(int)someDouble</code> 캐스팅은 보통 truncate(0 방향 절삭)이므로 <code>cvttsd2si</code>에 대응된다.</p>
+<h3>스칼라(scalar) vs 패킹(packed) 연산, 그리고 ss/sd 접미사</h3>
+<p>XMM 레지스터는 128비트라서 <code>float</code> 4개 또는 <code>double</code> 2개를 동시에 담을 수 있다. 명령 이름의 접미사로 어떤 모드인지 구분한다.</p>
+<pre><code>ss = Scalar Single  (32비트 float 1개만 연산, 나머지 96비트는 그대로 둠)
+sd = Scalar Double   (64비트 double 1개만 연산, 나머지 64비트는 그대로 둠)
+ps = Packed Single    (32비트 float 4개를 동시에 연산)
+pd = Packed Double     (64비트 double 2개를 동시에 연산)</code></pre>
+<pre><code>movss   xmm0, [rax]     ; float 1개 로드
+movsd   xmm0, [rax]     ; double 1개 로드 (참고: MOVS 문자열 명령의 movsd와 이름은 같지만 완전히 다른 명령이다! 오퍼랜드로 구분)
+addss   xmm0, xmm1       ; float 덧셈 1개
+addpd   xmm0, xmm1       ; double 2개를 동시에 덧셈</code></pre>
+<p><strong>주의</strong>: <code>movsd</code>라는 이름이 REV-0081(MOVS 문자열 명령 계열)의 <code>MOVSD</code>(Move String Doubleword, 문자열 복사)와 <strong>완전히 다른 명령</strong>임에도 이름이 같다. 오퍼랜드를 보면 구분된다 — <code>xmm</code> 레지스터가 오퍼랜드면 부동소수점 이동, <code>REP</code> 프리픽스와 함께 나오거나 오퍼랜드가 없으면(암묵적 ESI/EDI 사용) 문자열 이동이다.</p>
+<h3>플래그: 부동소수점 비교는 정수 CMP와 다른 플래그를 쓴다</h3>
+<p><code>comiss</code>/<code>comisd</code>(Compare Scalar, Ordered) 또는 <code>ucomiss</code>/<code>ucomisd</code>(Unordered 버전)는 두 부동소수점 값을 비교해서 결과를 <code>EFLAGS</code>의 <code>ZF</code>, <code>PF</code>, <code>CF</code>에 담는다(정수 <code>CMP</code>가 쓰는 <code>SF</code>/<code>OF</code>가 아니다!). <code>NaN</code>(Not a Number, 정의되지 않은 값)이 포함된 비교는 <code>PF=1</code>로 표시되며, 이런 특수 케이스 때문에 부동소수점 분기는 <code>ucomisd</code> + <code>jp</code>(패리티 분기, NaN 검사) 조합이 함께 나오는 경우가 있다.</p>
+<h3>스택/RIP</h3>
+<p>XMM 관련 명령들은 스택이나 <code>RIP</code>에 직접적인 영향을 주지 않는다(일반 데이터 이동/연산 명령과 동일). 다만 함수 프롤로그에서 XMM 레지스터를 저장하기 위해 <code>SUB RSP</code>로 스택 공간을 확보하고 <code>movaps [rsp+x], xmm6</code> 식으로 콜리 세이브(callee-save) XMM 레지스터를 저장하는 패턴은 흔히 볼 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">cvtsi2sd  xmm0, ecx        ; 정수 인자를 double로 변환
+mulsd     xmm0, qword ptr [rip+ratio]  ; 상수와 곱하기
+movsd     qword ptr [rbp-8], xmm0        ; 결과를 지역 변수에 저장</code></pre>
+<p>x64dbg/GDB 레지스터 창:</p>
+<pre><code class="language-text">XMM0 = 4014000000000000 00000000...   ; 이 16진수를 그대로 읽으면 안 됨 (IEEE754 double로 해석하면 5.0)</code></pre>
+<h2>가장 먼저 할 것</h2>
+<p>XMM 레지스터의 16진수 값을 보면, 디버거에 "부동소수점으로 해석" 옵션이 있는지부터 확인한다. 대부분의 현대 디버거(x64dbg, GDB, Pwndbg)는 XMM 레지스터를 float/double로 자동 변환해서 함께 보여준다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 디버거의 부동소수점 표시 확인</strong></p>
+<p>x64dbg는 레지스터 패널에서 XMM 레지스터를 우클릭하면 "float"/"double"로 해석해서 보여주는 옵션이 있다. GDB는 기본적으로 <code>print $xmm0.v2_double</code> 같은 형태로 이미 해석된 값을 보여준다.</p>
+<p><strong>2) 수동으로 16진수를 부동소수점으로 변환</strong></p>
+<p>디버거가 자동 변환을 안 해줄 때는 온라인/오프라인 IEEE754 변환 도구나 Python을 사용한다:</p>
+<pre><code class="language-python">import struct
+struct.unpack('&lt;d', bytes.fromhex('0000000000001440'))  # 리틀엔디안 바이트 순서 주의</code></pre>
+<p><strong>3) SSE인지 x87인지 확인</strong></p>
+<p>레지스터 창에 <code>XMM0</code>~<code>XMM15</code>가 있으면 SSE, <code>ST0</code>~<code>ST7</code>(또는 <code>FPU</code>라는 이름의 스택)이 있으면 x87이다. x87은 스택 방식이라 "지금 맨 위(ST0)에 뭐가 있는가"를 계속 추적해야 한다.</p>
+<p><strong>4) 명령 접미사로 데이터 크기/모드 파악</strong></p>
+<p><code>ss</code>(float 1개), <code>sd</code>(double 1개), <code>ps</code>(float 4개), <code>pd</code>(double 2개) 접미사를 보고 해당 XMM 레지스터의 어느 부분이 유효한 데이터인지 판단한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: 레지스터 패널의 XMM 값 우클릭 → 표시 형식(float/double/hex) 전환</li><li>GDB/Pwndbg: <code>p $xmm0.v2_double</code>(double 2개로 해석), <code>p $xmm0.v4_float</code>(float 4개로 해석), <code>info registers xmm0</code></li><li>IDA 디버거: 레지스터 뷰에서 FPU/XMM 섹션, 값 위에서 우클릭 → 표시 형식 변경</li><li>Python(오프라인 수동 변환): <code>struct.unpack('&lt;f', ...)</code> (float), <code>struct.unpack('&lt;d', ...)</code> (double)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>0x4014000000000000</code> → double로 해석 시 <code>5.0</code></li><li><code>0x3FF0000000000000</code> → double로 해석 시 <code>1.0</code></li><li><code>0x40490FDB</code> (32비트) → float로 해석 시 약 <code>3.14159</code> (π 근사값)</li><li><code>XMM0</code>의 상위/하위 절반이 서로 다른 값처럼 보이면 → Packed 모드(<code>ps</code>/<code>pd</code>)로 여러 값이 동시에 들어있는 것이니, 접미사에 맞춰 4등분(float×4) 또는 2등분(double×2)해서 각각 해석한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>XMM 레지스터의 16진수 값을 그냥 정수로 읽고 "이 값이 왜 이렇게 크지"라고 오해하는 것 — IEEE754 인코딩 특성상 작은 소수도 정수로 읽으면 매우 큰 수처럼 보인다.</li><li><code>movsd</code>(부동소수점 이동)와 <code>movsd</code>(문자열 이동, REP 프리픽스와 함께 쓰이는 MOVS 계열)를 이름만 보고 혼동하는 것 — 오퍼랜드(XMM 레지스터인지 아닌지)로 반드시 구분해야 한다.</li><li><code>cvttsd2si</code>와 <code>cvtsd2si</code>를 같은 명령으로 착각하는 것 — 하나는 truncate(0 방향 절삭), 하나는 반올림이라 결과가 다를 수 있다(예: <code>2.9</code>를 변환할 때 truncate는 <code>2</code>, 반올림은 <code>3</code>).</li><li>x87 <code>ST0</code>을 일반 레지스터처럼 "항상 고정된 자리"라고 생각하는 것 — <code>FLD</code>/<code>FSTP</code> 등으로 스택처럼 밀리고 당겨지므로, 현재 <code>ST0</code>이 무엇을 가리키는지는 그 이전 연산 순서를 봐야 알 수 있다.</li><li><code>ucomisd</code> 이후 정수 비교처럼 <code>SF</code>/<code>OF</code>를 확인하려 하는 것 — 부동소수점 비교는 <code>ZF</code>/<code>PF</code>/<code>CF</code> 조합으로 결과를 표현한다는 점이 다르다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>값 변환이 계속 이상하면 → 바이트 순서(리틀엔디안)를 제대로 뒤집어서 해석했는지 확인.</li><li>SIMD 관련 배경 지식이 더 필요하면 → REV-0487(SIMD 명령이 나와서 디컴파일이 이상해 보일 때)로 이동.</li><li>x87 FPU 스택 자체가 헷갈리면 → REV-0436(x87 FPU 스택 레지스터 개념 기초) 참고.</li><li>MOVAPS와의 관계가 궁금하면 → REV-0386(MOVAPS) 참고.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 정수를 double로 변환 후 연산 (C 대응)</strong></p>
+<pre><code class="language-c">double half(int n) {
+    return n / 2.0;
+}</code></pre>
+<pre><code class="language-asm">cvtsi2sd  xmm0, ecx        ; n(정수)을 double로 변환
+divsd     xmm0, qword ptr [rip+two_point_zero]  ; 2.0으로 나눔
+ret                          ; 반환값은 XMM0 (RAX가 아님!)</code></pre>
+<p><strong>예제 2 — double을 정수로 truncate (C 캐스팅)</strong></p>
+<pre><code class="language-c">int truncate_it(double d) {
+    return (int)d;
+}</code></pre>
+<pre><code class="language-asm">cvttsd2si eax, xmm0    ; xmm0(인자, double)을 소수점 버리고 정수로, 결과는 EAX
+ret</code></pre>
+<p><strong>예제 3 — 부동소수점 비교와 분기</strong></p>
+<pre><code class="language-c">if (x &gt; y) { ... }</code></pre>
+<pre><code class="language-asm">movsd     xmm0, qword ptr [x]
+ucomisd   xmm0, qword ptr [y]
+jbe       else_branch     ; Below-or-Equal 계열 분기 사용(부호 있는 정수의 jle가 아님에 주의)</code></pre>
+<p><strong>예제 4 — 16진수를 Python으로 직접 변환</strong></p>
+<pre><code class="language-python">&gt;&gt;&gt; import struct
+&gt;&gt;&gt; struct.pack('&lt;d', 5.0).hex()
+'0000000000001440'
+&gt;&gt;&gt; struct.unpack('&lt;d', bytes.fromhex('0000000000001440'))
+(5.0,)</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0487-simd-decompile-weird.html">REV-0487 — SIMD 명령이 나와서 디컴파일이 이상해 보일 때</a></li><li><a href="rev-0386-movaps.html">REV-0386 — MOVAPS: 정렬된 XMM 레지스터 이동</a></li><li><a href="rev-0436-x87-fpu-stack.html">REV-0436 — x87 FPU 스택 레지스터 개념 기초</a></li><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>IEEE 754 이진 부동소수점 형식(부호/지수/가수 배치): IEEE 754-2008 표준 및 Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 1, "Floating-Point Data Types" 섹션 기준 (2026-09-08 검증).</li><li><code>MOVSS</code>/<code>MOVSD</code>/<code>CVTSI2SD</code>/<code>CVTTSD2SI</code>/<code>COMISD</code>/<code>UCOMISD</code> 명령 스펙과 플래그 영향: 동 매뉴얼 Volume 2 (Instruction Set Reference) 기준.</li><li>x64 호출 규약에서 부동소수점 반환값이 XMM0에 담긴다는 규칙: System V AMD64 ABI 및 Microsoft x64 calling convention 공식 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

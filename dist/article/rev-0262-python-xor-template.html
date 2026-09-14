@@ -1,0 +1,151 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Python XOR 역산 템플릿 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / automation</div>
+<article class="article-body">
+<h1>Python XOR 역산 템플릿</h1>
+<div class="article-meta"><span class="tag">automation</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>XOR은 자기 자신의 역함수이므로(<code>a ^ b ^ b = a</code>) 재사용 가능한 <code>xor_bytes(data, key)</code> 함수 하나만 만들어두면 고정 키, 반복 키(rolling key) XOR을 모두 같은 코드로 암호화/복호화할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>바이너리 안에서 <code>for</code> 루프로 입력 바이트를 키와 XOR한 뒤 정답 배열과 비교하는 패턴을 발견했을 때</li><li>암호화된 문자열(예: 설정 파일, 난독화된 API 이름)이 XOR로 인코딩되어 있다고 의심될 때</li><li>키 길이를 모를 때 여러 길이를 자동으로 시도해보는 스크립트가 필요할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>XOR의 핵심 성질은 자기 역원(self-inverse)이다.</p>
+<pre><code>a ^ b = c   이면   c ^ b = a</code></pre>
+<p>즉 "암호화"와 "복호화"가 완전히 같은 연산이다 — 같은 키로 다시 XOR하면 원래 값이 그대로 나온다. 이 성질 덕분에 XOR 기반 변환은 별도의 역함수를 만들 필요 없이, <strong>같은 함수를 암호화에도 복호화에도 그대로 재사용</strong>할 수 있다.</p>
+<p>키 형태는 크게 두 가지다.</p>
+<ul><li><strong>고정 키(single-byte 또는 고정 길이 키 1개)</strong>: 모든 바이트에 동일한 키(바이트 하나 또는 정해진 길이의 키)를 반복 적용.</li><li><strong>반복 키(repeating/rolling key)</strong>: 키 길이가 데이터보다 짧아서 <code>key[i % len(key)]</code>처럼 순환시키며 적용. 고전적인 Vigenère 암호와 원리가 같다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-c">for (i = 0; i &lt; len; i++) {
+    out[i] = data[i] ^ key[i % keylen];
+}</code></pre>
+<p>디스어셈블리에서는 <code>xor al, byte ptr [key + edx]</code> 형태로 나타나고, <code>edx</code>가 나눗셈/나머지 연산(<code>and edx, mask</code> 또는 <code>div</code>)으로 만들어진 인덱스라면 반복 키 XOR일 가능성이 높다. 자세한 어셈블리 패턴은 REV-0199에서 다룬다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>암호화된(또는 비교 대상인) 바이트 배열과 키를 정확히 덤프한다. 키가 몇 바이트인지 모른다면 뒤의 "키 길이 추정" 절차를 먼저 수행한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 재사용 가능한 xor_bytes 함수</strong></p>
+<pre><code class="language-python">from itertools import cycle
+
+def xor_bytes(data: bytes, key: bytes) -&gt; bytes:
+    """data와 key를 반복 키 XOR로 결합한다.
+    key가 1바이트든, data보다 짧은 여러 바이트든 모두 동작한다."""
+    return bytes(d ^ k for d, k in zip(data, cycle(key)))</code></pre>
+<p><code>key</code>가 1바이트(<code>bytes([0x5A])</code>)여도, 4바이트(<code>b"CTF!"</code>)여도 동일하게 동작한다 — <code>cycle()</code>이 키를 필요한 만큼 반복해준다.</p>
+<p><strong>2) 고정 키(단일 바이트) 사용 예</strong></p>
+<pre><code class="language-python">expected = bytes.fromhex("3c363b3d2122352827")
+flag = xor_bytes(expected, bytes([0x5A]))
+print(flag)   # b'flag{xor}'</code></pre>
+<p><strong>3) 반복 키 사용 예</strong></p>
+<pre><code class="language-python">expected = bytes.fromhex("25382746382c29531c65357e262e3b")
+key = b"CTF!"
+flag = xor_bytes(expected, key)
+print(flag)</code></pre>
+<p><strong>4) 키를 모를 때 — 단일 바이트 키 전수 브루트포스</strong> 알려진 부분 문자열(예: <code>flag{</code>)이 있다면 XOR 성질을 이용해 키를 역산할 수 있다.</p>
+<pre><code class="language-python">expected = bytes.fromhex("...")
+known_prefix = b"flag{"
+
+for i in range(len(expected) - len(known_prefix) + 1):
+    # expected[i:i+len(known_prefix)]가 known_prefix가 되게 하는 키 후보 계산
+    candidate_key = xor_bytes(expected[i:i+len(known_prefix)], known_prefix)
+    print(i, candidate_key)</code></pre>
+<p>실제로는 키가 위치와 무관하게 고정이어야 하므로, <code>i=0</code>에서 얻은 후보 키로 전체를 복호화해 아스키 여부를 확인하는 식으로 좁혀간다.</p>
+<p><strong>5) 키 길이를 모를 때 — 아스키 비율로 자동 탐색</strong></p>
+<pre><code class="language-python">def printable_ratio(b: bytes) -&gt; float:
+    return sum(0x20 &lt;= c &lt; 0x7F for c in b) / max(len(b), 1)
+
+expected = bytes.fromhex("...")
+best = (0.0, None, None)
+for keylen in range(1, 17):
+    for key_guess in range(256):
+        key = bytes([key_guess]) * keylen   # 간단화: 단일 값 반복 (실전에선 바이트별 빈도분석 권장)
+        result = xor_bytes(expected, key)
+        ratio = printable_ratio(result)
+        if ratio &gt; best[0]:
+            best = (ratio, keylen, key)
+# best로 대략적인 키 길이 후보를 좁힌 뒤 정밀 탐색으로 넘어감</code></pre>
+<p>실전에서는 위 코드보다 "각 위치(<code>i % keylen</code>)별로 가장 자주 나오는 XOR 결과가 공백(<code>0x20</code>)이나 알려진 문자가 되는 키 바이트를 고르는" 빈도 분석이 더 정확하지만, 짧은 CTF 플래그에는 위 방식만으로도 충분히 실용적이다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA/Ghidra에서 XOR 명령을 찾으려면 <code>Search &gt; Text</code>(또는 <code>Alt+T</code>)로 <code>xor</code>를 검색</li><li>x64dbg: 커맨드바에 <code>find 00, "xor"</code> 또는 그래프 뷰에서 <code>xor</code> 관련 블록만 하이라이트</li><li>Python: <code>itertools.cycle</code>, <code>bytes.fromhex</code>, 리스트 컴프리헨션</li></ul>
+<h2>출력 해석</h2>
+<ul><li>복호화 결과가 <code>flag{</code>, <code>CTF{</code> 같은 접두어로 깔끔하게 시작하면 키/방향 추정이 맞았다는 강한 신호다.</li><li>앞부분만 맞고 뒷부분이 깨진다면 반복 키 길이를 잘못 추정했을 가능성이 높다 — 키 길이를 늘리거나 줄여가며 다시 시도한다.</li><li>전부 깨진 값이 나온다면 XOR 앞뒤에 다른 변환(ADD/ROL 등)이 섞여 있을 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>zip(data, cycle(key))</code>에서 <code>data</code>가 <code>key</code>보다 짧을 때는 문제없지만, 반대로 <code>cycle</code>을 안 쓰고 그냥 <code>key</code>만 <code>zip</code>하면 긴 데이터의 뒷부분이 잘려나가는 것 — 반드시 <code>cycle(key)</code>처럼 무한 반복자로 감싸야 한다.</li><li>반복 키의 방향을 착각하는 것 — <code>key[i % keylen]</code>이 정방향인지, 코드에 따라 <code>key[keylen - 1 - i % keylen]</code>처럼 역순인지 디스어셈블리를 다시 확인해야 한다.</li><li>체인 XOR(이전 바이트를 다음 키로 쓰는 CBC 스타일)을 반복 키 XOR로 착각해서 <code>xor_bytes</code>를 그대로 적용하는 것 — 이 경우는 REV-0199에서 다루는 별도의 순차 복원 로직이 필요하다.</li><li>8비트가 아니라 32비트 단위(<code>xor eax, key_dword</code>)로 XOR하는 코드를 1바이트 함수로 처리해 하위 바이트만 맞고 나머지가 틀리는 것 — 이럴 땐 REV-0261의 <code>struct.pack('&lt;I', ...)</code>로 4바이트씩 묶어 XOR해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>어셈블리에서 XOR 패턴이 단일 키/반복 키/체인 중 무엇인지 구분하는 방법이 더 필요하면 → REV-0199 (XOR 반복 변환 역산)에서 어셈블리 예제와 함께 상세히 다룬다.</li><li>32비트/64비트 단위로 묶어서 XOR해야 하면 → REV-0261 (struct pack/unpack)과 조합.</li><li>XOR 앞뒤에 ROL/ROR가 섞여 있으면 → REV-0263 (Rotate 함수 템플릿)과 순서를 맞춰 함께 역산.</li></ul>
+<h2>미니 예제</h2>
+<p>바이너리에서 다음 값을 확인했다고 하자: <code>expected = 1D 0B 1C 56 42 4E 04 13 05 0B 16 4E</code>, 키는 4바이트 <code>"CTF!"</code>.</p>
+<pre><code class="language-python">from itertools import cycle
+
+def xor_bytes(data: bytes, key: bytes) -&gt; bytes:
+    return bytes(d ^ k for d, k in zip(data, cycle(key)))
+
+expected = bytes.fromhex("25382746382c29531c65357e262e3b")
+key = b"CTF!"
+flag = xor_bytes(expected, key)
+print(flag)   # 사람이 읽을 수 있는 문자열이 나오면 성공</code></pre>
+<p>같은 <code>xor_bytes</code> 함수로 반대로 <code>xor_bytes(flag, key)</code>를 하면 다시 <code>expected</code>가 나온다 — 암호화/복호화가 완전히 대칭이라는 것을 직접 확인할 수 있다.</p>
+<h3>실전 예제 2 — 키를 전혀 모를 때, 알려진 접두어(<code>"flag{"</code>)만으로 단일 바이트 키 복구하기</h3>
+<p>이번엔 키가 몇 바이트인지도, 값이 무엇인지도 모르는 상황을 가정한다. 다만 플래그 형식의 문제라면 결과가 <code>"flag{"</code>로 시작한다는 것은 거의 확실하다 — 이 사전 지식만으로 단일 바이트 키를 정확히 역산해본다.</p>
+<pre><code class="language-python">from itertools import cycle  # 키를 데이터 길이에 맞춰 반복시켜주는 반복자
+
+
+def xor_bytes(data: bytes, key: bytes) -&gt; bytes:
+    # data와 key를 반복 키 XOR로 결합한다 (키가 1바이트여도, 여러 바이트여도 동일하게 동작)
+    return bytes(d ^ k for d, k in zip(data, cycle(key)))
+
+
+# 바이너리에서 덤프한, 아직 어떤 키로 XOR됐는지 모르는 암호화된 바이트열
+expected = bytes.fromhex("4c464b4d515943444d464f7548535e4f75524558751b19191d57")
+
+known_prefix = b"flag{"   # 복호화 결과가 이 문자열로 시작할 것이라는 사전 지식
+
+# 1) "정답 XOR 키 = 암호문 XOR 평문"이라는 XOR의 성질을 이용해, 앞 5바이트로 키 후보를 계산한다
+candidate = xor_bytes(expected[:len(known_prefix)], known_prefix)
+print("후보 키 바이트열:", candidate.hex())   # 예: 2a2a2a2a2a
+
+# 2) 후보 키 바이트가 전부 같은 값이면, "1바이트짜리 고정 키"라는 가정이 맞다는 뜻이다
+if len(set(candidate)) == 1:
+    recovered_key = candidate[0]           # 후보들이 전부 같으므로 그중 첫 값을 키로 확정
+    print("복구된 단일 바이트 키:", hex(recovered_key))
+
+    # 3) 복구한 키로 전체 데이터를 복호화해서 실제로 사람이 읽을 수 있는 문자열이 나오는지 확인
+    decoded = xor_bytes(expected, bytes([recovered_key]))
+    print("복호화 결과:", decoded)   # b'flag{single_byte_xor_1337}'
+else:
+    # 후보 바이트가 서로 다르다면 1바이트 고정 키가 아니라 반복 키(여러 바이트)일 가능성이 높다
+    print("1바이트 키 가정이 맞지 않음 - 반복 키(rolling key)일 가능성 확인 필요")</code></pre>
+<p><code>candidate</code> 바이트열(<code>expected</code>의 앞 5바이트와 <code>"flag{"</code>를 XOR한 결과)이 전부 똑같은 값(<code>0x2a</code>)으로 나온다는 것 자체가 "이 문제는 1바이트 고정 키를 쓴다"는 가정이 맞았다는 강력한 증거다. 만약 반복 키(예: 4바이트 키)였다면 이 5개의 후보 바이트는 서로 다른 값들이 섞여서 나왔을 것이다 — 이런 "후보 바이트가 전부 일치하는가"라는 검사만으로도 키 길이를 함께 추정할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0261-python-struct.html">REV-0261 — Python struct pack unpack</a></li><li><a href="rev-0263-python-rotate-template.html">REV-0263 — Python Rotate 함수 템플릿</a></li><li><a href="rev-0264-python-32bit-overflow.html">REV-0264 — Python 32비트 Overflow 재현</a></li><li>../algorithms/rev-0199-xor-loop-inversion.md</li></ul>
+<h2>출처/검증</h2>
+<ul><li>XOR의 자기 역원 성질은 불(Boolean) 대수의 기본 정리이며 모든 CPU 아키텍처 매뉴얼에서 동일하게 성립. <code>itertools.cycle</code>은 Python 공식 문서(itertools 모듈) 기준(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

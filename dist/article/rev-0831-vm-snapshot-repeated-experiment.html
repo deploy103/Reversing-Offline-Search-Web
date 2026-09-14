@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>스냅샷/되돌리기 기능으로 반복 실험하는 법(가상머신 활용) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>스냅샷/되돌리기 기능으로 반복 실험하는 법(가상머신 활용)</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>디버거의 "재시작"은 프로세스만 초기화할 뿐 대상 프로그램이 이미 만들어 놓은 파일/레지스트리/네트워크 상태는 그대로 남으므로, 실행 전 상태를 완전히 재현하려면 VMware/VirtualBox 같은 가상머신의 스냅샷(Snapshot) 기능으로 "실행 직전" 시점을 저장해두고 매 실험 뒤 그 지점으로 되돌리는 것이 안전하고 재현성 있는 방법이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>분석 대상이 파일을 생성/삭제하거나 레지스트리 값을 바꾸거나 네트워크에 접속하는 등 시스템 상태를 변경해서, 재실행만으로는 "처음 실행했을 때와 똑같은 조건"이 재현되지 않을 때</li><li>같은 실험(REV-0825~0827에서 다룬 인자/플래그/RIP 조작)을 여러 번 반복해야 하는데, 매번 프로그램만 재시작해서는 원래 파일 시스템 상태까지 되돌아가지 않을 때</li><li>악성코드로 의심되는 샘플을 분석해야 해서, 실수로 실제 시스템에 영향을 주지 않도록 격리된 환경에서 반복 실험하고 싶을 때</li><li>분석 도중 시스템이 불안정해지거나(레지스트리 오염, 프로세스 잔류) 실수로 무언가를 지워서 처음부터 다시 세팅해야 하는 상황을 피하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>디버거 재시작과 VM 스냅샷 되돌리기는 레벨이 다르다</h3>
+<ul><li><strong>디버거 재시작(GDB <code>run</code>, x64dbg의 재실행)</strong>: 프로세스의 메모리, 레지스터, 스택만 초기 상태로 되돌린다. 하지만 그 프로세스가 실행 중에 만든 파일, 레지스트리 키, 열어 놓은 락 파일 등은 운영체제 수준에 남아있으므로 사라지지 않는다.</li><li><strong>VM 스냅샷 되돌리기</strong>: 가상머신 전체(디스크, 메모리, 레지스트리, 네트워크 설정 포함)를 스냅샷을 찍은 시점 그대로 복원한다. 프로그램이 무엇을 바꿔놨든 상관없이 "완전히 깨끗한 시작점"으로 돌아간다.</li></ul>
+<p>즉 프로세스 수준의 부작용만 신경 쓰면 되는 실험(REV-0825~0827)은 디버거 재시작으로 충분하지만, 파일 시스템/레지스트리/영속 상태에 영향을 주는 프로그램(설치 프로그램, 드로퍼, 설정 파일을 남기는 검증 로직 등)은 VM 스냅샷 없이는 정확한 반복 실험이 불가능하다.</p>
+<h3>스냅샷을 언제 찍어야 하는가</h3>
+<p>분석을 시작하기 전, 즉 대상 프로그램을 한 번도 실행하지 않은 "깨끗한 상태"에서 스냅샷을 찍어두는 것이 기본이다. 이후 필요하다면 "디버거를 붙이고 첫 브레이크포인트 직전"처럼 조금 더 진행된 지점에서 추가 스냅샷을 찍어, 매번 디버거 설정부터 다시 하지 않아도 되게 만들 수도 있다.</p>
+<h3>스냅샷 vs 클론(Clone)</h3>
+<p>스냅샷은 같은 가상머신 안에서 여러 시점을 저장해두고 오가는 기능이고, 클론은 가상머신 자체를 통째로 복제하는 것이다. 장기적으로 여러 사람이 같은 환경에서 분석하거나, 분석 중 VM 자체가 손상될 위험이 있는 악성코드를 다룰 때는 스냅샷보다 별도의 클론 VM을 만들어 두는 것이 더 안전할 수 있다.</p>
+<h3>격리 네트워크 설정</h3>
+<p>스냅샷과 별개로, 악성코드 분석 VM은 네트워크 어댑터를 "Host-only" 또는 "Internal Network"로 설정해 실제 인터넷/내부망과 격리하는 것이 기본이다. 스냅샷으로 되돌려도 네트워크 설정 자체가 위험하게 되어 있으면 의미가 퇴색된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>프로그램을 두 번째 실행했을 때 첫 실행과 다른 동작을 보임(예: "이미 설치되어 있습니다" 메시지, 다른 시리얼 검증 결과)</li><li><code>%APPDATA%</code>, 레지스트리 <code>HKCU\Software\...</code> 등에 프로그램이 남긴 흔적이 재부팅해도 남아있음</li><li>분석 중 실수로 시스템 파일을 지우거나 방화벽 설정을 건드려 시스템이 불안정해짐</li><li>같은 실험을 반복하려는데 "이전 실행의 잔여 프로세스가 남아있다"는 오류가 남</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>분석용 가상머신에 대상 프로그램을 아직 한 번도 실행하지 않은 상태에서 스냅샷을 하나 찍어(예: 이름을 <code>clean-before-run</code>처럼 의미 있게 지정) "언제든 여기로 돌아올 수 있는 기준점"을 확보한다. 그 다음부터는 실험 → 되돌리기를 반복한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>분석용 VM을 준비하고 네트워크를 Host-only/Internal로 격리</li><li>대상 프로그램을 VM에 복사만 해두고(아직 실행 전) 스냅샷 생성(예: <code>before-run</code>)</li><li>디버거를 붙이고 프로그램을 실행, 필요한 실험(REV-0825~0830) 수행</li><li>실험이 끝나면 프로그램을 종료하고, VM 스냅샷 관리자에서 <code>before-run</code> 시점으로 복원(Revert to Snapshot)</li><li>복원 완료 후 동일한 조건에서 다른 입력/다른 실험을 반복</li><li>특정 시점(예: 첫 검증 통과 직후)까지의 상태를 재사용하고 싶다면 그 시점에서 추가 스냅샷을 찍어 다음 실험의 시작점으로 활용</li><li>실험이 모두 끝나면 필요 없는 중간 스냅샷은 정리(스냅샷이 많이 쌓이면 디스크 용량과 성능에 영향)</li></ol>
+<h2>명령어/단축키</h2>
+<p>VMware Workstation:</p>
+<pre><code>VM 메뉴 → Snapshot → Take Snapshot
+VM 메뉴 → Snapshot → Revert to Snapshot
+VM 메뉴 → Snapshot → Snapshot Manager (여러 시점 관리)</code></pre>
+<p>VirtualBox:</p>
+<pre><code>머신 → 스냅샷 → 만들기(단축키 없음, 메뉴 사용)
+스냅샷 목록에서 우클릭 → Restore Snapshot</code></pre>
+<p>디버거 자체 재시작(참고용, 프로세스 수준):</p>
+<pre><code>GDB: run (또는 kill 후 다시 run)
+x64dbg: Ctrl+F2 (Restart)</code></pre>
+<h2>출력 해석</h2>
+<ul><li>스냅샷 복원 직후 VM을 부팅하면(메모리 상태까지 저장하는 스냅샷이라면 부팅 없이 즉시) 이전에 찍었던 순간과 완전히 동일한 파일/레지스트리/프로세스 상태로 돌아온다. 복원 후 대상 프로그램의 흔적(생성했던 파일 등)이 실제로 사라졌는지 확인해보면 스냅샷이 제대로 걸렸는지 검증할 수 있다.</li><li>스냅샷 목록에서 트리 구조로 여러 시점이 갈라져 있다면, 어떤 가지가 "깨끗한 시작점"이고 어떤 가지가 "실험이 진행된 시점"인지 이름을 명확히 붙여 헷갈리지 않게 관리해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>스냅샷을 프로그램을 이미 한 번 실행한 뒤에 찍어서, 되돌려도 흔적이 남아있는 상태를 "깨끗한 시작점"으로 착각하는 것</li><li>스냅샷 이름을 <code>Snapshot 1</code>, <code>Snapshot 2</code>처럼 의미 없이 남겨서 나중에 어떤 게 진짜 기준점인지 헷갈리는 것</li><li>디버거 재시작만으로 충분하다고 생각하고 파일/레지스트리에 영향을 주는 프로그램까지 그렇게 다뤄서, 실험마다 조건이 미묘하게 달라지는 것을 눈치채지 못하는 것</li><li>네트워크를 격리하지 않은 VM에서 악성코드로 의심되는 샘플을 실행해 실제 네트워크에 영향을 주는 것</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>프로세스 수준의 반복 실험(레지스터/플래그/인자 조작)은 → REV-0825, REV-0826, REV-0827</li><li>시간을 되돌리는 개념을 디버거 자체 기능으로 하고 싶다면 → REV-0821 GDB reverse debugging 개념 소개(record/replay) (예정)</li><li>Time Travel Debugging 개념과의 차이가 궁금하면 → REV-0822 Time Travel Debugging 개념 소개(WinDbg 참고) (예정)</li><li>안티VM 탐지 때문에 분석 환경 자체가 들키는 게 걱정된다면 → REV-0576 VM 아티팩트 탐지 관련 글에서 반대 관점(탐지 기법) 확인</li></ul>
+<h2>미니 예제</h2>
+<pre><code>[VMware]
+1) 스냅샷 "before-run" 생성 (프로그램 실행 전)
+2) 프로그램 실행 → 레지스트리에 HKCU\Software\Sample\Installed=1 생성 확인
+3) 프로그램 종료
+4) VM 메뉴 → Snapshot → Revert to Snapshot → "before-run"
+5) 레지스트리 확인 → HKCU\Software\Sample 키가 사라짐(깨끗한 상태로 복원됨)
+6) 다른 입력값으로 다시 실행 → 동일한 조건에서 실험 반복</code></pre>
+<p>스냅샷을 되돌린 뒤 레지스트리 키가 실제로 사라진 것을 확인함으로써, 매 실험이 정확히 같은 초기 조건에서 시작된다는 것을 검증할 수 있었다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0825-modify-function-args-runtime.html">REV-0825 — 디버거에서 함수 인자를 실행 중 값으로 바꿔서 실험하기</a></li><li><a href="rev-0826-force-flag-manipulation.html">REV-0826 — 디버거에서 분기 조건을 강제로 바꿔서 실험하기(Flag 조작)</a></li><li><a href="rev-0827-force-rip-skip-loop.html">REV-0827 — 루프를 건너뛰기 위해 RIP를 강제로 옮기는 법</a></li><li><a href="rev-0576-vm-artifact-detection.html">REV-0576 — 가상머신 아티팩트(레지스트리/파일)로 VM 탐지하는 기법</a></li><li><a href="rev-0821-gdb-reverse-debugging-record-replay.html">REV-0821 — GDB reverse debugging 개념 소개(record/replay)</a></li><li><a href="rev-0822-time-travel-debugging-windbg-intro.html">REV-0822 — Time Travel Debugging 개념 소개(WinDbg 참고)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>VMware Workstation Snapshot/Revert 기능: VMware 공식 문서(Workstation Pro 사용 설명서, Snapshot 관리 절) 기준.</li><li>VirtualBox 스냅샷 기능: Oracle VirtualBox 공식 사용자 매뉴얼(Snapshots 절) 기준.</li><li>악성코드 분석 시 네트워크 격리(Host-only/Internal Network) 권장 사항: 일반적인 멀웨어 분석 방법론(격리 샌드박스 구축 가이드라인) 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,91 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>APK 파일 구조 기초 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dotnet-android</div>
+<article class="article-body">
+<h1>APK 파일 구조 기초</h1>
+<div class="article-meta"><span class="tag">dotnet-android</span><span class="tag">입문</span><span class="tag">android</span><span class="tag">APK</span><span class="tag">JADX</span></div>
+<h2>한 줄 요약</h2>
+<p>APK(Android Package)는 실제로는 <strong>ZIP 압축 컨테이너</strong>일 뿐이며, 그 안에 앱 실행에 필요한 모든 것 — 권한/컴포넌트 정의(<code>AndroidManifest.xml</code>), 컴파일된 자바/코틀린 바이트코드(<code>classes.dex</code>), 컴파일된 리소스 테이블(<code>resources.arsc</code>), 원본 리소스 파일(<code>res/</code>), 네이티브 라이브러리(<code>lib/</code>), 서명 정보(<code>META-INF/</code>)가 정해진 이름의 폴더/파일로 들어있으므로, 압축을 풀어 이 이름들만 알아보면 APK 분석의 첫 그림을 잡을 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>APK 파일을 처음 받아서 압축을 풀어봤는데 나오는 폴더/파일 이름(<code>AndroidManifest.xml</code>, <code>classes.dex</code>, <code>res/</code>, <code>lib/</code>, <code>META-INF/</code>)이 각각 뭘 하는 건지 모를 때</li><li>APK가 실제로 ZIP 포맷이라는 걸 몰라서 "어떤 전용 도구로만 열어야 하나?" 헷갈릴 때</li><li>JADX 같은 도구로 분석을 시작하기 전에 APK 내부 구조를 먼저 전체적으로 정리하고 싶을 때</li><li><code>classes.dex</code>와 <code>.NET</code>의 IL, 네이티브 PE의 코드 섹션이 어떻게 다른지 비교하며 이해하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>APK는 그냥 ZIP이다</h3>
+<p>APK 확장자를 <code>.zip</code>으로 바꾸면 대부분의 압축 프로그램(7-Zip, WinRAR 등)으로 그대로 열린다. 이것은 우연이 아니라 공식 스펙이다 — APK는 JAR(Java Archive)와 마찬가지로 표준 ZIP 포맷을 그대로 사용하는 컨테이너다. 이 사실을 알면 "APK를 열려면 반드시 전용 도구가 있어야 한다"는 부담이 사라지고, 구조를 파악하는 첫 단계는 그냥 압축 풀기라는 것을 알 수 있다. 다만 코드/리소스가 이진 형태로 컴파일되어 있어서, 압축을 풀어도 사람이 바로 읽을 수 있는 것은 아니다. 그 이진 포맷들을 해석해주는 것이 JADX 같은 전용 분석 도구의 역할이다.</p>
+<h3>압축을 풀면 나오는 주요 항목</h3>
+<pre><code>MyApp.apk (ZIP)
+ ├─ AndroidManifest.xml     앱 메타데이터 (이진 XML 형식)
+ ├─ classes.dex             컴파일된 Java/Kotlin 바이트코드 (DEX)
+ ├─ classes2.dex, ...       코드량이 많으면 여러 개로 분할(멀티덱스)
+ ├─ resources.arsc          컴파일된 리소스 테이블(문자열, 스타일, ID 매핑)
+ ├─ res/                    이미지, 레이아웃, 문자열 XML 등 원본 리소스
+ ├─ assets/                 컴파일되지 않은 원본 파일(임의 형식 데이터, DB 등)
+ ├─ lib/                    네이티브 라이브러리(.so, ARM/x86 아키텍처별 폴더)
+ └─ META-INF/               서명 인증서, 매니페스트 체크섬(APK 서명 정보)</code></pre>
+<h3>AndroidManifest.xml — 앱의 설계도</h3>
+<p>모든 APK는 루트에 <code>AndroidManifest.xml</code>을 반드시 포함한다. 이 파일은 앱 패키지명, 최소/타깃 Android SDK 버전, 사용하는 권한(<code>&lt;uses-permission&gt;</code>), 그리고 앱을 구성하는 4대 컴포넌트 — Activity(화면), Service(백그라운드 작업), BroadcastReceiver(이벤트 수신), ContentProvider(데이터 공유) — 를 선언한다. 리버싱 관점에서는 이 파일만 봐도 "이 앱이 어떤 권한을 요구하는지", "어떤 화면(Activity)에서 시작하는지(<code>intent-filter</code>의 <code>MAIN</code>/<code>LAUNCHER</code>)", "외부에 노출된 컴포넌트가 있는지(<code>exported="true"</code>)"를 빠르게 파악할 수 있다. 단, 압축을 풀어 원본을 텍스트 에디터로 열면 사람이 읽을 수 없는 <strong>이진 XML(AXML)</strong> 형식이므로, 반드시 JADX 같은 도구로 디코딩해서 봐야 한다.</p>
+<h3>classes.dex — 컴파일된 앱 코드</h3>
+<p>Android 앱은 Java 또는 Kotlin으로 작성되지만, 일반 JVM용 <code>.class</code> 파일로 컴파일되는 대신 <strong>DEX(Dalvik Executable)</strong>라는 Android 전용 바이트코드 포맷으로 다시 변환되어 <code>classes.dex</code>에 담긴다. DEX는 여러 클래스 파일을 하나로 합치고 문자열/타입/메서드 테이블을 공유하도록 최적화된 포맷으로, Dalvik 또는 ART(Android Runtime)가 이를 실행한다. .NET의 CIL과 마찬가지로 DEX도 원본 소스에 가까운 정보(클래스명, 메서드명, 타입)를 상당 부분 보존하고 있어서, JADX 같은 도구로 자바 소스에 가까운 형태로 디컴파일할 수 있다. 다만 이는 <a href="rev-0245-cil-to-csharp.html">REV-0245</a>에서 다룬 CIL과는 완전히 다른 바이트코드 포맷이며, 명령어 집합도 다르다는 점에 주의해야 한다. 코드가 많은 앱은 하나의 DEX가 담을 수 있는 메서드 개수(약 65,536개) 제한 때문에 <code>classes2.dex</code>, <code>classes3.dex</code>처럼 여러 개로 나뉘는 <strong>멀티덱스</strong> 구조를 갖기도 한다.</p>
+<h3>resources.arsc와 res/ — 리소스 두 갈래</h3>
+<p><code>res/</code> 폴더에는 이미지(<code>drawable/</code>), 레이아웃(<code>layout/</code>), 문자열(<code>values/strings.xml</code>) 등 리소스 원본이 들어 있지만, 빌드 과정에서 이 리소스들 중 다수(특히 XML 기반 리소스, 문자열 테이블)는 컴파일되어 <code>resources.arsc</code>라는 단일 이진 테이블로 합쳐진다. 이 테이블은 리소스 ID(정수)와 실제 값(문자열, 참조 등)을 매핑하는 역할을 하며, 코드에서 <code>R.string.app_name</code> 같은 식으로 참조되는 리소스 ID가 실제로 어떤 값인지 알아내려면 이 <code>resources.arsc</code>를 해석해야 한다. JADX는 APK를 열 때 이 테이블을 자동으로 해석해서 <code>res/values/strings.xml</code> 같은 읽을 수 있는 형태로 복원해준다.</p>
+<h3>lib/ — 네이티브 코드</h3>
+<p>많은 앱, 특히 게임이나 성능이 중요한 앱, 또는 안티 디버깅/난독화가 강한 앱은 일부 로직을 Java/Kotlin이 아니라 <strong>C/C++로 작성해 JNI(Java Native Interface)를 통해 호출</strong>한다. 이런 네이티브 코드는 컴파일되어 <code>lib/{아키텍처}/*.so</code> (예: <code>lib/arm64-v8a/libnative.so</code>) 형태로 APK에 포함된다. 이 <code>.so</code> 파일은 일반 ELF 공유 라이브러리이므로, JADX가 아니라 Ghidra나 IDA 같은 네이티브 디스어셈블러로 분석해야 한다. 즉 하나의 APK 안에서도 "자바/코틀린으로 된 부분"과 "네이티브 코드로 된 부분"이 함께 있을 수 있고, 두 부분은 서로 다른 분석 도구가 필요하다.</p>
+<h3>META-INF/ — 서명과 무결성</h3>
+<p><code>META-INF/</code> 폴더에는 <code>MANIFEST.MF</code>(각 파일의 체크섬 목록), <code>CERT.SF</code>(서명 대상 목록의 해시), <code>CERT.RSA</code>(또는 <code>.DSA</code>, 개발자 서명 인증서) 같은 파일이 들어 있다. Android는 서명되지 않은 APK의 설치를 기본적으로 허용하지 않으며, 이 서명은 "누가 이 앱을 만들었는지"를 증명하고 업데이트 시 동일 서명자인지 검증하는 데 쓰인다. 최신 Android는 이보다 발전된 <strong>APK Signature Scheme v2/v3</strong>(서명 블록을 ZIP 구조 자체에 별도로 삽입)도 함께 지원하지만, 기본 개념(체크섬 + 인증서로 무결성/출처 증명)은 동일하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>파일 탐색기에서 APK 확장자를 <code>.zip</code>으로 바꾸면 일반 압축 프로그램으로 내용물이 그대로 보인다.</li><li>JADX로 APK를 열면 좌측에 <code>Source code</code>(디컴파일된 자바 코드), <code>Resources</code>(리소스), <code>AndroidManifest.xml</code> 등의 탭/트리가 자동으로 구성된다.</li><li>압축을 풀었을 때 <code>lib/arm64-v8a/</code>, <code>lib/armeabi-v7a/</code>, <code>lib/x86_64/</code> 처럼 아키텍처별 폴더가 여러 개 보이면 네이티브 코드가 여러 CPU 아키텍처를 지원하도록 빌드된 것이다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>APK 파일을 받으면 바로 JADX부터 켜기 전에, 우선 압축 프로그램으로 열어(또는 확장자를 <code>.zip</code>으로 바꿔서) 최상위 폴더 구조를 30초만 훑어본다. <code>lib/</code> 폴더가 있는지(네이티브 코드 여부), <code>classes.dex</code>가 하나뿐인지 여러 개인지(멀티덱스 여부), <code>assets/</code>에 수상한 파일(암호화된 리소스, DB 등)이 있는지를 먼저 파악하면 이후 JADX 분석의 우선순위를 정하기 쉬워진다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 압축 해제로 전체 구조 훑기</strong> <code>.apk</code>를 <code>.zip</code>으로 바꾸거나 7-Zip 등으로 직접 연 뒤 최상위 목록을 확인한다.</p>
+<p><strong>2) AndroidManifest.xml 확인</strong> 루트의 <code>AndroidManifest.xml</code>은 이진 형식이라 직접 읽을 수 없으므로, JADX나 <code>apktool</code>로 디코딩해서 패키지명, 권한, 컴포넌트, 시작 Activity를 확인한다.</p>
+<p><strong>3) classes.dex 개수 확인</strong> <code>classes.dex</code>만 있는지 <code>classes2.dex</code> 이상이 더 있는지 확인해서 코드 규모(멀티덱스 여부)를 가늠한다.</p>
+<p><strong>4) lib/ 폴더 유무로 네이티브 코드 여부 판단</strong> <code>lib/</code> 폴더가 있으면 일부 로직이 네이티브(<code>.so</code>)에 있을 수 있다는 뜻이므로, 자바 코드만 보고 전체 로직을 판단하지 않도록 주의한다.</p>
+<p><strong>5) resources.arsc와 res/ 관계 이해</strong> 문자열 등 리소스 값이 코드에서 안 보이면 <code>R.string.xxx</code> 같은 리소스 참조를 따라 <code>resources.arsc</code>(JADX가 자동 복원해주는 <code>res/values/strings.xml</code>)를 확인해야 한다는 것을 기억해둔다.</p>
+<p><strong>6) META-INF로 서명 확인</strong> 서명 인증서 유무/내용으로 이 APK가 공식 배포판인지, 리패키징(재서명)된 변형본인지 짐작할 단서를 얻는다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">APK를 ZIP으로 취급해서 압축 해제: 확장자를 .zip으로 변경 후 압축 프로그램으로 열기
+apktool d MyApp.apk -o out/   AndroidManifest.xml과 res/를 사람이 읽을 수 있는 형태로 디코딩
+JADX: 파일을 창에 드래그 앤 드롭하여 APK를 열고 자동 디컴파일</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>AndroidManifest.xml</code>에서 <code>android:debuggable="true"</code>가 보이면 디버깅이 허용된 빌드(테스트/개발용 또는 의도적으로 취약하게 만든 CTF용)일 가능성이 높다.</li><li><code>minSdkVersion</code>/<code>targetSdkVersion</code> 값으로 이 앱이 지원하는 Android 버전 범위를 알 수 있고, 오래된 <code>targetSdkVersion</code>은 최신 보안 정책(권한 모델 등)이 느슨하게 적용된다는 뜻이기도 하다.</li><li><code>lib/</code> 안의 <code>.so</code> 파일 이름과 개수를 보면 이 앱이 네이티브 코드에 얼마나 의존하는지 가늠할 수 있다. 이름이 <code>libil2cpp.so</code>라면 Unity(IL2CPP) 게임일 가능성이 매우 높다는 특징적인 신호다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>APK를 무조건 전용 도구로만 열 수 있다고 생각해서 구조 파악 없이 바로 무거운 분석 도구부터 켜는 것. ZIP이라는 사실만 알아도 빠르게 훑어볼 수 있다.</li><li><code>classes.dex</code>가 앱의 전체 로직이라고 가정하고 <code>lib/</code>의 네이티브 코드를 놓치는 것. 안티 리버싱이 강한 앱일수록 핵심 로직을 네이티브로 옮겨두는 경우가 흔하다.</li><li><code>resources.arsc</code>를 무시하고 코드에 하드코딩된 문자열만 찾다가, 실제로는 리소스 문자열 테이블에 있는 값을 놓치는 것.</li><li>APK 서명(<code>META-INF/</code>)이 있다고 해서 내용이 변조되지 않았다고 오해하는 것. 리패키징 도구로 코드를 수정한 뒤 자체 서명으로 재서명하면 서명 자체는 유효하게(다른 인증서로) 생성될 수 있으므로, 서명 존재 여부가 아니라 서명 발급자(인증서)가 원래 개발자와 같은지를 확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>JADX로 실제로 이 구조를 열어서 분석하는 방법이 궁금하면 → <a href="rev-0249-jadx-basics.html">REV-0249 JADX로 APK 분석 시작</a></li><li>DEX 바이트코드가 .NET IL과 어떻게 다른지 비교하며 이해하고 싶으면 → <a href="rev-0245-cil-to-csharp.html">REV-0245 CIL IL 명령어를 C#과 연결해서 읽기</a></li><li>네이티브 <code>.so</code> 라이브러리 자체를 분석해야 하면 → Linux/ELF 카테고리의 공유 라이브러리 분석 관련 글을 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p>CTF에서 받은 <code>challenge.apk</code>의 확장자를 <code>.zip</code>으로 바꿔 열어보니 최상위에 <code>AndroidManifest.xml</code>, <code>classes.dex</code>, <code>resources.arsc</code>, <code>res/</code>, <code>META-INF/</code>가 보이고 <code>lib/</code> 폴더는 없다. <code>lib/</code>가 없다는 것은 이 문제의 핵심 로직이 네이티브 코드가 아니라 순수 Java/Kotlin(<code>classes.dex</code>) 안에 있을 가능성이 높다는 뜻이므로, 다음 단계에서는 곧바로 JADX로 <code>classes.dex</code>를 디컴파일해서 코드를 읽는 데 집중하면 된다는 분석 우선순위를 세울 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0249-jadx-basics.html">REV-0249 — JADX로 APK 분석 시작</a></li><li><a href="rev-0245-cil-to-csharp.html">REV-0245 — CIL IL 명령어를 C#과 연결해서 읽기</a></li><li><a href="rev-0242-dotnet-identification.html">REV-0242 — .NET 바이너리 식별과 첫 접근</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>APK 구조(ZIP 컨테이너, <code>AndroidManifest.xml</code>, <code>classes.dex</code>, <code>resources.arsc</code>, <code>lib/</code>, <code>META-INF/</code>)와 DEX/멀티덱스 개념: Android 공식 개발자 문서(developer.android.com, "APK 구성" 및 "Multidex support" 항목) 기준 (2026-09-08 확인).</li><li>APK 서명 체계(META-INF, Signature Scheme v2/v3): Android 공식 개발자 문서 "APK 서명" 항목 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

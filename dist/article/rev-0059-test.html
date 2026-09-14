@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>TEST: 값을 바꾸지 않는 AND 비교 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>TEST: 값을 바꾸지 않는 AND 비교</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>TEST</code>는 두 오퍼랜드를 AND 연산하되 <strong>결과를 어디에도 저장하지 않고 플래그만 세팅</strong>하는 명령어이며, 특히 <code>test eax, eax</code>는 "eax가 0인가?"를 확인하는 컴파일러의 표준 null/zero 체크 관용구다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>test eax, eax</code> 다음에 <code>jz</code>/<code>jnz</code>가 오는 코드를 만나서 이게 뭘 검사하는지 모를 때</li><li>함수 반환값 직후에 <code>test eax, eax</code>가 자주 나오는데 왜 <code>cmp eax, 0</code>을 안 쓰는지 궁금할 때</li><li>포인터가 NULL인지 검사하는 C 코드(<code>if (ptr == NULL)</code>)가 어셈블리로 어떻게 컴파일되는지 알고 싶을 때</li><li><code>test eax, 1</code>처럼 특정 비트 하나만 검사하는 코드를 분석할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>TEST dest, src</code></pre>
+<ul><li>내부적으로 <code>dest AND src</code>를 계산하지만, <strong>그 결과를 dest(또는 어디에도)에 저장하지 않는다.</strong> 오직 플래그만 갱신된다.</li><li><code>dest</code>는 레지스터/메모리, <code>src</code>는 레지스터/메모리/즉시값. 메모리-메모리 조합 불가.</li><li>예: <code>test eax, eax</code>, <code>test eax, 1</code>, <code>test byte ptr [rbp-1], 80h</code>.</li></ul>
+<h3>"값을 바꾸지 않는다"는 것의 정확한 의미</h3>
+<p><code>AND</code>는 <code>dest = dest AND src</code>로 dest를 덮어쓰지만, <code>TEST</code>는 <code>dest AND src</code>를 계산만 하고 <strong>dest를 원래 값 그대로 유지</strong>한다. 즉 TEST는 "AND를 해보되 그 결과는 버리고, 결과에서 파생되는 플래그 정보만 취하는" 명령어다. 이 때문에 TEST는 원본 레지스터/메모리 값을 전혀 훼손하지 않으면서 "만약 AND를 했다면 어떤 상태였을까"를 미리 알아보는 용도로 쓰인다.</p>
+<h3>플래그 변화</h3>
+<p><code>AND</code>와 완전히 동일한 플래그 규칙을 따른다 (내부적으로 AND를 계산하기 때문):</p>
+<ul><li><strong>ZF</strong>: <code>dest AND src</code>가 0이면 1</li><li><strong>SF</strong>: 결과의 최상위 비트가 1이면 1</li><li><strong>PF</strong>: 결과 하위 1바이트의 1비트 개수가 짝수면 1</li><li><strong>CF = 0</strong>, <strong>OF = 0</strong> (항상 무조건 클리어)</li><li><strong>AF</strong>: 정의되지 않음</li></ul>
+<h3><code>test eax, eax</code> — 가장 중요한 패턴</h3>
+<p><code>test eax, eax</code>는 <code>eax</code>를 자기 자신과 AND하는 것이므로 결과는 정확히 <code>eax</code>의 원래 값과 같다(자기 자신과 AND하면 값이 그대로 나옴). 따라서:</p>
+<ul><li><code>eax == 0</code> 이면 <code>ZF = 1</code></li><li><code>eax != 0</code> 이면 <code>ZF = 0</code></li><li><code>eax</code>의 최상위 비트(부호 비트)가 1이면(즉 <code>eax</code>가 음수로 해석될 수 있으면) <code>SF = 1</code></li></ul>
+<p>즉 <code>test eax, eax</code>는 사실상 <strong>"eax를 0과 비교한다"</strong>와 같은 효과를 낸다. 뒤이어 <code>jz</code>(ZF=1이면 분기)를 쓰면 "eax가 0이면 분기", <code>jnz</code>(ZF=0이면 분기)를 쓰면 "eax가 0이 아니면 분기"가 된다.</p>
+<h3>왜 컴파일러는 <code>cmp eax, 0</code> 대신 <code>test eax, eax</code>를 쓰는가</h3>
+<p>둘 다 결과적으로 ZF를 "eax==0" 여부로 세팅한다는 점은 동일하지만, 컴파일러(GCC/Clang/MSVC 전부)는 압도적으로 <code>test eax, eax</code>를 선호한다. 이유:</p>
+<ol><li><strong>인코딩 크기</strong>: <code>test eax, eax</code>는 2바이트(<code>85 C0</code>)인 반면 <code>cmp eax, 0</code>은 3바이트(<code>83 F8 00</code>, 8비트 즉시값을 부호 확장하는 형태 사용 시)다. <code>test</code>가 항상 더 짧거나 같다.</li><li><strong>즉시값 페치 불필요</strong>: <code>test eax, eax</code>는 레지스터-레지스터 연산이라 즉시값을 디코딩할 필요가 없다. <code>cmp eax, 0</code>은 형식상 즉시값 0을 명령어 안에 담아야 한다.</li><li><strong>널리 인식되는 관용구</strong>: 사람이 읽을 때도, 디스어셈블러가 패턴 인식을 할 때도 <code>test reg, reg</code>는 "제로 체크"라는 의미로 즉시 알아볼 수 있는 표준 관용구로 굳어져 있다.</li><li><strong>의미상 완전히 동등</strong>: <code>TEST</code>는 CF/OF를 항상 0으로 만드는데, <code>CMP reg, 0</code>도 뺄셈 결과가 0이므로 CF=0(빌림 없음), OF=0(오버플로 없음)이 되어 이 경우에 한해 플래그 결과가 사실상 동일하다. 그래서 어느 쪽을 써도 이후의 모든 분기(<code>jz</code>, <code>jnz</code>, <code>jl</code>, <code>jg</code> 등)가 똑같이 동작한다.</li></ol>
+<p>핵심 정리: <strong>레지스터를 상수 0과 비교할 때는 TEST와 CMP가 사실상 동등하고, 컴파일러는 더 작고 빠른 TEST를 선택한다.</strong> 반대로 0이 아닌 다른 값과 비교하거나 <code>JA</code>/<code>JB</code> 같은 <strong>unsigned</strong> 비교가 필요하면 TEST로는 안 되고 반드시 <a href="rev-0060-cmp.html">CMP</a>를 써야 한다(아래 "TEST vs CMP" 참고).</p>
+<h3>TEST vs CMP — 근본적인 차이</h3>
+<table><thead><tr><th></th><th><code>TEST dest, src</code></th><th><code>CMP dest, src</code></th></tr></thead><tbody><tr><td>내부 연산</td><td><code>dest AND src</code></td><td><code>dest - src</code></td></tr><tr><td>CF</td><td>항상 0</td><td>뺄셈에서 빌림(borrow) 발생 여부</td></tr><tr><td>OF</td><td>항상 0</td><td>뺄셈에서 부호 있는 오버플로 여부</td></tr><tr><td>용도</td><td>"이 비트가 켜져 있나?", "이 값이 0인가?"</td><td>"이 값이 저 값보다 큰가/작은가/같은가?" (임의의 두 값 비교)</td></tr><tr><td>unsigned 비교(JA/JB)</td><td><strong>불가능</strong> (CF가 항상 0이라 크기 비교 정보가 없음)</td><td>가능</td></tr><tr><td>signed 비교(JG/JL)</td><td>0과의 비교에서만 사실상 가능(OF가 항상 0이므로 SF만으로 판단)</td><td>항상 가능</td></tr></tbody></table>
+<p><code>TEST</code>는 진짜 뺄셈을 하지 않으므로 "A가 B보다 큰가"같은 <strong>순서 비교</strong>에는 근본적으로 쓸 수 없다. TEST는 오직 "특정 비트가 켜져 있는가"(<code>test eax, mask</code>) 또는 "값이 0인가/음수인가"(<code>test eax, eax</code>)를 확인하는 용도로만 쓰인다.</p>
+<h3>신호 있음/없음(signed/unsigned) 관점</h3>
+<p><code>test eax, eax</code> 다음에는 signed 계열 분기(<code>jl</code>, <code>jg</code>, <code>jle</code>, <code>jge</code>)와 zero 계열 분기(<code>jz</code>, <code>jnz</code>)는 정상적으로 쓸 수 있다(TEST가 OF=0을 만들어주므로 <code>jl</code>은 사실상 SF만으로 판단되어 "음수인가"와 동일해진다). 하지만 unsigned 계열 분기(<code>ja</code>, <code>jb</code>, <code>jae</code>, <code>jbe</code>)는 TEST 뒤에 쓰면 <strong>항상 CF=0을 기준으로 판단하므로 사실상 무의미하거나 잘못된 결과</strong>를 낸다 — TEST 뒤에 unsigned 비교 분기가 오는 코드는 거의 없다.</p>
+<h3>스택/RSP/RIP 변화</h3>
+<p>없음.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>call some_func</code> 다음에 바로 <code>test eax, eax</code> — 함수 반환값(포인터 또는 정수)이 0/NULL인지 검사하는 극도로 흔한 패턴</li><li><code>test eax, eax</code> + <code>jz</code> — "0이면 분기" (예: <code>if (x == 0)</code>, <code>if (ptr == NULL)</code>)</li><li><code>test eax, eax</code> + <code>jnz</code> — "0이 아니면 분기" (예: <code>if (x != 0)</code>, <code>if (ptr != NULL)</code>)</li><li><code>test eax, 1</code> — 최하위 비트(홀짝, 또는 불리언 값) 검사</li><li><code>test al, al</code> — 바이트 크기 레지스터(보통 함수가 <code>bool</code>을 반환할 때, 반환값이 <code>AL</code>에 담김)에 대한 제로 체크</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>두 오퍼랜드가 완전히 같은 레지스터인지 확인 (같으면 "0인가?" 검사)</li><li>다르면 어떤 비트마스크로 무슨 비트를 검사하는지 확인</li><li>바로 뒤에 오는 조건부 분기(<code>jz</code>/<code>jnz</code>/<code>jl</code>/<code>jg</code> 등)를 확인해서 전체 조건문을 해석</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) NULL 체크 패턴 인식</strong></p>
+<pre><code class="language-asm">call malloc
+test eax, eax
+jz   alloc_failed</code></pre>
+<p>→ <code>if (ptr == NULL) goto alloc_failed;</code> (malloc 실패 검사)</p>
+<p><strong>2) 반환값 0/1 (bool) 체크</strong></p>
+<pre><code class="language-asm">call IsValid
+test al, al
+jz   invalid</code></pre>
+<p>→ <code>if (!IsValid(...)) goto invalid;</code></p>
+<p><strong>3) 특정 비트 플래그 검사</strong></p>
+<pre><code class="language-asm">test eax, 8
+jz   flag_off</code></pre>
+<p>→ <code>if (flags &amp; 0x8) { ... }</code> (비트가 켜져 있으면 jz를 통과 — 주의: 켜져 있으면 ZF=0이라 jz는 분기 안 함)</p>
+<p><strong>4) TEST로는 불가능한 unsigned 비교를 CMP로 바꿔서 읽는 훈련</strong></p>
+<pre><code class="language-asm">test eax, eax
+ja   greater      ; 이런 조합은 사실상 등장하지 않음 - CF가 항상 0이라 무의미</code></pre>
+<p>이런 코드를 보면 원본 의도가 <code>cmp eax, something; ja ...</code> 였을 가능성을 의심해야 한다(디스어셈블러 오류이거나, 실제로는 다른 목적의 코드일 수 있음).</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA/Ghidra 의사코드에서 <code>test eax, eax</code> + <code>jz</code>는 자동으로 <code>if (v1 == 0)</code>으로, <code>jnz</code>는 <code>if (v1 != 0)</code>으로 정리된다 — 원본이 TEST였다는 사실은 소스 뷰에서만 확인 가능.</li><li>x64dbg: 명령어 실행 후 플래그 창(ZF/SF/CF/OF)을 직접 관찰하며 TEST의 효과를 확인할 수 있다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Ghidra는 <code>test eax, eax</code> 다음 <code>jz</code> 블록을 <code>if (iVar1 == 0) { ... }</code>로, <code>jnz</code>는 <code>if (iVar1 != 0) { ... }</code>로 매우 정확하게 재구성한다.</li><li>IDA F5도 동일하게 동작하며, 함수 반환값을 바로 <code>test</code>하는 패턴은 <code>if (!func())</code> 또는 <code>if (func())</code> 형태로 자연스럽게 보여준다.</li><li>디스어셈블리 원문에서 <code>test</code>가 보였다면, 이는 곧 "이 값 자체가 필요한 게 아니라 0 여부/비트 여부만 필요하다"는 컴파일러의 의도를 보여주는 신호다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>test eax, eax</code>를 보고 "eax와 eax를 곱하거나 뭔가 계산하는 것"이라 오해하는 것 — 아무 계산도 저장되지 않는다. 오직 플래그만 갱신된다.</li><li><code>test</code>가 dest를 바꾼다고 착각해서 <code>test</code> 이후에도 <code>eax</code> 값이 달라졌을 거라 추적하는 것 — TEST는 절대 오퍼랜드를 수정하지 않는다.</li><li><code>test eax, eax</code> 뒤에 <code>ja</code>/<code>jb</code>(unsigned 비교)가 오는 걸 기대하는 것 — TEST는 CF를 항상 0으로 만들기 때문에 unsigned 순서 비교에는 애초에 쓰이지 않는다. 그런 비교가 필요하면 반드시 <a href="rev-0060-cmp.html">CMP</a>가 쓰인다.</li><li><code>test eax, N</code>(N이 0이 아닌 상수)을 <code>cmp eax, N</code>(값이 N과 같은지)과 혼동하는 것 — <code>test eax, N</code>은 "eax와 N을 AND했을 때 결과가 0인가"(즉 N에 해당하는 비트가 전부 꺼져 있는가)를 묻는 것이지, "eax가 N과 같은가"를 묻는 게 절대 아니다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>test eax, eax</code> 다음 분기가 이해 안 되면 → <code>jz</code>인지 <code>jnz</code>인지부터 정확히 구분 (<a href="rev-0067-je-jz.html">REV-0067</a>/<a href="rev-0068-jne-jnz.html">REV-0068</a> 참고).</li><li><code>test eax, N</code>에서 N이 0이 아니면 → N을 2진수로 풀어서 어떤 비트를 검사하는지 확인.</li><li>함수 호출 직후 <code>test</code>가 나오면 → 거의 항상 그 함수의 반환값(성공/실패, NULL 여부)을 검사하는 코드라고 가정하고 시작.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 포인터 NULL 체크</strong></p>
+<pre><code class="language-c">void *p = malloc(size);
+if (p == NULL) {
+    return -1;
+}</code></pre>
+<pre><code class="language-asm">call malloc
+test eax, eax
+jnz  alloc_ok
+mov  eax, -1
+ret
+alloc_ok:</code></pre>
+<p><strong>예제 2 — 정수 0 체크</strong></p>
+<pre><code class="language-c">if (count != 0) {
+    process();
+}</code></pre>
+<pre><code class="language-asm">mov  eax, [count]
+test eax, eax
+jz   skip
+call process
+skip:</code></pre>
+<p><strong>예제 3 — bool 반환값 체크</strong></p>
+<pre><code class="language-c">if (!IsReady()) return;</code></pre>
+<pre><code class="language-asm">call IsReady
+test al, al
+jnz  continue
+ret
+continue:</code></pre>
+<p><strong>예제 4 — 비트 플래그 검사</strong></p>
+<pre><code class="language-c">if (state &amp; STATE_RUNNING) { ... }   // STATE_RUNNING = 0x2</code></pre>
+<pre><code class="language-asm">mov  eax, [state]
+test eax, 2
+jz   not_running
+; ... STATE_RUNNING이 켜져 있을 때 실행되는 코드
+not_running:</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li><li><a href="rev-0055-and.html">REV-0055 — AND: 마스크와 비트 제거</a></li><li><a href="rev-0067-je-jz.html">REV-0067 — JE와 JZ: ZF가 1일 때 분기</a></li><li><a href="rev-0068-jne-jnz.html">REV-0068 — JNE와 JNZ: ZF가 0일 때 분기</a></li><li><a href="rev-0069-jg-jge-jl-jle.html">REV-0069 — JG JGE JL JLE: Signed 비교 분기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>TEST 명령어의 오퍼랜드/플래그 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "TEST—Logical Compare" 섹션 기준 (2026-09-08 검증).</li><li><code>test reg, reg</code>가 <code>cmp reg, 0</code>보다 짧고 컴파일러가 선호하는 이유(인코딩 크기): Agner Fog, "Optimizing subroutines in assembly language" 및 Intel SDM 명령어 인코딩(Opcode Map) 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

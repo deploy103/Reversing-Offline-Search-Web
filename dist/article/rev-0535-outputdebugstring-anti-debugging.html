@@ -1,0 +1,102 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>OutputDebugString을 이용한 안티디버깅 탐지 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>OutputDebugString을 이용한 안티디버깅 탐지</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>OutputDebugStringA</code>/<code>W</code>는 디버거가 붙어 있을 때와 없을 때 내부적으로 완전히 다른 경로로 동작하는데, 디버거가 없으면 이 API가 예외(<code>DBG_PRINTEXCEPTION_C</code>, <code>0x40010006</code>)를 일으켜 시스템 예외 핸들러가 <code>SetLastError</code>를 특정 값(<code>0xBADF00D</code>, 대략 "bad food"를 흉내낸 십진수 <code>195939181</code>에 가까운 관례적 상수)으로 세팅하는 특이한 부작용을 이용해, 이 함수를 부른 직후 <code>GetLastError()</code>를 확인하는 것만으로 디버거 유무를 판단할 수 있다는 잘 알려진 트릭이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리에서 <code>SetLastError</code>로 어떤 임의의 값을 미리 세팅해두고, 곧바로 <code>OutputDebugStringA</code>(또는 <code>W</code>)를 호출한 뒤 다시 <code>GetLastError()</code>로 값을 확인하는 특이한 순서를 봤을 때</li><li>디버거 없이 실행하면 프로그램이 이상하게 동작하거나 크래시하는데, x64dbg로 열면 오히려 정상 작동하는(또는 반대인) 현상을 마주쳤을 때</li><li><code>IsDebuggerPresent</code>, <code>CheckRemoteDebuggerPresent</code>, <code>NtQueryInformationProcess</code> 어느 것도 안 보이는데 여전히 디버거를 감지하는 것 같은 바이너리를 만났을 때</li><li>CTF 문제에서 안티디버깅 종류를 하나씩 소거해가다가 마지막까지 원인을 못 찾았을 때, 흔히 놓치는 이 기법을 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 OutputDebugString이 안티디버깅에 쓰이는가</h3>
+<p><code>OutputDebugStringA(LPCSTR lpOutputString)</code>는 원래 개발자가 디버거의 출력 창에 로그 메시지를 보내기 위한 평범한 API다. 그런데 이 함수의 구현 내부 동작이 디버거 유무에 따라 달라진다는 특성이 안티디버깅에 악용된다.</p>
+<ul><li><strong>디버거가 붙어 있을 때</strong>: 문자열이 정상적으로 디버거의 출력 창(x64dbg의 Log 창 등)에 전달되고, <code>GetLastError()</code>는 이 호출 전에 세팅해둔 값을 그대로 유지한다.</li><li><strong>디버거가 없을 때</strong>: 이 API는 시스템 예외 <code>DBG_PRINTEXCEPTION_C</code>(코드 <code>0x40010006</code>)를 발생시켜 커널/시스템에 문자열을 전달하려 시도하는데, 이를 처리할 디버거가 없으므로 예외가 처리되지 않은 채 시스템 기본 처리 경로로 넘어가고, 그 과정에서 <code>GetLastError()</code>가 반환하는 값이 특정한 관례적 값(흔히 <code>0xBADF00D</code>로 알려진 값)으로 바뀌어버린다.</li></ul>
+<p>즉 코드는 이 함수를 부르기 <strong>전에</strong> <code>SetLastError(0)</code>(또는 다른 임의 값)로 초기화해두고, 함수를 부른 <strong>뒤</strong> <code>GetLastError()</code>를 다시 읽어 그 값이 바뀌었는지(디버거 없음) 그대로인지(디버거 있음)로 판단한다.</p>
+<h3>코드 패턴</h3>
+<pre><code class="language-c">SetLastError(0);
+OutputDebugStringA("test");
+if (GetLastError() == 0) {
+    // 값이 그대로 -&gt; 디버거가 있어서 정상 경로로 처리됨
+} else {
+    // 값이 바뀜(0xBADF00D 등) -&gt; 디버거가 없어서 예외 경로를 탐
+}</code></pre>
+<p>분기 방향은 구현마다 다르게 쓰일 수 있으므로, 반드시 실제 코드에서 어느 쪽이 "디버거 있음" 경로인지 직접 확인해야 한다.</p>
+<h3>신뢰성과 한계</h3>
+<p>이 기법은 Windows 버전과 빌드에 따라 동작이 다소 다르게 보고된 사례가 있어(특히 최신 Windows 10/11에서는 예외 발생 여부나 <code>GetLastError</code> 값의 정확한 세부 동작이 예전 문서와 미묘하게 다를 수 있음), 상용 프로텍터보다는 교육적 예제나 비교적 단순한 CTF 문제에서 더 흔하게 사용된다. 그럼에도 "잘 알려진 API 하나를 다른 목적으로 부작용까지 이용하는" 대표적인 예시로서, 안티디버깅 기법을 폭넓게 이해하는 데 중요한 사례다.</p>
+<h3>OutputDebugStringW와의 차이</h3>
+<p>유니코드 버전인 <code>OutputDebugStringW</code>도 유사한 원리로 동작하지만, 내부적으로 <code>OutputDebugStringA</code>를 호출하는 방식으로 구현된 경우가 많아 결과적으로 같은 예외/<code>GetLastError</code> 패턴을 보인다.</p>
+<h3>이 기법과 DBG_PRINTEXCEPTION_C 예외 코드</h3>
+<p>REV-0528에서 다룬 예외 코드 표에 있는 <code>0x40010006</code>(<code>DBG_PRINTEXCEPTION_C</code>)이 바로 이 함수가 디버거 없이 호출됐을 때 발생시키는 예외다. 이 예외는 심각도가 <code>0x4</code>(Informational)로, 실제 프로그램을 중단시키는 치명적 오류가 아니라 정보성 이벤트로 분류된다는 점도 함께 기억해두면 예외 코드 표를 해석할 때 도움이 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>디스어셈블리에서 <code>call SetLastError</code>(인자로 <code>0</code> 또는 임의 상수) 직후 <code>call OutputDebugStringA</code>(또는 <code>W</code>), 그 뒤 <code>call GetLastError</code>가 연달아 나오는 특이한 3연속 패턴.</li><li>x64dbg의 Log 창(<code>Alt+L</code>)에 <code>OutputDebugStringA</code>로 보낸 문자열이 실제로 출력되는 것을 확인할 수 있다 — 이는 디버거가 이 예외/문자열 전달을 정상적으로 소비하고 있다는 증거다.</li><li><code>GetLastError()</code> 반환값을 검사하는 <code>cmp eax, ...</code> 다음 분기가, 다른 API 실패 처리 코드와 달리 유독 이 호출 바로 뒤에 위치해 있어 맥락상 어색하게 느껴진다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>SetLastError</code> → <code>OutputDebugStringA/W</code> → <code>GetLastError</code> 3단계 조합을 발견하면, 이것이 일반적인 에러 처리 코드가 아니라 안티디버깅 트릭임을 먼저 의심한다. 일반적인 에러 처리라면 <code>GetLastError</code>가 직전에 실패할 수 있는 API(파일 열기 등) 바로 뒤에 오는 것이 자연스러운데, <code>OutputDebugString</code>처럼 실패할 일이 거의 없는 로깅 함수 뒤에 붙어 있다는 점 자체가 단서다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 패턴 매칭</strong></p>
+<p>IDA에서 <code>OutputDebugStringA</code>/<code>W</code>의 xref를 확인하고, 그 호출 직전/직후에 <code>SetLastError</code>/<code>GetLastError</code>가 함께 있는지 확인한다.</p>
+<p><strong>2) SetLastError 초기값 확인</strong></p>
+<p><code>SetLastError</code> 호출의 인자(첫 번째, <code>RCX</code>)로 어떤 값이 들어가는지 확인한다. 대개 <code>0</code>이다.</p>
+<p><strong>3) GetLastError 이후 비교 대상 확인</strong></p>
+<p><code>GetLastError</code> 호출 이후 어떤 값과 비교(<code>cmp eax, 0</code> 등)하는지 확인해, "값이 그대로면"과 "값이 바뀌었으면" 중 어느 쪽이 감지 경로인지 코드를 직접 따라가 확정한다.</p>
+<p><strong>4) x64dbg로 두 가지 상황 비교</strong></p>
+<p>디버거 없이(예: 탐색기에서 더블클릭) 실행했을 때와, x64dbg로 붙여서 실행했을 때 프로그램 동작이 실제로 다른지 비교 관찰한다.</p>
+<p><strong>5) 우회 방법 적용</strong></p>
+<p>가장 간단한 우회는 <code>GetLastError</code> 호출 직후 브레이크포인트를 걸고 <code>EAX</code>(반환값)를 원하는 값(대개 <code>SetLastError</code>로 세팅했던 값, 보통 <code>0</code>)으로 강제로 맞춰 "디버거 있음" 경로가 나오도록 만드는 것이다. <code>IsDebuggerPresent</code> 우회(REV-0531)와 원리가 같다 — 반환값을 조작하는 방식이므로 절차를 그대로 재활용할 수 있다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>Alt+L</code>(Log 창)에서 <code>OutputDebugString</code>으로 전달된 문자열 확인</li><li>x64dbg: <code>bp kernel32.GetLastError</code>, <code>Ctrl+F9</code>(Execute till return), Registers 창에서 <code>EAX</code> 수정</li><li>IDA: <code>Alt+T</code>로 <code>SetLastError</code>/<code>GetLastError</code>/<code>OutputDebugString</code> 문자열 일괄 검색</li></ul>
+<h2>출력 해석</h2>
+<ul><li>x64dbg의 Log 창에 <code>OutputDebugString</code>으로 보낸 문자열이 표시된다면, 디버거가 이 예외/메시지를 정상적으로 소비하고 있다는 뜻이며 프로그램 입장에서는 "디버거 있음" 상태로 판단될 조건이 충족된 것이다.</li><li><code>GetLastError()</code> 값이 세팅했던 초기값과 다르게 나온다면, 이는 예외가 처리되지 않고 시스템 기본 경로로 흘러갔다는 뜻이므로 디버거가 없는 상태로 판단된다.</li><li>이 트릭 하나만으로 판단이 애매하다면(Windows 버전별 동작 차이), 다른 안티디버깅 기법(REV-0529)과 함께 조합되어 있는지 추가로 확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>SetLastError</code>/<code>GetLastError</code> 조합을 보고 무조건 일반적인 에러 처리 코드로 넘겨버리는 것 — 사이에 <code>OutputDebugString</code> 호출이 끼어 있는지 반드시 확인해야 한다.</li><li>이 기법이 모든 Windows 버전에서 동일하게 동작한다고 가정하는 것 — 버전에 따라 미묘한 차이가 보고된 바 있으므로, 실제 실행 환경에서 직접 동적으로 확인하는 것이 가장 정확하다.</li><li><code>DBG_PRINTEXCEPTION_C</code>(<code>0x40010006</code>) 예외를 심각한 오류로 오해하고 크래시 원인으로 잘못 지목하는 것 — 심각도가 Informational인 정상적인 정보성 이벤트다.</li><li>이 기법만 우회하고 다른 안티디버깅 기법(REV-0529의 나머지 분류)을 확인하지 않아 여전히 감지되는 상황에서 헤매는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>이 기법이 만드는 예외 코드(<code>0x40010006</code>)의 전체 맥락이 궁금하다면 → REV-0528 Windows 예외 코드(Exception Code) 빠른 참조표</li><li>반환값 조작 방식의 우회 절차 기본형을 다시 보고 싶다면 → REV-0531 IsDebuggerPresent 우회 실습 개념과 한계</li><li>이 기법 외에 어떤 다른 안티디버깅 분류가 있는지 전체 지형을 다시 보고 싶다면 → REV-0529 Windows 안티디버깅 기법 종류 빠른 참조표</li><li>SEH가 예외를 어떻게 넘겨받는지 배경 지식이 필요하다면 → REV-0134 SEH와 예외 기반 제어 흐름 기초</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-asm">; SetLastError(0)
+xor  ecx, ecx
+call SetLastError
+
+; OutputDebugStringA("probe")
+lea  rcx, [probe_str]
+call OutputDebugStringA
+
+; GetLastError() 확인
+call GetLastError
+test eax, eax
+je   debugger_present_branch   ; 0 그대로면(값 안 바뀜) 디버거가 예외를 소비한 것 -&gt; 있음
+; 아니면(0이 아니면) 디버거 없음 -&gt; 아래로 계속 진행(예: 오답 처리 강제)</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0528-windows-exception-code-quickref.html">REV-0528 — Windows 예외 코드(Exception Code) 빠른 참조표</a></li><li><a href="rev-0531-isdebuggerpresent-bypass-concept.html">REV-0531 — IsDebuggerPresent 우회 실습 개념과 한계</a></li><li><a href="rev-0529-windows-anti-debugging-techniques-quickref.html">REV-0529 — Windows 안티디버깅 기법 종류 빠른 참조표</a></li><li><a href="rev-0134-seh-basics.html">REV-0134 — SEH와 예외 기반 제어 흐름 기초</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>OutputDebugStringA</code>/<code>W</code> 함수 시그니처는 Microsoft 공식 문서(learn.microsoft.com, "OutputDebugStringA function") 기준. 디버거 유무에 따른 예외 발생 및 <code>GetLastError</code> 부작용을 이용한 안티디버깅 트릭은 공식 문서에 명시된 내용이 아니라 리버싱/보안 커뮤니티에서 오랫동안 검증되고 인용되어 온 잘 알려진 기법(예: "Anti-Debug Tricks" 계열 문헌)을 기준으로 정리했으며, 정확한 상수 값과 최신 Windows 버전에서의 동작은 실습 환경에서 직접 동적으로 재확인하는 것을 권장한다(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

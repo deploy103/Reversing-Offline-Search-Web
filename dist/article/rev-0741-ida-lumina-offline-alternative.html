@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA Lumina 없이 오프라인 환경에서의 대안 찾기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA Lumina 없이 오프라인 환경에서의 대안 찾기</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>IDA Lumina는 커뮤니티가 클라우드 서버에 올려둔 함수 메타데이터(이름/타입/코멘트)를 자동으로 받아와 채워주는 기능인데, 인터넷이 차단된 대회장이나 사내 폐쇄망 PC에서는 접속 자체가 실패하므로 FLIRT 시그니처, Ghidra Function ID, 그리고 직접 만든 로컬 시그니처/참조 바이너리로 그 역할을 대신해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA에서 Lumina 관련 메뉴(Push metadata / Pull metadata)를 눌렀는데 연결 실패 팝업이 뜰 때</li><li>오프라인 CTF 대회 PC라서 Lumina를 애초에 쓸 수 없다는 걸 알고 미리 대체 수단을 준비하고 싶을 때</li><li>strip된 바이너리에서 라이브러리 함수 이름을 자동으로 찾고 싶은데 인터넷이 없을 때</li><li>팀원과 분석 결과(함수 이름/타입)를 클라우드 없이 공유하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Lumina가 원래 하는 일</h3>
+<p>Lumina는 Hex-Rays가 운영하는 원격 서버로, 전 세계 IDA 사용자들이 분석한 함수의 메타데이터(이름, 타입, 프로토타입, 코멘트)를 함수 지문(코드 패턴 기반 해시와 유사한 개념) 단위로 매칭해 자동으로 채워준다. 함수 위에서 우클릭 → Push metadata / Pull metadata, 또는 Edit → Plugins → Lumina 메뉴로 접근한다. 즉 "이 코드 패턴을 예전에 누군가 이미 분석해서 이름을 붙여놨다면 그 이름을 그대로 받아오는" 클라우드 지식 공유 기능이다.</p>
+<h3>오프라인 환경에서 왜 안 되는가</h3>
+<p>Lumina는 기본적으로 원격 서버에 네트워크로 접속해야 동작한다. 인터넷이 완전히 차단된 대회장/에어갭 PC에서는 이 접속 자체가 실패하며, 팝업이나 하단 상태 표시줄에 연결 실패 메시지가 뜬다. 사내에 온프레미스 Lumina 서버를 별도로 구축하는 상용 옵션이 존재하긴 하지만, 개인/CTF 환경에서는 준비하기 어렵다.</p>
+<h3>대안 1 - FLIRT 시그니처(완전 오프라인, IDA 내장)</h3>
+<p>FLIRT는 네트워크가 전혀 필요 없다. <code>.sig</code> 파일이 로컬에 있기만 하면 되므로 오프라인 환경에 가장 적합하다. IDA 설치 경로의 <code>sig/</code> 폴더에 컴파일러/버전별 시그니처가 기본 포함되어 있고, 커뮤니티가 만든 추가 <code>.sig</code> 파일(여러 glibc/MSVC 런타임 버전용 등)을 USB로 미리 오프라인 키트에 복사해두면 대회장에서도 그대로 쓸 수 있다. File → Load file → FLIRT signature file로 수동 적용한다.</p>
+<h3>대안 2 - Ghidra Function ID 데이터베이스</h3>
+<p>Ghidra의 Function ID Analyzer는 <code>.fidb</code> 파일을 로컬 디스크에서 읽어 동작하며 역시 네트워크가 필요 없다. 자주 만나는 라이브러리(특정 libc 버전, 특정 CTF 프레임워크)로 미리 FID 데이터베이스를 직접 만들어(Function ID 플러그인의 Create New Empty FidDb → Populate FidDb from Programs) 오프라인 키트에 포함시켜 둘 수 있다.</p>
+<h3>대안 3 - 자신만의 로컬 시그니처 직접 제작</h3>
+<p>IDA FLIRT의 경우 FLAIR 도구 체인(<code>pelf</code>/<code>pcf</code>로 오브젝트 파일에서 <code>.pat</code> 생성 → <code>sigmake</code>로 <code>.sig</code> 생성)을 이용해, 갖고 있는 라이브러리 오브젝트 파일(<code>.a</code>, <code>.o</code>)로부터 직접 시그니처를 만들 수 있다. 대회 전에 예상 라이브러리로 미리 서명 파일을 만들어 두면 Lumina 없이도 비슷한 효과를 낸다.</p>
+<h3>대안 4 - 버전 배너/문자열 기반 수동 식별</h3>
+<p>시그니처가 전혀 안 맞을 때는 REV-0646에서 다룬 것처럼 <code>strings</code> 결과에서 라이브러리 버전 배너를 찾아 정확한 버전을 특정하고, 같은 버전의 원본 라이브러리를 오프라인 키트에서 구해 나란히 놓고 비교하는 방법이 최후의 수단이다.</p>
+<h3>대안 5 - Ghidra Version Tracking / diaphora류 도구</h3>
+<p>이미 분석해 둔 참조 바이너리가 있다면, Ghidra Version Tracking(REV-0744)이나 오픈소스 diaphora 같은 도구로 그 참조 바이너리와 새 바이너리를 로컬에서 비교해 함수 유사도를 계산할 수 있다. 인터넷 없이 로컬 파일만으로 동작하므로, Lumina의 "누군가 이미 분석한 결과 가져오기"를 "내가 가진 참조 바이너리에서 가져오기"로 대체하는 셈이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Lumina 관련 메뉴 클릭 시 연결 실패/타임아웃 팝업</li><li>함수 목록에 <code>sub_</code> 접두사만 잔뜩 보이고 Push/Pull이 전혀 동작하지 않음</li><li>오프라인 키트에 <code>.sig</code>/<code>.fidb</code> 파일이 준비되어 있지 않아 대회 현장에서 급하게 대체 수단을 찾으려다 시간을 낭비함</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>대회/작업 전에 미리 오프라인 키트(<code>offline-kit/tools/</code>)에 FLIRT <code>.sig</code>와 Ghidra <code>.fidb</code> 파일을 최대한 확보해 두고, 실제 오프라인 환경에서는 Lumina를 아예 시도하지 말고 곧바로 FLIRT/Function ID부터 적용한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>IDA에서 File → Load file → FLIRT signature file로 로컬 <code>.sig</code> 적용, 매칭된 함수 이름 확인</li><li>Ghidra에서는 Auto-Analysis 실행 시 Function ID Analyzer 옵션을 켜고 로컬 <code>.fidb</code> 지정</li><li>매칭이 부족하면 <code>strings ./chall | grep -i "GNU C Library"</code> 등으로 라이브러리 버전 배너 확인(REV-0646)</li><li>버전이 확인되면 같은 버전 참조 바이너리를 오프라인 키트에서 찾아 Ghidra Version Tracking(REV-0744)이나 diaphora로 비교</li><li>그래도 안 되면 진입점부터 수동 콜체인 추적으로 대체(<code>_start</code> → <code>main</code>)</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: File → Load file → FLIRT signature file</li><li>IDA FLAIR 체인: <code>pelf</code>/<code>pcf</code> → <code>.pat</code> 생성 → <code>sigmake</code>로 <code>.sig</code> 생성(모두 오프라인 실행 가능한 커맨드라인 도구)</li><li>Ghidra: Auto Analyze 옵션 중 Function ID Analyzer 체크, Tools → Function ID → Create New Empty FidDb / Populate FidDb from Programs</li></ul>
+<h2>출력 해석</h2>
+<ul><li>FLIRT 적용 후 함수 이름이 라이브러리 이름 접두사와 함께 자동으로 바뀌면 매칭 성공 신호다.</li><li>매칭률이 낮게 나오면(소수 함수만 이름이 붙음) 컴파일러 버전/최적화 옵션이 시그니처 데이터베이스와 다르다는 뜻이며, 이름이 붙었다고 무조건 신뢰하지 말고 인자 개수·호출 패턴을 GDB로 검증해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>오프라인 환경임을 알면서도 대회 당일 처음으로 Lumina를 시도하다가 시간을 낭비하는 것.</li><li>FLIRT/Function ID 매칭 결과를 검증 없이 그대로 믿고 잘못된 함수 이름으로 로직을 오해하는 것.</li><li>시그니처 파일을 사전에 준비하지 않고 현장에서 급하게 인터넷으로 받으려는 것(오프라인 환경에서는 불가능).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>정적 링킹 바이너리에서 시그니처 매칭이 왜 필요한지 배경이 헷갈리면 → REV-0646 정적 링킹된(Statically Linked) ELF 분석 접근법</li><li>라이브러리 버전이 다른데 함수 시그니처가 왜 달라 보이는지 궁금하면 → REV-0648 glibc 버전별 함수 시그니처 차이 확인법</li><li>Ghidra로 직접 두 바이너리를 비교하고 싶으면 → REV-0744 Ghidra Version Tracking으로 두 바이너리 비교하기</li><li>반복적인 매칭/적용 작업을 자동화하고 싶으면 → REV-0743 Ghidra 스크립트(Python/Java)로 반복 작업 자동화 기초</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">IDA: File &gt; Load file &gt; FLIRT signature file 선택
+적용 전: sub_401A1D, sub_403AE0, sub_403C50
+적용 후: main, malloc, free   (매칭 성공)
+
+적용 후에도 sub_ 로 남는 함수가 많다면:
+-&gt; Ghidra로 같은 파일을 열고 Function ID Analyzer 결과와 교차 확인
+-&gt; 여전히 안 맞으면 strings로 libc 버전 배너부터 확인</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0646-statically-linked-elf-analysis.html">REV-0646 — 정적 링킹된(Statically Linked) ELF 분석 접근법</a></li><li><a href="rev-0648-glibc-version-function-signature-diff.html">REV-0648 — glibc 버전별 함수 시그니처 차이 확인법</a></li><li><a href="rev-0744-ghidra-version-tracking-binary-diff.html">REV-0744 — Ghidra Version Tracking으로 두 바이너리 비교하기</a></li><li><a href="rev-0743-ghidra-scripting-python-java-basics.html">REV-0743 — Ghidra 스크립트(Python/Java)로 반복 작업 자동화 기초</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>IDA Lumina 기능 개요 및 Push/Pull metadata 메뉴 동작: Hex-Rays IDA 공식 문서 기준.</li><li>FLIRT/FLAIR 시그니처 생성 체인(<code>pelf</code>/<code>pcf</code>/<code>sigmake</code>): Hex-Rays 공식 FLAIR 도구 문서 기준.</li><li>Ghidra Function ID Analyzer 및 FidDb 생성 절차: Ghidra 공식 Help 문서 기준.</li><li>온프레미스가 아닌 개인/CTF 환경에서 Lumina가 인터넷 연결을 전제로 한다는 점은 공식 문서와 커뮤니티에서 널리 확인되는 사실이다(2026-09-09 재확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

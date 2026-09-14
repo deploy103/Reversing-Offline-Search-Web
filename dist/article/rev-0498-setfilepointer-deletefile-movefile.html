@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinAPI 파일 입출력 함수 사전: SetFilePointer DeleteFile MoveFile · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>WinAPI 파일 입출력 함수 사전: SetFilePointer DeleteFile MoveFile</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>SetFilePointer</code>(위치 이동), <code>DeleteFile</code>(삭제), <code>MoveFile</code>(이름 변경/이동)은 각각 파일 내부 커서 조작, 파일 자체 삭제, 파일 경로 변경이라는 서로 다른 목적을 갖지만 셋 다 인자 1개(경로 또는 핸들)만 확인하면 코드가 어떤 파일을 대상으로 하는지 바로 알 수 있는 짧은 API라는 공통점이 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>SetFilePointer</code>의 <code>dwMoveMethod</code> 상수(<code>FILE_BEGIN</code>/<code>FILE_CURRENT</code>/<code>FILE_END</code>)가 헷갈릴 때</li><li>파일을 다 읽지 않고 특정 오프셋부터 읽으려고 파일 포인터를 옮기는 코드를 분석할 때</li><li><code>DeleteFile</code>/<code>MoveFile</code> 호출을 보고 이 프로그램이 자기 자신을 지우거나(자기 삭제 패턴) 다른 파일을 옮기는지 확인하고 싶을 때</li><li><code>MoveFileEx</code>에만 있는 특수 플래그(<code>MOVEFILE_DELAY_UNTIL_REBOOT</code> 등)의 의미가 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<p><strong><code>SetFilePointer</code></strong> — 파일 핸들 내부의 읽기/쓰기 위치(커서)를 이동한다.</p>
+<pre><code class="language-c">DWORD SetFilePointer(
+    HANDLE hFile,
+    LONG   lDistanceToMove,
+    PLONG  lpDistanceToMoveHigh,
+    DWORD  dwMoveMethod
+);</code></pre>
+<ul><li><code>lDistanceToMove</code>: 이동할 바이트 수(부호 있음, 음수면 역방향).</li><li><code>lpDistanceToMoveHigh</code>: 64비트 오프셋이 필요할 때 상위 32비트를 담는 포인터. 32비트 범위면 <code>NULL</code>.</li><li><code>dwMoveMethod</code>: <code>FILE_BEGIN</code>(0, 파일 처음부터), <code>FILE_CURRENT</code>(1, 현재 위치부터), <code>FILE_END</code>(2, 파일 끝부터 — 이 경우 <code>lDistanceToMove</code>에 음수를 주는 것이 일반적).</li><li>반환값은 이동 후의 새 위치(하위 32비트)이며, 실패 시 <code>INVALID_SET_FILE_POINTER</code>(0xFFFFFFFF)이고 이때는 반드시 <code>GetLastError()</code>로 실제 에러 여부를 재확인해야 한다(정상적으로 위치가 0xFFFFFFFF가 되는 경우와 구분하기 위함).</li><li>최신 코드에서는 64비트 오프셋을 한 번에 다루는 <code>SetFilePointerEx(HANDLE, LARGE_INTEGER, PLARGE_INTEGER, DWORD)</code>가 더 흔히 쓰인다. 동작은 동일하되 <code>LARGE_INTEGER</code>로 상/하위를 한 번에 넘긴다는 점만 다르다.</li></ul>
+<p><strong><code>DeleteFileW</code></strong> — 파일을 디스크에서 삭제한다.</p>
+<pre><code class="language-c">BOOL DeleteFileW(LPCWSTR lpFileName);</code></pre>
+<p>인자가 경로 문자열 하나뿐이다. 반환값 <code>BOOL</code>(0이면 실패, 대개 파일이 열려 있거나 읽기 전용 속성일 때 실패). 리버싱에서는 프로그램이 실행 중 자기 자신의 실행 파일을 지우려 시도하는 "자기 삭제(self-delete)" 패턴이나, 임시로 만든 드롭 파일을 흔적 없이 지우는 패턴에서 자주 등장한다. 다만 실행 중인 파일은 Windows에서 바로 삭제되지 않고 마지막 핸들이 닫힐 때 실제로 제거되므로, <code>MoveFileEx</code>로 파일명을 먼저 바꾸거나 배치 스크립트를 띄워 지연 삭제하는 우회 패턴도 함께 살펴야 한다.</p>
+<p><strong><code>MoveFileW</code></strong> — 파일(또는 디렉터리)의 이름을 바꾸거나 다른 경로로 이동한다.</p>
+<pre><code class="language-c">BOOL MoveFileW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName);</code></pre>
+<p>같은 드라이브 안에서는 단순 이름 변경(rename)으로 처리되어 매우 빠르고, 다른 드라이브로는 실제 복사 후 원본 삭제로 처리된다. 대상 경로에 이미 파일이 있으면 기본적으로 <strong>실패</strong>한다(덮어쓰지 않음).</p>
+<p><strong><code>MoveFileExW</code></strong> — <code>MoveFileW</code>에 동작을 세밀하게 제어하는 플래그를 추가한 버전.</p>
+<pre><code class="language-c">BOOL MoveFileExW(LPCWSTR lpExistingFileName, LPCWSTR lpNewFileName, DWORD dwFlags);</code></pre>
+<ul><li><code>MOVEFILE_REPLACE_EXISTING</code>(0x1): 대상에 파일이 있어도 덮어씀.</li><li><code>MOVEFILE_DELAY_UNTIL_REBOOT</code>(0x4): 지금 옮기지 않고 다음 재부팅 시 이동(레지스트리 <code>PendingFileRenameOperations</code>에 기록됨). <code>lpNewFileName</code>을 <code>NULL</code>로 주면 재부팅 시 삭제가 된다 — 실행 중이라 못 지우는 파일을 재부팅 후 지우는 전형적인 우회 기법이다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>SetFilePointer</code> 호출 직후 곧바로 <code>ReadFile</code>이 이어지는 패턴 — 파일 앞부분을 건너뛰고 특정 오프셋(예: 헤더 뒤 데이터 영역)부터 읽으려는 의도.</li><li><code>GetModuleFileNameW</code>로 자기 자신의 경로를 얻은 뒤 그 문자열이 <code>MoveFileExW</code>(<code>MOVEFILE_DELAY_UNTIL_REBOOT</code>)나 <code>DeleteFileW</code>의 인자로 쓰이는 패턴 — 자기 삭제/흔적 제거 코드.</li><li><code>MoveFileExW</code>의 3번째 인자가 <code>4</code>(0x4)로 보이면 재부팅 후 삭제/이동을 의도한 것이다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>DeleteFile</code>/<code>MoveFile</code> 계열이 보이면 대상 경로 문자열부터 확인해서 "자기 자신을 지우는가, 다른 파일(로그, 임시 파일, 원본 드롭 파일)을 지우는가"를 구분한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>IDA에서 <code>SetFilePointer</code>/<code>DeleteFileW</code>/<code>MoveFileExW</code> 호출을 <code>X</code>(xref)로 나열한다.</li><li><code>F5</code>로 디컴파일해 <code>dwMoveMethod</code> 값(0/1/2)과 이동 거리, 경로 문자열 인자를 바로 확인한다.</li><li>x64dbg에서 <code>bp SetFilePointer</code>(또는 <code>SetFilePointerEx</code>) 후 <code>RDX</code>(이동 거리)와 <code>R9</code>(dwMoveMethod)를 확인한다.</li><li><code>DeleteFileW</code>/<code>MoveFileExW</code>는 <code>RCX</code>(경로1), <code>MoveFileExW</code>라면 추가로 <code>RDX</code>(경로2), <code>R8</code>(flags)까지 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp SetFilePointer</code>, <code>bp SetFilePointerEx</code>, <code>bp DeleteFileW</code>, <code>bp MoveFileExW</code></li><li>IDA: <code>X</code>(xref), <code>F5</code>(디컴파일)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>SetFilePointer</code> 반환값이 <code>0xFFFFFFFF</code>(<code>INVALID_SET_FILE_POINTER</code>)이면 <code>GetLastError()</code>를 함께 확인해야 진짜 실패인지 판단할 수 있다.</li><li><code>MoveFileExW</code>의 <code>dwFlags</code>에 <code>0x4</code> 비트가 있으면 즉시 이동/삭제가 아니라 재부팅 이후로 예약된 것이므로, 지금 파일시스템을 봐도 아직 변화가 없을 수 있다.</li><li><code>DeleteFileW</code>가 <code>FALSE</code>를 반환했다면 파일이 이미 열려 있거나(다른 핸들이 점유), 읽기 전용 속성이거나, 경로가 틀렸을 가능성이 크다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>FILE_END</code>(2)로 이동할 때 <code>lDistanceToMove</code>에 양수를 넣어서 파일 범위를 벗어나는 위치를 만드는 실수 — 파일 끝 기준 역방향이므로 보통 음수를 써야 한다.</li><li><code>MoveFile</code>이 대상 파일을 덮어쓸 것이라 착각하는 것 — 기본 <code>MoveFileW</code>는 대상이 이미 존재하면 실패한다. 덮어쓰려면 <code>MoveFileExW</code> + <code>MOVEFILE_REPLACE_EXISTING</code>이 필요하다.</li><li><code>DeleteFileW</code> 호출 직후 파일이 파일시스템에서 안 보인다고 바로 "삭제 완료"로 단정하는 것 — 실행 중인 파일은 마지막 핸들이 닫혀야 실제로 제거된다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>파일을 여는 단계(<code>CreateFile</code>)가 궁금하면 → REV-0496 확인.</li><li>옮겨진 파일 포인터로 실제 읽기/쓰기를 하는 흐름이 궁금하면 → REV-0497 확인.</li><li>파일 크기/속성만 조회하려면 → REV-0499 확인.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">HANDLE h = CreateFileW(L"data.bin", GENERIC_READ, FILE_SHARE_READ, NULL,
+                        OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+SetFilePointer(h, 0x100, NULL, FILE_BEGIN);   // 0x100 오프셋으로 이동
+ReadFile(h, buf, 0x20, &amp;read, NULL);          // 헤더를 건너뛰고 데이터 읽기</code></pre>
+<p>이 패턴은 파일 앞부분(헤더/시그니처)을 건너뛰고 특정 오프셋의 데이터(예: 암호화된 페이로드)만 골라 읽는 전형적인 코드다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0496-createfile-family.html">REV-0496 — WinAPI 파일 입출력 함수 사전: CreateFile 계열</a></li><li><a href="rev-0497-readfile-writefile.html">REV-0497 — WinAPI 파일 입출력 함수 사전: ReadFile WriteFile 상세</a></li><li><a href="rev-0499-getfilesize-getfileattributes.html">REV-0499 — WinAPI 파일 입출력 함수 사전: GetFileSize GetFileAttributes</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>SetFilePointer</code>/<code>SetFilePointerEx</code>/<code>DeleteFileW</code>/<code>MoveFileW</code>/<code>MoveFileExW</code> 시그니처와 상수(<code>FILE_BEGIN</code> 등, <code>MOVEFILE_*</code> 플래그)는 Microsoft Win32 API 공식 문서 기준.</li><li><code>PendingFileRenameOperations</code>를 통한 재부팅 후 삭제 메커니즘은 Windows 내부 동작에 대한 일반 레퍼런스 기준(2026-09-08 확인 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LOCK 프리픽스와 원자적 연산 개념 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>LOCK 프리픽스와 원자적 연산 개념</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>LOCK</code>은 독립된 명령이 아니라 특정 읽기-수정-쓰기(read-modify-write) 명령 앞에 붙이는 <strong>1바이트 프리픽스(0xF0)</strong>로, 이를 붙이면 그 명령이 메모리에 접근하는 동안 다른 CPU 코어가 같은 메모리에 끼어들지 못하도록 버스/캐시를 잠가서 <strong>다중 코어 환경에서도 그 연산 전체가 원자적(atomic)으로 보이게</strong> 만든다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>lock add</code>, <code>lock inc</code>, <code>lock xchg</code>, <code>lock xadd</code>, <code>lock cmpxchg</code>, <code>lock or</code> 같은 조합을 디스어셈블리에서 처음 봤을 때</li><li>멀티스레드 프로그램을 리버싱하면서 "이 카운터/플래그는 여러 스레드가 동시에 건드려도 안전한가?"를 판단해야 할 때</li><li><code>InterlockedIncrement</code>, <code>std::atomic</code> 관련 API가 실제로 어떤 바이트로 컴파일되는지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>LOCK이 프리픽스라는 것의 의미</h3>
+<p>x86 명령어는 opcode 앞에 여러 종류의 프리픽스 바이트를 붙일 수 있다(반복 프리픽스 <code>REP</code>, 세그먼트 오버라이드 등). <code>LOCK</code>(바이트값 <code>0xF0</code>)도 그런 프리픽스 중 하나로, <strong>그 자체로는 아무 동작도 정의하지 않고 바로 뒤에 오는 명령의 동작 방식을 바꾼다.</strong> 디스어셈블러는 이를 <code>lock add ...</code>처럼 명령 이름 앞에 <code>lock</code> 단어를 붙여 표시한다.</p>
+<h3>어떤 명령에만 붙을 수 있는가</h3>
+<p><code>LOCK</code>은 <strong>메모리를 목적지로 하는 읽기-수정-쓰기형 명령</strong>에만 붙을 수 있다. Intel SDM이 명시하는 허용 목록은 다음과 같다.</p>
+<pre><code>ADD, ADC, AND, BTC, BTR, BTS, CMPXCHG, CMPXCHG8B/16B,
+DEC, INC, NEG, NOT, OR, SBB, SUB, XOR, XADD, XCHG</code></pre>
+<p><code>XCHG</code>는 메모리 오퍼랜드가 있으면 <code>LOCK</code> 프리픽스가 없어도 <strong>암묵적으로 항상 원자적</strong>이라는 특이 사항이 있다(<a href="rev-0043-xchg.html">REV-0043 XCHG</a> 참고). 그 외의 명령(예: <code>MOV</code>, <code>CMP</code>, <code>JMP</code>)에 <code>LOCK</code>을 붙이면 <code>#UD</code>(Invalid Opcode) 예외가 발생한다.</p>
+<h3>왜 필요한가 — 원자성의 문제</h3>
+<p><code>counter++</code>처럼 보이는 코드도 CPU 수준에서는 "메모리에서 값을 읽기 → 레지스터에서 계산 → 메모리에 다시 쓰기"라는 세 단계로 나뉜다. 코어가 하나뿐이면 문제가 없지만, 여러 코어가 동시에 같은 메모리 주소에 대해 이 세 단계를 수행하면 두 코어가 같은 값을 읽어서 계산한 뒤 서로 덮어써 버려 증가분 하나가 사라지는 경쟁 조건(race condition)이 발생할 수 있다. <code>LOCK</code> 프리픽스는 "읽기부터 쓰기까지 전체 과정 동안 다른 코어가 이 메모리 주소에 개입하지 못하게" 보장해서 이 문제를 없앤다.</p>
+<h3>동작 방식(개념 수준)</h3>
+<p>과거(단일 버스 시절) CPU는 <code>LOCK</code>이 붙으면 물리적으로 시스템 버스 전체를 잠그는 "버스 락(bus lock)"을 사용했다. 현대 멀티코어 CPU는 대부분 캐시 일관성 프로토콜(MESI 등)을 이용한 "캐시 락(cache lock)"으로 더 가볍게 구현하며, 해당 캐시 라인에 대한 배타적 소유권을 얻은 뒤 연산을 완료할 때까지 다른 코어가 그 라인에 접근하지 못하게 막는다. 리버서 입장에서는 이 세부 구현보다 "LOCK이 붙은 구간은 원자적으로 실행된다"는 결과만 알면 충분하다.</p>
+<h3>플래그/RIP/스택 변화</h3>
+<p><code>LOCK</code> 프리픽스 자체는 플래그를 바꾸지 않는다. 뒤따르는 명령이 원래 정의된 대로 플래그를 바꿀 뿐이다. 스택이나 RIP에도 프리픽스 자체는 영향을 주지 않는다.</p>
+<h3>컴파일러/라이브러리가 만드는 전형적 패턴</h3>
+<ul><li><code>InterlockedIncrement</code>/<code>InterlockedDecrement</code> (Win32) → <code>lock inc</code>/<code>lock dec</code> 또는 <code>lock xadd</code></li><li><code>InterlockedExchangeAdd</code> → <code>lock xadd</code></li><li><code>InterlockedCompareExchange</code> → <code>lock cmpxchg</code></li><li><code>std::atomic&lt;T&gt;</code> 클래스의 대입/증감 연산자 → 위와 동일한 <code>lock</code> 계열 명령들</li><li>커널/드라이버 코드에서 공유 자료구조를 보호하는 스핀락 구현부</li></ul>
+<h3>IDA/Ghidra 디컴파일에서 보이는 모습</h3>
+<p><code>lock</code> 프리픽스가 붙은 명령들은 <code>_InterlockedIncrement</code>, <code>_InterlockedExchangeAdd</code> 같은 인트린식 함수 호출로 정리되어 표시되는 경우가 많다. 원문 디스어셈블리를 볼 때는 <code>lock</code> 단어가 명령 앞에 그대로 남아 있으므로 놓치기 어렵다.</p>
+<h3>리버싱에서의 의미</h3>
+<p><code>lock</code> 프리픽스가 붙은 명령의 위치를 모으면 그 프로그램이 여러 스레드에서 공유하는 데이터가 무엇인지(카운터, 플래그, 큐 포인터 등) 빠르게 지도화할 수 있다. 또한 <a href="rev-0434-pause.html">REV-0434 — PAUSE</a>와 결합된 스핀락 패턴을 찾을 때, <code>LOCK</code> 계열 명령의 위치가 그 시작점이 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>lock inc dword ptr [rdi]</code>, <code>lock dec dword ptr [rdi]</code> — 원자적 증가/감소</li><li><code>lock xadd</code>, <code>lock cmpxchg</code>, <code>lock cmpxchg8b/16b</code> — 더 복잡한 원자적 연산(REV-0430, REV-0431 참고)</li><li><code>lock or dword ptr [flag], 1</code> — 원자적으로 비트 플래그를 세팅</li><li><code>lock bts</code>/<code>lock btr</code> — 원자적으로 특정 비트를 세팅/클리어(멀티스레드 비트마스크 조작)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>lock</code> 프리픽스가 붙은 명령을 발견하면 뒤따르는 명령이 무엇인지부터 확인한다(<code>inc</code>/<code>dec</code>/<code>add</code>/<code>xadd</code>/<code>cmpxchg</code> 등).</li><li>그 명령이 조작하는 메모리 주소가 무엇을 의미하는지(참조 카운트, 플래그, 큐 헤드 등) 문맥으로 파악한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 단순 원자적 증가 인식</strong></p>
+<pre><code class="language-asm">lock inc dword ptr [rbx]     ; [rbx]를 원자적으로 +1</code></pre>
+<p>→ <code>InterlockedIncrement((LONG*)ptr);</code>로 해석.</p>
+<p><strong>2) 원자적 플래그 세팅 인식</strong></p>
+<pre><code class="language-asm">lock or dword ptr [flags], 4   ; flags의 bit 2를 원자적으로 세팅</code></pre>
+<p><strong>3) LOCK이 허용되지 않는 명령에 잘못 붙은 것처럼 보이는 바이트를 만났을 때</strong> 디스어셈블러가 <code>lock</code>을 이상한 명령 앞에 표시한다면 오프셋이 어긋난 잘못된 디스어셈블리(코드/데이터 경계 오류)일 가능성이 높다 — <code>LOCK</code>이 허용되는 명령 목록에 없는 니모닉 앞에 <code>lock</code>이 보이면 디스어셈블리 자체를 의심하고 재정렬해야 한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: F5 디컴파일에서 <code>_Interlocked*</code> 인트린식으로 표시되는지 확인</li><li>x64dbg/GDB: <code>lock</code> 계열 명령에 브레이크포인트를 걸어 실행 전후 메모리 값을 비교(멀티스레드 디버깅 시 다른 스레드도 함께 멈추는지 확인)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>lock</code> 프리픽스가 있는 명령의 실행 결과는 단일 스레드에서 실행한 것과 동일한 최종값을 항상 보장한다 — 디버거로 한 스레드만 관찰할 때는 <code>lock</code>이 없는 것과 겉보기 동작이 같아 보일 수 있으니, 원자성의 효과는 여러 스레드를 동시에 실행할 때만 체감된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>LOCK</code>이 아무 명령에나 붙을 수 있다고 생각하는 것 — 허용된 read-modify-write 명령이 아니면 <code>#UD</code> 예외가 난다.</li><li>단일 스레드 프로그램을 분석하면서 <code>lock</code> 프리픽스를 보고 "특별히 느리거나 이상한 코드"라고 오해하는 것 — 라이브러리 코드(malloc, 스레드 안전 로거 등)에서 관례적으로 들어가 있을 뿐 그 프로그램이 실제로 멀티스레드인지와는 별개일 수 있다.</li><li><code>LOCK</code>이 인터럽트도 완전히 막아준다고 오해하는 것 — 이는 다른 <strong>코어</strong>끼리의 메모리 접근 순서를 보장하는 것이 목적이며, 인터럽트/예외 처리와는 별개의 메커니즘이다(다만 실무 리버싱에서 이 구분이 중요한 경우는 드물다).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>원자적 덧셈의 구체적 동작이 궁금하면 → <a href="rev-0430-xadd.html">REV-0430 — XADD</a></li><li>조건부 원자적 교환(CAS)이 궁금하면 → <a href="rev-0431-cmpxchg.html">REV-0431 — CMPXCHG</a></li><li><code>lock</code> 계열 명령이 바쁜 대기(busy-wait) 루프 안에 있고 <code>pause</code>도 함께 보인다면 → <a href="rev-0434-pause.html">REV-0434 — PAUSE</a>로 이동해 스핀락 패턴인지 확인.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 원자적 증가</strong></p>
+<pre><code class="language-c">InterlockedIncrement(&amp;g_counter);</code></pre>
+<pre><code class="language-asm">lock inc dword ptr [g_counter]</code></pre>
+<p><strong>예제 2 — 원자적 비트 플래그 세팅</strong></p>
+<pre><code class="language-c">std::atomic&lt;unsigned int&gt; flags;
+flags.fetch_or(1u &lt;&lt; 3);</code></pre>
+<pre><code class="language-asm">lock or dword ptr [flags], 8</code></pre>
+<p><strong>예제 3 — 스핀락 획득에 쓰이는 lock cmpxchg (개념 예시)</strong></p>
+<pre><code class="language-asm">acquire:
+mov  eax, 0            ; 기대값: 잠금 안 걸림(0)
+mov  ecx, 1             ; 새 값: 잠금 걸림(1)
+lock cmpxchg [lock_var], ecx
+jne  acquire             ; 실패하면 계속 재시도 (스핀)</code></pre>
+<p>이 구조에 <code>PAUSE</code>를 추가하면 REV-0434에서 다루는 전형적인 스핀락 패턴이 완성된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0430-xadd.html">REV-0430 — XADD: 교환하며 더하기</a></li><li><a href="rev-0431-cmpxchg.html">REV-0431 — CMPXCHG: 비교 후 교환(원자적 연산 개념)</a></li><li><a href="rev-0434-pause.html">REV-0434 — PAUSE: 스핀락 힌트 명령</a></li><li><a href="rev-0043-xchg.html">REV-0043 — XCHG: 두 값 교환</a></li><li><a href="rev-0047-add.html">REV-0047 — ADD: 덧셈과 플래그</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>LOCK</code> 프리픽스의 정의, 허용 명령 목록, 버스/캐시 락 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "LOCK—Assert LOCK# Signal Prefix" 섹션 기준 (2026-09-08 검증).</li><li><code>InterlockedIncrement</code>/<code>InterlockedCompareExchange</code> 등이 <code>lock</code> 계열 명령으로 컴파일되는 관례: Microsoft Learn "Interlocked Variable Access" 공식 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Write-up] rev-basic-2 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / writeup</div>
+<article class="article-body">
+<h1>[Write-up] rev-basic-2</h1>
+<div class="article-meta"><span class="tag">writeup</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">Detect It Easy</span></div>
+<h2>한 줄 요약</h2>
+<p>rev-basic-2는 정답 배열을 for 루프로 순회하며 입력값과 비교하는 유형인데, 디컴파일러가 정답 배열을 4바이트 단위(DWORD)로 읽어와 표시하는 반면 입력은 1바이트씩 읽기 때문에 접근 폭(stride) 차이를 못 알아채면 배열 크기와 정답 길이를 완전히 잘못 계산하게 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>드림핵 rev-basic-2를 디컴파일했는데 <code>*(_DWORD*)&amp;aC[4*i]</code> 같은 코드가 나와서 배열이 왜 4씩 건너뛰며 접근되는지 헷갈릴 때</li><li>정답 배열이 4바이트씩 읽히길래 정답 길이를 4배로 오해해서 계산이 계속 틀릴 때</li><li>Hex View에서 실제 배열 값을 봤는데 디컴파일러가 보여주는 정수 값과 뭔가 안 맞는 느낌이 들 때</li></ul>
+<h2>핵심 개념</h2>
+<p>이 문제도 겉보기 흐름은 앞선 두 문제와 같다: <code>Input : </code> 출력 → <code>%256s</code>로 최대 256바이트 입력 → 검증 함수 호출 → <code>Correct</code>/<code>Wrong</code> 출력. 다만 검증 함수 내부가 <code>for (i = 0; i &lt; 0x12; ++i)</code> 형태의 루프로 되어 있고, 루프 안에서 입력값의 <code>i</code>번째 바이트와 정답 배열 <code>aC</code>의 값을 비교한다.</p>
+<p>여기서 함정은 컴파일러(또는 디컴파일러)가 이 비교를 <code>*(unsigned __int8*)(a1+i)</code>(입력 쪽, 1바이트 단위)와 <code>*(_DWORD*)&amp;aC[4*i]</code>(정답 배열 쪽, 4바이트 단위)로 표시한다는 점이다. 실제 저장된 값 자체는 작은 정수(문자 하나의 아스키코드)이지만, 컴파일러가 정수 승격이나 배열 선언 방식에 따라 4바이트 폭으로 읽어오는 코드를 생성한 것이다. 겉모습만 보면 "정답 배열이 입력보다 4배 길다"고 오해하기 쉽지만, 실제로 의미 있는 값은 각 4바이트 블록의 하위 1바이트뿐이다. 이런 "선언과 실제 읽기 폭이 다르게 보이는" 상황은 배열/포인터 캐스팅을 다루는 문제에서 자주 나타나는 함정이며, Hex View로 원본 바이트를 직접 눈으로 확인하면 바로 정체가 드러난다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>실행 결과는 이전 문제들과 동일하게 <code>Input : </code> → <code>Correct</code>/<code>Wrong</code>.</li><li>검증 함수 디컴파일 결과에 <code>for (i = 0; i &lt; 0x12; ++i)</code> 같은 루프와 <code>if (*(unsigned __int8 *)(a1 + i) != *(_DWORD *)&amp;aC[4 * i]) return 0i64;</code> 형태의 비교문이 보인다.</li><li><code>aC</code>라는 이름의 전역 변수를 더블클릭하면 IDA가 데이터 세그먼트의 특정 주소로 이동하며, 그 자리에 바이트 배열이 저장되어 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>DIE로 파일 확인 후 IDA에서 검증 함수를 F5로 디컴파일한다. 루프 조건(<code>0x12</code> = 18)을 먼저 확인해 "총 몇 바이트를 비교하는가"를 알아낸다. 그다음 비교식 양쪽의 타입 캐스팅(<code>unsigned __int8</code> vs <code>_DWORD</code>)을 반드시 같이 확인한다 — 이 캐스팅 차이를 놓치면 이후 모든 계산이 틀어진다.</p>
+<h2>단계별 절차</h2>
+<ol><li>DIE로 파일 확인, 실행해서 입출력 문구 확인.</li><li>IDA에서 <code>main</code> → 검증 함수로 진입, F5로 디컴파일.</li><li>루프 반복 횟수(<code>0x12</code> = 18진법 변환하면 10진수 18)를 확인해 정답 길이를 특정.</li><li>비교식에서 입력 쪽은 1바이트(<code>__int8</code>)로, 배열 쪽은 4바이트(<code>_DWORD</code>)로 읽는다는 것을 확인 — 즉 배열의 각 원소는 4바이트 간격으로 떨어져 있지만 실제 값은 그 4바이트 중 하위 1바이트만 의미가 있다.</li><li><code>aC</code>를 더블클릭해 데이터 위치로 이동, IDA의 Hex View(REV-0162)를 열어 <code>4*i</code> 간격으로 떨어진 실제 바이트 값 18개를 직접 읽는다.</li><li>읽은 18개의 바이트 값을 순서대로 <code>chr()</code>로 변환해 문자열을 복원한다.</li><li>복원한 문자열을 입력해 <code>Correct</code>가 나오는지 검증한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>F5</code>(디컴파일), 데이터 이름 더블클릭(참조 위치로 이동), Hex View 창에서 주소로 바로 점프해 바이트 값 확인.</li><li>필요하면 배열 타입을 명시적으로 다시 지정할 때 <code>Y</code>(Set item type)를 사용해 4바이트가 아니라 1바이트 배열로 재해석할 수도 있다(REV-0148).</li><li>Python: <code>''.join(chr(b) for b in byte_list)</code>로 최종 문자열 변환.</li></ul>
+<h2>출력 해석</h2>
+<p><code>*(_DWORD *)&amp;aC[4 * i]</code>라는 표현은 "aC 배열의 <code>4*i</code>번째 바이트부터 4바이트를 정수로 읽는다"는 뜻이다. 만약 그 위치에 저장된 실제 바이트가 <code>43 00 00 00</code>(리틀 엔디안)이라면, 4바이트를 정수로 읽어도 그 값은 결국 <code>0x43</code>(67, 문자 <code>C</code>)과 같다. 즉 상위 3바이트가 전부 0이기 때문에 겉보기 표현만 다를 뿐 실제로 비교되는 값은 여전히 한 글자의 아스키코드다. 이 사실을 Hex View로 확인하고 나면 "4배 긴 배열"이라는 오해가 풀린다.</p>
+<h2>흔한 실수</h2>
+<ul><li>배열 접근이 <code>4*i</code>로 되어 있다고 해서 배열 전체 크기를 <code>18*4=72</code>바이트로 오해하고 엉뚱하게 긴 문자열을 만들려는 것.</li><li>Hex View를 확인하지 않고 디컴파일러가 보여주는 정수 값(예: 4바이트로 표시된 큰 수)을 그대로 문자로 변환해 이상한 문자가 나오는 것.</li><li>루프 조건의 <code>0x12</code>를 10진수 12로 잘못 읽어 정답 길이를 16진수/10진수 혼동으로 틀리는 것(0x12는 10진수 18이다).</li><li>입력 쪽과 배열 쪽의 캐스팅이 다르다는 것 자체를 눈치채지 못하고 타입 에러처럼 여겨 그냥 넘어가는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>정답 배열 대신 하드코딩된 <code>if</code> 문 여러 개가 이어지는 형태라면 REV-1002(rev-basic-1)와 더 가깝다.</li><li>배열 비교가 XOR과 인덱스 연산까지 섞여 있다면 REV-1004(rev-basic-3)로 넘어가서 비교한다.</li><li>디컴파일 결과의 타입 캐스팅을 읽는 법 자체가 헷갈리면 REV-0162(Hex View 검증)와 REV-0148(타입 재지정)을 먼저 본다.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">int check(char *a1) {
+    for (int i = 0; i &lt; 0x12; ++i) {
+        if (*(unsigned __int8 *)(a1 + i) != *(_DWORD *)&amp;aC[4 * i])
+            return 0;
+    }
+    return 1;
+}</code></pre>
+<p>겉보기에는 <code>aC</code>가 72바이트짜리 배열처럼 보이지만, Hex View로 확인하면 각 4바이트 블록의 상위 3바이트는 모두 0이고 하위 1바이트만 실제 정답 문자다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0162-hex-view-verification.html">REV-0162 — Hex View로 디컴파일 결과 검증하기</a></li><li><a href="rev-0148-ida-set-type.html">REV-0148 — IDA Y로 타입 지정하기</a></li><li><a href="rev-0146-ida-f5-decompile.html">REV-0146 — IDA F5 디컴파일과 Pseudocode 읽기</a></li><li><a href="rev-0198-char-by-char-loop-pattern.html">REV-0198 — 문자별 for 루프 검증 패턴</a></li><li>[REV-1001 — [Write-up] rev-basic-0](rev-1001-writeup-rev-basic-0.html)</li><li>[REV-1002 — [Write-up] rev-basic-1](rev-1002-writeup-rev-basic-1.html)</li><li>[REV-1004 — [Write-up] rev-basic-3](rev-1004-writeup-rev-basic-3.html)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>드림핵 워게임 rev-basic-2 챌린지(reversing 태그, Bronze 4 티어, 풀이자 4598명, 2026-09-09 조회 기준).</li><li>참고 블로그: <code>velog.io/@helenason/dreamhack-wargame-rev-basic-2</code> — IDA F5 디컴파일 결과에서 입력은 1바이트 단위, 정답 배열 <code>aC</code>는 4바이트 단위(<code>4*i</code>)로 접근되는 비교 루프(반복 횟수 0x12)를 확인한 것으로 조사됨.</li><li>위 원문을 그대로 인용하지 않고, "접근 폭이 서로 다른 배열 비교"라는 함정 패턴만 재구성해 새로 서술했다. 정확한 최종 플래그 문자열은 이 글에서 확정적으로 제시하지 않았다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

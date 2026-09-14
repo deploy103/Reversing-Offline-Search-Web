@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA에서 구조체를 직접 정의해서 디컴파일에 적용하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA에서 구조체를 직접 정의해서 디컴파일에 적용하기</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>IDA의 <strong>Structures</strong> 서브뷰(<code>Shift+F9</code>)에서 구조체를 직접 정의하고, 그 타입을 전역 데이터·Pseudocode 지역 변수·심지어 함수의 스택 프레임에 적용하면 <code>*(int *)(a1 + 8)</code> 같은 raw 오프셋 표현이 <code>a1-&gt;hp</code>처럼 필드 이름으로 바뀌어 코드 흐름을 훨씬 빠르게 이해할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>어떤 포인터 변수가 반복적으로 <code>+0</code>, <code>+4</code>, <code>+8</code> 같은 오프셋으로 접근되는데, 이게 하나의 구조체인 것 같아서 필드 단위로 정리하고 싶을 때</li><li>REV-0148(Y로 타입 지정하기)에서 구조체 포인터로 캐스팅하려 했는데, 그 전에 구조체 자체를 어떻게 새로 만드는지 몰라서 막혔을 때</li><li>함수의 스택 프레임 여러 지역 변수가 사실 하나의 지역 구조체(local struct)인 것 같은데, 어떻게 스택 프레임을 구조체로 묶는지 모를 때</li><li>C 헤더 파일(<code>.h</code>)을 갖고 있고, 그 안의 구조체 정의를 IDA에 그대로 가져와 쓰고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>구조체를 어디서 관리하는가</h3>
+<p>IDA에서 구조체는 <strong>Structures 서브뷰</strong>(<code>View → Open subviews → Structures</code>, 단축키 <code>Shift+F9</code>)에서 관리한다. 이 창은 데이터베이스 전역에서 재사용 가능한 구조체 타입의 목록이며, 여기서 만든 구조체는 Pseudocode의 <code>Y</code>(Set type, REV-0148) 명령에서 타입 이름으로 바로 참조할 수 있다. 참고로 <strong>Local Types 서브뷰</strong>(<code>Shift+F1</code>, REV-0737에서 자세히 다룸)에서도 구조체를 텍스트로 선언할 수 있는데, 두 창은 결국 같은 타입 정보를 공유하지만 Local Types에서 C 문법으로 직접 구조체를 선언하면 정렬(alignment)이 예상과 다르게 처리될 수 있으므로, 패딩이 중요한 구조체는 Structures 창에서 필드를 하나씩 만드는 편이 더 안전하다.</p>
+<h3>새 구조체 만들기</h3>
+<p>Structures 창에서 <code>Ins</code> 키(또는 우클릭 → <strong>Add struct type...</strong>)를 누르면 새 구조체 이름을 입력하는 대화상자가 뜬다. 이름을 정하고 확인하면 빈 구조체가 목록에 추가되고, 그 구조체 안에서 다시 <code>Ins</code>(또는 우클릭 → <strong>Add member...</strong>)를 눌러 필드를 하나씩 추가한다. 각 필드는 이름, 타입(예: <code>int</code>, <code>char[16]</code>, <code>Player *</code>처럼 다른 구조체에 대한 포인터도 가능), 필요하면 배열 크기를 지정한다.</p>
+<h3>C 헤더로부터 한 번에 가져오기</h3>
+<p>이미 구조체 정의가 담긴 C 헤더 파일이 있다면, 하나씩 손으로 만들 필요 없이 <code>File → Load file → Parse C header file...</code> 메뉴로 헤더 전체를 파싱해서 그 안의 모든 <code>struct</code>/<code>typedef</code>/<code>enum</code> 정의를 한 번에 Local Types(그리고 Structures)에 가져올 수 있다. CTF에서 소스 일부(헤더만)가 제공되는 문제라면 이 방법이 훨씬 빠르다.</p>
+<h3>오프셋 패턴을 보고 구조체 레이아웃 추정하기</h3>
+<p>소스나 헤더가 전혀 없다면, 디컴파일 결과에서 같은 포인터 변수에 반복적으로 등장하는 오프셋들(<code>+0</code>, <code>+4</code>, <code>+8</code>, <code>+0xC</code> 등)을 모아 각 오프셋의 접근 크기(바이트/워드/더블워드인지)와 사용 패턴(비교값, 초기화값)을 보고 필드 타입을 추정한다. 크기가 안 맞는 오프셋 사이에 빈 구간(gap)이 있다면, 그 자리에 <code>char pad[N]</code> 같은 채움 필드를 넣어 구조체 전체 크기를 실제 크기(예: <code>malloc</code> 호출 인자로 봤던 크기, REV-0654/REV-0655의 힙 청크 크기 참고)와 맞춰야 한다.</p>
+<h3>스택 프레임을 구조체로 다루기</h3>
+<p>함수 안의 여러 지역 변수가 실제로는 하나의 지역 구조체(예: 파서 상태를 담은 임시 구조체)인 경우, IDA는 함수마다 자동으로 만들어지는 스택 프레임 구조체(디스어셈블리 뷰에서 <code>Ctrl+K</code> 또는 함수 헤더 부분 더블클릭으로 열람 가능)를 갖고 있다. 이 스택 프레임 구조체 안에서도 Structures 창과 동일한 방식(<code>Ins</code>로 멤버 추가, 필드 타입 지정)으로 필드를 정리할 수 있으며, 서로 인접한 여러 지역 변수를 하나의 하위 구조체로 묶어 넣을 수도 있다.</p>
+<h3>적용까지의 흐름</h3>
+<p>구조체를 만드는 것 자체는 아직 아무 코드에도 영향을 주지 않는다. 실제로 오프셋 표현을 필드 접근으로 바꾸려면, REV-0148에서 다룬 대로 전역 변수/Pseudocode 변수 위에서 <code>Y</code>를 눌러 <code>구조체이름 *</code> 형태로 타입을 지정해야 한다. 즉 이 문서(구조체 정의)와 REV-0148(타입 적용)은 항상 짝을 이루는 절차다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Pseudocode에 <code>*(int *)(a1 + 8)</code>, <code>*(_DWORD *)(a1 + 0x14)</code>처럼 같은 변수에 대한 반복적인 오프셋 접근이 보인다.</li><li>디스어셈블리에서 <code>[eax+0]</code>, <code>[eax+4]</code>, <code>[eax+8]</code>처럼 연속된 작은 오프셋들이 한 레지스터 기준으로 반복된다.</li><li><code>malloc(0x18)</code>처럼 고정 크기 할당 직후, 반환된 포인터가 곧바로 여러 오프셋으로 나뉘어 쓰인다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문제의 포인터 변수가 참조하는 모든 오프셋과 각 오프셋에서의 접근 크기(바이트/워드/더블워드/쿼드워드)를 먼저 종이나 메모장에 나열한다. 이 목록이 구조체 필드 목록의 초안이 된다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>Shift+F9</code>로 Structures 창을 연다.</li><li><code>Ins</code>(또는 우클릭 → <strong>Add struct type...</strong>)로 새 구조체 이름(예: <code>Player</code>)을 만든다.</li><li>만든 구조체를 더블클릭해 안으로 들어간 뒤, <code>Ins</code>(또는 우클릭 → <strong>Add member...</strong>)로 앞서 정리한 오프셋 순서대로 필드를 하나씩 추가한다. 오프셋 사이에 빈틈이 있으면 <code>char pad_N[크기]</code> 형태의 채움 필드로 메운다.</li><li>이미 C 헤더가 있다면 3번 과정 대신 <code>File → Load file → Parse C header file...</code>로 헤더를 통째로 불러온다.</li><li>구조체가 완성되면, 실제로 적용할 전역 변수/Pseudocode 변수 위에서 <code>Y</code>를 누르고 <code>Player *</code>처럼 포인터 타입으로 지정한다(REV-0148).</li><li>스택 지역 변수 여러 개를 하나의 구조체로 묶고 싶다면, 함수 디스어셈블리에서 <code>Ctrl+K</code>(스택 프레임 보기)를 눌러 자동 생성된 프레임 구조체를 열고, 같은 방식으로 필드를 정리하거나 하위 구조체를 삽입한다.</li><li>F5를 다시 눌러(또는 자동 갱신을 기다려) Pseudocode가 필드 이름 기준으로 바뀌었는지 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li><code>Shift+F9</code>: Structures 서브뷰 열기</li><li>Structures 창에서 <code>Ins</code>: 새 구조체 추가(구조체 목록에서) 또는 새 멤버 추가(구조체 안에서)</li><li>우클릭 → <strong>Add struct type...</strong> / <strong>Add member...</strong>: <code>Ins</code>와 동일한 동작을 메뉴로 실행</li><li><code>File → Load file → Parse C header file...</code>: C 헤더 전체를 구조체/typedef/enum으로 일괄 가져오기</li><li>함수 디스어셈블리에서 <code>Ctrl+K</code>: 현재 함수의 스택 프레임 구조체 열기</li><li><code>Y</code>: 전역/지역 변수에 구조체 포인터 타입 적용(REV-0148)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>구조체를 만들고 필드를 추가하면 Structures 창에 오프셋, 크기, 타입, 이름이 표로 정리되어 보인다 — 이 표의 오프셋 열이 실제 메모리 레이아웃과 일치하는지 항상 재확인한다.</li><li>Pseudocode에서 변수에 구조체 포인터 타입을 적용한 뒤 <code>field_8</code>처럼 자동 생성된 이름이 보인다면, 그 필드에 아직 의미 있는 이름을 붙이지 않은 것이다 — Structures 창으로 돌아가 이름을 정리한다.</li><li>구조체 전체 크기가 실제 할당 크기(<code>malloc</code> 인자 등)와 다르면 필드 배치나 패딩 계산이 잘못된 것이므로 오프셋 목록을 다시 검토해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>오프셋 사이의 빈틈(패딩)을 무시하고 필드를 딱 붙여서 만들어, 이후 필드들의 오프셋이 실제와 어긋나는 것.</li><li>Local Types 창에서 C 문법으로 구조체를 선언했는데 컴파일러의 실제 정렬 규칙과 안 맞아서(예: 원래 1바이트 정렬로 컴파일된 구조체) 필드 오프셋이 밀리는 것 — 이런 경우 REV-0737에서 다루는 <code>#pragma pack</code> 관련 주의사항을 참고해야 한다.</li><li>구조체는 만들었는데 REV-0148의 <code>Y</code> 단계를 빼먹어서 실제 코드에는 여전히 raw 오프셋만 보이는 것.</li><li>필드 타입을 크기만 맞추고(<code>int</code>) 실제 의미(포인터인지 플래그 비트필드인지)는 무시해서, 나중에 다시 봤을 때 필드 이름과 실제 쓰임이 안 맞는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>구조체는 만들었는데 실제로 변수에 적용하는 방법이 헷갈린다면 → REV-0148 IDA Y로 타입 지정하기</li><li>구조체 정렬/패딩 문제로 Local Types와 Structures 결과가 다르게 나온다면 → REV-0737 IDA Local Types 창 활용하기</li><li>매직 넘버가 섞인 필드가 있다면 → REV-0735 IDA에서 Enum을 정의해서 매직넘버를 이름으로 바꾸기</li><li>구조체 참조 표기 자체를 빠르게 요약해서 보고 싶다면 → REV-0721 IDA 구조체(Structure) 정의 빠른 참조</li></ul>
+<h2>미니 예제</h2>
+<p>다음과 같이 raw 오프셋으로만 보이는 Pseudocode가 있다고 하자.</p>
+<pre><code class="language-c">int __cdecl sub_401500(int a1)
+{
+  if ( *(int *)(a1 + 8) &gt; 100 )
+    *(int *)(a1 + 12) = 0;
+  return *(int *)(a1 + 8);
+}</code></pre>
+<p><code>Shift+F9</code>로 Structures 창을 열고 <code>Ins</code>로 <code>Player</code>라는 이름의 새 구조체를 만든 뒤, 그 안에서 다시 <code>Ins</code>를 세 번 눌러 <code>int id</code>(오프셋 0), <code>int hp</code>(오프셋 4), <code>int mp</code>(오프셋 8)... 처럼 필드를 채운다(이 예제에서는 오프셋 8과 12가 쓰였으므로 <code>id</code>, <code>hp</code> 뒤에 오프셋 8=<code>mp</code>, 오프셋 12=<code>atk</code> 순으로 정리한다고 가정). 구조체가 완성되면 <code>a1</code> 위에서 <code>Y</code>를 누르고 <code>Player *</code>를 입력한다.</p>
+<pre><code class="language-c">int __cdecl sub_401500(Player *a1)
+{
+  if ( a1-&gt;mp &gt; 100 )
+    a1-&gt;atk = 0;
+  return a1-&gt;mp;
+}</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0148-ida-set-type.html">REV-0148 — IDA Y로 타입 지정하기</a></li><li><a href="rev-0737-ida-local-types-window.html">REV-0737 — IDA Local Types 창 활용하기</a></li><li><a href="rev-0735-ida-define-enum-magic-number.html">REV-0735 — IDA에서 Enum을 정의해서 매직넘버를 이름으로 바꾸기</a></li><li><a href="rev-0161-ghidra-rename-retype.html">REV-0161 — Ghidra Rename과 Data Type 수정</a></li><li><a href="rev-0721-ida-structure-quickref.html">REV-0721 — IDA 구조체(Structure) 정의 빠른 참조</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Structures 서브뷰(<code>Shift+F9</code>)와 <code>Add struct type...</code>/<code>Add member...</code>(단축키 <code>Ins</code>) 조작: Hex-Rays 공식 사용자 가이드(Subviews, Types 문서) 기준.</li><li><code>File → Load file → Parse C header file...</code>로 C 헤더의 구조체/typedef/enum을 일괄 가져오는 기능: Hex-Rays 공식 문서(Types) 기준.</li><li>Local Types에서 C 문법으로 구조체를 선언할 때 정렬(alignment) 처리가 Structures 창과 다르게 동작할 수 있다는 실전 팁: 리버싱 실무 블로그에서 반복적으로 언급되는 caveat이며, 정확한 재현 조건은 IDA 버전에 따라 다를 수 있어 실제 환경에서 재확인이 필요하다.</li><li>함수 스택 프레임 구조체를 <code>Ctrl+K</code>로 여는 동작: Hex-Rays 공식 단축키 레퍼런스 기준.</li><li>이 문서는 2026-09-09 기준 공개 문서 검색 결과를 바탕으로 작성했다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

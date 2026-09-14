@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>adb 기기 연결이 안 될 때(device not found) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dotnet-android</div>
+<article class="article-body">
+<h1>adb 기기 연결이 안 될 때(device not found)</h1>
+<div class="article-meta"><span class="tag">dotnet-android</span><span class="tag">기초</span><span class="tag">android</span><span class="tag">APK</span><span class="tag">adb</span></div>
+<h2>한 줄 요약</h2>
+<p><code>adb devices</code>에 기기가 안 뜨거나 <code>unauthorized</code>/<code>offline</code> 상태로 멈춰 있다면, 원인은 대부분 USB 디버깅이 꺼져 있거나, 기기 화면의 RSA 키 승인 팝업을 놓쳤거나, PC의 <code>adb</code> 서버가 꼬여서 재시작이 필요하거나, USB 드라이버/케이블 문제(Windows에서 특히 흔함) 중 하나다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>adb devices</code>를 쳤는데 <code>List of devices attached</code> 아래 아무 줄도 안 뜰 때</li><li>기기가 뜨긴 하는데 상태가 <code>unauthorized</code>나 <code>offline</code>로 계속 남아 있을 때</li><li>에뮬레이터는 잡히는데 실제 기기만 안 잡힐 때(또는 그 반대)</li><li>어제까지 잘 되던 연결이 갑자기 안 될 때</li></ul>
+<h2>핵심 개념</h2>
+<p><code>adb</code>는 PC의 <code>adb</code> 클라이언트 → PC에서 백그라운드로 도는 <code>adb server</code> → 기기 안의 <code>adbd</code> 데몬, 이렇게 세 구성 요소가 USB(또는 TCP/Wi-Fi)로 연결되어야 동작한다. 이 경로 어디서든 끊기면 기기가 안 잡힌다.</p>
+<p>가장 흔한 원인 네 가지는 다음과 같다.</p>
+<ul><li><strong>USB 디버깅이 꺼져 있음</strong>: 안드로이드 기기는 설정에서 개발자 옵션을 활성화하고 그 안의 "USB 디버깅"을 켜야 <code>adbd</code>가 USB 연결을 받아들인다.</li><li><strong>RSA 키 승인 미확인</strong>: 처음 PC에 연결하면 기기 화면에 "이 컴퓨터의 USB 디버깅을 허용하시겠습니까?"라는 팝업이 뜨는데, 이를 놓치거나 거부하면 <code>unauthorized</code> 상태로 남는다.</li><li><strong><code>adb server</code> 상태 꼬임</strong>: 여러 버전의 adb를 오가며 설치했거나, 이전 세션이 비정상 종료된 경우 PC 쪽 서버 프로세스가 꼬여서 새 기기를 못 잡을 수 있다.</li><li><strong>USB 드라이버/케이블 문제(주로 Windows)</strong>: 데이터 전송을 지원하지 않는 충전 전용 케이블이거나, 기기 제조사 전용 USB 드라이버가 설치되지 않은 경우다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>adb devices</code> 결과에 <code>List of devices attached</code>만 있고 그 아래가 비어 있다.</li><li>기기 시리얼 옆에 <code>unauthorized</code>라고 표시된다.</li><li>기기 시리얼 옆에 <code>offline</code>이라고 표시된 채 바뀌지 않는다.</li><li><code>adb: error: no devices/emulators found</code>라는 오류가 다른 명령(<code>adb install</code> 등) 실행 시 뜬다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>기기 화면을 직접 확인한다. USB를 연결한 직후 "USB 디버깅을 허용하시겠습니까?" 팝업이 떠 있는지부터 본다. 이 팝업이 안 뜨거나 이미 화면 뒤로 넘어갔다면 케이블을 뽑았다 다시 꽂아 팝업을 다시 띄운다.</p>
+<h2>단계별 절차</h2>
+<ol><li>기기의 설정 → 개발자 옵션(빌드 번호를 7번 연속 탭하면 활성화) → "USB 디버깅"이 켜져 있는지 확인한다.</li><li>USB 케이블을 다시 꽂고 기기 화면의 RSA 키 승인 팝업에서 "항상 허용" 후 확인을 누른다.</li><li><code>adb kill-server</code>로 PC 쪽 adb 서버를 완전히 종료한 뒤 <code>adb start-server</code>로 재시작한다.</li><li>그래도 안 되면 다른 USB 케이블(데이터 전송 지원 케이블)과 다른 USB 포트로 바꿔본다.</li><li>Windows라면 장치 관리자에서 기기가 알 수 없는 장치나 경고 아이콘으로 뜨는지 확인하고, 제조사 전용 USB 드라이버를 설치한다.</li><li>에뮬레이터라면 <code>adb devices</code>에 <code>emulator-5554</code> 형태로 별도로 잡히는지 확인하고, 실기기와 동시에 여러 개 연결됐다면 <code>-s &lt;시리얼&gt;</code>로 대상을 명시한다.</li><li>Wi-Fi(TCP) 연결을 쓰는 경우 <code>adb tcpip 5555</code> → <code>adb connect &lt;IP&gt;:5555</code> 순서를 다시 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">adb devices                          # 연결 상태 확인
+adb kill-server &amp;&amp; adb start-server   # 서버 재시작
+adb devices -l                        # 더 상세한 기기 정보(모델명 등) 포함 확인
+adb -s &lt;시리얼&gt; &lt;명령&gt;                 # 여러 기기 중 특정 대상 지정
+adb tcpip 5555                        # Wi-Fi adb 준비(USB로 먼저 연결된 상태에서)
+adb connect 192.168.0.10:5555         # Wi-Fi로 연결</code></pre>
+<h2>출력 해석</h2>
+<ul><li>목록이 아예 비어 있으면 USB 연결/드라이버/디버깅 옵션 자체를 의심해야 한다.</li><li><code>unauthorized</code>는 인증 자체는 진행 중이나 기기에서 아직 승인을 안 한 상태다 — 화면을 확인하라는 신호다.</li><li><code>offline</code>은 한 번은 연결됐지만 현재 통신이 끊긴 상태로, 보통 <code>adb kill-server</code>/<code>start-server</code> 재시작으로 해결된다.</li><li><code>no devices/emulators found</code>는 adb 서버 입장에서 연결된 대상이 전혀 없다는 뜻이며, 위 목록이 비어 있는 상황과 같은 근본 원인을 갖는다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>RSA 키 승인 팝업을 놓치고 계속 <code>adb devices</code>만 반복 실행하는 것 — 기기 화면을 먼저 봐야 한다.</li><li>충전 전용 케이블로 연결해놓고 왜 안 되는지 몰라 헤매는 것.</li><li>여러 에뮬레이터/기기가 동시에 연결된 상태에서 <code>-s</code> 옵션 없이 명령을 내려서 엉뚱한 대상에 명령이 가는 것.</li><li>Windows에서 드라이버 문제를 의심하지 않고 adb 설정만 계속 건드리는 것.</li><li><code>adb kill-server</code>를 시도하지 않고 재부팅부터 하는 것 — 대부분 서버 재시작만으로 충분하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>기기는 잡혔는데 앱 데이터 접근이나 로그 확인이 궁금하면 → REV-0255 adb 기본 명령 치트시트</li><li>Frida까지 붙여야 하는데 attach가 안 된다면 → REV-0983 Frida 서버 연결이 안 될 때(attach 실패)</li><li>재서명한 APK 설치가 실패한다면 → REV-0984 APK 재서명 후 설치가 실패할 때</li></ul>
+<h2>미니 예제</h2>
+<p><code>adb devices</code>를 실행했더니 <code>List of devices attached</code>만 뜨고 아무 기기도 안 보였다. 기기 화면을 확인해보니 화면이 잠겨 있어 팝업을 못 본 상태였다. 잠금을 풀자 "USB 디버깅을 허용하시겠습니까?" 팝업이 나타났고, "이 컴퓨터에서 항상 허용"을 체크한 뒤 확인을 눌렀다. 이후 <code>adb devices</code>를 다시 실행하니 다음과 같이 정상적으로 잡혔다.</p>
+<pre><code>$ adb devices
+List of devices attached
+R58N1234ABC     device</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0255-adb-cheatsheet.html">REV-0255 — adb 기본 명령 치트시트</a></li><li><a href="rev-0983-frida-attach-fails.html">REV-0983 — Frida 서버 연결이 안 될 때(attach 실패)</a></li><li><a href="rev-0984-apk-resign-install-fails.html">REV-0984 — APK 재서명 후 설치가 실패할 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>adb devices</code> 상태(<code>device</code>/<code>unauthorized</code>/<code>offline</code>) 및 서버 구조(<code>adb server</code>/<code>adbd</code>)는 Android 공식 개발자 문서("Android Debug Bridge (adb)")를 기준으로 정리했다(2026-09-09 확인).</li><li>USB 디버깅 활성화 및 RSA 키 승인 절차는 Android 공식 개발자 문서("Configure on-device developer options")의 설명과 일치한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

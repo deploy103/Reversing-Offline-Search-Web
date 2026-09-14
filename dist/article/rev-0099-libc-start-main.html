@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__libc_start_main이 무엇이고 main을 찾는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>__libc_start_main이 무엇이고 main을 찾는 법</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">입문</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">objdump</span><span class="tag">readelf</span><span class="tag">binutils</span></div>
+<h2>한 줄 요약</h2>
+<p><code>__libc_start_main</code>은 glibc가 제공하는 "진짜 프로그램 초기화 담당자"로, <code>_start</code>로부터 넘겨받은 함수 포인터(그 중 <strong>첫 번째 인자가 <code>main</code></strong>)를 이용해 C 런타임을 완전히 세팅한 뒤 <code>main</code>을 호출하고, <code>main</code>이 끝나면 <code>exit()</code>까지 처리하는 함수다 — glibc 버전에 따라 내부 구현이 갈렸지만 "첫 번째 인자가 main"이라는 사실은 변하지 않는다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>_start</code>에서 <code>__libc_start_main</code>을 호출하는 걸 봤는데, 이 함수가 정확히 무슨 일을 하는지, 인자가 몇 개고 순서가 어떻게 되는지 알고 싶을 때</li><li>glibc 버전에 따라 <code>__libc_start_main</code>의 동작이나 심볼 이름이 달라 보여서(<code>__libc_start_main@GLIBC_2.34</code> vs 그냥 <code>__libc_start_main</code>) 혼란스러울 때</li><li>strip된 바이너리에서 <code>main</code> 심볼 자체는 지워졌지만 <code>__libc_start_main</code> 호출은 여전히 보일 때, 이걸 이용해 <code>main</code>을 어떻게 찾는지 구체적인 방법이 필요할 때</li></ul>
+<blockquote><p>이 문서는 <code>__libc_start_main</code> 자체의 시그니처, 인자 순서, glibc 버전 차이, stripped 바이너리에서 실제로 어떻게 보이는지를 깊이 다룬다. "IDA/Ghidra에서 main을 못 찾을 때 전체적으로 뭘 해야 하는지"에 대한 더 넓은 범위의 실전 가이드는 <a href="rev-0009-finding-main.html">REV-0009 main 함수가 안 보일 때 찾는 방법</a>을 먼저 참고하고, 이 문서는 그 안에서 언급된 <code>__libc_start_main</code> 메커니즘 자체를 파고드는 심화 문서로 보면 된다.</p></blockquote>
+<h2>핵심 개념</h2>
+<h3>전통적인(구버전) 시그니처</h3>
+<p>glibc 2.33 이전까지 <code>__libc_start_main</code>은 대략 다음과 같은 시그니처를 가진 하나의 큰 함수였다(<code>csu/libc-start.c</code>, 실제로는 <code>#ifdef</code> 매크로로 미묘하게 변형되지만 개념적으로는 이 형태):</p>
+<pre><code class="language-c">int __libc_start_main(
+    int (*main)(int, char **, char **),  // 1번째 인자 = 진짜 main
+    int argc,                            // 2번째 인자 = argc
+    char **argv,                         // 3번째 인자 = argv
+    void (*init)(void),                  // 4번째 인자 = __libc_csu_init
+    void (*fini)(void),                  // 5번째 인자 = __libc_csu_fini
+    void (*rtld_fini)(void),             // 6번째 인자 = 동적 로더 정리 함수
+    void *stack_end                      // 7번째 인자 = 스택 최상단 주소
+);</code></pre>
+<p>x86-64 SysV 호출 규약이므로 이 인자들은 순서대로 <strong>RDI, RSI, RDX, RCX, R8, R9, (스택)</strong>에 담겨 전달된다. REV-0098에서 본 <code>_start</code> 코드가 정확히 이 순서로 레지스터를 채웠던 것을 떠올리면 된다: <code>rdi=main</code>, <code>rsi=argc</code>, <code>rdx=argv</code>, <code>rcx=init</code>, <code>r8=fini</code>, <code>r9=rtld_fini</code>, 스택 맨 위=<code>stack_end</code>.</p>
+<p>이 함수 내부가 실제로 하는 일:</p>
+<ol><li>TLS(Thread-Local Storage) 초기화 및 스택 보호(카나리) 관련 초기값 세팅.</li><li><code>argc</code>/<code>argv</code>/<code>environ</code>을 전역 변수로 등록(그래서 <code>main</code>의 세 번째 인자 없이도 전역 <code>environ</code>으로 환경변수에 접근 가능).</li><li><code>init</code> 콜백(보통 <code>__libc_csu_init</code>) 호출 → 이 안에서 <code>.init_array</code> 섹션에 등록된 함수 포인터들을 순서대로 호출(전역 C++ 생성자, <code>__attribute__((constructor))</code> 함수들).</li><li><strong><code>main(argc, argv, envp)</code> 호출</strong> — 드디어 사용자 코드 실행.</li><li><code>main</code>의 리턴값을 받아 <code>exit(리턴값)</code> 호출 → 이 안에서 <code>fini</code>(<code>.fini_array</code>, 전역 소멸자) 처리 후 프로세스 종료.</li></ol>
+<h3>glibc 2.34 이후: __libc_start_call_main으로 분리</h3>
+<p>glibc 2.34(2021년경 배포)부터 내부 구현이 리팩터링되어, <code>main</code> 호출과 <code>exit</code> 처리를 담당하는 부분이 <code>__libc_start_call_main</code>이라는 별도의(주로 인라인되는) 함수로 분리되었다. <code>__libc_start_main</code>이라는 심볼 이름과 외부에서 보이는 동작(첫 번째 인자가 <code>main</code>)은 호환성을 위해 그대로 유지되지만, 디스어셈블리 레벨에서는 이 변화 때문에:</p>
+<ul><li>최신 Ubuntu/Debian 등에서 빌드된 바이너리는 <code>__libc_start_main@GLIBC_2.34</code>처럼 <strong>버전이 명시된 심볼</strong>로 참조가 걸린다(<code>nm</code>/<code>readelf -s</code> 출력에서 확인 가능, REV-0093 참고).</li><li>실제 <code>main</code> 호출 지점이 <code>__libc_start_main</code> 함수 몸체 안이 아니라 <code>__libc_start_call_main</code>(정적 인라인이라 별도 심볼로 안 보이는 경우가 많음) 안일 수 있다.</li></ul>
+<p>리버서 입장에서 실전적으로 중요한 결론은 하나다: <strong>glibc 버전이 무엇이든, <code>_start</code>가 <code>__libc_start_main</code>을 호출할 때 그 첫 번째 인자(RDI)로 넘기는 값은 항상 <code>main</code>이다.</strong> 내부 구현이 어떻게 리팩터링되었든 이 외부 계약(ABI)은 바뀌지 않았다.</p>
+<h3>musl libc 등 다른 C 라이브러리라면</h3>
+<p>Alpine Linux 등 musl libc로 빌드된 바이너리는 <code>__libc_start_main</code>이라는 이름 자체가 없고, musl 자체의 <code>_start_c</code>/<code>__libc_start_main</code> 유사 함수(구현이 다름)를 쓴다. 이 문서는 glibc 기준이며, musl 바이너리를 만났다면 <code>_start</code>가 호출하는 유일한 큰 함수를 같은 논리(첫 인자 = main)로 접근하되 함수 이름은 다를 수 있다는 점을 감안해야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>nm ./chall</code> 또는 <code>objdump -T ./chall</code> 결과에 <code>__libc_start_main@GLIBC_2.34</code>처럼 버전 접미사가 붙어 있음</li><li><code>_start</code>의 마지막 CALL 대상이 <code>__libc_start_main@plt</code>로 표시됨(동적 링킹인 경우 PLT를 거침, REV-0100 참고)</li><li>strip된 바이너리인데도 <code>__libc_start_main@plt</code>라는 이름은 여전히 보이는 경우가 많음 — 하지만 바로 그 위에서 <code>rdi</code>에 로드되는 <code>main</code> 주소 쪽은 이름이 없고 그냥 숫자 주소로만 보임</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>objdump -d -M intel ./chall | grep -B3 'libc_start_main'</code>로 <code>_start</code> 안에서 <code>__libc_start_main</code> 호출 직전 코드를 바로 뽑아본다. 그 중 <code>rdi</code>에 값을 로드하는 명령어의 대상 주소가 <code>main</code>이다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) __libc_start_main 호출부 찾기</strong></p>
+<pre><code class="language-bash">objdump -d -M intel ./chall | grep -B8 'call.*libc_start_main'</code></pre>
+<p><strong>2) 심볼 버전 확인 (glibc 버전 추정)</strong></p>
+<pre><code class="language-bash">nm -D ./chall | grep libc_start_main</code></pre>
+<p>출력 예:</p>
+<pre><code>                 U __libc_start_main@GLIBC_2.34</code></pre>
+<p><code>GLIBC_2.34</code>가 붙어 있으면 최신 리팩터링 이후 버전으로 빌드/링크된 것이다.</p>
+<p><strong>3) strip된 바이너리에서 main 이름만 사라진 경우</strong></p>
+<pre><code class="language-bash">$ objdump -d -M intel chall_stripped | grep -B8 'call.*libc_start_main'
+    1081:	48 8d 3d c1 00 00 00 	lea    rdi,[rip+0xc1]        # 1149
+    1088:	ff 15 12 2f 00 00    	call   QWORD PTR [rip+0x2f12] # 3fa0 &lt;__libc_start_main@GLIBC_2.34&gt;</code></pre>
+<p><code>__libc_start_main</code>은 여전히 이름이 보이지만(<code>.dynsym</code>에 있는 외부 라이브러리 심볼이라 strip으로 안 지워짐), <code>lea rdi, [rip+0xc1]</code>이 가리키는 주소(<code>0x1149</code>)에는 이름이 없다. <strong>이 주소가 바로 strip으로 이름만 지워진 <code>main</code>이다.</strong> 이 주소로 가서 <code>N</code>(IDA) 또는 그냥 참고 표시로 <code>main</code>이라고 리네임해두면 된다.</p>
+<p><strong>4) GDB로 동적 확인</strong></p>
+<pre><code class="language-gdb">(gdb) break *_start
+(gdb) run
+(gdb) x/8i $pc
+(gdb) break *0x555555555088   ; call 직전 주소(ASLR 베이스 감안해서 조정)
+(gdb) continue
+(gdb) print/x $rdi
+(gdb) x/4i $rdi</code></pre>
+<p><code>$rdi</code>가 가리키는 주소를 역어셈블했을 때 <code>endbr64</code> / <code>push rbp</code> 같은 전형적인 함수 시작 패턴이 보이면 그 함수가 <code>main</code>임을 재확인할 수 있다.</p>
+<p><strong>5) 정적 링킹 + strip 조합 (가장 어려운 경우)</strong> <code>__libc_start_main</code> 자체도 이름이 없다. 이 경우 REV-0098에서 설명한 <code>_start</code>의 <strong>고유한 코드 패턴</strong>(레지스터를 순서대로 채운 뒤 함수 하나만 CALL하고 리턴하지 않음)으로 <code>_start</code> 자체를 식별하고, 그 안의 유일한 CALL 대상을 <code>__libc_start_main</code>으로 간주한 뒤, 그 함수 안에서 다시 SysV 인자 규약(RDI가 담고 있던 원래 값)이 어디로 전달되는지 데이터 흐름을 추적해야 한다. IDA의 FLIRT 시그니처가 정적 링킹된 libc 함수를 자동 인식해주는 경우가 많아 실전에서는 이 수작업까지 갈 일이 드물다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">objdump -d -M intel ./chall | grep -B8 'call.*libc_start_main'
+nm -D ./chall | grep libc_start_main
+readelf -s ./chall | grep libc_start_main</code></pre>
+<p>GDB: <code>break *_start</code>, <code>x/8i $pc</code>, <code>print/x $rdi</code>, <code>x/4i $rdi</code></p>
+<h2>출력 해석</h2>
+<ul><li><code>__libc_start_main@GLIBC_2.34</code> 같은 버전 문자열은 "이 바이너리가 링크된 glibc가 최소 2.34 이상의 ABI를 요구한다"는 뜻이지, 실행 시스템의 glibc가 정확히 2.34여야 한다는 뜻은 아니다(하위 호환은 유지됨).</li><li><code>main</code> 위치를 가리키는 <code>lea rdi, [rip+offset]</code>에서 계산된 절대 주소는, PIE 바이너리라면 정적 분석 상의 상대 주소일 뿐이고 실제 실행 시에는 ASLR 베이스가 더해진다는 걸 REV-0089/REV-0096에서 다룬 PIE 개념과 함께 기억해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>__libc_start_main</code>의 인자가 항상 정확히 7개라고 암기하는 것 — glibc 버전 리팩터링에 따라 세부 인자 구성이 조금씩 바뀌었다. 외워야 할 건 인자 개수가 아니라 <strong>"첫 번째 인자가 main"</strong> 이라는 불변 규칙이다.</li><li>strip된 바이너리에서 <code>__libc_start_main</code>이라는 이름이 안 보인다고 착각하는 것 — 동적 링킹이라면 <code>.dynsym</code>에 남아있어 대부분 그대로 보인다. 이름이 진짜로 안 보이는 경우는 정적 링킹 + strip 조합뿐이다.</li><li><code>main</code>의 세 번째 인자(<code>envp</code>)가 항상 존재한다고 프로그램 안에서 가정하는 것 — 표준 C에서 <code>main(int argc, char **argv)</code> 두 인자만 선언해도 문제없이 컴파일되고 동작한다(POSIX 확장으로 <code>envp</code>가 세 번째 인자로 추가 제공될 뿐).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>entry point부터 이어지는 전체 흐름을 먼저 정리하고 싶으면 → <a href="rev-0097-entry-to-main.html">REV-0097 ELF Entry Point에서 main까지</a></li><li><code>_start</code> 코드 자체를 명령어 단위로 다시 보고 싶으면 → <a href="rev-0098-start-function.html">REV-0098 _start 함수 읽는 법</a></li><li>main을 못 찾는 상황에 대한 더 넓은 범위의 실전 절차는 → <a href="rev-0009-finding-main.html">REV-0009 main 함수가 안 보일 때 찾는 방법</a></li><li>심볼이 아예 없는 stripped 바이너리 전반의 대응법은 → <a href="rev-0010-stripped-entry-point.html">REV-0010 stripped 바이너리에서 시작점 잡는 방법</a></li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ nm -D chall | grep libc_start_main
+                 U __libc_start_main@GLIBC_2.34
+
+$ objdump -d -M intel chall | grep -B2 'call.*libc_start_main'
+    1081:	48 8d 3d c1 00 00 00 	lea    rdi,[rip+0xc1]        # 1149 &lt;main&gt;
+    1088:	ff 15 12 2f 00 00    	call   QWORD PTR [rip+0x2f12] # __libc_start_main@GLIBC_2.34</code></pre>
+<p><code>main</code>(0x1149)이 <code>rdi</code>에 로드된 직후 바로 <code>__libc_start_main</code>이 호출된다 — glibc 2.34 이상 ABI를 요구하는 동적 링킹 바이너리라는 것과, <code>main</code>의 정확한 위치를 동시에 확인했다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0097-entry-to-main.html">REV-0097 — ELF Entry Point에서 main까지</a></li><li><a href="rev-0098-start-function.html">REV-0098 — _start 함수 읽는 법</a></li><li><a href="rev-0009-finding-main.html">REV-0009 — main 함수가 안 보일 때 찾는 방법</a></li><li><a href="rev-0010-stripped-entry-point.html">REV-0010 — stripped 바이너리에서 시작점 잡는 방법</a></li><li><a href="rev-0093-nm-basics.html">REV-0093 — nm으로 심볼 찾기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>__libc_start_main</code> 전통적 시그니처와 동작: glibc 소스 <code>csu/libc-start.c</code>(2.33 이전 계열) 기준 (2026-09-08 검증).</li><li>glibc 2.34 리팩터링(<code>__libc_start_call_main</code> 분리): glibc 공식 저장소 커밋 로그 및 NEWS 파일의 "csu" 관련 변경 사항 기준.</li><li>x86-64 SysV 인자 전달 규약: System V AMD64 ABI 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

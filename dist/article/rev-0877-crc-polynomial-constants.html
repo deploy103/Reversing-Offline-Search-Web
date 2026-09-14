@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CRC 다항식 상수 빠른 참조표 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>CRC 다항식 상수 빠른 참조표</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>CRC는 비트 폭(8/16/32)과 반사(reflected) 여부에 따라 쓰이는 다항식 상수가 여러 종류로 갈리므로, 코드에 등장하는 정확한 상수값(<code>0xEDB88320</code>, <code>0x04C11DB7</code>, <code>0x82F63B78</code>, <code>0xA001</code>, <code>0x1021</code> 등)만 보고도 어떤 CRC 변형인지 표로 즉시 식별할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>REV-0877(본 문서)를 찾기 전에 이미 CRC 계열임은 확인했지만(REV-0209 참고), 정확히 어떤 CRC 변형인지(CRC-32 vs CRC-32C vs CRC-16) 구분이 안 될 때</li><li>여러 개의 낯선 16비트/32비트 다항식 상수가 코드에 등장해서 어느 것이 표준 CRC인지 헷갈릴 때</li><li><code>zlib.crc32</code>로 계산한 값과 바이너리의 결과가 계속 다르게 나와서 다른 변형(CRC-32C 등)을 의심할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>CRC는 "반사형(reflected)"과 "정방향(normal)" 두 가지 비트 순서 표현이 있고, 같은 알고리즘이라도 표현 방식에 따라 다항식 상수가 다르게 보인다. 아래는 리버싱에서 실제로 마주치는 대표적인 CRC 상수 목록이다.</p>
+<p><strong>32비트 CRC</strong></p>
+<table><thead><tr><th>상수(hex)</th><th>방향</th><th>알고리즘</th><th>비고</th></tr></thead><tbody><tr><td><code>0xEDB88320</code></td><td>반사형</td><td>CRC-32(ISO-HDLC)</td><td>zlib/PKZIP/PNG/이더넷 표준. 가장 흔함</td></tr><tr><td><code>0x04C11DB7</code></td><td>정방향</td><td>CRC-32(ISO-HDLC)</td><td>위와 동일 알고리즘, 비트 순서만 반대</td></tr><tr><td><code>0x82F63B78</code></td><td>반사형</td><td>CRC-32C(Castagnoli)</td><td>SSE4.2 <code>CRC32</code> 명령어, iSCSI/ext4</td></tr><tr><td><code>0x1EDC6F41</code></td><td>정방향</td><td>CRC-32C(Castagnoli)</td><td>위의 정방향 표현</td></tr><tr><td><code>0x77073096</code></td><td>-</td><td>CRC-32 표준 테이블의 인덱스 1 값</td><td>테이블 지문(fingerprint)으로 사용</td></tr></tbody></table>
+<p><strong>16비트 CRC</strong></p>
+<table><thead><tr><th>상수(hex)</th><th>알고리즘</th><th>비고</th></tr></thead><tbody><tr><td><code>0xA001</code></td><td>CRC-16/ARC (CRC-16/Modbus 계열)</td><td>반사형, 다항식 <code>0x8005</code>의 반사 표현</td></tr><tr><td><code>0x8005</code></td><td>CRC-16/IBM 계열</td><td>정방향 표현</td></tr><tr><td><code>0x1021</code></td><td>CRC-16/CCITT-FALSE, CRC-16/XMODEM</td><td>통신/펌웨어에서 흔함</td></tr><tr><td><code>0x8408</code></td><td>CRC-16/CCITT 반사형</td><td><code>0x1021</code>의 반사 표현</td></tr></tbody></table>
+<p><strong>8비트 CRC</strong></p>
+<table><thead><tr><th>상수(hex)</th><th>알고리즘</th><th>비고</th></tr></thead><tbody><tr><td><code>0x07</code></td><td>CRC-8(표준)</td><td>정방향, ATM HEC 등에서 사용</td></tr><tr><td><code>0x31</code></td><td>CRC-8/MAXIM (1-Wire)</td><td>Dallas/Maxim 1-Wire 장치</td></tr></tbody></table>
+<p><strong>초기값/최종 XOR도 함께 확인해야 하는 이유</strong>: 다항식이 같아도 초기값(<code>init</code>)과 최종 XOR(<code>xorout</code>)이 다르면 결과값이 완전히 달라진다. 표준 CRC-32(zlib)는 <code>init=0xFFFFFFFF</code>, <code>xorout=0xFFFFFFFF</code>를 쓰지만, CRC-32/BZIP2나 CRC-32/MPEG-2처럼 초기값·최종XOR·비트순서 조합이 다른 변형도 있으므로, 다항식 상수 하나만 맞다고 무조건 zlib과 같은 결과가 나오는 건 아니다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">xor     eax, 0EDB88320h     ; CRC-32 반사형</code></pre>
+<pre><code class="language-c">crc = (crc &gt;&gt; 1) ^ (0xA001 &amp; -(crc &amp; 1));   // CRC-16 반사형 비트루프</code></pre>
+<pre><code class="language-text">crc32     eax, edx           ; SSE4.2 하드웨어 명령어 → CRC-32C(0x82F63B78) 확정</code></pre>
+<h2>가장 먼저 할 것</h2>
+<p>코드에서 발견한 다항식 상수를 위 표와 정확히 대조한다. 표에 없는 낯선 값이면, 온라인 CRC 카탈로그(예: <code>reveng</code> 프로젝트의 CRC 카탈로그) 기준의 변형(CRC-32/BZIP2, CRC-32/JAMCRC 등)일 수 있으니 초기값·최종XOR·반사 여부까지 함께 기록해둔다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 다항식 상수 정확히 읽기</strong> — IDA에서 <code>H</code>로 진법 토글해서 오타 없이 확인.</p>
+<p><strong>2) 비트 폭 확인</strong> — 상수가 8/16/32비트 중 어디에 속하는지(레지스터 크기, 마스크 <code>&amp; 0xFF</code>/<code>&amp; 0xFFFF</code>/<code>&amp; 0xFFFFFFFF</code>) 확인.</p>
+<p><strong>3) 위 표와 대조</strong> — 정확히 일치하는 알고리즘 이름을 찾는다.</p>
+<p><strong>4) Python으로 검증</strong></p>
+<pre><code class="language-python">import zlib
+print(hex(zlib.crc32(b"123456789")))       # 0xcbf43926, 표준 CRC-32 테스트 벡터
+
+def crc16_arc(data: bytes) -&gt; int:
+    crc = 0x0000
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = (crc &gt;&gt; 1) ^ 0xA001 if (crc &amp; 1) else (crc &gt;&gt; 1)
+    return crc
+
+print(hex(crc16_arc(b"123456789")))  # 0xbb3d, CRC-16/ARC 테스트 벡터와 대조</code></pre>
+<p><strong>5) SSE4.2 CRC32 명령어인 경우</strong> — 이건 반드시 CRC-32C(Castagnoli)이며 zlib의 표준 CRC-32와 다른 알고리즘이므로 <code>zlib.crc32</code>가 아니라 <code>crc32c</code> 계열 라이브러리로 검증해야 한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>H</code>(진법 토글), <code>Alt+T</code>(텍스트 검색으로 다항식 상수 검색)</li><li>Linux: <code>objdump -d binary | grep -i "crc32"</code></li><li>Python: <code>zlib.crc32(data)</code>, <code>import crc8/crcmod</code> 같은 서드파티 라이브러리로 CRC-8/16 변형 계산</li></ul>
+<h2>출력 해석</h2>
+<ul><li>계산값이 zlib과 안 맞는데 다항식은 <code>0xEDB88320</code>이 맞다면, 초기값이나 최종 XOR이 표준(<code>0xFFFFFFFF</code>)이 아닌 변형(CRC-32/BZIP2는 <code>xorout=0</code>, CRC-32/MPEG-2는 반사되지 않음)일 가능성이 크다.</li><li>CRC-16 계열은 초기값이 <code>0x0000</code>이 아니라 <code>0xFFFF</code>인 변형(CRC-16/CCITT-FALSE)도 흔하니 결과가 안 맞으면 초기값부터 바꿔서 재시도.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>다항식 상수 하나만 일치하면 무조건 zlib과 같은 CRC-32라고 단정하는 것 — 초기값/최종XOR/비트순서까지 모두 같아야 동일한 결과가 나온다.</li><li>CRC-32와 CRC-32C를 다항식 숫자만 비슷해 보인다고 혼동하는 것(<code>0xEDB88320</code> vs <code>0x82F63B78</code>) — 완전히 다른 알고리즘이며 SSE4.2 <code>crc32</code> 명령어는 항상 CRC-32C다.</li><li>CRC-16 계열에서 반사형(<code>0xA001</code>)과 정방향(<code>0x8005</code>) 상수를 같은 알고리즘의 다른 표현이 아니라 서로 다른 알고리즘으로 착각하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>CRC의 테이블 기반/비트 단위 구현 자체를 식별하는 기초는 → REV-0209 — CRC 계열 알고리즘 흔적 찾기.</li><li>곱셈 상수 위주의 해시(FNV)와 헷갈리면 → REV-0208 — 16777619 상수가 보일 때 FNV 의심하기.</li><li>암호학적 해시(MD5/SHA류) 상수와 헷갈리면 → REV-0876 — 해시 함수 매직 상수 빠른 참조(MD5/SHA1/SHA256 초기값).</li></ul>
+<h2>미니 예제</h2>
+<p>바이너리에서 다음 즉시값을 발견했다:</p>
+<pre><code class="language-asm">mov     eax, 8408h</code></pre>
+<p>위 표에서 <code>0x8408</code>은 CRC-16/CCITT의 반사형 표현이다. Python으로 재현:</p>
+<pre><code class="language-python">def crc16_ccitt_reflected(data: bytes, init: int = 0xFFFF) -&gt; int:
+    crc = init
+    for b in data:
+        crc ^= b
+        for _ in range(8):
+            crc = (crc &gt;&gt; 1) ^ 0x8408 if (crc &amp; 1) else (crc &gt;&gt; 1)
+    return crc &amp; 0xFFFF</code></pre>
+<p>계산 결과를 바이너리의 비교 상수와 대조해서 초기값(<code>0xFFFF</code> 또는 <code>0x0000</code>)을 조정하며 일치시킨다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0209-crc-fingerprints.html">REV-0209 — CRC 계열 알고리즘 흔적 찾기</a></li><li><a href="rev-0208-fnv-16777619.html">REV-0208 — 16777619 상수가 보일 때 FNV 의심하기</a></li><li><a href="rev-0876-hash-function-magic-constants.html">REV-0876 — 해시 함수 매직 상수 빠른 참조(MD5/SHA1/SHA256 초기값)</a></li><li><a href="rev-0885-algorithm-identification-checklist.html">REV-0885 — 알고리즘 유형별 판별 체크리스트</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>CRC-32(0xEDB88320/0x04C11DB7) 및 테이블 인덱스 1 값(0x77073096): zlib 공식 소스코드(<code>crc32.c</code>) 및 ISO 3309 / ITU-T V.42 표준 기준 (2026-09-09 검증).</li><li>CRC-32C(0x82F63B78/0x1EDC6F41, Castagnoli): RFC 3720(iSCSI) 및 Intel SDM SSE4.2 CRC32 명령어 설명 기준.</li><li>CRC-16/ARC(0xA001/0x8005), CRC-16/CCITT(0x1021/0x8408), CRC-8 계열: Anycrc/CRC RevEng 공개 CRC 카탈로그("A catalogue of parametrised CRC algorithms") 기준 표준 테스트 벡터와 대조 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

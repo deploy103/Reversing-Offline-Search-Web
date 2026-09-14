@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Write-up] hash-browns · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / writeup</div>
+<article class="article-body">
+<h1>[Write-up] hash-browns</h1>
+<div class="article-meta"><span class="tag">writeup</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">Python(pwntools)</span></div>
+<h2>한 줄 요약</h2>
+<p>드림핵 Silver 2 "hash-browns"는 Dreamhack CTF Season 1 Round #2의 리버싱 문제로 실제 출제된 것이 확인되며, 커뮤니티 질문 글에서 "Ghidra로 정적 분석하다가 어떤 해시 알고리즘인지는 알아냈지만 그 이상 진행이 막혔다"는 진행 상황까지는 확인됐으나 상세 write-up은 찾지 못했으므로, 이 글은 해시 계열 리버싱 문제에 공통적으로 적용되는 알고리즘 식별 절차를 중심으로 정리하며 구체적인 알고리즘명이나 정답은 추정으로만 언급한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>ELF 바이너리를 Ghidra/IDA로 열었는데, 디컴파일 결과에 <code>0x67452301</code>, <code>0x5A827999</code> 같은 낯선 32비트 상수가 반복적으로 등장할 때</li><li>프로그램이 사용자 입력을 받아 뭔가를 계산한 뒤, 그 결과를 정해진 값과 비교하는 구조인데 비교 로직이 단순 문자 비교가 아니라 복잡한 비트 연산(순환 이동, XOR, 덧셈 누적)으로 이루어져 있을 때</li><li>"해시 함수를 처음부터 구현한 것 같은데 어떤 표준 알고리즘인지 감이 안 잡힐 때"</li></ul>
+<h2>핵심 개념</h2>
+<h3>해시 알고리즘을 코드만 보고 식별하는 방법</h3>
+<p>표준 해시 알고리즘(MD5, SHA-1, SHA-256, CRC32, FNV 등)은 각기 고유한 초기값/매직 상수를 갖고 있고, 이 상수들은 알고리즘 구현체에 거의 그대로 하드코딩되어 나타난다. 예를 들어 MD5는 <code>0x67452301, 0xefcdab89, 0x98badcfe, 0x10325476</code>이라는 4개의 32비트 초기 상태값을, SHA-1은 다른 5워드 초기값을, SHA-256은 또 다른 8워드 초기값을 쓴다. CRC32는 다항식 상수(<code>0xEDB88320</code> 등)로 만든 룩업 테이블이 <code>.rodata</code>에 256개의 32비트 값으로 통째로 박혀 있는 경우가 많다. FNV-1/1a는 특정 소수 기반의 offset basis/prime 상수를 쓴다. 따라서 Ghidra에서 상수 검색(Search → For Scalars) 기능으로 이런 특징적인 숫자를 찾으면, 함수 전체를 한 줄씩 읽지 않고도 "이건 MD5다" 혹은 "이건 CRC32 룩업테이블이다"라고 빠르게 특정할 수 있다.</p>
+<h3>알고리즘을 식별한 뒤 다음 단계</h3>
+<p>알고리즘을 식별하는 것은 절반의 진행일 뿐이다. 그 다음은 이 해시가 프로그램에서 어떤 역할로 쓰이는지 파악해야 한다. 크게 두 가지 경우가 있다.</p>
+<ol><li><strong>비밀번호/입력을 해시해서 정해진 해시값과 비교</strong>: 표준 해시 알고리즘 자체는 일방향이라 역산이 거의 불가능하므로, 입력 후보를 사전에 두고 같은 해시를 계산해 맞는지 대조하는 오프라인 무차별 대입(만약 입력 공간이 좁다면)이 유일한 실전적 접근이 된다.</li><li><strong>커스텀 변형 해시(표준 알고리즘의 상수만 빌려오고 라운드 수/연산을 바꾼 것)</strong>: 이 경우는 표준 알고리즘이 아니라 문제 제작자가 임의로 변형한 것이므로, 표준 라이브러리로 그대로 재현할 수 없고 코드를 그대로 Python 등으로 옮겨 재구현(포팅)해야 한다.</li></ol>
+<p>hash-browns 문제와 관련된 커뮤니티 질문에서는 "정적 분석으로 어떤 해시 알고리즘인지는 파악했지만 코드 흐름을 완전히 따라가지는 못했다"는 진행 상황이 확인되므로, 이 문제는 최소한 표준 해시 알고리즘의 상수를 식별하는 것까지는 필요하지만, 그 이후 표준 구현 그대로인지 변형인지까지 확인해야 완전히 풀 수 있는 유형으로 추정된다.</p>
+<h3>Ghidra 기반 정적 분석이 필요한 이유(문제 특성상)</h3>
+<p>커뮤니티 질문 글에서 확인되듯, hash-browns는 ELF 바이너리이기 때문에 Windows용 x64dbg/OllyDbg를 그대로 쓸 수 없고 Linux 환경의 GDB 또는 크로스플랫폼 정적 분석 도구인 Ghidra/IDA가 필요하다. 동적 디버깅(GDB)도 가능하지만, 해시 계산 루프는 반복 횟수가 많아 한 스텝씩 실행을 따라가기보다는 정적으로 전체 루프 구조를 먼저 이해하고, 필요한 지점에만 브레이크포인트를 걸어 중간값을 확인하는 것이 효율적이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>디컴파일 결과에 32비트 상수 배열이 4~8개, 또는 256개짜리 테이블이 <code>.rodata</code>에 정의되어 있다.</li><li>반복문 안에서 <code>&lt;&lt;</code>/<code>&gt;&gt;</code>(비트 시프트), <code>^</code>(XOR), <code>+</code>(덧셈)가 뒤섞여 반복 적용되는 코드가 보인다.</li><li>함수 이름이나 변수 이름이 strip되어 있어도, 상수만으로 알고리즘 계열을 특정할 수 있다.</li><li>최종적으로 계산된 결과(보통 16바이트 또는 20바이트, 32바이트 버퍼)를 <code>memcmp</code>로 정해진 값과 비교하는 코드가 마지막에 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>Ghidra에서 Search → For Scalars(또는 Defined Strings/Bytes)로 32비트 상수 목록을 뽑아, REV-0876(해시 함수 매직 상수 빠른 참조)과 REV-0209(CRC 계열 알고리즘 흔적 찾기)의 상수 목록과 대조해 어떤 알고리즘 계열인지부터 특정한다. 알고리즘이 특정되면 표준 구현 소스(예: 공개된 참조 구현)와 나란히 놓고 라운드 수, 연산 순서가 표준과 완전히 같은지 다른지를 비교한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>file</code>/<code>checksec</code>으로 ELF 아키텍처와 보호 기법을 확인한다.</li><li>Ghidra로 열어 Search → For Scalars로 알려진 매직 상수(MD5/SHA-1/SHA-256/CRC32/FNV)를 검색한다.</li><li>상수가 매칭되면 REV-0876, REV-0209, REV-0207, REV-0895, REV-0897 등 참조 글의 상수표와 대조해 알고리즘을 확정한다.</li><li>해당 알고리즘의 표준 구현(예: Python <code>hashlib</code>)으로 같은 입력을 돌려본 뒤 바이너리의 계산 결과와 비교해, 표준 그대로인지 변형인지 판별한다.</li><li>표준 그대로라면 최종 비교 대상 해시값을 바이너리에서 추출하고, 입력 공간이 좁다면 후보를 오프라인으로 해시해 대조하는 스크립트를 작성한다.</li><li>변형이라면 Ghidra 디컴파일 결과를 Python으로 그대로 옮겨 포팅하고, 동일 입력에 대해 바이너리와 같은 결과가 나오는지 검증한 뒤 이를 이용해 정답을 역으로 계산하거나 대입 탐색한다.</li><li>GDB로 실제 실행 중 중간 해시 상태(라운드별 값)를 몇 개 찍어서 포팅한 Python 코드와 대조 검증한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">file ./hash-browns
+checksec --file=./hash-browns</code></pre>
+<p>Ghidra: <code>Search</code> → <code>For Scalars</code> → 상수 범위 지정(예: <code>0x60000000</code>~<code>0x70000000</code>)으로 MD5류 초기값 후보를 좁혀 검색.</p>
+<pre><code class="language-python">import hashlib
+print(hashlib.md5(b'test').hexdigest())   # 표준 구현과 대조용</code></pre>
+<h2>출력 해석</h2>
+<ul><li>상수 검색으로 나온 값이 REV-0876의 표에 있는 값과 정확히 일치하면 해당 알고리즘일 확률이 매우 높다.</li><li>Python 표준 구현과 바이너리 계산 결과가 같은 입력에서 다르게 나오면, 라운드 수를 줄였거나 상수 순서를 바꾼 변형 알고리즘일 가능성이 크므로 5~6단계의 포팅 절차로 넘어가야 한다.</li><li>최종 비교 대상 값이 16바이트면 MD5류, 20바이트면 SHA-1류, 32바이트면 SHA-256류일 가능성이 각각 높다는 것도 보조적인 판별 근거가 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>상수 하나만 보고 알고리즘을 확정한 뒤, 실제로는 라운드 수나 상수 배열 순서가 달라진 변형이라는 것을 못 알아채고 표준 라이브러리 결과만 계속 비교하며 헤매는 것.</li><li>ELF 바이너리인데 Windows 전용 디버거로 열려고 시도하다가 시간을 낭비하는 것(REV-0110 등 Linux 환경 도구를 써야 한다).</li><li>해시가 일방향이라는 사실을 무시하고 "해시값에서 원문을 역산"하려는 것 — 입력 공간이 넓으면 표준 해시는 역산이 아니라 대입 탐색만 가능하다.</li><li>반복문의 실제 반복 횟수(라운드 수)를 확인하지 않고 표준 라운드 수라고 가정해버리는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>어떤 상수가 어떤 알고리즘인지 표로 빠르게 대조하고 싶다면 → REV-0876 해시 함수 매직 상수 빠른 참조(MD5/SHA1/SHA256 초기값), REV-0209 CRC 계열 알고리즘 흔적 찾기, REV-0207 FNV-1과 FNV-1a 해시 패턴</li><li>SHA-256/MD5 각각의 흔적을 더 자세히 확인하고 싶다면 → REV-0895 SHA-256 흔적을 상수로 알아보는 법, REV-0897 MD5 흔적을 상수로 알아보는 법</li><li>해시가 이중으로 적용된 HMAC류 구조가 의심된다면 → REV-0898 HMAC 패턴 알아보기(이중 해시 구조)</li><li>ELF에서 strcmp/memcmp 계열 비교 함수를 추적하는 기본기가 필요하다면 → REV-0110 strcmp strncmp memcmp 비교 추적</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">// 해시 계열 검증 구조 예시(추정 재구성, 실제 hash-browns 코드 아님)
+unsigned int h0 = 0x67452301, h1 = 0xefcdab89, h2 = 0x98badcfe, h3 = 0x10325476; // MD5류 초기값처럼 보이는 상수
+compute_hash(input, &amp;h0, &amp;h1, &amp;h2, &amp;h3);
+if (memcmp(&amp;h0, target_hash, 16) == 0) {
+    puts("correct! here's your flag");
+}</code></pre>
+<p>이런 초기값 4개가 보인다면 MD5 계열일 확률이 높다는 것이 이 글의 핵심 단서이며, 실제 hash-browns가 정확히 이 알고리즘을 쓰는지는 확인되지 않았다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0876-hash-function-magic-constants.html">REV-0876 — 해시 함수 매직 상수 빠른 참조(MD5/SHA1/SHA256 초기값)</a></li><li><a href="rev-0209-crc-fingerprints.html">REV-0209 — CRC 계열 알고리즘 흔적 찾기</a></li><li><a href="rev-0207-fnv1-fnv1a.html">REV-0207 — FNV-1과 FNV-1a 해시 패턴</a></li><li><a href="rev-0895-sha256-fingerprints.html">REV-0895 — SHA-256 흔적을 상수로 알아보는 법</a></li><li><a href="rev-0897-md5-constant-fingerprint.html">REV-0897 — MD5 흔적을 상수로 알아보는 법</a></li><li>[REV-1047 — [Write-up] randzzz](rev-1047-writeup-randzzz.html)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>"hash-browns"가 Dreamhack CTF Season 1 Round #2의 리버싱 카테고리 공식 문제(20코인, Official Writeup 존재)로 실제 출제되었다는 사실은 dreamhack.io/ctf/2 페이지 조회로 확인했다(2026-09-10).</li><li>Dreamhack 공식 Q&amp;A 포럼(<code>dreamhack.io/forum/qna/664</code>)에서 이 문제를 푸는 다른 사용자가 "ELF라 Ollydbg/x64dbg를 못 쓰고 Ghidra로 정적 분석했으며, 며칠 분석해서 어떤 해시 알고리즘을 쓰는지와 전체 흐름은 파악했지만 세부 코드 분석까지는 못했다"고 남긴 질문 내용을 참고해 이 글의 "정적 분석으로 알고리즘부터 식별" 접근 방향을 서술했다.</li><li>어떤 표준 해시 알고리즘이 실제로 쓰였는지, 표준 그대로인지 변형인지, 정확한 플래그는 이번 조사에서 확인하지 못했으며 지어내지 않았다. 이 글의 알고리즘 식별 절차는 해시 계열 리버싱 문제 일반에 적용되는 방법론이다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

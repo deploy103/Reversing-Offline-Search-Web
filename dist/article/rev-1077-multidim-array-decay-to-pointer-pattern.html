@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>다차원 배열을 함수로 넘길 때 포인터로 decay되는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / c-analysis</div>
+<article class="article-body">
+<h1>다차원 배열을 함수로 넘길 때 포인터로 decay되는 패턴</h1>
+<div class="article-meta"><span class="tag">c-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>int mat[3][10]</code>처럼 선언된 다차원 배열을 함수 매개변수로 넘기면 가장 바깥쪽 차원(<code>3</code>)의 크기 정보는 사라지고 <code>int (*)[10]</code>(10개짜리 배열을 가리키는 포인터) 하나로 decay되며, 어셈블리에서는 이것이 "함수는 포인터 레지스터 하나만 받고, 행(row) 하나를 건너뛸 때마다 안쪽 차원 크기(<code>10 * sizeof(int)</code> = 40바이트)를 고정 상수로 곱해 더하는" 형태로 나타난다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>void f(int mat[3][10])</code>처럼 선언한 함수인데 어셈블리를 보면 인자로 받는 게 그냥 포인터 레지스터 하나뿐이라 "3이라는 정보는 어디 갔지?" 싶을 때</li><li>행렬의 특정 행 주소를 계산하는 코드에서 <code>add rax, 40</code>, <code>imul rax, rdx, 40</code> 처럼 고정된 배수(40, 80 등)가 반복해서 나올 때</li><li>함수 시그니처만 보고 "이 배열이 몇 행짜리인지" 알아내려다 실패하고, 대신 호출하는 쪽 코드에서 몇 번 반복하는지를 봐야 하는 상황일 때</li><li>2차원 배열 인덱싱 <code>mat[i][j]</code>가 함수 안/밖에서 서로 다른 방식(곱셈 유무)으로 계산되는 것을 비교해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>C에서 배열이 함수 매개변수로 선언되면 항상 포인터로 decay(퇴화)된다. 1차원 배열 <code>int arr[10]</code>은 <code>int *arr</code>로, 다차원 배열 <code>int mat[3][10]</code>은 <code>int (*mat)[10]</code>(10개 int로 된 배열 하나를 가리키는 포인터)로 바뀐다. 이때 사라지는 것은 가장 바깥쪽 차원(행의 개수, <code>3</code>)뿐이고, 안쪽 차원(열의 개수, <code>10</code>)은 포인터 타입 자체(<code>int (*)[10]</code>)에 남아 있어서 컴파일러가 "한 행을 건너뛸 때 몇 바이트를 이동해야 하는지"(stride)를 계산하는 데 계속 쓰인다.</p>
+<pre><code class="language-c">void fill_row(int arr[10], int row) {   /* int arr[10]은 실제로 int *arr로 decay */
+    for (int i = 0; i &lt; 10; i++) {
+        arr[i] = row;
+    }
+}
+
+void use_matrix(int mat[3][10]) {       /* 실제 매개변수 타입은 int (*mat)[10] */
+    fill_row(mat[1], 7);                /* mat[1] = 두 번째 행의 시작 주소 */
+}</code></pre>
+<p>x86-64 SysV, <code>-O0</code>, Intel 문법:</p>
+<pre><code class="language-asm">use_matrix:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 16
+    mov     [rbp-8], rdi        ; mat 저장 -- 실제로는 int(*)[10] 포인터 하나, [3][10] 중 3은 이미 사라짐
+    mov     rax, [rbp-8]        ; rax = mat
+    add     rax, 40             ; rax = mat + 40바이트 = &amp;mat[1][0]  (1행 * 10칸 * 4바이트 = 40, 안쪽 차원 10이 stride로 남아있음)
+    mov     rdi, rax            ; fill_row의 1번째 인자: &amp;mat[1][0]
+    mov     esi, 7              ; fill_row의 2번째 인자: row = 7
+    call    fill_row
+    leave
+    ret
+
+fill_row:
+    push    rbp
+    mov     rbp, rsp
+    mov     [rbp-24], rdi       ; arr 저장 (int *arr로 decay됨, 안쪽 차원 정보도 없음)
+    mov     [rbp-28], esi       ; row 저장
+    mov     DWORD [rbp-4], 0    ; i = 0
+.L_loop:
+    cmp     DWORD [rbp-4], 9
+    jg      .L_end
+    mov     eax, [rbp-4]        ; eax = i
+    cdqe                        ; eax를 rax로 부호 확장
+    lea     rdx, [rax*4]        ; rdx = i * 4바이트 (int 하나 크기)
+    mov     rax, [rbp-24]       ; rax = arr
+    add     rax, rdx            ; rax = &amp;arr[i]
+    mov     ecx, [rbp-28]       ; ecx = row
+    mov     [rax], ecx          ; arr[i] = row
+    add     DWORD [rbp-4], 1
+    jmp     .L_loop
+.L_end:
+    pop     rbp
+    ret</code></pre>
+<p><code>use_matrix</code>에서 <code>mat[1]</code>을 계산할 때 <code>add rax, 40</code>이라는 고정 상수가 쓰인 것을 주목하자. 이 <code>40</code>은 <code>10(안쪽 차원, 열 개수) * 4바이트(int 크기)</code>로, 컴파일러가 <code>mat</code>의 타입이 <code>int (*)[10]</code>이라는 걸 알고 있기 때문에 나올 수 있는 값이다. 반면 <code>fill_row</code> 안에서는 매개변수가 이미 단순 <code>int *</code>로 decay되어 있어서 <code>arr[i]</code>를 계산할 때는 그냥 <code>i * 4</code>만 곱하며, 더 이상 "몇 번째 행인지" 같은 개념이 없다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>함수 매개변수로 배열을 받는 함수인데 실제로는 포인터 레지스터(<code>rdi</code>, <code>rcx</code> 등) 하나만 전달됨</li><li>행렬 관련 코드에서 <code>imul</code>이나 <code>add</code>에 <code>10*4=40</code>, <code>10*8=80</code> 같은, 선언된 열 개수와 원소 크기를 곱한 고정 상수가 반복됨</li><li><code>sizeof(mat)</code>을 함수 안에서 호출했다고 가정할 코드가 실제로는 배열 전체 크기가 아니라 포인터 크기(8바이트)로 계산됨(그래서 <code>sizeof</code>를 함수 매개변수 배열에 쓰면 안 된다는 규칙의 어셈블리적 증거)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>함수가 다차원 배열을 매개변수로 받는 것처럼 선언되어 있다면, 실제로 레지스터/스택에 전달되는 것이 포인터 하나뿐인지부터 확인한다. 그 다음 함수 안에서 인덱싱 시 곱해지는 고정 상수를 찾아 "안쪽 차원 크기 × 원소 크기"로 역산하면 원래 선언의 안쪽 차원을 알 수 있다.</p>
+<h2>단계별 절차</h2>
+<ol><li>함수 프롤로그에서 배열로 선언된 매개변수가 실제로 포인터 레지스터 하나로만 전달되는지 확인한다.</li><li>그 포인터에 인덱싱이 일어날 때 곱해지는 상수를 찾는다(<code>imul</code>, 또는 <code>lea reg, [reg*N]</code> 형태).</li><li>그 상수를 원소 크기(대개 4바이트 <code>int</code>, 8바이트 <code>double</code>/포인터 등)로 나누어 안쪽 차원의 크기를 역산한다.</li><li>바깥쪽 차원(행 개수)은 함수 시그니처만 봐서는 알 수 없으므로, 호출하는 쪽 코드에서 반복 횟수나 배열 전체 크기 상수를 찾아 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 함수 인자 타입을 <code>int (*)[10]</code>처럼 직접 지정(Edit Function 또는 로컬 타입 편집)하면 pseudocode가 <code>mat[i][j]</code> 형태로 자연스럽게 복원됨</li><li>Ghidra: Function Signature 편집에서 매개변수 타입을 배열 포인터로 지정</li><li>GDB: <code>ptype mat</code>으로 실제 컴파일된 타입 확인, <code>p sizeof(mat)</code>으로 배열 전체가 아니라 포인터 크기(8)가 나오는 것을 직접 확인</li><li>x64dbg: 레지스터 창에서 포인터 값 하나만 전달되는지 직접 확인, 메모리 덤프에서 40바이트 간격으로 값이 반복되는지 확인</li></ul>
+<h2>출력 해석</h2>
+<p><code>add rax, 40</code>이 반복적으로 나타나고 그 값이 항상 <code>40</code>으로 고정되어 있다면, 이는 배열의 안쪽 차원이 <code>10</code>(10 * 4바이트 = 40)으로 컴파일 시점에 이미 고정되어 있다는 뜻이다. 만약 이 값이 실행 중 레지스터 곱셈으로 매번 다시 계산된다면(<code>imul rax, rcx, N</code>처럼 변수 곱셈이라면), 안쪽 차원 크기가 컴파일 시점 상수가 아니라 가변 길이 배열(VLA)일 가능성도 검토해야 한다.</p>
+<h2>흔한 실수</h2>
+<ul><li>함수 매개변수로 선언된 <code>int mat[3][10]</code>을 보고 실제로 3행 전체 정보가 함수 안에 전달된다고 생각하는 것 — 실제로는 행 개수(3)는 완전히 사라진다.</li><li>함수 안에서 <code>sizeof(mat)</code>을 호출해 전체 배열 크기를 구하려는 것 — 매개변수화된 배열은 포인터이므로 <code>sizeof</code>는 8(포인터 크기)만 반환한다.</li><li>안쪽 차원 크기를 곱하는 상수(<code>40</code>)를 원소 개수(<code>10</code>)로 착각하는 것 — 반드시 원소 크기로 나누어야 진짜 차원 크기가 나온다.</li><li>1차원 배열 decay(<code>int arr[10]</code> → <code>int *arr</code>)와 다차원 배열 decay(<code>int mat[3][10]</code> → <code>int (*mat)[10]</code>)를 같은 것으로 취급해 안쪽 차원 정보까지 사라진다고 착각하는 것 — 안쪽 차원은 포인터 타입에 남아 유지된다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>함수 밖(호출하는 쪽)에서 2차원 배열을 직접 인덱싱하는 코드가 어떻게 다른지 비교하려면 → REV-1059 2차원 배열 인덱싱이 어셈블리에서 보이는 패턴(예정)</li><li>이 포인터에 대한 포인터 산술(더하기/빼기) 전반이 궁금하면 → REV-1063 포인터 산술이 어셈블리에서 보이는 패턴(예정)</li><li>배경 지식으로 다차원 배열 자체가 메모리에 어떻게 배치되는지 먼저 보고 싶다면 → REV-0350 다차원 배열이 어셈블리로 어떻게 변하는지</li></ul>
+<h2>미니 예제</h2>
+<p>3x3 단위 행렬의 대각선 원소만 채우는 함수로, 안쪽 차원 상수가 곱해지는 모습을 더 명확히 보여준다.</p>
+<pre><code class="language-c">void set_diagonal(int mat[3][3], int value) {   /* 실제 매개변수 타입: int (*mat)[3] */
+    for (int i = 0; i &lt; 3; i++) {
+        mat[i][i] = value;
+    }
+}</code></pre>
+<pre><code class="language-asm">set_diagonal:
+    push    rbp
+    mov     rbp, rsp
+    mov     [rbp-24], rdi        ; mat 저장 (int(*)[3] 하나의 포인터)
+    mov     [rbp-28], esi        ; value 저장
+    mov     DWORD [rbp-4], 0     ; i = 0
+.L_loop:
+    cmp     DWORD [rbp-4], 2
+    jg      .L_end
+    mov     eax, [rbp-4]         ; eax = i
+    cdqe
+    imul    rdx, rax, 12         ; rdx = i * 12  (안쪽 차원 3 * 4바이트 = 12, 행 오프셋)
+    mov     rax, [rbp-24]        ; rax = mat
+    add     rax, rdx             ; rax = &amp;mat[i][0]
+    mov     edx, [rbp-4]         ; edx = i (열 인덱스로 재사용)
+    movsxd  rdx, edx
+    lea     rcx, [rdx*4]         ; rcx = i * 4  (열 오프셋)
+    add     rax, rcx             ; rax = &amp;mat[i][i]
+    mov     ecx, [rbp-28]        ; ecx = value
+    mov     [rax], ecx           ; mat[i][i] = value
+    add     DWORD [rbp-4], 1
+    jmp     .L_loop
+.L_end:
+    pop     rbp
+    ret</code></pre>
+<p><code>imul rdx, rax, 12</code>에서 <code>12</code>는 <code>3(안쪽 차원, 열 개수) * 4바이트</code>이고, 이 상수 하나만으로도 원래 선언이 <code>int mat[N][3]</code> 형태(안쪽 차원이 3)였다는 것을 바깥쪽 N값 없이도 알아낼 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0350-multidim-array-in-asm.html">REV-0350 — 다차원 배열이 어셈블리로 어떻게 변하는지</a></li><li><a href="rev-1059-2d-array-indexing-asm-pattern.html">REV-1059 — 2차원 배열 인덱싱이 어셈블리에서 보이는 패턴</a></li><li><a href="rev-1063-pointer-arithmetic-asm-pattern.html">REV-1063 — 포인터 산술이 어셈블리에서 보이는 패턴</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>배열이 함수 매개변수로 선언될 때 포인터로 decay되는 규칙과, 다차원 배열은 가장 바깥쪽 차원만 사라진다는 규칙: C 표준(ISO/IEC 9899) 배열/포인터 변환 섹션 기준.</li><li>안쪽 차원 크기가 stride 상수로 컴파일 시점에 고정되어 <code>add</code>/<code>imul</code> 명령으로 나타나는 패턴: 실제 gcc/clang <code>-O0</code> x86-64 출력 비교로 반복 확인 (2026-09-10 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

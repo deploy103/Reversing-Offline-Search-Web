@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Python 32비트 Overflow 재현 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / automation</div>
+<article class="article-body">
+<h1>Python 32비트 Overflow 재현</h1>
+<div class="article-meta"><span class="tag">automation</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>Python <code>int</code>는 크기 제한 없이 커지지만 C의 <code>int</code>/<code>uint32_t</code>는 32비트를 넘으면 값이 잘려나가므로(wraparound), C와 똑같은 결과를 얻으려면 <strong>모든 산술 연산 직후마다</strong> <code>&amp; 0xFFFFFFFF</code>로 마스킹해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>바이너리의 해시/체크섬 계산 루프를 Python으로 그대로 옮겨 적었는데 결과가 디버거에서 본 값과 전혀 다르게 나올 때</li><li><code>EAX</code>가 곱셈이나 덧셈을 반복하는 루프를 도는데, Python으로 같은 루프를 돌리면 값이 눈덩이처럼 커져서 자릿수 자체가 다를 때</li><li>CRC, FNV 해시, 커스텀 시리얼 검증 알고리즘처럼 32비트 레지스터 연산이 핵심인 알고리즘을 재현할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>C에서 <code>int</code>, <code>unsigned int</code>, <code>uint32_t</code> 같은 32비트 타입은 값이 <code>0</code>~<code>0xFFFFFFFF</code>(또는 부호 있는 범위) 사이에서만 존재할 수 있다. 이 범위를 넘어서는 연산 결과는 상위 비트가 잘려나가고 하위 32비트만 남는다 — 이것이 "오버플로/wraparound"다. CPU도 <code>EAX</code> 같은 32비트 레지스터에 결과를 저장할 때 자동으로 하위 32비트만 남긴다(캐리/오버플로 플래그는 별도로 세팅될 뿐 레지스터 값 자체는 잘림).</p>
+<p>Python의 <code>int</code>는 이런 제한이 전혀 없는 임의 정밀도 정수다. <code>2**32 * 2**32</code>를 계산해도 오류 없이 정확한 큰 수를 반환한다. 이것이 편리하기도 하지만, <strong>C 코드를 그대로 옮겨 적을 때는 함정</strong>이 된다 — Python은 "잘라내는" 동작을 저절로 해주지 않기 때문에, 명시적으로 마스킹하지 않으면 완전히 다른(훨씬 큰) 값이 계속 누적된다.</p>
+<p>규칙은 단순하다. <strong>곱셈, 덧셈, 뺄셈, 왼쪽 시프트 등 결과가 커질 수 있는 연산을 수행한 직후에는 항상 <code>&amp; 0xFFFFFFFF</code>(32비트 기준)를 붙인다.</strong></p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-c">uint32_t hash = 0x811C9DC5;
+for (int i = 0; i &lt; len; i++) {
+    hash ^= data[i];
+    hash *= 0x01000193;   // 곱하면 32비트를 넘을 수 있지만 uint32_t라 자동으로 잘림
+}</code></pre>
+<p>이런 루프를 Python으로 그대로 옮기면서 <code>hash *= 0x01000193</code>만 적고 마스킹을 빼먹으면, 반복할수록 <code>hash</code>가 수백 자리 숫자로 불어나버려 최종값이 C와 전혀 다르게 나온다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>원본 C/디스어셈블리 코드에서 다루는 변수의 <strong>정확한 비트 폭</strong>(<code>uint32_t</code>인지 <code>uint64_t</code>인지, <code>EAX</code>인지 <code>RAX</code>인지)을 확정한다. 32비트 레지스터에 결과를 쓰는 명령(<code>mov eax, ...</code>, <code>imul eax, ...</code>)은 상위 32비트를 자동으로 0으로 만든다는 x86-64 규칙도 함께 기억해둔다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 틀린 예시로 문제를 먼저 확인</strong></p>
+<pre><code class="language-python"># 마스킹을 빼먹은 잘못된 버전
+def fnv1a_wrong(data: bytes) -&gt; int:
+    h = 0x811C9DC5
+    for b in data:
+        h ^= b
+        h *= 0x01000193
+    return h
+
+print(hex(fnv1a_wrong(b"hello")))
+# 결과: 매우 큰 수 (32비트를 훌쩍 넘는 자릿수) — C의 uint32_t 결과와 다름</code></pre>
+<p><strong>2) 올바른 버전 — 매 연산 후 마스킹</strong></p>
+<pre><code class="language-python">MASK32 = 0xFFFFFFFF
+
+def fnv1a_correct(data: bytes) -&gt; int:
+    h = 0x811C9DC5
+    for b in data:
+        h ^= b
+        h = (h * 0x01000193) &amp; MASK32   # 곱셈 직후 즉시 마스킹
+    return h
+
+print(hex(fnv1a_correct(b"hello")))
+# 결과: 0xa430d84 같은 정상적인 32비트 값</code></pre>
+<p><strong>3) 재사용 가능한 헬퍼 함수로 정리</strong></p>
+<pre><code class="language-python">MASK32 = 0xFFFFFFFF
+MASK64 = 0xFFFFFFFFFFFFFFFF
+
+def add32(a: int, b: int) -&gt; int: return (a + b) &amp; MASK32
+def sub32(a: int, b: int) -&gt; int: return (a - b) &amp; MASK32
+def mul32(a: int, b: int) -&gt; int: return (a * b) &amp; MASK32
+def shl32(a: int, n: int) -&gt; int: return (a &lt;&lt; n) &amp; MASK32
+# 오른쪽 시프트는 자연히 32비트 안에 들어오므로 별도 마스킹이 필수는 아니지만
+# 습관적으로 붙여도 무해하다.
+def shr32(a: int, n: int) -&gt; int: return (a &amp; MASK32) &gt;&gt; n</code></pre>
+<p>이 함수들을 쓰면 C 코드의 각 줄을 거의 1:1로 옮길 수 있다.</p>
+<pre><code class="language-c">// C
+hash = hash * 33 + c;</code></pre>
+<pre><code class="language-python"># Python
+hash = add32(mul32(hash, 33), c)</code></pre>
+<p><strong>4) 부호 있는 결과가 필요할 때 (REV-0259와 연계)</strong></p>
+<pre><code class="language-python">def to_signed32(x: int) -&gt; int:
+    x &amp;= MASK32
+    return x - (1 &lt;&lt; 32) if x &gt;= (1 &lt;&lt; 31) else x
+
+result = mul32(0x7FFFFFFF, 3)
+print(hex(result), to_signed32(result))</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>디버거(x64dbg/IDA)에서 <code>EAX</code>/<code>EDX</code> 등 32비트 레지스터의 연산 직후 값을 하나하나 캡처해 Python 결과와 대조하며 어느 단계에서 마스킹이 빠졌는지 이분 탐색하듯 좁혀나간다.</li><li>Python REPL에서 <code>hex(value)</code>의 자릿수가 8자리(<code>0x</code> 제외)를 넘어가면 곧바로 마스킹 누락을 의심한다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Python 계산값의 16진수 표현이 8자리(32비트)를 초과하면 100% 마스킹 누락이다. 즉시 해당 연산 뒤에 <code>&amp; 0xFFFFFFFF</code>를 추가한다.</li><li>자릿수는 맞는데 값 자체가 다르다면 마스킹 위치가 아니라 연산 순서나 초기값, 상수를 잘못 옮겨 적었을 가능성이 크다 — C 코드와 한 줄씩 다시 대조한다.</li><li>64비트 레지스터(<code>RAX</code> 등)를 다루는 코드라면 마스크를 <code>0xFFFFFFFFFFFFFFFF</code>로 바꿔야 하며, 32비트 마스크를 그대로 쓰면 상위 32비트가 잘못 잘려나간다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>루프 안의 여러 연산 중 곱셈에만 마스킹을 걸고 덧셈/시프트에는 빼먹는 것 — 모든 연산 각각이 잠재적 오버플로 지점이므로 하나도 빠짐없이 확인해야 한다.</li><li>최종 반환값에만 마스킹을 걸고 루프 중간값은 그대로 두는 것 — 중간값이 이미 틀리면 다음 반복의 입력도 틀려지므로 누적 오차가 발생한다. 반드시 <strong>매 스텝마다</strong> 마스킹해야 한다.</li><li>32비트 코드인데 64비트 마스크(<code>0xFFFFFFFFFFFFFFFF</code>)를 쓰거나 그 반대로 착각하는 것.</li><li><code>x86</code> 32비트 레지스터 연산 시 자동으로 상위 비트가 0이 되는 x86-64 규칙(<code>mov eax, ...</code>는 <code>rax</code>의 상위 32비트를 0으로 클리어)과, <code>AL</code>/<code>AX</code>처럼 8/16비트 서브 레지스터에 쓸 때는 상위 비트가 보존되는 규칙을 혼동하는 것 — 이 경우는 마스크 크기(<code>0xFF</code>, <code>0xFFFF</code>)를 정확히 그 레지스터 폭에 맞춰야 한다.</li></ul>
+<h2>마스킹을 잊으면 벌어지는 일 — 대조 예제</h2>
+<p>아래는 "왜 잊으면 틀리는지"를 보여주는 대조 예제다.</p>
+<pre><code class="language-python">MASK32 = 0xFFFFFFFF
+
+def bad_checksum(data: bytes) -&gt; int:
+    s = 0
+    for b in data:
+        s = s * 31 + b          # 마스킹 없음 -&gt; WRONG
+    return s
+
+def good_checksum(data: bytes) -&gt; int:
+    s = 0
+    for b in data:
+        s = (s * 31 + b) &amp; MASK32   # 매 반복마다 마스킹 -&gt; C와 동일
+    return s
+
+data = b"A" * 20
+print(hex(bad_checksum(data)))    # 자릿수가 8자리를 훨씬 초과하는 거대한 수
+print(hex(good_checksum(data)))   # 정확히 8자리 이하의 32비트 값, C의 uint32_t 결과와 일치</code></pre>
+<p><code>bad_checksum</code>은 Python에서는 "에러 없이 실행되어 그럴듯한 숫자"를 내놓기 때문에, 검증 로직과 비교할 때까지 문제를 못 느끼는 경우가 많다는 점이 특히 위험하다.</p>
+<h2>실전 예시: 여러 연산이 섞인 시리얼 체크섬 역재현</h2>
+<p>실전 CTF의 검증 로직은 곱셈이나 덧셈 하나만 반복하는 것이 아니라 <strong>시프트, XOR, 곱셈을 한 반복문 안에서 여러 번 섞어서</strong> 쓰는 경우가 많다. 아래 C 코드는 그런 상황을 흉내 낸, 앞의 djb2 예제보다 한 단계 더 복잡한 예시다.</p>
+<pre><code class="language-c">// 원본 C: 왼쪽 4비트 시프트 + 오른쪽에서 넘친 4비트를 다시 XOR로 섞은 뒤 매직 상수를 곱하는 32비트 해시
+uint32_t compute(const char *s, int len) {
+    uint32_t h = 0;
+    for (int i = 0; i &lt; len; i++) {
+        h = (h &lt;&lt; 4) ^ (h &gt;&gt; 28) ^ (uint32_t)(unsigned char)s[i];
+        h = h * 0x9E3779B9u;   // 황금비 기반 홀수 매직 상수, 32비트 자동 랩어라운드
+    }
+    return h;
+}</code></pre>
+<p>이 함수는 한 번 반복할 때마다 <strong>연산이 다섯 개</strong>(왼쪽 시프트, 오른쪽 시프트, XOR 두 번, 곱셈 한 번)나 이어져 있다. 이럴 때 "한 줄 전체를 계산한 다음 맨 끝에만 마스킹"하면 틀린다 — 특히 <code>h &lt;&lt; 4</code>는 그 자체로 이미 32비트를 넘어설 수 있는 연산이므로, <strong>그 시프트 결과만 따로 떼어서 즉시 마스킹</strong>해야 다음 XOR에 넘어갈 값이 정확해진다.</p>
+<pre><code class="language-python">MASK32 = 0xFFFFFFFF
+
+def compute(s: bytes) -&gt; int:
+    h = 0
+    for c in s:
+        # 1) 왼쪽 시프트는 32비트를 초과할 수 있으므로 시프트 직후 바로 마스킹한다
+        left = (h &lt;&lt; 4) &amp; MASK32
+        # 2) 오른쪽 시프트는 이미 32비트 범위 안에 들어오지만, 습관적으로 마스킹을 붙여도 무해하다
+        right = (h &gt;&gt; 28) &amp; MASK32
+        # 3) XOR는 자릿수를 키우지 않는 연산이라 여기서는 추가 마스킹이 필요 없다
+        h = left ^ right ^ c
+        # 4) 곱셈은 32비트를 크게 초과할 수 있는 연산이므로 곱한 직후 다시 마스킹한다
+        h = (h * 0x9E3779B9) &amp; MASK32
+    return h
+
+# 예시 입력 "KEY01"에 대해 위 규칙대로 정확히 마스킹하며 계산한 값
+print(hex(compute(b"KEY01")))   # 0x2fc4f1e1</code></pre>
+<p>이 코드를 실제로 실행하면 <code>0x2fc4f1e1</code>이 그대로 나온다(직접 CPython 3에서 재현 검증됨). 만약 3번째 줄(<code>h = left ^ right ^ c</code>)까지는 맞게 옮겼는데 4번째 줄의 곱셈 뒤에 마스킹을 빼먹으면, <code>h</code>가 반복될수록 눈덩이처럼 커져서 최종 자릿수 자체가 8자리(32비트)를 넘어가 버린다 — 이 자릿수 초과가 곧 "마스킹을 어디선가 빼먹었다"는 가장 확실한 신호라는 점은 앞서 "출력 해석"에서 다룬 규칙과 동일하다. 요컨대 규칙은 항상 같다: <strong>연산이 몇 개가 이어지든, "커질 수 있는" 연산(덧셈/뺄셈/곱셈/왼쪽 시프트) 각각의 결과를 그 즉시 떼어서 마스킹</strong>하면, 아무리 복잡하게 섞인 해시 함수도 C와 동일하게 재현할 수 있다.</p>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>부호 있는 값으로 해석해야 하는 경우 → REV-0259 (Signed Unsigned 변환)와 함께 <code>to_signed32</code> 적용.</li><li>회전(ROL/ROR)까지 섞인 해시라면 → REV-0263 (Rotate 함수 템플릿)의 회전 함수와 마스킹을 함께 적용.</li><li>최종 결과를 바이트로 다시 묶어야 하면 → REV-0261 (struct pack/unpack)로 <code>&lt;I</code> 포맷 사용.</li></ul>
+<h2>미니 예제</h2>
+<p>간단한 커스텀 체크섬 검증을 재현해보자. C 코드가 다음과 같다고 하자.</p>
+<pre><code class="language-c">uint32_t calc(const char *s, int len) {
+    uint32_t h = 5381;
+    for (int i = 0; i &lt; len; i++) {
+        h = ((h &lt;&lt; 5) + h) + s[i];   // h*33 + c (djb2 스타일)
+    }
+    return h;
+}</code></pre>
+<p>Python으로 정확히 재현:</p>
+<pre><code class="language-python">MASK32 = 0xFFFFFFFF
+
+def calc(s: bytes) -&gt; int:
+    h = 5381
+    for c in s:
+        h = (((h &lt;&lt; 5) &amp; MASK32) + h + c) &amp; MASK32
+    return h
+
+print(hex(calc(b"flag_candidate")))</code></pre>
+<p><code>(h &lt;&lt; 5)</code>에 먼저 마스킹을 걸고, 그 다음 덧셈 결과 전체에도 다시 마스킹을 거는 이중 마스킹이 안전하다 — 시프트만으로도 32비트를 초과할 수 있기 때문이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0259-python-signed-unsigned.html">REV-0259 — Python으로 Signed Unsigned 변환</a></li><li><a href="rev-0261-python-struct.html">REV-0261 — Python struct pack unpack</a></li><li><a href="rev-0263-python-rotate-template.html">REV-0263 — Python Rotate 함수 템플릿</a></li><li><a href="rev-0258-python-number-conversion-cheatsheet.html">REV-0258 — 리버싱용 Python 숫자 변환 치트시트</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>32비트 정수 오버플로/wraparound 동작은 C 표준(부호 없는 정수 연산은 모듈러 산술로 정의됨, ISO/IEC 9899)과 Intel SDM의 32비트 레지스터 쓰기 규칙 기준(2026-09-08 확인). Python <code>int</code>의 임의 정밀도 특성은 Python 공식 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

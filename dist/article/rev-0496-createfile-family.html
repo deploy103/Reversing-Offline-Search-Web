@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinAPI 파일 입출력 함수 사전: CreateFile 계열 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>WinAPI 파일 입출력 함수 사전: CreateFile 계열</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>CreateFileA</code>/<code>CreateFileW</code>(및 <code>CreateFile2</code>)는 파일·파이프·장치를 열거나 새로 만들어 <code>HANDLE</code>을 돌려주는 Win32 진입점이며, 7개 인자 중 <code>dwDesiredAccess</code>(2번), <code>dwCreationDisposition</code>(5번)만 정확히 읽어도 "이 코드가 뭘 하려는 파일 작업인지" 즉시 판단할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Import Table에서 <code>CreateFileA</code>/<code>CreateFileW</code>를 보고 정확한 인자 순서와 각 상수값이 기억나지 않을 때</li><li><code>CreateFile2</code>(Windows 8+ 전용 API)가 보여서 기존 <code>CreateFileW</code>와 뭐가 다른지 궁금할 때</li><li>반환값이 <code>INVALID_HANDLE_VALUE</code>(<code>-1</code>)인데 왜 실패했는지 <code>dwCreationDisposition</code>/<code>dwDesiredAccess</code> 조합으로 원인을 추정하고 싶을 때</li><li>x64dbg에서 <code>bp CreateFileW</code> 후 레지스터에 찍힌 숫자 상수(<code>0x80000000</code>, <code>0x3</code> 등)가 무슨 뜻인지 바로 찾고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p><code>CreateFileA</code>/<code>CreateFileW</code>는 <code>kernel32.dll</code>(실제 구현은 <code>KernelBase.dll</code>)이 제공하며, ANSI(<code>A</code>)와 유니코드(<code>W</code>) 버전은 첫 인자 문자열 인코딩만 다르고 나머지 동작은 동일하다.</p>
+<pre><code class="language-c">HANDLE CreateFileW(
+    LPCWSTR               lpFileName,
+    DWORD                  dwDesiredAccess,
+    DWORD                  dwShareMode,
+    LPSECURITY_ATTRIBUTES  lpSecurityAttributes,
+    DWORD                  dwCreationDisposition,
+    DWORD                  dwFlagsAndAttributes,
+    HANDLE                 hTemplateFile
+);</code></pre>
+<p><strong>인자별 요약</strong></p>
+<ol><li><code>lpFileName</code> — 경로 문자열. <code>\\.\PhysicalDrive0</code>처럼 <code>\\.\</code>로 시작하면 물리 디스크/장치를 직접 여는 것이므로 단순 파일 조작이 아닐 가능성이 크다.</li><li><code>dwDesiredAccess</code> — 흔한 값: <code>GENERIC_READ</code>(0x80000000), <code>GENERIC_WRITE</code>(0x40000000), 둘 다 OR하면 읽기/쓰기 겸용. <code>0</code>을 주면 메타데이터(속성)만 조회하고 실제 데이터 접근은 하지 않겠다는 뜻이다.</li><li><code>dwShareMode</code> — <code>0</code>이면 다른 프로세스와 공유 안 함(독점), <code>FILE_SHARE_READ</code>(1)/<code>FILE_SHARE_WRITE</code>(2)/<code>FILE_SHARE_DELETE</code>(4)를 OR해서 공유 허용.</li><li><code>lpSecurityAttributes</code> — 대부분 <code>NULL</code>. 상속 가능한 핸들을 만들 때만 값이 채워진다.</li><li><code>dwCreationDisposition</code> — <strong>정확히 하나만</strong> 선택해야 하는 값. 뒤 표 참고.</li><li><code>dwFlagsAndAttributes</code> — <code>FILE_ATTRIBUTE_NORMAL</code>(0x80)이 가장 흔함. <code>FILE_FLAG_OVERLAPPED</code>(0x40000000)면 비동기 I/O, <code>FILE_FLAG_DELETE_ON_CLOSE</code>(0x04000000)면 핸들이 닫히자마자 파일 자동 삭제(임시 파일/안티포렌식 패턴에서 자주 보임).</li><li><code>hTemplateFile</code> — 거의 항상 <code>NULL</code>.</li></ol>
+<p><strong><code>dwCreationDisposition</code> 값표</strong></p>
+<table><thead><tr><th>값</th><th>이름</th><th>의미</th></tr></thead><tbody><tr><td>1</td><td><code>CREATE_NEW</code></td><td>파일이 없을 때만 새로 생성, 있으면 실패</td></tr><tr><td>2</td><td><code>CREATE_ALWAYS</code></td><td>항상 새로 생성(기존 파일 있으면 덮어씀)</td></tr><tr><td>3</td><td><code>OPEN_EXISTING</code></td><td>파일이 있어야만 열림(없으면 실패) — 가장 흔한 "읽기용 열기" 패턴</td></tr><tr><td>4</td><td><code>OPEN_ALWAYS</code></td><td>있으면 열고 없으면 새로 생성</td></tr><tr><td>5</td><td><code>TRUNCATE_EXISTING</code></td><td>파일을 열면서 크기를 0으로 초기화(쓰기 권한 필수)</td></tr></tbody></table>
+<p>반환값은 성공 시 유효한 <code>HANDLE</code>, 실패 시 <code>INVALID_HANDLE_VALUE</code>(모든 비트가 1, 즉 x86에서 <code>0xFFFFFFFF</code>, x64 포인터 크기에서도 상위 비트까지 전부 1)다. <code>NULL</code>(0)이 아니라는 점이 다른 많은 Win32 함수의 실패값(<code>NULL</code>)과 다르므로 실패 체크 코드에서 <code>cmp eax, -1</code> / <code>cmp rax, -1</code> 형태를 찾아야 한다.</p>
+<p><strong><code>CreateFile2</code></strong> (Windows 8 이상)는 인자 3개(<code>dwShareMode</code>, <code>dwCreationDisposition</code>, <code>dwFlagsAndAttributes</code>)를 <code>CREATEFILE2_EXTENDED_PARAMETERS</code> 구조체 하나로 묶은 최신 버전이다. UWP/최신 데스크톱 앱에서 보이며 등장 빈도는 낮지만, 구조체 포인터를 4번째 인자로 넘긴다는 점만 알면 나머지는 동일하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>x86: <code>call</code>부터 역순으로 <code>push</code>가 7번 쌓임(마지막 인자 <code>hTemplateFile</code>이 먼저 push됨).</li><li>x64: <code>mov r9d, ...</code>(hTemplateFile 생략 시 0), <code>mov [rsp+28h], ...</code>(6번째 인자는 스택), <code>mov r8d, ...</code>(dwShareMode), <code>mov edx, ...</code>(dwDesiredAccess), <code>lea rcx, [filename]</code> 순서로 역순 세팅되는 경우가 흔함.</li><li>반환값을 곧바로 <code>cmp eax/rax, -1</code> 또는 <code>cmp eax/rax, 0FFFFFFFFh</code>로 검사.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>dwDesiredAccess</code>(2번 인자)와 <code>dwCreationDisposition</code>(5번 인자) 두 값만 먼저 확인한다. 이 둘의 조합만으로 "새 파일을 만드는가/기존 파일을 읽는가/덮어쓰는가"가 결정된다.</p>
+<h2>단계별 절차</h2>
+<ol><li>IDA에서 <code>CreateFileW</code> 호출부를 <code>X</code>(xref)로 모두 나열한다.</li><li><code>F5</code>(Hex-Rays)로 디컴파일하면 <code>CreateFileW(L"save.dat", 0xC0000000, 0, 0, 2, 0x80, 0)</code> 형태로 상수가 그대로 보인다. <code>0xC0000000</code>은 <code>GENERIC_READ|GENERIC_WRITE</code>, <code>2</code>는 <code>CREATE_ALWAYS</code>다.</li><li>x64dbg에서는 <code>bp CreateFileW</code> 후 멈추면 <code>RCX</code>(경로), <code>RDX</code>(access), <code>R8</code>(share), <code>R9</code>(security), <code>[rsp+28h]</code>(disposition)를 순서대로 확인한다.</li><li>반환값(<code>RAX</code>)을 <code>Ctrl+F9</code>(Execute till return)로 확인하고, <code>-1</code>이 아니면 성공한 것이므로 이후 <code>ReadFile</code>/<code>WriteFile</code> 흐름(REV-0497)으로 이어간다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp CreateFileW</code>, <code>bp CreateFileA</code>, <code>Ctrl+F9</code>(리턴까지 실행)</li><li>IDA: <code>X</code>(xref), <code>F5</code>(디컴파일), 상수 우클릭 → <code>Use standard symbolic constant</code>로 <code>0x80000000</code> 같은 숫자를 <code>GENERIC_READ</code>로 자동 치환 가능</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>dwDesiredAccess = 0x80000000</code> → 읽기 전용. <code>0x40000000</code> → 쓰기 전용. <code>0xC0000000</code> → 읽기/쓰기.</li><li><code>dwCreationDisposition = 3</code>(OPEN_EXISTING)인데 반환값이 <code>-1</code>이면 "그 경로에 파일이 없다"는 뜻 — 프로그램이 어떤 파일을 찾는지 역으로 알 수 있는 좋은 단서다.</li><li><code>dwFlagsAndAttributes</code>에 <code>FILE_FLAG_DELETE_ON_CLOSE</code>(0x04000000) 비트가 있으면 이 핸들이 닫히는 순간 파일이 자동 삭제되므로, 파일 내용을 보려면 핸들이 열려 있는 동안(즉 <code>CloseHandle</code> 전)에 덤프해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>dwCreationDisposition</code> 값을 <code>dwDesiredAccess</code>와 혼동해서 "값이 3이니까 읽기+쓰기+실행이겠지"처럼 잘못 추측하는 것. 두 필드는 완전히 다른 상수 세트를 쓴다.</li><li>실패값을 <code>NULL</code>(0)로 착각해서 <code>test eax, eax</code> 로 검사하는 코드를 찾다가 못 찾는 것 — <code>CreateFile</code> 계열은 <code>INVALID_HANDLE_VALUE</code>(<code>-1</code>)를 쓴다.</li><li><code>CreateFileA</code>와 <code>CreateFileW</code>가 같은 함수라고 생각해서 문자열 인코딩을 착각하는 것. <code>A</code>는 1바이트(현재 코드페이지), <code>W</code>는 2바이트(UTF-16LE)다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>열린 핸들로 실제 데이터를 읽고 쓰는 흐름이 궁금하면 → REV-0497 확인.</li><li>파일 포인터 이동/삭제/이동(rename) 계열 API가 궁금하면 → REV-0498 확인.</li><li>파일 크기나 속성만 조회하는 API가 궁금하면 → REV-0499 확인.</li><li>함수 이름 자체가 낯설다면 → REV-0138에서 API 이름으로 기능을 추측하는 법을 먼저 본다.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">HANDLE h = CreateFileW(L"C:\\temp\\out.dat", GENERIC_WRITE, 0, NULL,
+                        CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+if (h == INVALID_HANDLE_VALUE) { /* 실패 처리 */ }</code></pre>
+<p>디스어셈블리(x64)에서는 상수가 <code>0x40000000</code>(GENERIC_WRITE), <code>2</code>(CREATE_ALWAYS), <code>0x80</code>(FILE_ATTRIBUTE_NORMAL)로 그대로 보이며, 반환값을 <code>cmp rax, -1</code> / <code>je fail_branch</code>로 검사하는 패턴이 뒤따른다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0497-readfile-writefile.html">REV-0497 — WinAPI 파일 입출력 함수 사전: ReadFile WriteFile 상세</a></li><li><a href="rev-0498-setfilepointer-deletefile-movefile.html">REV-0498 — WinAPI 파일 입출력 함수 사전: SetFilePointer DeleteFile MoveFile</a></li><li><a href="rev-0499-getfilesize-getfileattributes.html">REV-0499 — WinAPI 파일 입출력 함수 사전: GetFileSize GetFileAttributes</a></li><li><a href="rev-0139-createfile-readfile-writefile.html">REV-0139 — CreateFile ReadFile WriteFile 입력 데이터 추적</a></li><li><a href="rev-0138-guess-function-from-api-name.html">REV-0138 — Windows API 이름으로 기능 추측하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>CreateFileW</code>/<code>CreateFile2</code> 시그니처, 인자 상수값(<code>GENERIC_READ</code>, <code>CREATE_ALWAYS</code> 등)은 Microsoft Win32 API 공식 문서(learn.microsoft.com) 기준.</li><li><code>INVALID_HANDLE_VALUE</code>가 실패값이라는 점, 반환값 규칙도 동일 공식 문서 기준(2026-09-08 확인 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

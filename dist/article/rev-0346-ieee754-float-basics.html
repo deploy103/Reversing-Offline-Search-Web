@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>부동소수점 표현 IEEE 754 기초 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>부동소수점 표현 IEEE 754 기초</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p><code>float</code>(4바이트)와 <code>double</code>(8바이트)은 정수처럼 값 전체를 그대로 저장하지 않고, <strong>부호(sign) 1비트 + 지수부(exponent) + 가수부(mantissa/fraction)</strong> 세 부분으로 쪼개서 "2의 거듭제곱 × 가수" 형태로 근사 저장하는 IEEE 754 표준을 따르며, 이 구조를 모르면 메모리 덤프에 찍힌 4바이트/8바이트 값을 봐도 무슨 숫자인지 전혀 알 수 없다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>메모리 덤프나 <code>.rodata</code>에서 <code>41 20 00 00</code> 같은 4바이트 값을 봤는데 이게 어떤 실수(real number)인지 감이 안 잡힐 때</li><li>IDA/Ghidra가 변수를 <code>float</code>나 <code>double</code>로 표시했는데 헥스 값과 화면에 보이는 소수가 왜 저렇게 이상하게 대응하는지 궁금할 때</li><li><code>0.1 + 0.2 == 0.3</code>이 프로그램에서 거짓으로 나오는 이유, 즉 부동소수점 오차가 왜 생기는지 알고 싶을 때</li><li>CTF 문제에서 float/double 값을 직접 손으로 인코딩하거나 디코딩해야 할 때(예: 특정 부동소수점 비트 패턴을 입력으로 넣어야 크래시가 나는 문제)</li></ul>
+<h2>핵심 개념</h2>
+<h3>정수와 실수 저장 방식의 근본적 차이</h3>
+<p>정수는 2진수 그대로 저장하면 끝이다. <code>int x = 5;</code>는 메모리에 그냥 <code>00 00 00 05</code>(빅엔디안 기준, 실제로는 리틀엔디안이라 <code>05 00 00 00</code>)로 들어간다. 하지만 실수는 이렇게 저장할 수 없다. <code>3.14</code>를 2진수로 그대로 쓰려면 무한히 많은 자리가 필요할 수도 있고, 정수부와 소수부의 경계가 값마다 다르기 때문이다.</p>
+<p>그래서 컴퓨터는 실수를 과학적 표기법과 비슷한 방식으로 저장한다. 10진수에서 <code>314 × 10^-2</code>라고 쓰듯이, 2진수에서는 <code>가수(mantissa) × 2^지수(exponent)</code> 형태로 쓴다. IEEE 754는 이 세 요소(부호, 지수, 가수)를 정해진 비트 수로 어떻게 나눠 담을지 정한 국제 표준이다.</p>
+<h3>float(32비트)의 비트 레이아웃</h3>
+<pre><code>[31]      [30 ......... 23]      [22 .................... 0]
+ 부호(S)      지수(E, 8비트)              가수(M, 23비트)
+  1비트                                    23비트</code></pre>
+<p>값 = <code>(-1)^S × 1.M(2진수) × 2^(E - 127)</code></p>
+<ul><li><strong>부호(S)</strong>: 0이면 양수, 1이면 음수.</li><li><strong>지수(E)</strong>: 실제 지수에 127을 더한 "biased exponent"로 저장한다. 예를 들어 실제 지수가 0이면 E는 127(<code>0111 1111</code>)로 저장된다. 이렇게 하는 이유는 지수가 음수일 수도 있는데, 부호 없는 8비트 값만으로 양수/음수 지수를 모두 표현하기 위해서다.</li><li><strong>가수(M)</strong>: 23비트. 앞에 항상 생략된 <code>1.</code>이 붙는다는 규칙(정규화, normalized form) 덕분에 실제로는 24비트 정밀도를 갖는다. <code>1.M</code>에서 <code>1.</code>이 암묵적으로 존재하고 저장은 소수점 뒤 M만 한다.</li></ul>
+<h3>double(64비트)의 비트 레이아웃</h3>
+<pre><code>[63]      [62 ................. 52]      [51 ........................................ 0]
+ 부호(S)        지수(E, 11비트)                       가수(M, 52비트)
+  1비트                                                52비트</code></pre>
+<p>값 = <code>(-1)^S × 1.M(2진수) × 2^(E - 1023)</code></p>
+<p><code>double</code>은 지수 비트가 11비트(bias 1023), 가수가 52비트로 늘어나 <code>float</code>보다 표현 범위와 정밀도가 모두 커진다. 이것이 리버싱에서 "이 값이 4바이트 float인지 8바이트 double인지"를 크기만 보고도 구분할 수 있는 이유다.</p>
+<h3>손으로 디코딩해보기</h3>
+<p><code>0x40490FDB</code>(float, <code>π</code>의 근사값)를 예로 들어보자.</p>
+<pre><code>0x40490FDB = 0100 0000 0100 1001 0000 1111 1101 1011
+
+S = 0                                    → 양수
+E = 1000 0000 1 = 0x81 = 129            → 실제 지수 = 129 - 127 = 2
+M = 100 1001 0000 1111 1101 1011 (23비트)
+
+값 = 1.M(2진수) × 2^2
+   = 1.5707963... × 4
+   ≈ 3.14159265... = π</code></pre>
+<p>이 계산을 손으로 매번 하기는 번거롭지만, "부호 1비트 → 지수 8/11비트 → 나머지가 가수"라는 구조만 기억하면 어떤 도구(Python, IDA 계산기, 온라인 변환기)로 검증하든 값을 빠르게 확인할 수 있다.</p>
+<h3>특수값들</h3>
+<p>IEEE 754는 몇 가지 예약된 비트 패턴으로 특수한 값을 표현한다.</p>
+<ul><li><strong>0.0</strong>: E와 M이 모두 0. <code>-0.0</code>도 존재한다(부호 비트만 1).</li><li><strong>무한대(Infinity)</strong>: E가 모두 1(<code>0xFF</code> for float), M이 0.</li><li><strong>NaN(Not a Number)</strong>: E가 모두 1, M이 0이 아님. <code>0.0 / 0.0</code> 같은 정의되지 않은 연산의 결과.</li><li><strong>비정규화 수(subnormal/denormal)</strong>: E가 모두 0인데 M이 0이 아닌 경우로, 0에 아주 가까운 극소값을 표현한다(암묵적 <code>1.</code>이 <code>0.</code>으로 바뀜).</li></ul>
+<p>리버싱 중 <code>0x7FC00000</code> 같은 값이 보이면 float NaN, <code>0x7FF8000000000000</code>이 보이면 double NaN이라는 것을 바로 알아챌 수 있어야 한다.</p>
+<h3>왜 0.1이 정확히 표현되지 않는가</h3>
+<p>10진수 <code>0.1</code>은 2진수로 표현하면 <code>0.0001100110011...</code>처럼 무한 반복소수가 된다. <code>float</code>/<code>double</code>은 유한한 비트만 쓰므로 이 무한소수를 어느 자리에서 잘라 근사할 수밖에 없다. 그래서 <code>0.1f</code>를 메모리에 저장하고 다시 읽으면 정확히 <code>0.1</code>이 아니라 <code>0.100000001490116119384765625</code> 같은 근사값이 된다. 이 오차가 누적되면 <code>0.1 + 0.2 != 0.3</code> 같은 익숙한 버그가 발생한다. 리버싱에서는 프로그램이 부동소수점 비교를 <code>==</code>로 하는지, 오차범위(epsilon)를 두고 비교하는지가 로직 이해에 중요한 단서가 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>메모리 덤프에서 4바이트 단위 값이 <code>0x3F800000</code>(=1.0), <code>0x40000000</code>(=2.0), <code>0xBF800000</code>(=-1.0)처럼 특정 패턴으로 자주 반복된다.</li><li>IDA/Ghidra 디컴파일 결과에 <code>float</code>, <code>double</code> 타입 변수와 함께 <code>1.0</code>, <code>3.14</code> 같은 소수 리터럴이 그대로 보인다(컴파일러가 상수를 <code>.rodata</code>에 미리 인코딩해 둔 것).</li><li><code>.rodata</code> 섹션을 헥스 뷰로 열었을 때 정수라고 보기엔 애매한 패턴(지수부 비트가 특이하게 몰려 있는)이 8바이트 또는 4바이트 간격으로 나열되어 있다.</li><li>디버거에서 값을 <code>int</code>로 출력하면 말이 안 되는 큰 수가 나오는데, 같은 주소를 <code>float</code>로 캐스팅해서 보면 그럴듯한 소수가 나온다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>헥스 값을 보고 부동소수점인지 의심된다면, 먼저 <strong>크기</strong>부터 확인한다. 4바이트면 float, 8바이트면 double 가능성이 높다. 그 다음 손으로 계산하기보다 GDB의 <code>print</code>나 Python의 <code>struct</code> 모듈로 즉시 디코딩해 확인하는 것이 실전에서 훨씬 빠르다.</p>
+<h2>단계별 절차</h2>
+<ol><li>값이 저장된 메모리의 크기를 확인한다(4바이트 → float 후보, 8바이트 → double 후보).</li><li>GDB에서 <code>x/f</code> 포맷으로 그 주소를 부동소수점으로 다시 읽어본다.</li><li>IDA/Ghidra에서 해당 변수/상수의 타입을 <code>float</code>/<code>double</code>로 지정해 디컴파일 결과가 자연스러운 소수로 바뀌는지 확인한다.</li><li>특수 비트 패턴(<code>0x7F800000</code> 계열)이 보이면 무한대/NaN 여부를 먼저 의심한다.</li><li>값이 애매하면 Python <code>struct.unpack</code>으로 직접 바이트를 풀어 교차 검증한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code>(gdb) x/fw 0x404000      # 4바이트(w)를 float(f)로 해석해서 출력
+(gdb) x/fg 0x404000      # 8바이트(g)를 double(f)로 해석해서 출력
+(gdb) print (float)0x40490FDB   # 정수 비트패턴을 강제로 float로 재해석하려면 아래처럼 포인터 캐스팅이 정확함
+(gdb) print *(float*)&amp;val
+(gdb) print *(double*)&amp;val</code></pre>
+<pre><code class="language-python">import struct
+struct.unpack('&lt;f', bytes.fromhex('DB0F4940'))   # 리틀엔디안 4바이트 → float
+struct.unpack('&lt;d', bytes.fromhex('182D4454FB210940'))  # 리틀엔디안 8바이트 → double
+struct.pack('&lt;f', 3.14)   # 반대로 float 값을 바이트로 인코딩</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>x/fw</code>로 출력했는데 화면에 <code>nan</code> 또는 <code>inf</code>가 나오면 그 주소는 부동소수점이 아니라 다른 종류의 정수 데이터일 가능성도 염두에 둔다(우연히 지수부가 전부 1인 정수 패턴).</li><li>Python <code>struct.unpack</code> 결과가 소수점 여러 자리까지 이어지는 근사값(예: <code>3.140000104904175</code>)으로 나오는 것은 정상이다 — float는 double보다 정밀도가 낮아 원래 의도한 값과 완전히 같지 않을 수 있다.</li><li>값이 지나치게 크거나(<code>1e38</code> 근처) 작으면(<code>1e-38</code> 근처) 표현 범위의 한계에 가깝다는 뜻이므로 오버플로우/언더플로우 가능성을 의심한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>정수 캐스팅(<code>(int)0x40490FDB</code>)과 비트 재해석(<code>*(float*)&amp;x</code>)을 혼동하는 것 — 정수 <code>1078530011</code>을 <code>float</code>로 캐스팅하면 <code>1078530011.0</code>이 되어버려 원하는 결과가 절대 아니다. 비트 패턴을 그대로 재해석하려면 반드시 포인터 캐스팅(<code>*(float*)&amp;val</code>) 또는 <code>union</code>을 써야 한다.</li><li>부동소수점 값을 <code>==</code>로 직접 비교하는 코드를 보고 "논리적으로 이상하다"고 오해하는 것 — 실제로 그 프로그램 자체가 정밀도 오차 버그를 갖고 있을 수도 있고, 이는 CTF 문제의 의도된 함정일 수도 있다.</li><li>float와 double의 지수 bias(127 vs 1023)를 헷갈려서 손 계산 결과가 틀리는 것.</li><li>리틀엔디안 시스템에서 바이트 순서를 그대로 읽어 잘못된 값으로 해석하는 것(REV-0023 참고).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>XMM 레지스터에 부동소수점 값이 로드되는 실제 어셈블리 패턴이 궁금하면 → REV-0347 부동소수점이 어셈블리(XMM)로 보일 때 읽는 법</li><li>리틀엔디안/빅엔디안 바이트 순서 자체가 헷갈리면 → REV-0023 Little Endian과 Big Endian</li><li>정수 비트 패턴과 부호/오버플로우 개념이 헷갈리면 → REV-0024 2의 보수와 음수 표현</li></ul>
+<h2>미니 예제</h2>
+<p>다음 C 코드와, 그 상수가 메모리에 저장되는 실제 바이트를 함께 살펴보자.</p>
+<pre><code class="language-c">#include &lt;stdio.h&gt;
+
+int main(void) {
+    float  f = 1.5f;
+    double d = 1.5;
+    printf("%f %f\n", f, d);
+    return 0;
+}</code></pre>
+<p>컴파일러는 <code>1.5f</code>, <code>1.5</code>라는 상수를 <code>.rodata</code>에 다음과 같은 바이트로 미리 인코딩해 둔다(리틀엔디안 x64 기준).</p>
+<pre><code>f (4바이트): 00 00 C0 3F     → 바이트 순서를 뒤집으면 0x3FC00000
+             S=0, E=01111111(127) → 실제지수 0, M=1000...0 → 1.1(2) × 2^0 = 1.5
+
+d (8바이트): 00 00 00 00 00 00 F8 3F  → 뒤집으면 0x3FF8000000000000
+             S=0, E=01111111111(1023) → 실제지수 0, M=1000...0 → 1.1(2) × 2^0 = 1.5</code></pre>
+<p><code>1.5 = 1.1(2) × 2^0</code>이라는 아주 깔끔한 이진 표현을 갖기 때문에 오차 없이 정확히 저장된다. 반면 <code>0.1</code>이나 <code>3.14</code> 같은 값은 위와 같은 방식으로 손 계산하면 무한소수가 되어, IDA/Ghidra가 보여주는 소수 리터럴이 실제로는 근사값이라는 사실을 항상 염두에 둬야 한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0347-xmm-float-asm-reading.html">REV-0347 — 부동소수점이 어셈블리(XMM)로 보일 때 읽는 법</a></li><li><a href="rev-0023-endianness.html">REV-0023 — Little Endian과 Big Endian</a></li><li><a href="rev-0024-twos-complement.html">REV-0024 — 2의 보수와 음수 표현</a></li><li><a href="rev-0025-signed-unsigned.html">REV-0025 — Signed와 Unsigned 해석</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>IEEE 754 부동소수점 형식(부호/지수/가수 비트 레이아웃, bias, 특수값 정의): IEEE Standard for Floating-Point Arithmetic (IEEE 754) 공식 규격 기준.</li><li>float/double 비트 레이아웃과 근사 오차 사례: 실제 GCC/Clang x86-64 컴파일 결과 및 Python <code>struct</code> 모듈 동작으로 직접 검증 (2026-09-09 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

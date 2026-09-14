@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADD: 덧셈과 플래그 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>ADD: 덧셈과 플래그</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>ADD dest, src</code>는 "<code>dest = dest + src</code> 를 계산해서 결과를 <code>dest</code>에 다시 쓰고, 그 결과에 따라 CF·OF·SF·ZF·AF·PF 여섯 개 플래그를 전부 갱신하는" 가장 기본적인 정수 덧셈 명령어다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>add eax, ebx</code>, <code>add rsp, 0x20</code>, <code>add rax, 8</code> 같은 코드를 보고 정확히 뭘 계산하는지 확인하고 싶을 때</li><li>함수 에필로그에서 <code>add rsp, 0x30</code> 처럼 스택 포인터에 더하는 코드를 봤을 때 (스택 정리인지 다른 의미인지 헷갈릴 때)</li><li>덧셈 뒤에 CF나 OF를 검사하는 분기가 있어서 "언제 캐리가 뜨고 언제 오버플로우가 뜨는지" 정확히 알아야 할 때</li><li>IDA 디컴파일에서 <code>v1 = v2 + v3;</code> 또는 <code>v1 += v2;</code> 형태로 보이는 코드의 원본 어셈블리를 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>ADD가 실제로 하는 일</h3>
+<p><code>ADD dest, src</code>는 두 오퍼랜드를 받는다.</p>
+<ul><li><strong>dest</strong>: 레지스터 또는 메모리. 연산 결과가 저장되는 곳(목적지).</li><li><strong>src</strong>: 레지스터, 메모리, 또는 즉시값(immediate). 단, dest와 src가 둘 다 메모리일 수는 없다(x86은 메모리-메모리 연산을 허용하지 않는다).</li></ul>
+<p>동작은 <code>dest = dest + src</code> 이고, 이 결과값이 dest에 그대로 덮어써진다. 원래 dest에 있던 값은 사라진다.</p>
+<pre><code class="language-asm">add eax, ebx      ; EAX = EAX + EBX
+add rax, 8        ; RAX = RAX + 8
+add dword [rbp-4], 1   ; 메모리에 있는 4바이트 값 += 1</code></pre>
+<h3>플래그 — ADD는 6개를 전부 건드린다</h3>
+<p><code>ADD</code>는 산술 명령어이므로 EFLAGS/RFLAGS의 다음 6개 플래그를 <strong>전부</strong> 결과에 맞춰 갱신한다:</p>
+<ul><li><strong>CF (Carry Flag)</strong> — unsigned 관점에서 자리올림(캐리)이 발생했는가. 즉 결과가 dest의 비트폭(8/16/32/64비트)을 넘어서 흘러넘쳤는가.</li><li><strong>OF (Overflow Flag)</strong> — signed 관점에서 오버플로우가 발생했는가. 즉 두 signed 정수를 더한 결과가 그 비트폭의 signed 표현 범위를 벗어났는가.</li><li><strong>SF (Sign Flag)</strong> — 결과의 최상위 비트(부호 비트)와 동일.</li><li><strong>ZF (Zero Flag)</strong> — 결과가 0이면 1.</li><li><strong>AF (Auxiliary Carry Flag)</strong> — 4비트 단위(니블) 자리올림. BCD 연산에서나 쓰이고 일반 리버싱에서는 거의 무시해도 된다.</li><li><strong>PF (Parity Flag)</strong> — 결과의 하위 8비트에서 1인 비트 개수가 짝수면 1. 요즘 코드에서는 거의 안 쓰인다.</li></ul>
+<p>이 여섯 개를 다 갱신한다는 점이 다음 글(<a href="rev-0049-inc-dec.html">REV-0049 — INC와 DEC</a>)에서 다루는 <code>INC</code>/<code>DEC</code>와의 결정적 차이다. <code>INC</code>/<code>DEC</code>는 CF는 건드리지 않는다.</p>
+<h3>CF vs OF — 8비트 예제로 정확히 구분하기</h3>
+<p>CF와 OF는 완전히 다른 질문에 답한다. <strong>CF는 "unsigned로 봤을 때 넘쳤는가"</strong>, <strong>OF는 "signed로 봤을 때 넘쳤는가"</strong> 다. 같은 비트 연산 결과라도 두 플래그가 서로 다르게(혹은 같게) 나올 수 있다.</p>
+<p><strong>예 1: <code>0xFF + 0x01</code> (8비트 레지스터 AL 기준)</strong></p>
+<pre><code>  0xFF = 1111_1111
++ 0x01 = 0000_0001
+---------------------
+  결과   1_0000_0000  → 8비트에는 0x00만 남고, 9번째 비트(캐리)가 넘침</code></pre>
+<ul><li><strong>CF = 1</strong> — unsigned로 보면 <code>255 + 1 = 256</code>인데 8비트로는 256을 표현 못 하니 자리올림 발생 → CF 세팅.</li><li><strong>OF = 0</strong> — signed로 보면 <code>0xFF</code>는 <code>-1</code>이다. <code>-1 + 1 = 0</code>이고 이건 8비트 signed 범위(-128~127) 안에 정확히 들어간다 → 오버플로우 아님 → OF = 0.</li></ul>
+<p><strong>예 2: <code>0x7F + 0x01</code></strong></p>
+<pre><code>  0x7F = 0111_1111
++ 0x01 = 0000_0001
+---------------------
+  결과   1000_0000 = 0x80</code></pre>
+<ul><li><strong>CF = 0</strong> — unsigned로 보면 <code>127 + 1 = 128</code>이고 8비트 unsigned 범위(0~255) 안에 들어간다 → 자리올림 없음 → CF = 0.</li><li><strong>OF = 1</strong> — signed로 보면 <code>0x7F</code>는 <code>127</code>(signed 최댓값)이다. <code>127 + 1</code>은 signed 8비트 범위를 넘어 <code>-128</code>로 뒤집혀 버린다 → 오버플로우 발생 → OF = 1.</li></ul>
+<p>이 두 예제가 CF와 OF의 존재 이유를 정확히 보여준다: <strong>같은 비트 패턴이라도 그 값을 unsigned로 해석하느냐 signed로 해석하느냐에 따라 "넘쳤다"의 기준이 다르다.</strong> 그래서 x86은 두 플래그를 따로 둔다. 이후 unsigned 비교 분기(<code>JA</code>/<code>JB</code> 계열, [REV-0070 예정])는 CF를 보고, signed 비교 분기(<code>JG</code>/<code>JL</code> 계열, [REV-0069 예정])는 OF와 SF를 함께 본다. 자세한 매핑은 <a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a>에서 종합적으로 정리한다.</p>
+<h3>ADD와 LEA의 차이 — "덧셈처럼 보이는데 플래그를 안 건드리는" 경우</h3>
+<p><code>LEA rax, [rbx+rcx*4+8]</code> 같은 명령은 겉보기에 덧셈/곱셈을 하는 것처럼 보이지만, 사실은 <strong>주소 계산 전용 명령</strong>이라 EFLAGS를 전혀 건드리지 않는다. 컴파일러는 "플래그가 필요 없는 순수한 산술 계산"(포인터 연산, 배열 인덱싱, 심지어 <code>x = a + b</code> 같은 일반 정수 덧셈까지)을 최적화할 때 <code>ADD</code> 대신 <code>LEA</code>를 즐겨 쓴다. 예를 들어 <code>lea eax, [ebx+ecx]</code>는 <code>add eax, ecx</code>(단, eax=ebx일 때)와 결과값은 같지만 플래그를 바꾸지 않고, 3-오퍼랜드 형태(<code>dest</code>가 <code>src</code>들과 다른 레지스터)로 쓸 수 있다는 장점이 있다. 리버싱 중 "이 덧셈은 플래그에 영향을 주는가?"를 판단할 때 <code>LEA</code>인지 <code>ADD</code>인지를 반드시 구분해야 한다.</p>
+<h3>스택/RSP 변화 — 에필로그의 <code>add rsp, N</code></h3>
+<p>함수 에필로그(끝부분)에서 흔히 보이는 패턴이다:</p>
+<pre><code class="language-asm">add rsp, 0x20    ; 함수 진입 시 sub rsp, 0x20으로 확보했던 지역 변수 공간을 되돌려줌
+ret</code></pre>
+<p><code>sub rsp, N</code>으로 지역 변수용 공간을 스택에 확보했다면, 함수가 끝날 때 <code>add rsp, N</code>으로 RSP를 원래 값으로 되돌린다. 이건 스택 프레임을 접는 동작이고, RIP 자체는 바뀌지 않는다(그건 뒤따르는 <code>ret</code>의 역할). <code>RSP</code>만 증가시켜 "그 아래 있던 데이터는 더 이상 유효하지 않다"고 표시하는 셈이다.</p>
+<h3>컴파일러 패턴</h3>
+<ul><li><code>add eax, ebx</code> — 가장 단순한 정수 덧셈 <code>a + b</code>.</li><li><code>add rsp, 0x20</code> — 함수 에필로그에서 지역 변수 공간 반환.</li><li><code>add [rbp-4], 1</code> — <code>count++</code>가 메모리 변수에 직접 적용된 경우 (레지스터에 안 올리고 바로 메모리에 연산).</li><li><strong>다중 정밀도(128비트 이상) 덧셈</strong>: 64비트 레지스터 하나로 표현 못 하는 큰 수를 더할 때, 하위 64비트는 <code>ADD</code>로 더하고 상위 64비트는 <code>ADC</code>(Add with Carry, 하위에서 발생한 CF까지 더해줌)로 더한다.</li></ul>
+<pre><code class="language-asm">  add rax, rcx     ; 하위 64비트 더하기, 여기서 CF가 세팅될 수 있음
+  adc rdx, rbx     ; 상위 64비트 더하기 + 방금 CF까지 포함</code></pre>
+<p>이 패턴을 보면 "64비트를 넘는 정수 연산(예: 128비트 정수, 빅넘버 라이브러리)"이라고 바로 짐작할 수 있다.</p>
+<h3>IDA/Ghidra 디컴파일 렌더링</h3>
+<ul><li><code>add eax, ebx</code> → <code>v1 = v1 + v2;</code> 또는 <code>v1 += v2;</code></li><li><code>add rsp, 0x20</code> → 에필로그의 일부라 보통 디컴파일 결과에는 아예 안 보인다(스택 정리는 컴파일러가 자동 처리하는 것으로 취급되어 디컴파일러가 생략).</li><li>루프 안의 <code>add esi, 4</code> (포인터를 4바이트씩 전진) → <code>p += 4;</code> 또는 배열 인덱스 증가로 <code>i++</code> 형태로 정리되어 보이는 경우가 많다.</li></ul>
+<h3>리버싱에서의 의미</h3>
+<ul><li>ADD 직후 <code>jc</code>/<code>jnc</code>가 오면 → <strong>unsigned 덧셈 오버플로우(자리올림) 검사</strong>. 정수 오버플로우 취약점을 찾을 때 이런 패턴을 주의 깊게 본다.</li><li>ADD 직후 <code>jo</code>/<code>jno</code>가 오면 → <strong>signed 덧셈 오버플로우 검사</strong>. 드물지만 안전한 정수 연산 라이브러리에서 보인다.</li><li><code>add rsp, N</code>을 보면 즉시 "이 함수가 스택에 얼마나 지역 변수 공간을 썼는지"(진입부의 <code>sub rsp, N</code>과 짝을 이루는지) 확인하는 습관을 들이면 스택 불균형 버그나 함수 경계를 빠르게 파악할 수 있다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>add eax, ebx</code>, <code>add eax, 1</code>, <code>add [rbp-8], eax</code> — 일반적인 덧셈</li><li><code>add rsp, 0x??</code> — 함수 에필로그의 스택 정리 (진입부 <code>sub rsp, 0x??</code>와 반드시 값이 대응)</li><li><code>add ...</code> 뒤에 바로 <code>jc</code>/<code>jnc</code>/<code>jo</code>/<code>jno</code> — 오버플로우 검사</li><li><code>add</code> 다음 줄에 <code>adc</code> — 다중 정밀도(64비트 초과) 덧셈</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>dest와 src가 각각 레지스터/메모리/즉시값 중 무엇인지 확인</li><li>이 ADD가 "값 계산"인지 "스택 정리(<code>add rsp, N</code>)"인지 구분</li><li>ADD 직후에 CF나 OF를 검사하는 분기가 있는지 확인 → 있다면 오버플로우 방어 코드</li><li>이 값이 signed로 쓰이는지 unsigned로 쓰이는지(변수 타입) 확인해서 CF/OF 중 어느 게 의미 있는지 판단</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 단순 덧셈 확인</strong></p>
+<pre><code class="language-asm">mov eax, [rbp-4]   ; a
+add eax, [rbp-8]   ; a += b
+mov [rbp-4], eax   ; a 저장</code></pre>
+<p>→ C로는 <code>a = a + b;</code>.</p>
+<p><strong>2) 스택 정리인지 확인</strong> 함수 시작 부분에서 <code>sub rsp, 0x30</code>을 봤다면, 함수 끝의 <code>add rsp, 0x30</code>은 그 짝이다. 값이 서로 다르면 중간에 <code>push</code>/<code>pop</code>이 더 있었는지 다시 세어본다.</p>
+<p><strong>3) 오버플로우 검사 패턴 확인</strong></p>
+<pre><code class="language-asm">add eax, ebx
+jo  overflow_handler   ; signed overflow 발생 시 분기</code></pre>
+<p>→ 이 코드는 signed 정수 덧셈 오버플로우를 명시적으로 검사하는 방어 코드(안전한 산술 라이브러리, 보안이 중요한 계산 등)라고 해석한다.</p>
+<p><strong>4) 다중 정밀도 덧셈 확인</strong></p>
+<pre><code class="language-asm">add rax, rcx
+adc rdx, rbx</code></pre>
+<p>→ RDX:RAX와 RBX:RCX 두 128비트 값을 더하는 코드로 해석한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA/x64dbg/GDB에서 특별한 단축키는 없지만, 레지스터 창에서 <code>add</code> 실행 전후 CF/OF/ZF/SF 비트를 직접 비교하면 플래그 변화를 눈으로 확인할 수 있다.</li><li>x64dbg: 명령어에 F7/F8로 한 줄씩 실행하면서 우측 플래그 패널에서 C(CF)/O(OF)/Z(ZF)/S(SF) 표시가 바뀌는지 관찰.</li><li>GDB/Pwndbg: <code>info registers eflags</code> 또는 Pwndbg의 레지스터 화면에서 <code>CF OF SF ZF</code> 등이 색으로 표시된다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>x64dbg/Pwndbg 플래그 창에서 실행 직후 <code>CF=1</code>이면 unsigned 덧셈이 자리올림을 일으켰다는 뜻 (예: <code>0xFFFFFFFF + 1</code>).</li><li><code>OF=1</code>이면 signed 관점에서 결과가 부호를 잘못 뒤집을 만큼 컸다는 뜻 (예: <code>INT_MAX + 1</code>).</li><li>IDA 디컴파일에서 <code>v1 += v2;</code> 형태는 원본 <code>ADD</code> 명령이 결과를 dest에 다시 쓴다는 특성을 그대로 반영한 것이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>CF와 OF를 같은 의미로 착각하는 것 — CF는 unsigned 오버플로우, OF는 signed 오버플로우다. 변수가 <code>unsigned int</code>인데 OF를 보고 판단하거나, <code>int</code>인데 CF를 보고 판단하면 틀린 결론을 내리게 된다.</li><li><code>add rsp, N</code>을 "값 계산"으로 착각해서 함수 로직으로 분석하려는 것 — 대부분은 단순 스택 정리다.</li><li>ADD가 항상 플래그를 갱신한다고 해서, LEA도 그럴 거라 착각하는 것 — LEA는 겉보기에 덧셈 같아도 EFLAGS를 전혀 바꾸지 않는다.</li><li>다중 정밀도 덧셈에서 <code>ADC</code> 없이 <code>ADD</code>만 두 번 쓰인 코드를 보고 128비트 연산이라 착각하는 것 — 진짜 다중 정밀도 덧셈이려면 반드시 상위 워드에 <code>ADC</code>가 와야 한다(하위의 캐리를 반영해야 하므로).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>ADD 뒤에 이어지는 분기가 CF를 보는지 OF를 보는지 헷갈린다면 → <a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 Jcc 연결</a>에서 각 Jcc가 정확히 어떤 플래그 조합을 보는지 표로 확인.</li><li><code>add rsp, N</code>의 N 값이 진입부 <code>sub rsp, N</code>과 안 맞는다면 → 중간에 <code>push</code>/<code>pop</code>이 몇 번 있었는지 다시 세어보거나, 정렬(alignment)을 위한 추가 조정이 있었는지 확인.</li><li>왜 컴파일러가 <code>add</code>가 아니라 <code>lea</code>를 썼는지 궁금하다면 → 플래그가 필요 없는 위치의 덧셈이라서 그렇다(REV-0042 LEA 예정 참고).</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 기본 덧셈과 CF/OF 구분</strong></p>
+<pre><code class="language-c">unsigned char a = 0xFF;
+unsigned char b = 0x01;
+unsigned char c = a + b;   // c = 0, unsigned 관점에서 자리올림 발생</code></pre>
+<pre><code class="language-asm">mov al, 0FFh
+add al, 1        ; AL = 0x00, CF=1 (unsigned 255+1 넘침), OF=0 (signed -1+1=0 정상)</code></pre>
+<p><strong>예제 2 — 스택 정리</strong></p>
+<pre><code class="language-c">void func(void) {
+    char buf[32];
+    // ...
+}</code></pre>
+<pre><code class="language-asm">func:
+    push rbp
+    mov  rbp, rsp
+    sub  rsp, 0x20     ; buf[32]용 공간 확보
+    ; ... 함수 본문 ...
+    add  rsp, 0x20     ; 확보했던 공간 반환
+    pop  rbp
+    ret</code></pre>
+<p><strong>예제 3 — 오버플로우 방어 코드</strong></p>
+<pre><code class="language-c">int add_checked(int a, int b, int *out) {
+    int r = a + b;
+    if (((a ^ r) &amp; (b ^ r)) &lt; 0) return -1; // 개념적으로 이런 오버플로우 검사
+    *out = r;
+    return 0;
+}</code></pre>
+<pre><code class="language-asm">mov  eax, [a]
+add  eax, [b]      ; signed 덧셈
+jo   overflow_case  ; OF=1이면 signed overflow → 별도 처리</code></pre>
+<p><strong>예제 4 — 128비트(다중 정밀도) 덧셈</strong></p>
+<pre><code class="language-asm">; RDX:RAX(피연산자1) + RBX:RCX(피연산자2), 결과는 RDX:RAX에 저장
+add rax, rcx    ; 하위 64비트
+adc rdx, rbx    ; 상위 64비트 (하위에서 넘어온 CF까지 더함)</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0048-sub.html">REV-0048 — SUB: 뺄셈과 플래그</a></li><li><a href="rev-0049-inc-dec.html">REV-0049 — INC와 DEC: 1 증가 감소와 CF 주의</a></li><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a></li><li><a href="rev-0042-lea.html">REV-0042 — LEA: 주소 계산인데 왜 산술 연산처럼 보이는가</a></li><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li><li><a href="rev-0069-jg-jge-jl-jle.html">REV-0069 — JG JGE JL JLE: Signed 비교 분기</a></li><li><a href="rev-0070-ja-jae-jb-jbe.html">REV-0070 — JA JAE JB JBE: Unsigned 비교 분기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>ADD 명령어 동작과 플래그 영향: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "ADD—Add" 섹션 기준 (2026-09-08 검증).</li><li>CF/OF의 unsigned/signed 오버플로우 구분: Intel SDM Volume 1, "3.4.3 EFLAGS Register" 섹션 기준.</li><li>LEA가 플래그를 변경하지 않는다는 점: Intel SDM Volume 2A, "LEA—Load Effective Address" 섹션 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

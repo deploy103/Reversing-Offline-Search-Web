@@ -148,5 +148,5 @@ main
 - REV-0764 — 데맹글된 이름으로 클래스 구조 추정하기
 
 ## 출처/검증
-- 이 문서는 이 저장소 `AGENTS.md`의 "Recovery protocol"(진행 상황을 durable 로그로 남겨 다른 세션/AI가 이어받을 수 있게 한다는 원칙)을 개별 리버싱 분석 작업 단위로 구체화한 것이며, CTF/리버스 엔지니어링 커뮤니티에서 널리 쓰이는 "분석 노트(analysis notes)" 관행을 기준으로 정리했다.
+- 이 문서는 CTF/리버스 엔지니어링 커뮤니티에서 널리 쓰이는 분석 노트(analysis notes) 관행을 개별 분석 작업 단위로 구체화했다.
 - IDA 주석/북마크, Ghidra EOL/Plate Comment 기능은 각 도구의 공식 문서(Hex-Rays User Guide, Ghidra Help) 기준이다.

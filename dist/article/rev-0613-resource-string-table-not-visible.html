@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>리소스 문자열 테이블(String Table)이 안 보일 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>리소스 문자열 테이블(String Table)이 안 보일 때</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">Resource Hacker</span><span class="tag">PE-bear</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p><code>RT_STRING</code> 리소스는 낱개의 문자열이 아니라 <strong>최대 16개씩 묶인 블록</strong> 단위로 저장되고, 각 문자열은 널 종료가 아니라 <strong>2바이트 길이 접두사 + UTF-16 본문</strong>(Pascal 스타일) 형식이라서 IDA 같은 일반 도구로 원시 바이트를 보면 알아볼 수 없는 뭉치로 보이므로, Resource Hacker처럼 이 포맷을 이해하는 전용 리소스 뷰어로 열거나 블록/오프셋 계산 공식을 직접 적용해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Resource Hacker나 PE-bear의 리소스 트리에서 <code>String Table</code> 항목을 열었는데 원하는 문자열이 없거나 번호가 예상과 다를 때</li><li>IDA/HxD로 <code>.rsrc</code> 섹션의 <code>RT_STRING</code>(타입 번호 6) 데이터를 직접 봤는데 텍스트로 안 읽히는 뭉치로 보일 때</li><li>코드에서 <code>LoadStringW(hInstance, ID, buf, size)</code> 같은 호출을 봤는데, 그 <code>ID</code>로 리소스 트리에서 검색해도 정확히 일치하는 항목이 안 보일 때</li></ul>
+<h2>핵심 개념</h2>
+<p><code>RT_STRING</code>(리소스 타입 번호 6)은 프로그램이 사용하는 짧은 UI 문자열들을 담는 표준 리소스 타입이다. Windows는 이를 저장 공간과 조회 속도를 절약하기 위해 다음과 같은 독특한 구조로 묶어서 저장한다.</p>
+<ul><li>문자열은 <strong>16개씩 하나의 블록(bundle)</strong>으로 묶인다. 이 16개짜리 블록 하나가 리소스 디렉터리에서 하나의 개별 리소스 항목이 된다.</li><li>문자열 ID(예: 101번)가 주어지면, 그 문자열이 속한 <strong>블록 번호</strong>는 <code>(ID / 16) + 1</code>로 계산되고, 그 블록 안에서의 <strong>위치(0~15)</strong>는 <code>ID % 16</code>이다. 즉 ID 0~15는 블록 1에, ID 16~31은 블록 2에 들어가는 식이다.</li><li>블록 안에서 각 문자열은 <strong>널 종료 문자열이 아니라 "2바이트 길이 + 그 길이만큼의 UTF-16 문자 데이터"</strong>로 저장된 카운트 문자열(Pascal 스타일과 유사)이다. 블록에는 항상 16개 슬롯이 다 채워져 있으며, 실제로 쓰이지 않는 ID(빈 슬롯)는 길이 필드가 <code>0</code>인 빈 문자열로 표시된다.</li><li>이 때문에 어떤 블록에 문자열 ID 16과 31만 정의되어 있다면, 그 블록에는 문자열 16, 그 뒤로 길이 0짜리 빈 문자열 14개, 그리고 문자열 31이 순서대로 저장된다. "문자열 20이 빈 문자열이다"와 "문자열 20이 애초에 존재하지 않는다"를 데이터만으로는 구분할 수 없다는 특징이 있다.</li></ul>
+<p>이런 구조를 모르는 상태로 <code>.rsrc</code>의 <code>RT_STRING</code> 데이터를 헥스 에디터나 일반 텍스트 뷰어로 보면, 문자와 문자 사이에 길이 바이트가 끼어 있고 널 종료도 없어서 그냥 알아볼 수 없는 바이트 뭉치처럼 보인다. Resource Hacker 같은 전용 도구는 이 블록/카운트 문자열 포맷을 이해하고 파싱해서, 마치 낱개 문자열 목록인 것처럼 사람이 읽기 좋게 재구성해서 보여준다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>HxD/IDA로 <code>RT_STRING</code> 원시 데이터를 보면 <code>xx 00</code> 같은 짧은 바이트 뒤에 UTF-16 문자들이 이어지고, 그 사이사이에 <code>00 00</code>(빈 슬롯)이 섞여 있음</li><li>Resource Hacker의 <code>String Table</code> 노드를 펼치면 문자열들이 "블록 번호"가 아니라 실제 문자열 ID로 재구성되어 표시됨(예: <code>101: "확인"</code>, <code>102: "취소"</code>)</li><li>코드에서 <code>LoadStringW</code>에 넘긴 <code>ID</code> 값과, Resource Hacker에서 보이는 항목 번호가 겉보기엔 다른 것 같지만 실제로는 매핑 공식(<code>블록 = ID/16 + 1</code>)에 따라 정확히 연결됨</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>.rsrc</code>를 직접 헥스로 파싱하려 하지 말고, 먼저 <strong>Resource Hacker</strong>로 파일을 열어 좌측 트리에서 <code>String Table</code> 노드를 펼쳐본다.</li><li>각 항목을 클릭하면 우측에 그 블록에 속한 16개 문자열(빈 것 포함)이 ID와 함께 정리되어 나온다.</li><li>코드에서 찾은 <code>LoadStringW</code>의 <code>ID</code> 인자값으로 직접 검색(Resource Hacker의 찾기 기능 또는 목록을 눈으로 스캔)해서 대응되는 실제 문자열을 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) Resource Hacker로 전체 문자열 테이블 확인</strong></p>
+<ul><li>Resource Hacker에서 <code>File → Open</code>으로 대상 파일을 연다.</li><li>좌측 트리에서 <code>String Table</code>을 펼치면 블록 단위(예: <code>1033:1</code>처럼 언어 ID와 블록 번호로 표시)로 하위 노드가 나열되고, 각 노드를 클릭하면 우측에 해당 블록의 16개 문자열이 ID와 함께 표로 정리되어 보인다.</li></ul>
+<p><strong>2) 코드에서 사용하는 ID와 대조</strong></p>
+<ul><li>IDA에서 <code>LoadStringW</code> 호출부의 두 번째 인자(문자열 ID)를 확인한다(x64 호출 규약이면 <code>RDX</code>).</li><li>이 ID를 Resource Hacker에서 찾아 대응 문자열을 확인한다. 예를 들어 ID가 105라면 <code>105 / 16 + 1 = 7</code>번 블록, 블록 안에서 <code>105 % 16 = 9</code>번째(0부터 세면 10번째) 슬롯에 있다.</li></ul>
+<p><strong>3) 원시 바이트로 직접 확인해야 할 때</strong></p>
+<ul><li>Resource Hacker가 없는 환경이거나 자동화가 필요하다면, <code>.rsrc</code> 데이터를 직접 파싱하는 스크립트를 짤 수도 있다. 각 블록 시작부터 2바이트씩 길이를 읽고, 그 길이(문자 수) × 2바이트만큼 UTF-16 데이터를 읽은 뒤 다음 슬롯으로 이동하는 방식을 16번 반복하면 한 블록을 통째로 복원할 수 있다.</li><li>PE-bear의 리소스 뷰도 <code>RT_STRING</code>을 원시 바이트로만 보여줄 수 있으므로, 파싱된 형태를 보려면 Resource Hacker 쪽이 더 편하다.</li></ul>
+<p><strong>4) 다국어 리소스 확인</strong></p>
+<ul><li>문자열 테이블은 언어(Language) 별로 따로 존재할 수 있다. 찾는 문자열이 안 보인다면 리소스 트리에서 다른 언어 코드(예: <code>1033</code>=영어, <code>1042</code>=한국어) 하위에 있는지도 함께 확인한다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>Resource Hacker: 좌측 트리 <code>String Table</code> 노드 펼치기, 항목 클릭으로 우측 뷰 확인</li><li>IDA: <code>LoadStringW</code> xref(<code>X</code>)로 호출부와 ID 인자 확인</li><li>블록 계산 공식: 블록 번호 = <code>(ID / 16) + 1</code>, 블록 내 위치 = <code>ID % 16</code></li></ul>
+<h2>출력 해석</h2>
+<ul><li>Resource Hacker에서 특정 ID 자리에 빈 문자열이 표시된다면, 그 ID가 애초에 사용되지 않았거나(코드에서 참조 안 함), 혹은 의도적으로 빈 문자열로 정의된 것이다. 코드에서 그 ID를 실제로 <code>LoadStringW</code>하는지 xref로 대조해야 어느 쪽인지 알 수 있다.</li><li>원시 바이트에서 길이 필드가 <code>0x0000</code>이면 빈 슬롯, 그 외의 값이면 그 값(문자 개수)만큼 뒤에 UTF-16 데이터가 이어진다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>RT_STRING</code> 데이터를 일반 <code>C</code>-style(널 종료) 문자열로 착각하고 헥스 에디터에서 눈으로 텍스트를 찾으려다 실패하는 것. 길이 접두사 방식이라 널 종료 문자가 없다.</li><li>Resource Hacker에 표시된 "블록 번호"를 코드의 문자열 ID와 동일하다고 착각하는 것. 반드시 <code>블록 = ID/16 + 1</code> 공식으로 변환해서 대조해야 한다.</li><li>문자열이 여러 언어로 중복 정의되어 있는데 한 언어 블록만 보고 "이 ID는 없다"고 결론짓는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>리소스 섹션의 전체 구조(Type/Name/Language 트리)가 헷갈린다면 → REV-0141(Resource Section과 숨겨진 데이터 확인)을 먼저 읽는다.</li><li>UTF-16 인코딩 자체가 헷갈린다면 → REV-0128(Windows 문자열 ASCII와 UTF-16 찾기)을 확인한다.</li><li>IDA Strings 창에서 이 문자열들이 왜 안 잡히는지 궁금하다면 → REV-0612(UTF-16 문자열이 IDA Strings에 안 잡힐 때)를 확인한다. <code>RT_STRING</code> 데이터는 리소스 섹션에 있어서 IDA의 일반 Strings 스캔과는 별개로 다뤄야 한다.</li></ul>
+<h2>미니 예제</h2>
+<p>IDA에서 다음 호출을 확인했다고 하자.</p>
+<pre><code class="language-c">LoadStringW(hInstance, 101, buf, 256);</code></pre>
+<p><code>101 / 16 + 1 = 7</code>이므로 7번 블록, <code>101 % 16 = 5</code>이므로 블록 내 6번째(0부터 세면 5번) 슬롯에 이 문자열이 있다. Resource Hacker로 파일을 열어 <code>String Table</code> 아래 7번 블록을 클릭하니, 실제로 ID 101 자리에 <code>"저장되었습니다."</code>라는 문자열이 나타났다. 이런 방식으로 코드의 문자열 ID만 가지고도 정확한 UI 문자열을 역추적할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0141-resource-section.html">REV-0141 — Resource Section과 숨겨진 데이터 확인</a></li><li><a href="rev-0128-windows-string-encoding.html">REV-0128 — Windows 문자열 ASCII와 UTF-16 찾기</a></li><li><a href="rev-0612-utf16-strings-not-found-ida.html">REV-0612 — UTF-16 문자열이 IDA Strings에 안 잡힐 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>RT_STRING</code> 리소스가 16개 단위 블록으로 저장되고, 각 문자열이 2바이트 길이 접두사 + UTF-16 데이터(카운트 문자열) 형식이라는 점, 블록 번호가 <code>(ID/16)+1</code>로 계산된다는 점은 Microsoft 공식 <code>LoadStringW</code> 문서 및 Raymond Chen의 "The Old New Thing" 블로그(문자열 리소스 포맷 설명)에서 확인된다.</li><li>빈 슬롯이 길이 0인 문자열로 채워지며 "존재하지 않음"과 "빈 문자열"을 구분할 수 없다는 점도 동일 출처(Old New Thing) 기준이다(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

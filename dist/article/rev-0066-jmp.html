@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JMP: 무조건 분기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>JMP: 무조건 분기</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>JMP</code>는 조건 검사 없이 무조건 RIP(다음 실행할 명령의 주소)를 목표 주소로 바꾸는 명령어다. <code>Jcc</code>(조건 분기)와 달리 항상 분기하며, <code>CALL</code>과 달리 스택에 반환 주소를 남기지 않는다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>어셈블리에 <code>jmp short loc_401050</code>, <code>jmp rax</code>, <code>jmp qword ptr [rcx+rdx*8]</code> 같은 코드가 나오는데 왜 조건도 없이 그냥 분기하는지 헷갈릴 때</li><li>함수 끝부분에 <code>call</code>이 아니라 <code>jmp</code>로 다른 함수를 부르는 것처럼 보이는 코드(tail call)를 만났을 때</li><li><code>switch</code>문처럼 보이는 C 코드가 컴파일된 결과에서 <code>jmp [reg*8 + 주소]</code>와 그 앞에 낯선 주소 배열이 있는 걸 봤을 때</li><li>CALL을 JMP로(또는 반대로) 패치하려는데 스택이 깨질까 봐 걱정될 때</li><li>IDA 그래프 뷰에서 JMP가 JMP로, 또 JMP로 계속 이어지는 지저분한 흐름을 만났을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>JMP가 실제로 하는 일</h3>
+<p><code>JMP target</code>은 단 하나의 일만 한다: <strong>RIP를 target 주소로 설정한다.</strong> 그게 전부다. 스택을 건드리지 않고, 플래그도 읽거나 바꾸지 않는다. <code>CALL</code>이 "반환 주소를 PUSH하고 이동"하는 것과 달리, JMP는 "그냥 이동"이다 — 그래서 JMP로 이동한 곳에서 원래 자리로 "돌아올" 방법이 원칙적으로 없다(누군가 스택에 직접 반환 주소를 만들어두지 않는 한).</p>
+<h3>Intel 문법과 오퍼랜드 형태</h3>
+<pre><code class="language-asm">JMP rel8         ; short jump — 목표가 현재 위치에서 -128~+127 바이트 이내일 때 (2바이트 인코딩)
+JMP rel32        ; near jump — 그보다 멀리 떨어진 목표 (5바이트 인코딩)
+JMP reg          ; 예: jmp rax — 레지스터 값을 목표 주소로 사용 (indirect)
+JMP [mem]        ; 예: jmp qword ptr [rax+8] — 메모리에서 목표 주소를 읽어와 사용 (indirect)
+JMP [table+idx*8]; 점프 테이블 인덱싱 — switch-case에서 흔히 등장 (indirect)
+JMP far ptr seg:offset  ; far jump — 세그먼트까지 바꾸는 점프. 유저모드 리버싱에서는 거의 안 보임</code></pre>
+<p>오퍼랜드는 하나뿐이며, MOV처럼 "목적지/출발지" 개념이 없다 — 오퍼랜드 자체가 곧 "어디로 갈지"다.</p>
+<h3>레지스터/메모리/스택 효과</h3>
+<ul><li>RIP(EIP)만 바뀐다.</li><li>RSP는 <strong>전혀 변하지 않는다.</strong> 이 점이 CALL과의 가장 중요한 차이다 — CALL은 실행 시 RSP가 8만큼(x64 기준) 줄어들며 반환 주소가 스택에 쌓이지만, JMP는 스택에 아무것도 쓰지 않고 그냥 이동만 한다.</li><li>플래그 레지스터도 전혀 건드리지 않는다 — JMP는 플래그를 읽지도(Jcc처럼 조건 검사를 하지 않으므로) 쓰지도 않는다.</li></ul>
+<h3>컴파일러가 JMP를 만드는 대표 패턴</h3>
+<p><strong>1) 반복문의 뒤쪽 화살표(back-edge)</strong></p>
+<pre><code class="language-c">while (cond) { body(); }</code></pre>
+<p>컴파일러는 보통 조건 검사를 반복문 끝으로 옮기고, 몸통이 끝난 뒤 조건 검사 위치로 무조건 되돌아가는 <code>JMP</code>(또는 조건부로 되돌아가는 <code>Jcc</code>)를 만든다. 아래 "if/else" 예제와 함께 보면 감이 온다.</p>
+<p><strong>2) if/else의 else 블록 건너뛰기</strong></p>
+<pre><code class="language-c">if (cond) { A(); } else { B(); }</code></pre>
+<p>컴파일러는 조건이 거짓이면 A블록을 건너뛰는 <code>Jcc</code>를 만들고, A블록이 끝나는 지점에 B블록 전체를 건너뛰는 <strong>무조건</strong> <code>JMP</code>를 넣는다:</p>
+<pre><code class="language-asm">    test  eax, eax
+    jz    else_branch     ; 조건부 분기 (Jcc) — 거짓이면 else로
+    call  A
+    jmp   end_if           ; 무조건 분기 (JMP) — A를 실행했으면 else를 건너뜀
+else_branch:
+    call  B
+end_if:</code></pre>
+<p><strong>3) 꼬리 호출 최적화(Tail Call Optimization)</strong> 함수 맨 마지막 동작이 "다른 함수를 호출하고 그 결과를 그대로 반환하는 것"뿐이라면, 컴파일러는 <code>CALL other_func</code> + <code>RET</code> 대신 그냥 <code>JMP other_func</code>로 바꿔버린다. <code>other_func</code>가 끝나면 <code>other_func</code>의 <code>RET</code>이 (현재 함수가 아니라) <strong>현재 함수를 호출한 쪽</strong>으로 바로 돌아간다 — 스택에 현재 함수의 프레임이 남아있지 않기 때문에 가능한 최적화다. 이 패턴은 rev-0071-call.md의 "흔한 실수"에서도 다룬다 — CALL과 JMP를 혼동하면 이런 코드에서 "왜 함수가 안으로 안 들어가지?" 하고 헷갈리게 된다.</p>
+<p><strong>4) 스위치-케이스 점프 테이블</strong></p>
+<pre><code class="language-c">switch (n) {
+    case 0: A(); break;
+    case 1: B(); break;
+    case 2: C(); break;
+}</code></pre>
+<p>case 값들이 촘촘하게 이어져 있으면(예: 0,1,2,3...) 컴파일러는 각 case의 코드 주소를 담은 <strong>테이블</strong>을 <code>.rodata</code>나 <code>.text</code>에 만들어두고, <code>n</code> 값으로 그 테이블을 인덱싱해서 바로 해당 case로 점프한다:</p>
+<pre><code class="language-asm">cmp   eax, 2          ; 범위 체크 (n &lt;= 2 인지)
+ja    default_case
+lea   rcx, [rip+jump_table]
+movsxd rdx, eax
+jmp   qword ptr [rcx+rdx*8]   ; 테이블에서 목표 주소를 읽어 그 자리로 점프</code></pre>
+<p>IDA/Ghidra에서 <code>jmp [reg*8+주소]</code> 형태가 보이고 그 근처(대개 <code>.rodata</code>)에 코드 주소로 보이는 값들이 줄지어 있다면 이게 점프 테이블이다. 이 패턴 자체를 처음부터 끝까지 손으로 읽는 방법은 더 깊이 있게 다루는 별도 글(스위치-케이스 점프 테이블, 예정)에서 다룬다 — 여기서는 "JMP의 오퍼랜드가 계산된 메모리 주소일 수 있다"는 것만 기억해두면 된다.</p>
+<h3>IDA/Ghidra 디컴파일에서 보이는 모습</h3>
+<ul><li><strong>앞으로 가는(forward) 무조건 JMP</strong>가 단순히 두 코드 블록을 합치는 용도라면, 디컴파일러는 이를 아예 없애고 그냥 이어붙인 직선 코드나 <code>if/else</code> 구조로 재구성해서 보여준다 — 즉 디컴파일 결과에는 JMP 자체가 안 보이는 경우가 많다.</li><li><strong>뒤로 가는(backward) 무조건 JMP</strong>는 대부분 <code>while(1)</code>이나 <code>for(;;)</code> 같은 반복문의 되돌아가는 화살표로 해석되어 <code>while</code>/<code>for</code> 구문으로 표시된다.</li><li><strong>점프 테이블을 통한 간접 JMP</strong>는 디컴파일러가 인식에 성공하면 깔끔한 <code>switch</code> 문으로 재구성해준다.</li><li><strong>레지스터/메모리 기반 간접 JMP를 디컴파일러가 정적으로 못 풀어내면</strong>, 함수 흐름이 끊기거나(그래프가 중간에 끊어짐), <code>switch</code> 인식에 실패하고 원본에 가까운 형태로 남는다. 이럴 때는 목표 주소가 담긴 메모리(테이블)를 직접 찾아 Xrefs나 Hex View로 그 위치의 데이터를 확인해야 한다.</li></ul>
+<h3>리버싱에서의 의미 — JMP 체인과 난독화</h3>
+<p><code>JMP → JMP → JMP → ...</code> 처럼 의미 없는 JMP가 여러 번 이어지는 코드를 종종 보게 된다. 이는 컴파일러 최적화의 부작용일 수도 있지만, 난독화 도구가 <strong>일부러</strong> 짧은 JMP 조각들을 여기저기 흩어놓아 그래프 뷰를 지저분하게 만들고 정적 분석을 방해하는 기법(control-flow obfuscation)으로도 흔히 쓰인다. 이런 경우 IDA에서 여러 JMP를 하나하나 따라가며 "결국 최종적으로 어디로 가는지"를 확인하는 수밖에 없다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>jmp short loc_401030</code> — 가까운 곳으로의 무조건 분기 (반복문 되돌아가기 등)</li><li><code>jmp loc_402000</code> — near jump, 좀 더 먼 목표</li><li><code>jmp rax</code> — 레지스터 기반 간접 점프 (함수 포인터, 트램폴린 코드)</li><li><code>jmp qword ptr [rcx+rdx*8]</code> — 점프 테이블을 통한 간접 점프 (switch-case 의심)</li><li>함수 맨 끝(에필로그 자리, <code>leave</code>/<code>pop rbp</code> 이후가 아니라 그 자리를 대신해서)에 <code>jmp other_func</code> — tail call</li><li>짧은 JMP 여러 개가 연쇄적으로 이어짐 — 난독화 의심</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>JMP 앞에 조건 검사(<code>cmp</code>/<code>test</code> + <code>Jcc</code>)가 있는지 확인한다 — 있다면 이 JMP는 그 if/else의 "else 건너뛰기" 부분일 가능성이 크다.</li><li>오퍼랜드가 상수 주소(direct)인지 레지스터/메모리(indirect)인지 구분한다.</li><li>목표 주소가 현재 코드보다 <strong>앞쪽</strong>(작은 주소)이면 반복문의 되돌아가기, <strong>뒤쪽</strong>(큰 주소)이면 건너뛰기 패턴일 가능성이 높다.</li><li>함수의 맨 끝자리에 있다면 tail call인지 확인한다(RET/LEAVE 없이 바로 JMP로 함수가 끝나는가).</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 단순 무조건 분기 — 반복문 되돌아가기</strong></p>
+<pre><code class="language-asm">loop_top:
+    ; ... 반복 몸통 ...
+    dec  ecx
+    test ecx, ecx
+    jnz  loop_top     ; (참고: 이건 Jcc다. 순수 JMP 예시는 아래 참고)</code></pre>
+<p>반복 조건이 항상 참인 <code>while(1)</code> 패턴이면 조건 없이 그냥:</p>
+<pre><code class="language-asm">loop_top:
+    ; ... 몸통 ...
+    jmp  loop_top      ; 무조건 되돌아가기</code></pre>
+<p><strong>2) if/else 건너뛰기 패턴 읽기</strong> 위 "핵심 개념" 2번 예제를 다시 보면서, <code>jz else_branch</code>(조건부)와 <code>jmp end_if</code>(무조건)를 구분해서 읽는다. 각 라벨(<code>else_branch:</code>, <code>end_if:</code>)이 정확히 어디를 가리키는지 IDA에서 더블클릭해 따라가 본다.</p>
+<p><strong>3) Tail call 확인</strong></p>
+<pre><code class="language-asm">sub_401000:
+    mov  rcx, rdx
+    jmp  sub_402000    ; call/ret 대신 그냥 jmp로 끝남 — tail call</code></pre>
+<p>디버거로 <code>sub_401000</code>에 진입해 <code>jmp sub_402000</code>까지 실행한 뒤 <code>sub_402000</code>이 끝나면 콜스택에서 <code>sub_401000</code>이 아니라 그보다 더 위의 호출자로 바로 돌아가는지 확인해보면 tail call임을 체감할 수 있다.</p>
+<p><strong>4) 점프 테이블 따라가기</strong></p>
+<pre><code class="language-asm">jmp qword ptr [rcx+rdx*8]</code></pre>
+<p>IDA에서 <code>rcx</code>가 가리키는 주소(점프 테이블 시작)를 Hex View나 데이터 뷰로 연다. 8바이트씩 끊어 읽으면 각 항목이 코드 주소들이다. <code>rdx</code>(인덱스)가 0일 때 첫 항목, 1일 때 두 번째 항목… 순서로 어떤 case로 가는지 계산해본다. IDA가 자동으로 switch를 인식했다면 그래프 뷰에서 여러 갈래로 갈라지는 노드로 이미 예쁘게 그려져 있을 것이다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: JMP 대상 라벨 위에서 <code>Enter</code>(또는 더블클릭)로 그 위치로 이동, <code>Esc</code>로 이전 위치로 복귀, 그래프 뷰에서 화살표 색으로 분기 방향 확인(초록/빨강은 조건부 Jcc의 참/거짓 경로, 파랑은 무조건 JMP 경로), 점프 테이블 주소 위에서 <code>D</code>를 눌러 데이터로 변환 후 배열처럼 보기</li><li>x64dbg: JMP 라인 우클릭 → "Follow in Disassembler"로 목표 주소로 이동, 그래프 뷰(우클릭 → Graph)로 분기 구조 시각화</li><li>GDB/Pwndbg: <code>x/10gx &lt;table_addr&gt;</code>로 점프 테이블 메모리를 8바이트씩 10개 덤프, <code>stepi</code>로 JMP 실행 후 <code>$rip</code>가 정확히 예상 주소로 바뀌었는지 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>IDA 그래프 뷰에서 화살표가 <strong>파란색</strong>이면 조건 없는 흐름(무조건 JMP 또는 다음 명령으로의 자연스러운 흐름), <strong>초록/빨강</strong>이면 Jcc의 참/거짓 분기다. 파란 화살표만 있는데 원래 코드에 조건이 있어야 할 것 같다면, 컴파일러가 최적화로 조건을 단순화했거나 애초에 무조건 분기가 맞는 것이다.</li><li>점프 테이블 항목을 덤프했을 때 나오는 값들이 모두 <code>.text</code> 섹션 범위 안의 유효한 코드 주소처럼 보인다면 switch-case 테이블이 맞다는 강한 신호다.</li><li>디컴파일러가 JMP를 아예 안 보여주고 곧바로 <code>if/else</code>나 <code>while</code>로 표시했다면, 정상적으로 제어 흐름을 재구성한 것이니 걱정할 필요 없다 — 원본 어셈블리를 볼 때만 JMP가 직접 보인다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><strong>JMP를 CALL과 혼동해서 "여기서 실행하고 다시 돌아올 것"이라고 착각하는 것</strong> — JMP는 반환 주소를 스택에 남기지 않으므로 절대 자동으로 돌아오지 않는다. 패치 작업 중 CALL을 JMP로 바꾸면(또는 반대로) 스택 균형이 깨져 이후 RET이 엉뚱한 주소로 돌아가며 프로그램이 크래시하거나 이상하게 동작한다.</li><li><strong>빠르게 코드를 훑다가 Jcc(<code>je</code>, <code>jnz</code> 등)를 JMP로 착각하는 것</strong> — JMP는 조건 접미사가 없는 순수 3글자(<code>jmp</code>)이고, Jcc는 항상 조건을 뜻하는 접미사(<code>e</code>, <code>ne</code>, <code>z</code>, <code>g</code>, <code>a</code> 등)가 붙는다. 니모닉을 항상 정확히 확인하는 습관이 중요하다.</li><li><strong>간접 JMP(<code>jmp rax</code> 등)를 보고 "이 함수가 여기서 끝난다"고 단정하는 것</strong> — 목표가 무엇인지 확인하지 않고 넘어가면 실제로는 다른 함수로 tail call되어 흐름이 계속 이어지고 있는데도 분석을 중단해버리는 실수를 하게 된다.</li><li><strong>점프 테이블의 인덱스 범위 체크(<code>cmp</code>+<code>ja default_case</code> 같은 코드)를 놓치고 테이블만 보는 것</strong> — 실제 case 개수와 테이블 인덱싱 범위를 맞춰보지 않으면 존재하지 않는 case를 만들어내거나 default 분기를 놓칠 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>간접 JMP의 목표가 계속 레지스터/메모리라서 정적으로 안 보이면 → 디버거로 브레이크포인트를 걸고 실행 중 실제 값을 확인한다.</li><li>JMP 체인이 너무 길어서 최종 목적지를 못 찾겠다면 → 각 JMP 라벨을 순서대로 적어가며 손으로 따라가거나, 디버거로 <code>stepi</code>를 반복하며 <code>$rip</code>가 최종적으로 어디서 멈추는지 관찰한다.</li><li>점프 테이블처럼 보이는데 IDA가 switch로 인식하지 못했다면 → 테이블 시작 주소에서 <code>D</code>(데이터로 변환) 후 8바이트씩 끊어 배열로 만들고, 각 항목 위에서 <code>C</code>(코드로 변환)를 눌러 IDA가 그 위치를 함수/코드로 인식하게 도와준다.</li><li>Tail call인지 일반 direct call인지 헷갈리면 → 함수 맨 끝에 <code>leave</code>/<code>pop rbp</code>/<code>ret</code>이 전혀 없이 곧바로 <code>jmp</code>로 끝나는지 확인한다. 있으면 그냥 일반 분기(반복문 등)일 수 있다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 반복문 되돌아가기 (무조건 JMP)</strong></p>
+<pre><code class="language-c">for (;;) { do_work(); }</code></pre>
+<pre><code class="language-asm">loop_start:
+    call do_work
+    jmp  loop_start     ; 무조건 되돌아가기, 스택/플래그 변화 없음</code></pre>
+<p><strong>예제 2 — if/else의 else 건너뛰기</strong></p>
+<pre><code class="language-c">if (x == 0) a(); else b();</code></pre>
+<pre><code class="language-asm">    test eax, eax
+    jnz  else_branch    ; 조건부 (Jcc)
+    call a
+    jmp  end_if          ; 무조건 (JMP) — else를 건너뜀
+else_branch:
+    call b
+end_if:</code></pre>
+<p><strong>예제 3 — 꼬리 호출(Tail Call)</strong></p>
+<pre><code class="language-c">int wrapper(int x) { return real_func(x); }</code></pre>
+<pre><code class="language-asm">wrapper:
+    ; 인자(x)는 이미 RCX/RDI에 있으므로 그대로 둔 채
+    jmp  real_func       ; call+ret 대신 jmp로 대체 — real_func의 ret이 wrapper의 호출자로 바로 감</code></pre>
+<p><strong>예제 4 — 점프 테이블 (switch-case)</strong></p>
+<pre><code class="language-c">switch (op) {
+    case 0: return add(a,b);
+    case 1: return sub(a,b);
+    case 2: return mul(a,b);
+    default: return -1;
+}</code></pre>
+<pre><code class="language-asm">    cmp   edi, 2
+    ja    default_case
+    lea   rcx, [rip+jtable]
+    movsxd rdx, edi
+    jmp   qword ptr [rcx+rdx*8]   ; 테이블에서 목표를 읽어 해당 case로 점프
+jtable:
+    dq offset case0
+    dq offset case1
+    dq offset case2</code></pre>
+<h2>관련 글</h2>
+<ul><li>./rev-0071-call.md — CALL: 함수 호출, 반환 주소, 인자 추적 (JMP와의 차이, tail call)</li><li>./rev-0067-je-jz.md — JE/JZ: ZF가 1일 때 분기</li><li>./rev-0068-jne-jnz.md — JNE/JNZ: ZF가 0일 때 분기</li><li>./rev-0069-jg-jge-jl-jle.md — JG/JGE/JL/JLE: Signed 비교 분기</li><li>./rev-0070-ja-jae-jb-jbe.md — JA/JAE/JB/JBE: Unsigned 비교 분기</li><li>./rev-0088-flags-overview.md — 플래그 레지스터 전체 개요</li><li><a href="rev-0072-ret.html">REV-0072 — RET: 함수 반환과 스택 변화</a></li><li><a href="rev-0073-leave.html">REV-0073 — LEAVE: 함수 에필로그와 스택 프레임</a></li><li>스위치-케이스 점프 테이블 (예정)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>JMP 명령어 동작(short/near/far, direct/indirect 형태), 플래그 미변경: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "JMP—Jump" 섹션 기준 (2026-09-08 검증).</li><li>꼬리 호출 최적화와 스위치 점프 테이블 코드 생성 패턴: 컴파일러(GCC/Clang/MSVC) 최적화 관행에 대한 일반적인 리버싱/컴파일러 문헌 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

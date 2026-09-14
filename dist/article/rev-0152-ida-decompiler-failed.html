@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA Decompiler Failed가 뜰 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA Decompiler Failed가 뜰 때</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>F5를 눌렀는데 아예 반응이 없거나 우클릭 메뉴에 "Decompile" 항목 자체가 없다면 <strong>십중팔구 Hex-Rays 디컴파일러가 설치/라이선스되지 않은 것</strong>이고(IDA Free는 디컴파일러가 없음), 반면 <code>Decompilation failed</code> 창이 뜬다면 디컴파일러는 정상 동작 중이며 특정 함수의 코드/스택/타입 정보가 애매해서 실패한 것이므로 그 원인 메시지를 읽고 함수 경계·스택·타입을 하나씩 고쳐야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>F5를 눌렀는데 아무 창도 안 뜨고, 우클릭 메뉴에도 "Decompile" 항목이 안 보일 때</li><li>Pseudocode 탭 안에 회색 글씨로 <code>Decompilation failed: ...</code> 문구가 뜰 때</li><li>특정 함수만 디컴파일이 안 되고 나머지는 잘 될 때</li></ul>
+<h2>핵심 개념</h2>
+<p>IDA(디스어셈블러)와 Hex-Rays 디컴파일러(F5로 의사코드를 보여주는 기능)는 <strong>별개의 제품</strong>이다. IDA는 바이너리를 어셈블리로 바꿔 보여주는 역할만 하고, 그 어셈블리를 다시 C 비슷한 의사코드로 재구성하는 것은 Hex-Rays 디컴파일러라는 별도 플러그인/라이선스가 담당한다. <strong>IDA Free(무료판)에는 디컴파일러가 아예 포함되어 있지 않다.</strong> 유료 IDA라도 구매한 아키텍처(x86/x64/ARM 등)에 맞는 디컴파일러 라이선스가 없으면 F5가 동작하지 않는다.</p>
+<p>디컴파일러가 정상적으로 설치되어 있다면, F5는 함수 하나를 대상으로 다음을 시도한다: 명령어를 마이크로코드로 변환 → 스택 포인터(SP) 변화 추적 → 지역 변수/스택 프레임 재구성 → 제어 흐름(if/for/switch) 복원 → 최종 C 유사 코드 출력. 이 중 어느 단계에서든 IDA가 "이 코드는 확신할 수 없다"고 판단하면 실패 메시지를 내고 멈춘다. 즉 <code>Decompilation failed</code>는 버그라기보다 "디스어셈블리 단계에서 만들어진 정보(함수 경계, 스택 프레임, 타입)가 불완전하니 사람이 보정해달라"는 신호에 가깝다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><strong>케이스 A (디컴파일러 자체가 없음)</strong>: F5를 눌러도 반응이 없거나, View → Open subviews 목록에 Pseudocode 항목이 없음. 함수 위에서 우클릭해도 "Decompile" 메뉴가 안 보임.</li><li><strong>케이스 B (디컴파일러는 있지만 이 함수만 실패)</strong>: Pseudocode 창(또는 F5 직후 열리는 창)에 <code>Decompilation failed: &lt;주소&gt; &lt;메시지&gt;</code> 형태의 회색 텍스트가 표시됨. 예: <code>positive sp value has been found</code>, <code>call analysis failed</code>, <code>switch analysis failed</code>, <code>invalid basic block</code>, <code>no license available</code> 등.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>아무 반응도 없거나 메뉴 자체가 없다면 → 디컴파일러 설치/라이선스 문제이므로 아래 "케이스 A" 절차로 간다.</li><li><code>Decompilation failed</code> 텍스트가 실제로 보였다면 → 그 텍스트 뒤에 붙은 구체적 원인 문구를 그대로 읽는다. 이게 다음에 뭘 고쳐야 할지 알려주는 가장 중요한 단서다.</li></ol>
+<h2>단계별 절차</h2>
+<h3>케이스 A: F5가 아예 반응 없음 / 메뉴에 Decompile이 없음</h3>
+<ol><li>IDA 메인 화면 상단 About(Help → About) 또는 시작 화면에서 라이선스 종류를 확인한다. "IDA Free"라면 디컴파일러가 포함되지 않은 버전이므로 F5 자체를 사용할 수 없다 — 이 경우 REV-0146에서 다루는 F5 대신 디스어셈블리/그래프 뷰로 계속 분석해야 한다.</li><li>유료 IDA인데도 안 된다면, 설치 시 해당 아키텍처(x86, x64, ARM 등)용 디컴파일러 애드온이 함께 설치/라이선스되었는지 확인한다(Hex-Rays 라이선스는 아키텍처별로 별도 판매된다).</li><li>메시지 창에 <code>no license available</code>이 뜬다면 이는 정확히 라이선스 문제이므로 정상 동작하는 다른 환경(예: 라이선스가 있는 IDA)에서 열거나, 라이선스 파일 경로/네트워크 라이선스 서버 설정을 점검한다.</li></ol>
+<h3>케이스 B: 특정 함수에서 Decompilation failed</h3>
+<ol><li>실패 메시지의 정확한 문구를 확인한다. 흔한 예시와 대응:</li></ol>
+<ul><li><strong><code>positive sp value has been found</code></strong>: 스택 포인터 추적이 함수 중간에 어긋난 것. REV-0151(정확히 이 경고를 다루는 글)과 REV-0153(더 넓은 범위의 SP 문제)을 참고해 스택 포인터를 수동으로 고친다.</li><li><strong><code>invalid basic block</code></strong>: 함수 안에 실행되지 않는 쓰레기 코드가 섞였거나, 점프가 함수 경계 밖으로 나가거나, non-return 함수(예: <code>exit</code>, <code>abort</code>처럼 리턴하지 않는 함수) 뒤에 붙은 코드를 IDA가 잘못 함수의 일부로 포함시킨 경우 자주 뜬다. 해당 CALL을 우클릭 → "Don't call" 대신 함수 원형을 확인하고, 필요하면 그 함수를 non-returning으로 표시하거나 반대로 해제한다.</li><li><strong><code>switch analysis failed</code></strong>: switch문에서 쓰이는 점프 테이블(jump table)을 IDA가 못 알아챈 경우. 해당 간접 점프(<code>jmp [eax*4 + table]</code> 형태) 위에서 우클릭 → "Specify switch idiom"으로 테이블 구조를 직접 알려주거나, 관련 명령어를 지웠다가(U) 다시 코드로(C) 만들어본다.</li><li><strong><code>call analysis failed</code></strong>: 함수가 호출하는 대상의 원형(인자 개수, 호출 규약)이 애매할 때. 문제가 되는 CALL이 부르는 함수 위에서 <strong>Y</strong>를 눌러 원형을 직접 지정한다(REV-0148 참고). 간접 호출(레지스터/메모리를 통한 CALL)이라면 그 호출이 실제로 어떤 함수를 가리키는지 확인하고 xref를 추가해야 할 수도 있다.</li><li><strong><code>undefined or illegal type</code></strong>: 함수나 변수가 참조하는 타입이 로컬 타입 라이브러리에 없는 경우. Shift+F1(Local Types 창)에서 해당 타입을 다시 정의하거나 struct/헤더를 다시 import한다.</li><li><strong><code>inconsistent database information</code></strong>: 함수 청크(chunk) 정보가 꼬인 경우. 함수를 통째로 지웠다가(U) 다시 만든다(P).</li><li><strong><code>stack frame is too big</code></strong> / <strong><code>too complex function</code></strong> / <strong><code>too big function</code></strong>: 함수가 너무 크거나 스택이 비정상적으로 커서 디컴파일러가 포기한 것. 이런 경우 대부분 함수 경계 자체가 잘못 잡혀 두 함수가 하나로 합쳐졌을 가능성이 높으므로 REV-0154를 먼저 확인한다.</li></ul>
+<ol><li>원인을 고친 뒤, 함수 시작 주소에서 우클릭 → <strong>"Reanalyze function"</strong>을 실행하거나, 함수를 지웠다가(U) 시작 주소에 커서를 놓고 <strong>P</strong>(Create function)로 다시 만들고, 다시 F5를 누른다.</li><li>여전히 안 되면 함수 경계가 맞는지(REV-0154), 그 함수 안에 정의되지 않은(undefined) 바이트가 남아 있는지(REV-0155) 순서대로 점검한다.</li><li>그래도 디컴파일이 안 되는 코드(손으로 짠 인라인 어셈블리, 심하게 난독화된 코드, SEH 예외 처리 스텁 등)라면 디컴파일러가 정상적으로 처리할 수 없는 경우이므로, 미련을 버리고 디스어셈블리/Graph view(REV-0150)로 직접 읽는 쪽으로 전환한다. 의사코드는 참고용일 뿐 항상 정답은 아니다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li><code>F5</code>: 현재 함수 디컴파일(디컴파일러가 설치된 경우)</li><li>함수 시작 주소 우클릭 → <code>Reanalyze function</code></li><li><code>U</code>(Undefine) → 커서를 함수 시작에 놓고 <code>P</code>(Create function)</li><li><code>Y</code>: 함수/변수 타입·원형 지정</li><li>간접 점프 우클릭 → <code>Specify switch idiom</code></li><li><code>Shift+F1</code>: Local Types 창(타입 재정의)</li><li><code>Edit → Functions → Change stack pointer</code>(Alt+K): SP 값 수동 보정 — 자세한 절차는 REV-0153 참고</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Pseudocode 창에 회색으로 뜨는 <code>Decompilation failed: &lt;주소&gt; &lt;원인 문구&gt;</code>는 그 함수 하나만 실패했다는 뜻이며, 다른 함수 디컴파일에는 영향이 없다.</li><li>Output window에 <code>positive sp value</code> 같은 경고가 먼저 뜨고 나서 Pseudocode 창에 실패 메시지가 뜨는 경우가 많다 — Output window를 위로 스크롤해서 더 이른 시점의 원인 로그를 함께 확인하면 진짜 원인을 더 빨리 찾을 수 있다.</li><li><code>no license available</code>은 코드 문제가 아니라 순수히 라이선스/설치 문제이므로 함수를 아무리 고쳐도 해결되지 않는다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>IDA Free를 쓰면서 "왜 F5가 안 되지"라고 코드 문제로 착각하고 시간을 낭비하는 것. 먼저 라이선스/버전부터 확인해야 한다.</li><li>실패 메시지 문구를 읽지 않고 무작정 Reanalyze만 반복하는 것. 문구마다 원인이 다르므로 반드시 읽고 그에 맞는 조치를 취해야 한다.</li><li>함수 하나가 안 되면 그 함수만 보고 원인을 함수 내부에서만 찾는 것. 실제로는 그 함수가 호출하는 다른 함수의 원형이 잘못돼서 실패하는 경우도 많다(<code>call analysis failed</code>).</li><li>디컴파일이 실패했다고 해서 그 함수 분석 자체를 포기하는 것. 디컴파일러가 못 읽어도 디스어셈블리는 항상 읽을 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>함수가 이상하게 짧거나 두 함수가 합쳐진 것 같다면 → REV-0154(함수 경계 문제)</li><li>SP 관련 메시지가 반복된다면 → REV-0151(정확히 이 경고), REV-0153(더 넓은 SP 문제)</li><li>함수 안에 회색/빨간 <code>db XX</code> 바이트가 섞여 있다면 → REV-0155(undefined bytes)</li><li>F5 자체의 기본 사용법이나 Pseudocode 읽는 법이 헷갈린다면 → REV-0146</li></ul>
+<h2>미니 예제</h2>
+<p>어떤 함수에서 F5를 눌렀더니 Pseudocode 창에 다음과 같이 떴다고 하자.</p>
+<pre><code class="language-text">Decompilation failed: 00401560 positive sp value has been found</code></pre>
+<p>이 경우 순서는: (1) Output window를 확인해 SP 델타가 튄 정확한 명령어 위치를 찾는다, (2) 그 위치의 CALL이 어떤 함수를 부르는지 보고 원형(인자 개수, 호출 규약)이 맞는지 Y로 확인한다, (3) 필요하면 Alt+K로 SP 델타를 수동 보정한다, (4) 함수 시작에서 Reanalyze function을 실행하고 F5를 다시 누른다. 이 흐름은 REV-0151과 REV-0153에 더 자세히 나와 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0146-ida-f5-decompile.html">REV-0146 — IDA F5 디컴파일과 Pseudocode 읽기</a></li><li><a href="rev-0151-positive-sp-value.html">REV-0151 — IDA Positive SP Value Has Been Detected 경고</a></li><li><a href="rev-0153-ida-stack-pointer-wrong.html">REV-0153 — IDA Stack Pointer 분석이 틀렸을 때</a></li><li><a href="rev-0154-ida-wrong-function-boundary.html">REV-0154 — IDA에서 함수 경계가 잘못 잡혔을 때</a></li><li><a href="rev-0155-ida-undefined-bytes.html">REV-0155 — IDA에서 Undefined Bytes를 Code/Data로 재해석</a></li><li><a href="rev-0148-ida-set-type.html">REV-0148 — IDA Y로 타입 지정하기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>디컴파일러 실패 메시지 목록(<code>positive sp value has been found</code>, <code>invalid basic block</code>, <code>switch analysis failed</code>, <code>call analysis failed</code>, <code>no license available</code> 등)과 각 메시지별 권장 조치는 Hex-Rays 공식 문서 "Failures and troubleshooting"(IDA 8.4 버전, docs.hex-rays.com) 내용을 요약한 것이다.</li><li>IDA Free에 디컴파일러가 포함되지 않는다는 사실과 아키텍처별 디컴파일러 라이선스 판매 구조는 Hex-Rays 공식 제품 페이지에 기반한 일반적으로 알려진 사실이다.</li><li>정확한 메뉴 문구/단축키는 IDA 버전에 따라 조금씩 달라질 수 있으므로(특히 우클릭 메뉴 이름), 실제 설치된 IDA 버전에서 Help 메뉴나 Edit → Functions 하위 메뉴로 다시 한 번 확인하는 것을 권장한다. 이 글 작성 시점에는 실제 IDA 설치 환경에서 직접 재현 검증을 하지 못했다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

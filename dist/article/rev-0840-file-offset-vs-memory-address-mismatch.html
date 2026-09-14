@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>브레이크포인트를 파일 오프셋으로 걸었는데 실제 메모리 주소랑 안 맞을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>브레이크포인트를 파일 오프셋으로 걸었는데 실제 메모리 주소랑 안 맞을 때</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>헥스에디터/IDA의 "파일 오프셋"과 디버거가 실제로 멈추는 "메모리 주소(VA)"는 애초에 서로 다른 좌표계이며, PE는 <code>VA = ImageBase + RVA</code>(RVA는 섹션의 <code>FileAlignment</code> 기준 파일 오프셋과 <code>SectionAlignment</code> 기준 메모리 오프셋이 서로 다르게 매핑됨), ELF는 <code>VA = 로드베이스 + p_vaddr</code>(파일에서는 <code>p_offset</code>)로 계산되므로, 이 변환 없이 파일 오프셋 숫자를 그대로 디버거에 넣으면 전혀 다른 위치를 가리키게 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>HxD/ImHex 같은 헥스에디터에서 확인한 오프셋을 x64dbg나 GDB에 그대로 입력했는데 엉뚱한 곳에서 멈추거나 아예 안 멈출 때</li><li>IDA의 정적 분석 주소(가상 주소로 표시됨)와 파일을 직접 열었을 때의 바이트 위치가 안 맞아 헷갈릴 때</li><li>PE 섹션의 <code>FileAlignment</code>(보통 0x200)와 <code>SectionAlignment</code>(보통 0x1000)가 달라서 오프셋 계산이 어긋날 때</li><li>ELF 프로그램 헤더의 <code>p_offset</code>과 <code>p_vaddr</code>가 왜 다른 값인지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>파일 오프셋과 VA(Virtual Address)는 다른 좌표계다</h3>
+<p>디스크에 저장된 실행 파일은 섹션들이 촘촘하게(파일 정렬 단위로) 이어져 있지만, 메모리에 로드될 때는 각 섹션이 페이지 정렬 단위로 널찍하게 배치된다. 그래서 "파일에서 1000바이트 지점"과 "메모리에서 1000바이트 오프셋 지점"은 섹션 경계를 넘어가는 순간부터 서로 다른 값이 된다. 개념 자체와 계산 공식은 REV-0028(주소 VA RVA File Offset 차이), PE 한정 상세 계산은 REV-0118(RVA VA Raw Offset 계산)에서 다룬다.</p>
+<h3>PE — FileAlignment vs SectionAlignment</h3>
+<p>PE Optional Header의 <code>FileAlignment</code>(디스크상 섹션 정렬 단위, 보통 0x200)와 <code>SectionAlignment</code>(메모리상 정렬 단위, 보통 0x1000)가 다르면, 같은 섹션 안에서도 "파일 오프셋 - 섹션의 PointerToRawData"와 "RVA - 섹션의 VirtualAddress"가 같은 값이 아니게 되는 구간이 생길 수 있다. 실행 중 주소(VA)는 <code>ImageBase + RVA</code>로 계산하며, 파일 오프셋에서 RVA로 가려면 반드시 그 오프셋이 속한 섹션의 <code>PointerToRawData</code>/<code>VirtualAddress</code>를 기준으로 변환해야 한다.</p>
+<h3>ELF — p_offset vs p_vaddr, 그리고 PIE 베이스</h3>
+<p>ELF 프로그램 헤더(<code>Elf64_Phdr</code>)의 <code>p_offset</code>은 파일 안에서의 위치, <code>p_vaddr</code>는 그 세그먼트가 매핑될 가상 주소다. 고정 베이스 실행 파일(<code>ET_EXEC</code>)은 <code>p_vaddr</code>가 절대 주소지만, PIE(<code>ET_DYN</code>)는 <code>p_vaddr</code>조차 "베이스를 0으로 가정한 상대값"이라 실제 VA를 얻으려면 커널이 정한 런타임 로드 베이스를 더해야 한다. PIE/ASLR 베이스 계산의 상세 절차는 REV-0194에서 다룬다.</p>
+<h3>왜 "파일 오프셋 그대로" 걸면 안 걸리거나 엉뚱한 곳에서 걸리는가</h3>
+<p>디버거의 <code>break *0x주소</code>(GDB), <code>bp 0x주소</code>(x64dbg)는 항상 <strong>VA</strong>를 기대한다. 헥스에디터에서 본 파일 오프셋 숫자를 변환 없이 그대로 넣으면, 우연히 해당 섹션의 오프셋 차이가 0인 극히 일부 구간이 아닌 이상 다른 바이트를 가리키게 되어 브레이크포인트가 무의미한 위치에 걸린다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>헥스에디터 오프셋을 그대로 <code>bp</code>/<code>break *</code>에 넣었는데 실행 중 전혀 다른(또는 무의미한) 명령어에서 멈춤</li><li>IDA에서 같은 위치를 볼 때 "가상 주소"와 "파일 오프셋"이 서로 다른 두 개의 숫자로 표시됨(Options → General에서 어느 쪽을 보고 있는지 확인 가능)</li><li>PE-bear/<code>readelf -l</code>으로 확인한 섹션/세그먼트의 오프셋과 가상 주소 값이 서로 다름</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>지금 갖고 있는 숫자가 "파일 오프셋"인지 "가상 주소(VA/RVA)"인지부터 명확히 한다. IDA라면 상태 표시줄이나 Options에서 현재 보고 있는 좌표계를 확인하고, 헥스에디터에서 얻은 값이라면 반드시 변환을 거친다.</p>
+<h2>단계별 절차</h2>
+<ol><li>PE: <code>PE-bear</code>나 <code>readelf</code>(ELF)로 섹션/세그먼트 테이블을 열어, 문제의 오프셋이 속한 섹션의 <code>PointerToRawData</code>/<code>VirtualAddress</code>(PE) 또는 <code>p_offset</code>/<code>p_vaddr</code>(ELF)를 확인한다.</li><li>RVA = 파일오프셋 - PointerToRawData + VirtualAddress (PE) 로 변환한다.</li><li>VA = ImageBase + RVA (PE, 고정 베이스라면 그대로, ASLR이면 실제 로드 베이스로 대체) 를 계산한다.</li><li>ELF: VA = 런타임 로드 베이스 + (p_vaddr + (파일오프셋 - p_offset)) 로 변환한다(비PIE는 로드 베이스가 0이라 p_vaddr가 곧 VA).</li><li>변환한 VA로 다시 브레이크포인트를 건다.</li><li>IDA를 쓴다면 애초에 파일 오프셋 대신 IDA가 보여주는 가상 주소를 그대로 복사해서 쓰는 것이 계산 실수를 줄이는 가장 안전한 방법이다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">readelf -l ./chall        # ELF 프로그램 헤더: p_offset, p_vaddr
+objdump -h ./chall         # 섹션별 오프셋/VMA</code></pre>
+<pre><code class="language-text">PE-bear: Section Headers 탭에서 PointerToRawData / VirtualAddress 확인</code></pre>
+<pre><code class="language-gdb">break *(BASE + RVA)</code></pre>
+<h2>출력 해석</h2>
+<p><code>readelf -l</code>/<code>objdump -h</code>에서 같은 세그먼트/섹션의 두 값(파일 오프셋 계열, 가상 주소 계열)이 다르면 그 차이가 곧 변환에 필요한 보정값이다. PE-bear에서 <code>PointerToRawData</code>와 <code>VirtualAddress</code>가 다르면 마찬가지로 그 차이만큼 보정해야 한다.</p>
+<h2>흔한 실수</h2>
+<ul><li>IDA 화면에 나온 숫자가 파일 오프셋인지 VA인지 확인하지 않고 그대로 디버거에 입력하는 것.</li><li>여러 섹션에 걸친 범위인데 하나의 변환 공식(하나의 섹션 기준 보정값)만 전체에 적용하는 것 — 섹션마다 보정값이 다를 수 있다.</li><li>PIE/ASLR 바이너리인데 비PIE처럼 <code>p_vaddr</code>를 절대 주소로 착각하는 것.</li><li><code>FileAlignment</code>와 <code>SectionAlignment</code>가 같다고 가정하고 계산하는 것 — 대부분의 컴파일러 기본값은 다르다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>VA/RVA/파일 오프셋 개념 자체가 헷갈린다면 → REV-0028 주소 VA RVA File Offset 차이</li><li>PE에서의 구체적 계산 공식이 필요하다면 → REV-0118 RVA VA Raw Offset 계산</li><li>PIE 바이너리라서 베이스 자체가 실행마다 바뀐다면 → REV-0194 PIE 바이너리 GDB 브레이크포인트 잡기</li><li>브레이크포인트가 다른 이유로도 안 걸리는 것 같다면 → REV-0835 브레이크포인트가 안 걸릴 때 확인할 것들</li></ul>
+<h2>미니 예제</h2>
+<p>HxD에서 파일 오프셋 <code>0x600</code>에 흥미로운 바이트를 발견했다. <code>readelf -l</code>로 확인하니 그 오프셋을 포함하는 세그먼트가 <code>p_offset=0x0</code>, <code>p_vaddr=0x400000</code>(비PIE)였다. VA = 0x400000 + (0x600 - 0x0) = 0x400600으로 계산해 GDB에 <code>break *0x400600</code>을 걸자 정확히 그 지점에서 멈췄다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0028-va-rva-offset.html">REV-0028 — 주소 VA RVA File Offset 차이</a></li><li><a href="rev-0118-rva-va-raw-offset.html">REV-0118 — RVA VA Raw Offset 계산</a></li><li><a href="rev-0194-gdb-pie-breakpoints.html">REV-0194 — PIE 바이너리 GDB 브레이크포인트 잡기</a></li><li><a href="rev-0835-breakpoint-not-triggering.html">REV-0835 — 브레이크포인트가 안 걸릴 때 확인할 것들</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>PE <code>FileAlignment</code>/<code>SectionAlignment</code>, <code>PointerToRawData</code>/<code>VirtualAddress</code>와 RVA/VA 계산: Microsoft PE/COFF 공식 문서 기준.</li><li>ELF 프로그램 헤더 <code>p_offset</code>/<code>p_vaddr</code>와 <code>ET_DYN</code>(PIE)의 런타임 재배치: System V ABI ELF 명세 기준(2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

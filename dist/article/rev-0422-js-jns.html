@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JS와 JNS: 부호 플래그 기반 분기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>JS와 JNS: 부호 플래그 기반 분기</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>JS</code>/<code>JNS</code>는 부호 플래그(SF)만 검사해서 분기하는 명령으로, 직전 연산 결과의 최상위 비트(부호 비트)가 1이면(음수로 해석되면) <code>JS</code>가, 0이면(음수가 아니면) <code>JNS</code>가 분기한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>test eax, eax</code> 뒤에 <code>js</code>가 나오는데 <code>jl</code>이나 <code>jz</code>와 뭐가 다른지 궁금할 때</li><li><code>if (x &lt; 0)</code> 같은 C 코드가 어셈블리로 어떻게 컴파일되는지 확인할 때</li><li><code>NEG</code> 연산 뒤에 <code>jns</code>가 붙어서 원래 값의 부호를 판별하는 코드를 만났을 때</li><li><code>JS</code>/<code>JNS</code>와 <code>JL</code>/<code>JGE</code>(부호 있는 대소 비교)의 차이가 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>정확한 동작</h3>
+<ul><li><code>JS</code> (Jump if Sign): <code>SF = 1</code>이면 분기.</li><li><code>JNS</code> (Jump if Not Sign): <code>SF = 0</code>이면 분기.</li></ul>
+<p><code>SF</code>는 직전 산술/논리 연산 결과의 최상위 비트(MSB)를 그대로 복사한 값이다. 부호 있는(signed) 정수 표현(2의 보수)에서는 MSB가 1이면 음수이므로, <code>SF=1</code>은 "결과가 음수"라는 뜻이 된다.</p>
+<h3>오퍼랜드와 방향</h3>
+<p><code>js label</code>, <code>jns label</code> — 오퍼랜드는 상대 오프셋(rel8/rel32)으로 표현되는 분기 대상 레이블 하나뿐이다. 오퍼랜드가 조건이나 값을 직접 갖지 않고, 오직 SF 플래그만 읽는다.</p>
+<h3>레지스터/메모리/플래그 영향</h3>
+<ul><li>레지스터/메모리에 아무 영향 없음.</li><li><strong>플래그를 전혀 바꾸지 않는다</strong> — SF를 포함해 모든 플래그를 읽기만 할 뿐 쓰지 않는다.</li><li>RIP: 분기가 성립하면 목표 주소로, 아니면 다음 명령으로. 스택 변화는 없다(<code>CALL</code>과 달리 반환 주소를 남기지 않는다).</li></ul>
+<h3>JS/JNS vs JL/JGE: SF만 볼 것인가, SF와 OF를 같이 볼 것인가</h3>
+<p><code>JL</code>(REV-0069)은 <code>SF != OF</code>일 때 분기하는데, 이는 오버플로가 발생한 경우까지 고려한 "진짜 부호 있는 미만" 판정이다. 반면 <code>JS</code>는 오직 <code>SF</code>만 보고 <code>OF</code>는 신경 쓰지 않는다.</p>
+<p>두 조건이 갈라지는 지점은 <strong>오버플로가 발생했을 때</strong>뿐이다. 예를 들어 <code>CMP</code>/<code>SUB</code>처럼 뺄셈 기반 연산이라면, 결과가 오버플로되면 SF만으로 판단한 부호와 실제 수학적 부호가 어긋날 수 있다. 반면 <code>TEST</code>, <code>AND</code>, <code>OR</code> 같은 논리 연산은 <strong>정의상 항상 OF를 0으로 클리어</strong>하므로, 논리 연산 뒤에서는 <code>SF</code>(=JS/JNS)만 봐도 결과가 <code>JL</code>/<code>JGE</code>와 완전히 일치한다. 그래서 컴파일러는 <code>test eax, eax</code> 뒤에 부호 판별이 필요하면 <code>JL</code>이 아니라 더 단순한 <code>JS</code>를 즐겨 쓴다.</p>
+<h3>컴파일러 패턴</h3>
+<p><code>if (x &lt; 0)</code>처럼 0과 비교하는 부호 판별은 대부분 다음처럼 컴파일된다:</p>
+<pre><code class="language-asm">test    eax, eax
+js      negative_case</code></pre>
+<p>또는 직전 산술 연산(<code>SUB</code>, <code>NEG</code>, <code>ADD</code> 등)의 플래그가 아직 유효하다면 별도의 <code>TEST</code>/<code>CMP</code> 없이 곧바로 <code>JS</code>/<code>JNS</code>가 붙기도 한다:</p>
+<pre><code class="language-asm">sub     eax, ebx
+js      result_negative</code></pre>
+<h3>IDA/Ghidra 디컴파일에서의 모습</h3>
+<p><code>test eax, eax</code> + <code>js label</code> 시퀀스는 IDA F5나 Ghidra에서 거의 예외 없이 <code>if (x &lt; 0)</code> 또는 <code>if ((int)x &lt; 0)</code> 형태로 깔끔하게 재구성된다. 다만 앞선 연산이 부호 확장 없이 처리된 값이라면(예: <code>unsigned int</code>를 <code>int</code>로 강제 캐스팅한 경우), 디컴파일러가 붙이는 타입 캐스팅 표기(<code>(int)</code>)를 눈여겨보면 원래 값의 실제 타입과 분석 중인 부호 판별이 서로 어긋나 있는지 확인할 수 있다.</p>
+<h3>배열 인덱스/버퍼 크기 검증에서의 등장</h3>
+<p><code>JS</code>/<code>JNS</code>는 특히 배열 인덱스나 버퍼 오프셋이 음수인지 검사하는 방어 코드에서 자주 나타난다.</p>
+<pre><code class="language-c">if (index &lt; 0 || index &gt;= size) { return ERROR; }</code></pre>
+<p>이런 코드는 흔히 <code>test</code>/<code>js</code>로 먼저 음수 여부를 걸러내고, 이어서 <code>cmp</code>/<code>jae</code>로 상한을 검사하는 두 단계로 컴파일된다. 이 패턴을 알아두면 바운드 체크 로직을 빠르게 식별하고, 혹시 음수 검사 단계가 누락된 함수가 있는지(정수 오버플로/언더플로 취약점의 단서) 빠르게 훑어볼 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">test    eax, eax
+js      negative_value</code></pre>
+<pre><code class="language-asm">neg     eax
+jns     was_non_positive</code></pre>
+<pre><code class="language-asm">cmp     eax, 0
+jns     positive_or_zero</code></pre>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>JS</code>/<code>JNS</code> 바로 앞의 명령이 무엇의 결과를 세팅했는지(<code>TEST</code>, <code>CMP</code>, <code>SUB</code>, <code>NEG</code> 등) 확인한다.</li><li>그 값이 부호 있는(signed) 타입으로 해석되는 값인지 확인한다 — 부호 없는(unsigned) 값이라면 SF 판정 자체가 의미 없다.</li><li>앞선 연산이 논리 연산(<code>TEST</code>/<code>AND</code>/<code>OR</code>)인지 산술 연산(<code>SUB</code>/<code>CMP</code>)인지 구분해, 오버플로 가능성을 고려해야 하는지 판단한다.</li></ol>
+<h2>단계별 절차</h2>
+<pre><code class="language-asm">mov     eax, [rbp-4]
+test    eax, eax
+js      handle_negative</code></pre>
+<ol><li><code>[rbp-4]</code>가 <code>int</code> 타입 지역 변수라고 가정.</li><li><code>test eax, eax</code>는 <code>eax &amp; eax</code>를 계산해 SF/ZF/PF만 세팅하고 결과는 버린다(REV-0059 참고).</li><li><code>js handle_negative</code>는 <code>eax</code>의 MSB(비트31)가 1이면, 즉 <code>eax &lt; 0</code>(signed)이면 분기.</li><li>원래 C 코드는 <code>if (x &lt; 0) { handle_negative(); }</code> 형태로 재구성할 수 있다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA/Ghidra: F5 디컴파일 시 <code>if (x &lt; 0)</code> / <code>if (x &gt;= 0)</code> 형태로 바로 재구성되는 경우가 많다.</li><li>GDB/x64dbg: EFLAGS 창에서 <code>SF</code> 비트를 직접 확인해 분기 여부를 미리 예측할 수 있다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>디버거 플래그 창에서 <code>SF=1</code>이면 다음 <code>JS</code>가 분기하고, <code>SF=0</code>이면 <code>JNS</code>가 분기한다.</li><li>IDA 디컴파일 결과에서 <code>&lt; 0</code>, <code>&gt;= 0</code> 비교로 보이는 조건문은 대부분 이 SF 기반 분기에서 온 것이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>JS</code>가 항상 "그 값이 최종적으로 음수"임을 100% 보장한다고 맹신하는 것 — 산술 연산(특히 <code>SUB</code>/<code>CMP</code>) 직후라면 오버플로 여부까지 고려해야 진짜 부호 있는 비교가 되며, 그럴 땐 <code>JL</code>/<code>JGE</code>(SF^OF)를 써야 한다. <code>JS</code>/<code>JNS</code>는 오직 "결과 MSB가 1인가"만 볼 뿐이다.</li><li><code>JS</code>/<code>JNS</code>와 <code>JL</code>/<code>JGE</code>를 혼용해도 항상 같은 결과라고 오해하는 것 — 논리 연산(<code>TEST</code>/<code>AND</code>/<code>OR</code>) 뒤에서는 OF가 항상 0이라 실제로 같지만, <code>SUB</code>/<code>CMP</code>처럼 오버플로가 발생할 수 있는 연산 뒤에서는 다를 수 있다.</li><li>부호 없는(unsigned) 값에 <code>JS</code>/<code>JNS</code>를 적용해 "음수인지" 판별하려는 것 — unsigned 값에는 애초에 "음수"라는 개념이 없으므로, 이런 코드가 있다면 값이 실제로는 signed로 취급되고 있다는 신호로 봐야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>JS</code>/<code>JNS</code> 앞의 명령이 <code>SUB</code>/<code>CMP</code> 계열인지 <code>TEST</code>/<code>AND</code>/<code>OR</code> 계열인지 다시 확인했는가?</li><li>관련 값이 <code>int</code>인지 <code>unsigned int</code>인지 원래 타입을 추정해봤는가?</li><li>결과가 예상과 다르다면 오버플로가 발생한 경계값(<code>INT_MIN</code>, <code>INT_MAX</code> 근처)인지 의심해본다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 단순 음수 판별</strong></p>
+<pre><code class="language-c">int x = get_value();
+if (x &lt; 0) { handle_negative(); }</code></pre>
+<pre><code class="language-asm">call    get_value
+test    eax, eax
+js      handle_negative</code></pre>
+<p><strong>예제 2 — NEG 이후 원래 값의 부호 판별</strong></p>
+<pre><code class="language-asm">mov     eax, [val]
+neg     eax          ; eax = -val
+jns     val_was_non_positive   ; NEG 결과가 음수가 아니면(즉 원래 val &lt;= 0)</code></pre>
+<p><strong>예제 3 — CMP 0 후 분기</strong></p>
+<pre><code class="language-c">if (balance &gt;= 0) { proceed(); }</code></pre>
+<pre><code class="language-asm">mov     eax, [balance]
+cmp     eax, 0
+jns     proceed</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0059-test.html">REV-0059 — TEST: 값을 바꾸지 않는 AND 비교</a></li><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li><li><a href="rev-0069-jg-jge-jl-jle.html">REV-0069 — JG JGE JL JLE: Signed 비교 분기</a></li><li><a href="rev-0423-jo-jno.html">REV-0423 — JO와 JNO: 오버플로 플래그 기반 분기</a></li><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>JS/JNS 명령어 동작과 SF 정의: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "Jcc—Jump if Condition Is Met" 섹션 기준 (2026-09-08 검증).</li><li>논리 연산이 OF를 항상 0으로 클리어하는 규칙: Intel SDM Volume 1, 정수 논리 연산 및 EFLAGS 챕터 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

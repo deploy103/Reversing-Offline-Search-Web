@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghidra Data Type Manager 빠른 참조 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>Ghidra Data Type Manager 빠른 참조</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>Ghidra의 <strong>Data Type Manager</strong> 창(<code>Window → Data Type Manager</code>)은 IDA의 Structures/Enums/Local Types에 해당하는 기능을 한 창에서 모두 제공하는 곳으로, 여기서 구조체·enum·typedef를 직접 만들거나 <code>.gdt</code>(Ghidra Data Type Archive) 파일 또는 C 헤더를 불러와 바이너리에 적용할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Decompile 창에 <code>undefined4 field0x8</code>처럼 구조체가 될 법한 필드가 반복해서 보일 때</li><li>변수를 구조체로 묶어서 <code>-&gt;</code> 표기로 읽고 싶을 때</li><li>이미 알려진 라이브러리 헤더(<code>.h</code>)나 다른 프로젝트에서 만든 타입 아카이브를 재사용하고 싶을 때</li><li>Data Type Manager 창이 화면에 안 보여서 어디서 여는지 찾고 있을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Data Type Manager 창 구조</h3>
+<p><code>Window → Data Type Manager</code>로 열면 좌측에 트리 형태로 여러 <strong>Archive</strong>(타입 저장소)가 나열된다. 기본적으로 다음이 함께 보인다.</p>
+<ul><li><strong>Built In Types</strong> — Ghidra가 기본 제공하는 원시 타입(<code>int</code>, <code>char</code>, <code>undefined4</code> 등)</li><li><strong>현재 프로그램 이름의 Archive</strong> — 지금 분석 중인 바이너리 전용으로 새로 만든 구조체/enum이 저장되는 곳</li><li>추가로 불러온 <strong>.gdt 아카이브</strong>들(예: 표준 라이브러리용 아카이브)</li></ul>
+<h3>새 구조체 만들기</h3>
+<p>현재 프로그램 Archive를 우클릭하고 <code>New → Structure</code>를 선택하면 구조체 편집기가 열린다. 이 편집기에서 오프셋별로 필드를 추가/삭제하고 각 필드의 이름과 타입을 지정할 수 있다. 편집기 안에서 필드 크기를 조절하면 이후 필드들의 오프셋이 자동으로 밀리거나 당겨진다.</p>
+<h3>Enum과 typedef도 같은 창에서</h3>
+<p><code>New → Enum</code>으로 열거형을, <code>New → Typedef</code>로 typedef를 같은 방식으로 만들 수 있다. IDA처럼 구조체/enum이 별도 창으로 나뉘어 있지 않고 Data Type Manager 하나에 모두 모여 있는 것이 Ghidra의 특징이다.</p>
+<h3>변수에 구조체 적용하기</h3>
+<p>Decompile 창에서 포인터 변수를 우클릭 후 <code>Retype Variable</code>(<code>Ctrl+L</code>)을 선택하고, 방금 만든 구조체 이름에 <code>*</code>를 붙여 입력하면 그 포인터가 구조체 타입으로 재해석되어 <code>local_10-&gt;field1_0x8</code>처럼 표시된다. Ghidra는 구조체를 적용한 뒤에도 오프셋 기반 필드 이름(<code>field1_0x8</code> 등)을 자동으로 붙여주므로, 그 필드를 다시 편집기에서 원하는 이름으로 바꿔주면 된다.</p>
+<h3>.gdt 아카이브 불러오기/만들기</h3>
+<p><code>File → Open File Archive</code> 또는 Data Type Manager 창 상단 아이콘으로 기존 <code>.gdt</code> 파일을 불러올 수 있다. 반대로 지금 프로젝트에서 만든 타입들을 다른 프로젝트에서도 재사용하려면, Archive를 우클릭해 <code>Save As</code>로 별도 <code>.gdt</code> 파일로 내보낼 수 있다. C 헤더 파일을 직접 파싱해서 아카이브로 만드는 기능(<code>Parse C Source</code>)도 제공된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>Decompile 창에서 <code>*(undefined4 *)(param_1 + 8)</code>처럼 포인터에 오프셋을 더해 접근하는 코드가 반복되거나, 함수 인자가 <code>undefined4</code>, <code>undefined8</code> 같은 미확정 타입으로만 표시되어 실제 의미를 알 수 없을 때 Data Type Manager를 열어볼 때다.</p>
+<h2>가장 먼저 할 것</h2>
+<p><code>Window → Data Type Manager</code>로 창을 열고, 현재 프로그램 Archive 아래에 이미 만들어진 타입이 있는지부터 확인한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 창 열기</strong></p>
+<p><code>Window → Data Type Manager</code>.</p>
+<p><strong>2) 새 구조체 생성</strong></p>
+<p>현재 프로그램 Archive 우클릭 → <code>New → Structure</code> → 이름 입력(예: <code>player_t</code>) → 구조체 편집기에서 필드 추가.</p>
+<p><strong>3) 필드 크기/타입 편집</strong></p>
+<p>편집기 하단에서 필드를 선택해 크기를 바꾸거나, 타입 컬럼에 다른 데이터 타입(다른 구조체, 배열, 포인터 등)을 끌어다 놓을 수 있다.</p>
+<p><strong>4) 변수에 적용</strong></p>
+<p>Decompile 창에서 대상 변수를 우클릭 → <code>Retype Variable</code>(<code>Ctrl+L</code>) → 구조체 포인터 타입 입력.</p>
+<p><strong>5) 결과 정리</strong></p>
+<p>자동으로 붙은 <code>field1_0x8</code> 같은 이름을 편집기에서 실제 의미에 맞는 이름으로 바꾼다.</p>
+<p><strong>6) 필요하면 아카이브로 저장</strong></p>
+<p>다른 바이너리에서도 같은 구조체를 쓸 예정이면 Archive를 우클릭 → <code>Save As</code>로 <code>.gdt</code> 파일로 저장해둔다.</p>
+<h2>명령어/단축키</h2>
+<table><thead><tr><th>메뉴/단축키</th><th>동작</th></tr></thead><tbody><tr><td><code>Window → Data Type Manager</code></td><td>창 열기</td></tr><tr><td>우클릭 → <code>New → Structure</code></td><td>새 구조체 생성</td></tr><tr><td>우클릭 → <code>New → Enum</code></td><td>새 열거형 생성</td></tr><tr><td>우클릭 → <code>New → Typedef</code></td><td>새 typedef 생성</td></tr><tr><td><code>Ctrl+L</code> (Decompile 창)</td><td>변수 Retype(구조체 포인터 등 적용)</td></tr><tr><td><code>File → Open File Archive</code></td><td>기존 <code>.gdt</code> 아카이브 불러오기</td></tr><tr><td>우클릭 Archive → <code>Save As</code></td><td>현재 타입들을 <code>.gdt</code>로 내보내기</td></tr><tr><td><code>File → Parse → Parse C Source</code></td><td>C 헤더를 파싱해 아카이브로 생성</td></tr></tbody></table>
+<h2>출력 해석</h2>
+<ul><li>구조체를 적용하면 Decompile 코드의 <code>*(undefined4 *)(param_1 + 8)</code>이 <code>param_1-&gt;field1_0x8</code>처럼 바뀐다. <code>field1_0x8</code>은 오프셋 8을 뜻하는 Ghidra의 자동 이름 규칙이므로(REV-0640 참고 성격의 명명 규칙과 유사), 편집기에서 이름을 바꿔주면 된다.</li><li>구조체 크기가 실제 코드에서 관찰되는 최대 오프셋보다 작으면 Ghidra가 구조체를 자동으로 확장하거나, 접근이 구조체 밖으로 벗어난다는 경고성 표시를 보여줄 수 있다.</li><li><code>.gdt</code> 아카이브를 불러왔는데 원하는 타입이 안 보이면, 트리에서 해당 아카이브가 접혀 있거나 검색창(Filter)에 이전 검색어가 남아 있을 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>구조체를 만들고도 Decompile 창의 변수에 <code>Ctrl+L</code>로 재적용하는 단계를 빼먹는 것.</li><li>필드 크기를 실제와 다르게 지정해서 이후 필드들의 오프셋이 전부 어긋나는 것.</li><li>프로그램 전용 Archive에 만든 임시 구조체를 그대로 두고, 재사용 가능한 구조체까지 <code>.gdt</code>로 저장해두지 않아 다음 바이너리에서 처음부터 다시 만드는 것.</li><li>Data Type Manager와 Symbol Tree/Functions 목록을 혼동해서 구조체 정의를 함수 목록에서 찾으려 하는 것 — 구조체/타입은 항상 Data Type Manager에서 관리한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>구조체가 아니라 이름/타입 변경 자체(<code>L</code>/<code>Ctrl+L</code>)가 헷갈리면 → REV-0161 Ghidra Rename과 Data Type 수정.</li><li>Decompile 창 자체의 읽는 법이 궁금하면 → REV-0158 Ghidra Decompiler 창 읽기.</li><li>이 필드가 어디서 참조되는지 추적하고 싶으면 → REV-0160 Ghidra XREF 따라가기.</li><li>자동화로 구조체를 스크립트로 만들고 싶으면 → REV-0725 Ghidra 스크립트 API 빠른 참조(기초).</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">1. Window → Data Type Manager 열기
+2. 프로그램 Archive 우클릭 → New → Structure → "player_t"
+3. 구조체 편집기에서 offset 0(4바이트, hp), offset 4(4바이트, level) 추가
+4. Decompile 창에서 param_1 우클릭 → Retype Variable → "player_t *"
+5. *(undefined4 *)(param_1 + 4)가 param_1-&gt;level로 표시됨</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0161-ghidra-rename-retype.html">REV-0161 — Ghidra Rename과 Data Type 수정</a></li><li><a href="rev-0158-ghidra-decompiler-window.html">REV-0158 — Ghidra Decompiler 창 읽기</a></li><li><a href="rev-0160-ghidra-xref.html">REV-0160 — Ghidra XREF 따라가기</a></li><li><a href="rev-0725-ghidra-script-api-quickref.html">REV-0725 — Ghidra 스크립트 API 빠른 참조(기초)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Data Type Manager 창 구조(Built In Types, 프로그램 Archive, 외부 <code>.gdt</code> 아카이브), 구조체/enum/typedef 생성 메뉴, <code>Ctrl+L</code> Retype Variable, <code>.gdt</code> 저장/불러오기 기능은 Ghidra 공식 문서(Ghidra Help, NationalSecurityAgency/ghidra 저장소의 공식 문서 페이지) 기준으로 정리했다(2026-09-09 검증).</li><li>정확한 메뉴 항목 이름과 위치는 Ghidra 버전에 따라 소폭 달라질 수 있으므로, 실제 설치본에서 우클릭 메뉴로 재확인할 것을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

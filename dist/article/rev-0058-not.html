@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NOT: 비트 반전 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>NOT: 비트 반전</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>NOT</code>는 오퍼랜드 하나의 모든 비트를 뒤집는(0↔1) 단항 명령어로, 1의 보수(one's complement)를 만들며 <strong>플래그를 전혀 건드리지 않는다는 점</strong>이 가장 중요한 특징이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>not eax</code> 처럼 오퍼랜드가 하나뿐인 코드를 만났는데 무슨 연산인지 모를 때</li><li><code>NOT</code>과 <code>NEG</code>(<a href="rev-0054-neg.html">REV-0054</a>)를 헷갈릴 때 — 둘 다 오퍼랜드가 하나지만 결과와 플래그 동작이 다르다</li><li>반전된 마스크를 만들어서 <a href="rev-0055-and.html">AND</a>로 특정 비트를 지우는 코드를 분석할 때</li><li>C의 <code>~x</code>(비트 NOT)와 <code>!x</code>(논리 NOT)의 어셈블리 차이를 이해하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>NOT dest</code></pre>
+<ul><li>오퍼랜드가 <strong>하나뿐인 단항(unary) 연산</strong>이다 (source가 따로 없음).</li><li><code>dest</code>는 레지스터 또는 메모리.</li><li><code>dest = ~dest</code> (모든 비트를 뒤집음: 1은 0으로, 0은 1로)</li><li>예: <code>not eax</code>, <code>not dword ptr [rbp-4]</code>, <code>not rax</code>.</li></ul>
+<h3>레지스터/메모리에 미치는 효과</h3>
+<pre><code>    1010 1100
+NOT ---------
+  = 0101 0011</code></pre>
+<p>모든 비트가 그대로 반전된다. 수학적으로는 <code>~x == -x - 1</code> (2의 보수 체계에서), 또는 <code>~x == 0xFFFFFFFF - x</code> (32비트 기준)와 동일하다.</p>
+<h3>플래그 변화 — NOT의 가장 중요한 특징</h3>
+<p><strong><code>NOT</code>은 어떤 플래그도 건드리지 않는다 (ZF, SF, CF, OF, PF, AF 전부 그대로 유지).</strong> 이는 AND/OR/XOR/TEST/CMP 등 대부분의 논리·비교 명령어와 뚜렷하게 다른 점이다. 이전 명령어가 세팅해 놓은 플래그가 <code>NOT</code> 이후에도 그대로 살아있으므로, <code>NOT</code> 다음에 오는 조건부 분기는 <code>NOT</code> 이전 명령어의 결과를 근거로 판단한다는 점에 유의해야 한다.</p>
+<h3>NOT vs NEG — 반드시 구분할 것</h3>
+<p>초보자가 가장 많이 헷갈리는 지점이다.</p>
+<table><thead><tr><th></th><th><code>NOT eax</code></th><th><code>NEG eax</code></th></tr></thead><tbody><tr><td>연산</td><td>모든 비트 반전 (<code>~x</code>, 1의 보수)</td><td>2의 보수 음수 (<code>-x</code>, <code>~x + 1</code>)</td></tr><tr><td>플래그</td><td><strong>전혀 건드리지 않음</strong></td><td>ZF, SF, CF, OF 등 세팅됨 (SUB 0, x와 동일)</td></tr><tr><td><code>eax=5</code>일 때 결과</td><td><code>0xFFFFFFFA</code> (-6)</td><td><code>0xFFFFFFFB</code> (-5)</td></tr><tr><td><code>eax=0</code>일 때 결과</td><td><code>0xFFFFFFFF</code> (-1)</td><td><code>0x00000000</code> (0 그대로)</td></tr></tbody></table>
+<p><code>eax=0</code>일 때 결과가 완전히 다르다는 점이 특히 중요하다 — <code>NOT 0</code>은 <code>-1</code>이 되지만 <code>NEG 0</code>은 여전히 <code>0</code>이다.</p>
+<h3>신호 있음/없음(signed/unsigned) 관점</h3>
+<p>NOT은 순수 비트 반전이라 signed/unsigned 구분이 의미 없지만, 결과를 부호 있는 정수로 해석하면 흔히 "값이 갑자기 음수(또는 매우 큰 unsigned 값)로 바뀌는" 것처럼 보인다. 예: <code>eax = 0x00000003</code>에 <code>not eax</code>를 하면 <code>0xFFFFFFFC</code>가 되어, signed로는 -4, unsigned로는 4294967292가 된다.</p>
+<h3>스택/RSP/RIP 변화</h3>
+<p>없음.</p>
+<h3>C의 <code>~</code>와 <code>!</code>의 어셈블리 차이 — 흔한 함정</h3>
+<p>C에서 <code>~x</code>(비트 NOT)는 정확히 <code>NOT</code> 명령어로 컴파일된다. 하지만 <code>!x</code>(논리 NOT, "x가 0이 아니면 0, x가 0이면 1")는 <code>NOT</code>으로 컴파일되지 <strong>않는다.</strong> <code>!x</code>는 보통 <code>test</code>/<code>cmp</code>로 x를 0과 비교한 뒤 <code>sete</code>(SETcc 계열, REV-00xx 예정)로 0/1을 만드는 형태로 컴파일된다. <code>NOT eax</code>를 실행하면 <code>eax=0</code>이 <code>0xFFFFFFFF</code>(참 같지만 실제로는 -1)가 되어버려 C의 <code>!</code> 의미와 전혀 다르다는 점이 초보자가 가장 많이 하는 실수다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>not eax</code> — 단독으로 등장, 비트 전체 반전</li><li><code>not eax</code> 다음에 <code>and</code>/<code>or</code>가 이어지는 경우 — 반전된 마스크로 특정 비트만 지우거나(AND) 켜는(OR) 조합 연산</li><li><code>not eax</code> 다음 바로 <code>inc eax</code> — <code>NOT</code> + <code>INC</code> 조합은 <code>NEG</code>와 동일한 결과를 만드는 우회 표현(컴파일러가 드물게 이런 형태를 만들기도 함)</li><li>플래그가 <code>not</code> 앞뒤로 동일하게 유지되는 것을 디버거에서 확인 가능</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>오퍼랜드가 정말 하나뿐인지 확인 (NEG와 혼동 방지)</li><li>NOT 앞뒤에서 플래그가 안 바뀌는지 디버거로 확인해 "플래그 안 건드림"이라는 특성을 체감</li><li>NOT 결과가 곧바로 AND/OR와 결합되는지 확인 (마스크 반전 패턴)</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 단순 비트 반전 인식</strong></p>
+<pre><code class="language-asm">not eax   ; eax = ~eax</code></pre>
+<p><strong>2) 반전 마스크로 특정 비트 클리어</strong></p>
+<pre><code class="language-asm">mov ecx, 4        ; 클리어하고 싶은 비트(bit 2)
+not ecx            ; ecx = 0xFFFFFFFB (bit 2만 0, 나머지 전부 1)
+and eax, ecx        ; eax의 bit 2만 0으로 강제 클리어, 나머지는 유지</code></pre>
+<p>컴파일 시점에 마스크 값이 고정 상수라면 컴파일러는 대부분 <code>NOT</code> 없이 이미 반전된 상수를 직접 인코딩한다(<code>and eax, 0FFFFFFFBh</code>). <code>NOT</code>이 실제로 등장하는 경우는 마스크가 <strong>변수</strong>(런타임에 결정)일 때가 많다.</p>
+<p><strong>3) NOT+INC로 NEG 흉내(드문 패턴) 인식</strong></p>
+<pre><code class="language-asm">not eax
+inc eax    ; 결과적으로 eax = -eax (NEG eax와 동일한 최종 값)</code></pre>
+<p><strong>4) 플래그 미변경 확인</strong></p>
+<pre><code class="language-asm">cmp eax, ebx   ; 여기서 ZF/SF/CF/OF 세팅
+not ecx         ; ecx만 반전, 방금 cmp가 세팅한 플래그는 그대로 유지됨
+jz  still_valid ; 이 jz는 not이 아니라 위의 cmp 결과를 보고 분기한다</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg/IDA 디버거: <code>not</code> 명령어 실행 전후로 플래그 레지스터(EFLAGS) 창을 비교해서 정말 변화가 없는지 직접 확인해보면 이해가 빠르다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>IDA/Ghidra는 <code>not eax</code>를 대체로 <code>x = ~x</code>로 그대로 보여준다.</li><li><code>not</code> 뒤에 바로 <code>and</code>가 오는 코드는 종종 <code>x &amp;= ~mask;</code> 형태로 정리되어 보인다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>NOT</code>과 <code>NEG</code>를 혼동하는 것 — 표에서 정리했듯 <code>eax=0</code>일 때 결과가 완전히 다르다(<code>NOT</code>은 -1, <code>NEG</code>는 0).</li><li><code>NOT</code>이 플래그를 세팅한다고 착각해서, <code>NOT</code> 다음의 <code>jz</code>/<code>jnz</code>가 <code>NOT</code>의 결과를 보고 분기한다고 오해하는 것 — 실제로는 그 이전 명령어의 플래그를 보고 분기한다.</li><li><code>NOT</code>을 C의 논리 부정 <code>!</code>과 같다고 착각하는 것 — <code>NOT</code>은 <code>~</code>(비트 전체 반전)에 대응하며, <code>!</code>(0/1 논리 부정)은 보통 <code>cmp</code>/<code>test</code> + <code>sete</code>로 컴파일된다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>not</code> 다음의 분기가 이해가 안 된다면 → <code>not</code> 앞의 명령어가 무엇인지 확인 (플래그는 거기서 온 것).</li><li><code>not</code> 결과가 예상과 다르게 음수로 보인다면 → 부호 있는 해석 때문이니 <a href="rev-0024-twos-complement.html">REV-0024</a>(2의 보수)를 참고해 정상 동작임을 확인.</li><li>컴파일된 코드에 <code>not</code>이 안 보이는데 소스에는 <code>~mask</code>가 있다면 → 컴파일러가 상수를 컴파일 타임에 미리 반전시켜 인코딩했을 가능성이 높음(정상).</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 단순 비트 반전</strong></p>
+<pre><code class="language-c">unsigned int y = ~x;</code></pre>
+<pre><code class="language-asm">mov eax, [x]
+not eax
+mov [y], eax</code></pre>
+<p><strong>예제 2 — 특정 비트 클리어(변수 마스크)</strong></p>
+<pre><code class="language-c">flags &amp;= ~bit;</code></pre>
+<pre><code class="language-asm">mov eax, [bit]
+not eax
+and [flags], eax</code></pre>
+<p><strong>예제 3 — NOT과 NEG의 차이를 값으로 확인</strong></p>
+<pre><code class="language-asm">mov eax, 0
+not eax    ; eax = 0xFFFFFFFF (-1), 플래그는 이전 상태 그대로
+mov ebx, 0
+neg ebx    ; ebx = 0x00000000 (0), ZF=1로 세팅됨</code></pre>
+<p><strong>예제 4 — NOT+INC로 NEG 흉내</strong></p>
+<pre><code class="language-asm">mov eax, 5
+not eax    ; eax = 0xFFFFFFFA
+inc eax    ; eax = 0xFFFFFFFB (-5, NEG eax와 같은 최종 값)</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0055-and.html">REV-0055 — AND: 마스크와 비트 제거</a></li><li><a href="rev-0057-xor.html">REV-0057 — XOR: XOR 연산과 XOR reg reg 제로화</a></li><li><a href="rev-0054-neg.html">REV-0054 — NEG: 2의 보수 음수 만들기</a></li><li><a href="rev-0024-twos-complement.html">REV-0024 — 2의 보수와 음수 표현</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>NOT 명령어의 오퍼랜드/플래그 동작(플래그 미변경 포함): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "NOT—One's Complement Negation" 섹션 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

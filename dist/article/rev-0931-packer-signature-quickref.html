@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>흔한 패커 시그니처 빠른 참조표(UPX/ASPack/PECompact 등) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / packing</div>
+<article class="article-body">
+<h1>흔한 패커 시그니처 빠른 참조표(UPX/ASPack/PECompact 등)</h1>
+<div class="article-meta"><span class="tag">packing</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">Detect It Easy</span></div>
+<h2>한 줄 요약</h2>
+<p>Detect It Easy가 표시하는 패커 이름이나 섹션 헤더에 보이는 낯선 이름(<code>.aspack</code>, <code>PECompact2</code>, <code>FSG!</code> 등)만 봐도 어떤 패커인지 즉시 감을 잡을 수 있도록, 흔히 등장하는 PE 패커들의 대표 시그니처를 한 표로 정리한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Detect It Easy(DIE) 결과란에 <code>UPX</code>가 아닌 낯선 패커 이름이 떴을 때, 그 이름이 뭘 의미하는지 빠르게 확인하고 싶을 때</li><li>IDA/PE-bear에서 섹션 이름이 <code>.text</code>/<code>.data</code>가 아니라 <code>.aspack</code>, <code>.petite</code>, <code>PEC2</code> 같은 이상한 이름으로 보일 때</li><li>CTF 문제 설명이나 writeup에 패커 이름만 언급되어 있는데 그게 UPX처럼 자동 언패킹 도구가 있는 종류인지 궁금할 때</li><li>여러 패커 이름을 한 번에 비교해서 "이 문제에서 어떤 패커가 가장 자주 나오는지" 감을 잡고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>UPX 외에도 Windows PE 실행 파일 압축에 흔히 쓰이는 패커가 여러 개 있다. UPX와 마찬가지로 대부분 원본 섹션을 압축된 형태로 저장하고, 실행 시 압축을 풀어주는 스텁 코드를 앞에 붙이는 구조는 동일하다. 다만 패커마다 스텁이 만드는 섹션 이름, 파일에 남기는 매직 문자열, 압축 알고리즘이 다르기 때문에 이를 알아두면 정적 분석 단계에서 시간을 크게 아낄 수 있다. UPX처럼 공식 도구로 자동 언패킹이 가능한 것도 있고(ASPack, FSG, Petite 일부 버전), 공식 언패커가 없어서 REV-0227의 수동 언패킹 개념이 필요한 것도 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>아래 표는 대표적인 오픈소스/프리웨어 계열 PE 패커의 흔적을 정리한 것이다.</p>
+<table><thead><tr><th>패커</th><th>대표 섹션 이름</th><th>strings에 남는 흔적</th><th>DIE 표시 예</th><th>자동 언패커</th></tr></thead><tbody><tr><td>UPX</td><td><code>UPX0</code>, <code>UPX1</code>, <code>UPX2</code></td><td><code>UPX!</code>, <code>$Info: This file is packed with the UPX</code></td><td><code>Packer: UPX(4.2.4)</code></td><td><code>upx -d</code> (REV-0226)</td></tr><tr><td>ASPack</td><td><code>.aspack</code>, <code>.adata</code></td><td><code>ASPack</code> 문자열, 경우에 따라 <code>.aspack</code> 자체</td><td><code>Packer: ASPack(2.12)</code></td><td>공식 ASPack 언패커 존재(구버전)</td></tr><tr><td>PECompact</td><td><code>PEC2</code>, <code>PECompact2</code></td><td><code>PECompact2</code> 문자열</td><td><code>Packer: PECompact(2.x)</code></td><td>플러그인 기반, 자동화 난이도 있음</td></tr><tr><td>FSG (Fast Small Good)</td><td>섹션 이름이 거의 없거나 랜덤</td><td><code>FSG!</code> 매직 바이트</td><td><code>Packer: FSG(2.0)</code></td><td>공식 언패커 있음(구버전 한정)</td></tr><tr><td>MEW</td><td>섹션이 하나로 병합됨</td><td><code>MEW</code> 문자열이 거의 안 남음(매우 압축률 지향)</td><td><code>Packer: MEW</code></td><td>전용 스크립트 필요</td></tr><tr><td>Petite</td><td><code>.petite</code></td><td><code>Petite</code> 문자열</td><td><code>Packer: Petite(2.x)</code></td><td>없음, 수동 언패킹</td></tr><tr><td>NSPack</td><td><code>.nsp0</code>, <code>.nsp1</code></td><td><code>NSPack</code> 문자열</td><td><code>Packer: NSPack</code></td><td>없음, 수동 언패킹</td></tr><tr><td>Themida/WinLicense</td><td>랜덤/난독화된 이름, 다수 섹션</td><td>거의 없음(강한 안티 분석)</td><td><code>Protector: Themida/WinLicense</code></td><td>없음(REV-0935 참고)</td></tr><tr><td>VMProtect</td><td>랜덤/<code>.vmp0</code>, <code>.vmp1</code></td><td>거의 없음</td><td><code>Protector: VMProtect</code></td><td>없음(REV-0935 참고)</td></tr></tbody></table>
+<h2>가장 먼저 할 것</h2>
+<p>DIE에 파일을 드래그해 상단 결과란의 패커/프로텍터 이름부터 확인한다. UPX면 REV-0225/REV-0226으로, 표에 있는 다른 이름이면 이 표에서 자동 언패커 여부를 먼저 확인하고, 표에 없는 이름이면 해당 패커 이름 그대로 검색해 공식 언패커가 있는지 찾아본다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) DIE로 1차 판별</strong>: 파일을 열어 상단 결과란의 이름과 버전을 확인한다. <strong>2) 위 표와 대조</strong>: 표에 있는 이름이면 자동 언패커 열을 확인한다. <strong>3) 섹션 이름으로 교차 확인</strong>: DIE가 "Unknown"이라도 섹션 이름이 표의 패턴과 일치하면 해당 패커일 가능성이 높다. <strong>4) strings로 매직 문자열 재확인</strong>: <code>strings sample.exe | grep -iE "aspack|pecompact|fsg|mew|petite|nspack"</code>로 문자열 흔적을 찾는다. <strong>5) 결론에 따라 분기</strong>: 자동 언패커가 있으면 그것부터 시도하고, 없으면 REV-0227의 수동 언패킹 개념 또는 REV-0241의 동적 분석 전환을 검토한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">strings sample.exe | grep -iE "upx|aspack|pecompact|fsg|mew|petite|nspack"</code></pre>
+<ul><li>DIE: 파일 드래그 → 상단 결과란(패커/프로텍터 이름, 버전)</li><li>PE-bear/IDA: Section Headers/Segments에서 섹션 이름 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>DIE가 <code>Packer:</code>로 시작하면 압축형(자동 언패킹 가능성 있음), <code>Protector:</code>로 시작하면 보호형(코드 실행 방해/가상화 포함, REV-0935 대상)임을 구분하는 신호로 볼 수 있다.</li><li>섹션 이름이 표에 없는 완전히 낯선 이름이라면 커스텀 패커이거나 섹션 이름을 일부러 지운 경우이므로, 엔트로피(REV-0934)와 entry point 코드 패턴을 함께 봐야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>섹션 이름만 보고 패커를 단정하는 것 — 일부 패커/CTF 문제는 섹션 이름을 임의로 바꾸거나 지워서 자동 탐지를 회피한다.</li><li>오래된 패커(FSG, MEW 등)의 공식 언패퍼가 최신 OS/아키텍처에서 그대로 동작할 것이라 가정하는 것 — 상당수가 32비트 전용이며 유지보수가 끊긴 도구다.</li><li><code>Packer:</code>와 <code>Protector:</code> 구분 없이 모두 "UPX처럼 몇 초 만에 풀린다"고 기대하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>표에 없는 완전히 낯선 패커명이 나온다면 → REV-0224로 돌아가 엔트로피/entry point 패턴을 재확인한다.</li><li>이름이 <code>Protector:</code>로 뜬다면 → REV-0935에서 상용 프로텍터 목록과 대응 방향을 확인한다.</li><li>자동 언패커가 없는 패커라면 → REV-0227 수동 언패킹 개념 또는 REV-0241 동적 분석 전환을 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">DIE 결과: Packer: ASPack(2.12) [-]
+섹션: .aspack, .adata
+
+$ strings sample.exe | grep -i aspack
+ASPack
+
+-&gt; ASPack로 확인. 공식 ASPack 자체 언패킹 도구 또는 x64dbg + OllyDbg 스크립트로
+   OEP 탐색 후 REV-0227 절차로 진행.</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0224-packing-indicators.html">REV-0224 — 패킹된 바이너리인지 의심하는 기준</a></li><li><a href="rev-0225-identifying-upx.html">REV-0225 — UPX인지 확인하는 법</a></li><li><a href="rev-0226-upx-basic-unpacking.html">REV-0226 — UPX 기본 언패킹</a></li><li><a href="rev-0227-manual-unpacking-oep.html">REV-0227 — 수동 언패킹 개념 OEP와 Dump</a></li><li><a href="rev-0934-entropy-value-quickref.html">REV-0934 — Entropy 값 해석 기준 빠른 참조</a></li><li><a href="rev-0935-commercial-protectors-existence-quickref.html">REV-0935 — VMProtect/Themida 등 상용 프로텍터 존재만 알아두는 참조표</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>UPX/ASPack/PECompact/FSG/MEW/Petite/NSPack의 섹션 명명 규칙과 매직 문자열은 각 프로젝트 공식 문서 또는 저장소(예: github.com/upx/upx)와 다수의 공개 리버싱 교육 자료에서 공통적으로 확인되는 내용을 정리한 것이다(2026-09-09 검증).</li><li>Detect It Easy의 패커/프로텍터 시그니처 표기 방식(<code>Packer:</code> vs <code>Protector:</code>)은 프로젝트 공식 저장소(github.com/horsicq/Detect-It-Easy)의 시그니처 데이터베이스 구조를 참고했다.</li><li>오래된 패커(FSG, MEW, NSPack 등)는 유지보수가 끊긴 경우가 많아 버전별 정확한 동작은 실제 샘플에서 재검증이 필요하다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

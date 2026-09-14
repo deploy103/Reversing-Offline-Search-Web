@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Section 이름이 표준과 달라서 도구가 헷갈릴 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>Section 이름이 표준과 달라서 도구가 헷갈릴 때</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">PE-bear</span><span class="tag">Detect It Easy</span></div>
+<h2>한 줄 요약</h2>
+<p>섹션 이름이 <code>.text</code>/<code>.data</code>가 아니라 <code>UPX0</code>, <code>UPX1</code> 또는 알아볼 수 없는 임의의 문자열로 되어 있어도 실행에는 아무 문제가 없는 이유는 <strong>Windows 로더가 섹션 이름을 전혀 참조하지 않고, <code>IMAGE_SECTION_HEADER.Characteristics</code>의 비트 플래그(실행 가능/쓰기 가능/코드 여부)만으로 각 섹션을 처리하기 때문</strong>이며, 분석 시에도 이름이 아니라 이 <code>Characteristics</code> 값과 <code>AddressOfEntryPoint</code>가 속한 섹션을 기준으로 코드/데이터 섹션을 구분해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA나 PE-bear의 섹션 목록에 <code>.text</code>, <code>.data</code>, <code>.rdata</code> 같은 익숙한 이름이 하나도 안 보이고 <code>UPX0</code>, <code>UPX1</code>, <code>.aspack</code>, 혹은 의미 없는 문자열/빈 문자열만 있을 때</li><li>자동화 스크립트가 섹션 이름을 문자열로 매칭(<code>if section.Name == ".text"</code>)하도록 짜여 있어서 오탐이 날 때</li><li>Detect It Easy가 섹션 이름만으로 특정 패커(UPX 등)를 자동 식별했다는 결과를 봤을 때 그 원리가 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<p><code>IMAGE_SECTION_HEADER</code> 구조체의 <code>Name</code> 필드는 <strong>정확히 8바이트</strong>이며, 스펙상 널 종료 문자열이 아니다(8자를 꽉 채우면 널 종료 바이트가 없을 수도 있다). 더 중요한 것은 이 이름이 순전히 사람이 읽기 위한 레이블일 뿐, Windows 로더의 실행 동작에는 전혀 영향을 주지 않는다는 점이다. 로더는 각 섹션을 메모리에 매핑할 때 다음 필드들만 본다.</p>
+<ul><li><code>VirtualAddress</code>, <code>VirtualSize</code>: 이 섹션이 메모리 어디에, 얼마나 매핑되는지</li><li><code>PointerToRawData</code>, <code>SizeOfRawData</code>: 파일 어느 위치의 데이터를 그대로 복사할지</li><li><code>Characteristics</code>: 이 섹션에 부여할 메모리 보호 속성과 내용 종류를 나타내는 비트 플래그</li><li><code>IMAGE_SCN_CNT_CODE</code>(0x00000020): 실행 코드를 담고 있음</li><li><code>IMAGE_SCN_CNT_INITIALIZED_DATA</code>(0x00000040): 초기화된 데이터</li><li><code>IMAGE_SCN_CNT_UNINITIALIZED_DATA</code>(0x00000080): 초기화 안 된 데이터(BSS류)</li><li><code>IMAGE_SCN_MEM_EXECUTE</code>(0x20000000): 실행 가능 페이지</li><li><code>IMAGE_SCN_MEM_READ</code>(0x40000000): 읽기 가능</li><li><code>IMAGE_SCN_MEM_WRITE</code>(0x80000000): 쓰기 가능</li></ul>
+<p>즉 어떤 섹션이 "코드 섹션"으로 취급되는지는 이름이 <code>.text</code>인지가 아니라, <code>Characteristics</code>에 <code>IMAGE_SCN_CNT_CODE</code>와 <code>IMAGE_SCN_MEM_EXECUTE</code>가 켜져 있는지로 결정된다. 링커/컴파일러가 관례적으로 <code>.text</code>, <code>.data</code>, <code>.rdata</code>, <code>.rsrc</code> 같은 이름을 붙일 뿐이고, 이 관례를 어떤 도구도 강제하지 않는다.</p>
+<p>UPX 같은 패커는 압축 해제용 섹션을 관례적으로 <code>UPX0</code>(대개 압축 해제된 코드가 풀릴 빈 공간), <code>UPX1</code>(압축된 원본 코드+압축 해제 스텁), <code>UPX2</code>(임포트 등 나머지 데이터) 이름으로 만든다. 이 이름 패턴 자체가 워낙 유명해서 Detect It Easy 같은 도구가 이를 시그니처로 활용해 "UPX로 패킹됨"을 빠르게 판별하는 데 쓰지만, 이것은 어디까지나 관례적 이름을 이용한 휴리스틱이지 스펙 요구사항이 아니다. 악의적인 목적으로 섹션 이름을 무작위 문자열이나 심지어 다른 정상 이름(<code>.text</code>가 아닌데 <code>.text</code>처럼 보이는 이름)으로 바꿔서 사람의 눈이나 이름 기반 자동화 도구를 혼란시키는 경우도 흔하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>PE-bear/IDA의 섹션 목록에 <code>.text</code> 대신 <code>UPX0</code>, <code>UPX1</code> 또는 빈 문자열, 임의 문자열이 표시됨</li><li>Detect It Easy가 섹션 이름 패턴만으로 특정 패커를 자동 인식한 결과를 보여줌</li><li>자동화 스크립트(Python <code>pefile</code> 등)에서 <code>.text</code> 이름으로 섹션을 찾는 코드가 <code>None</code>을 반환하며 실패함</li><li>섹션 이름은 <code>.text</code>인데 실제 <code>Characteristics</code>에는 실행 속성이 없는(반대로 데이터 섹션인데 실행 속성이 있는) 위장 사례</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>섹션 이름은 참고용으로만 보고, PE-bear의 Section Headers 탭이나 IDA의 세그먼트 뷰(<code>Alt+7</code>)에서 각 섹션의 <code>Characteristics</code> 값과 <code>AddressOfEntryPoint</code>가 어느 섹션의 <code>VirtualAddress</code>~<code>VirtualAddress+VirtualSize</code> 범위에 속하는지부터 확인한다. 그 섹션이 사실상의 코드 섹션이다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) PE-bear로 Characteristics 직접 확인</strong></p>
+<ul><li><code>Section Headers</code> 탭을 연다. 각 행에 <code>Name</code>뿐 아니라 <code>Characteristics</code>(16진수 플래그 값)와 이를 사람이 읽기 쉽게 풀어주는 표시(Executable, Readable, Writable 등 체크 아이콘)가 함께 있다.</li><li><code>IMAGE_SCN_MEM_EXECUTE</code>가 켜진 섹션을 코드 섹션 후보로 표시해둔다.</li></ul>
+<p><strong>2) Entry Point가 속한 섹션 찾기</strong></p>
+<ul><li><code>Optional Header</code>에서 <code>AddressOfEntryPoint</code> 값을 확인한다.</li><li>각 섹션의 <code>VirtualAddress</code>부터 <code>VirtualAddress + VirtualSize</code> 범위 중 이 값이 포함되는 섹션을 찾는다. 이름이 뭐든 이 섹션이 실제 진입점이 있는, 사실상의 코드 섹션이다.</li></ul>
+<p><strong>3) IDA에서도 동일하게 접근</strong></p>
+<ul><li>IDA는 파일을 로드할 때 <code>Characteristics</code>를 읽어 자동으로 세그먼트 속성(R/W/X)을 부여하므로, 이름과 무관하게 <code>Segments</code> 창(단축키로 열리는 목록)에서 <code>R W X</code> 컬럼을 보고 실행 가능한 세그먼트를 바로 식별할 수 있다.</li></ul>
+<p><strong>4) 자동화 스크립트를 이름이 아닌 플래그 기준으로 수정</strong></p>
+<ul><li>Python <code>pefile</code>을 쓴다면 <code>section.Name</code>으로 매칭하지 말고 <code>section.Characteristics &amp; 0x20000000</code>(<code>IMAGE_SCN_MEM_EXECUTE</code>) 같은 비트 검사로 코드 섹션을 찾도록 로직을 바꾼다.</li></ul>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">PE-bear: Section Headers 탭에서 Characteristics 컬럼 확인
+IDA: Alt+7(세그먼트 뷰)에서 R/W/X 컬럼 확인
+Python pefile: section.Characteristics &amp; 0x20000000  # IMAGE_SCN_MEM_EXECUTE 여부</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>Characteristics</code>에 <code>0x60000020</code>(코드 + 실행 + 읽기) 같은 값이 있으면 전형적인 코드 섹션 조합이다.</li><li>이름이 <code>.text</code>인데 <code>Characteristics</code>에 실행 속성이 빠져 있다면, 이 섹션은 이름만 위장된 데이터 섹션일 수 있으므로 속지 않아야 한다.</li><li><code>AddressOfEntryPoint</code>가 특정 섹션 범위에 들어가면, 그 섹션 이름이 무엇이든 실제 실행이 시작되는 곳이라는 확실한 근거가 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>섹션 이름이 <code>.text</code>가 아니라는 이유만으로 "이 파일에는 코드 섹션이 없다"고 오해하는 것.</li><li>자동화 스크립트나 YARA 룰을 섹션 이름 문자열에만 의존해서 작성했다가, 이름이 조작된 샘플에서 전부 놓치는 것.</li><li>UPX 섹션 이름(<code>UPX0</code>/<code>UPX1</code>)만 보고 반드시 UPX라고 단정하는 것 — 이름은 자유롭게 바꿀 수 있으므로 실제로는 Characteristics나 코드 패턴, 헤더 구조로 재검증해야 확실하다.</li><li>섹션 이름의 8바이트 제한을 모르고 9바이트 이상의 이름을 넣으려다 뒷부분이 잘리는 것을 오류로 착각하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>섹션 이름뿐 아니라 헤더 자체의 다른 필드도 조작되어 도구가 파싱을 거부한다면 → REV-0592(PE 헤더가 조작되어 도구가 잘못 파싱할 때)를 함께 본다.</li><li>패커 여부 자체를 확실히 판별하고 싶다면 → REV-0126(Detect It Easy로 컴파일러 패커 확인)을 참고한다.</li><li>섹션 테이블의 각 필드 의미를 처음부터 다시 보고 싶다면 → REV-0117(PE Section Table 읽기)을 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p>어떤 파일의 섹션 목록이 다음과 같이 보였다고 하자.</p>
+<pre><code class="language-text">Name      VirtualAddress  VirtualSize  Characteristics
+UPX0      0x1000          0x00009000   0xE0000080
+UPX1      0xA000          0x00003200   0xE0000060
+UPX2      0xE000          0x00000800   0xC0000040</code></pre>
+<p>이름만 보면 셋 다 낯설지만, <code>UPX1</code>의 <code>Characteristics</code>(<code>0xE0000060</code>)에는 <code>IMAGE_SCN_CNT_CODE</code>(0x20)와 <code>IMAGE_SCN_MEM_EXECUTE</code>(0x20000000) 비트가 모두 켜져 있다. <code>Optional Header</code>의 <code>AddressOfEntryPoint</code>가 <code>0xA050</code>이라면 이는 <code>UPX1</code> 섹션(<code>0xA000</code>~<code>0xA000+0x3200</code>) 범위 안에 들어가므로, 이름이 무엇이든 <code>UPX1</code>이 실질적인 진입점 코드 섹션임을 확신할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0117-pe-section-table.html">REV-0117 — PE Section Table 읽기</a></li><li><a href="rev-0592-pe-header-corruption-parsing.html">REV-0592 — PE 헤더가 조작되어 도구가 잘못 파싱할 때</a></li><li><a href="rev-0126-die-basics.html">REV-0126 — Detect It Easy로 컴파일러 패커 확인</a></li><li><a href="rev-0121-entry-point-winmain.html">REV-0121 — Entry Point와 WinMain 찾기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>IMAGE_SECTION_HEADER.Name</code>이 8바이트 고정이며 널 종료가 보장되지 않는다는 점, <code>Characteristics</code> 비트 플래그(<code>IMAGE_SCN_CNT_CODE</code>, <code>IMAGE_SCN_MEM_EXECUTE</code> 등)의 의미는 Microsoft PE/COFF 형식 공식 문서 기준.</li><li>UPX가 <code>UPX0</code>/<code>UPX1</code>/<code>UPX2</code> 섹션 이름 관례를 사용한다는 사실은 UPX 공식 프로젝트 및 다수의 언패킹 레퍼런스에서 공통적으로 확인된다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

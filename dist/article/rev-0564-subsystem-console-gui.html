@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>콘솔 프로그램과 GUI 프로그램 서브시스템 차이 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>콘솔 프로그램과 GUI 프로그램 서브시스템 차이</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">PE-bear</span><span class="tag">editbin</span></div>
+<h2>한 줄 요약</h2>
+<p><code>IMAGE_OPTIONAL_HEADER.Subsystem</code> 필드 하나(값 <code>2</code>=GUI, <code>3</code>=콘솔)가 "이 프로그램을 실행할 때 콘솔 창을 자동으로 붙일지 말지"를 결정하며, 코드 로직이 똑같아도 이 필드만 <code>editbin /subsystem:windows</code>로 바꿔치기하면 <code>printf</code>를 아무리 많이 써도 화면에 아무 창도 안 뜨게 만들 수 있어서, 악성코드가 콘솔 창을 숨기는 가장 흔하고 값싼 방법 중 하나로 쓰인다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>EXE를 더블클릭했는데 검은 콘솔 창이 뜨지 않아서, 콘솔 프로그램인 줄 알았는데 아무 반응이 없다고 느낄 때</li><li>IDA/PE-bear에서 <code>Subsystem</code> 필드 값이 <code>2</code>인지 <code>3</code>인지 헷갈릴 때</li><li>악성코드가 콘솔 출력 없이 조용히 실행되는 이유를 서브시스템 관점에서 설명해야 할 때</li><li><code>editbin /subsystem:windows</code> 같은 명령으로 이미 빌드된 EXE의 콘솔 창 유무를 바꿀 수 있다는 걸 알고 싶을 때</li><li>GUI 프로그램인데 디버깅용으로 콘솔 출력을 보고 싶어서 <code>AllocConsole</code>이 왜 필요한지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Subsystem 필드가 결정하는 것</h3>
+<p><code>IMAGE_OPTIONAL_HEADER.Subsystem</code>(REV-0116에서 다룬 Optional Header의 필드 중 하나)은 WORD 값이며, 대표적인 값은 다음과 같다.</p>
+<table><thead><tr><th>값</th><th>상수 이름</th><th>의미</th></tr></thead><tbody><tr><td>1</td><td><code>IMAGE_SUBSYSTEM_NATIVE</code></td><td>커널 드라이버 등 네이티브 서브시스템(REV-0562 참고)</td></tr><tr><td>2</td><td><code>IMAGE_SUBSYSTEM_WINDOWS_GUI</code></td><td>GUI 프로그램 — 실행 시 콘솔이 자동으로 붙지 않음</td></tr><tr><td>3</td><td><code>IMAGE_SUBSYSTEM_WINDOWS_CUI</code></td><td>콘솔 프로그램(Console User Interface) — 실행 시 콘솔이 자동으로 붙음</td></tr></tbody></table>
+<p>이 필드는 <strong>Windows 로더가 프로세스를 시작할 때 콘솔 창을 자동으로 할당할지 결정하는 유일한 근거</strong>다. 프로그램 코드가 <code>printf</code>를 쓰든 안 쓰든, <code>main</code>을 쓰든 <code>WinMain</code>을 쓰든 상관없이, 이 필드 값 자체가 콘솔 창 생성 여부를 결정한다.</p>
+<h3>CRT 진입점과 Subsystem은 원래 짝을 이룬다</h3>
+<p>일반적으로 Visual Studio에서 프로젝트를 만들 때, "콘솔 앱" 템플릿은 <code>main</code>/<code>wmain</code>을 쓰고 링커가 자동으로 <code>Subsystem=CUI</code>를 설정하며, "Windows 데스크톱 앱" 템플릿은 <code>WinMain</code>/<code>wWinMain</code>(REV-0565 참고)을 쓰고 <code>Subsystem=GUI</code>를 설정한다. 하지만 이 둘은 <strong>개념적으로 독립적</strong>이다 — 즉 <code>WinMain</code>을 쓰면서 <code>Subsystem=CUI</code>로 링크하는 것도, <code>main</code>을 쓰면서 <code>Subsystem=GUI</code>로 링크하는 것도 기술적으로 가능하다. 다만 CRT 시작 함수(<code>mainCRTStartup</code> 계열은 <code>GetCommandLineA</code>만 호출, <code>WinMainCRTStartup</code> 계열은 추가로 <code>GetStartupInfo</code>, <code>GetModuleHandle</code>도 호출해 <code>WinMain</code>에 필요한 인자를 준비)가 다르므로, 링커의 <code>/ENTRY</code>, <code>/SUBSYSTEM</code> 옵션을 프로젝트 설정과 다르게 섞으면 빌드 시 명시적으로 지정해줘야 한다.</p>
+<h3>왜 악성코드가 이 필드를 악용하는가</h3>
+<p>콘솔 프로그램(<code>main</code>)으로 작성된 백도어/드로퍼라도, 링크할 때 <code>Subsystem=GUI</code>로 강제 설정하면 실행 시 <strong>콘솔 창이 전혀 뜨지 않는다.</strong> <code>printf</code>로 로그를 찍는 코드가 그대로 남아 있어도, 애초에 표준 출력이 연결된 콘솔 자체가 없으므로 그 출력은 어디에도 보이지 않고 조용히 사라진다(정확히는 실패하거나 무시된다). 이는 코드를 전혀 바꾸지 않고 <strong>PE 헤더의 딱 2바이트(Subsystem 필드)</strong>만 바꾸면 되는, 매우 값싼 은폐 기법이다.</p>
+<pre><code class="language-text">editbin /subsystem:windows sample.exe</code></pre>
+<p>위 명령 한 줄이면 이미 빌드된 콘솔 EXE를 GUI EXE로 즉시 바꿀 수 있다(둘 다 <code>main</code>을 그대로 쓸 수 있으며, CRT가 <code>GetStartupInfo</code> 실패 등에 관대하게 대처하도록 되어 있어 실행 자체는 대개 문제없이 이어진다).</p>
+<h3>GUI 프로그램에서 콘솔을 보고 싶을 때: AllocConsole</h3>
+<p>반대로 GUI 프로그램이 디버깅/로그용으로 콘솔 창을 스스로 띄우고 싶다면 런타임에 직접 API를 호출해야 한다.</p>
+<pre><code class="language-c">AllocConsole();                                  // 새 콘솔 창 생성
+freopen("CONOUT$", "w", stdout);                 // stdout을 새 콘솔에 연결</code></pre>
+<p>악성코드가 <code>AllocConsole</code> 호출 없이 <code>Subsystem=GUI</code>로만 빌드된 경우, 이 프로그램은 정말로 콘솔 출력을 아무 데도 보내지 않는 "조용한" 실행 파일이 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>PE-bear/CFF Explorer의 Optional Header 뷰에서 <code>Subsystem</code> 필드가 <code>IMAGE_SUBSYSTEM_WINDOWS_GUI (0x0002)</code>로 표시됨</li><li>IDA에서 <code>main</code>류 함수(인자가 <code>argc</code>, <code>argv</code> 형태)가 있는데도 Subsystem이 GUI로 설정돼 있어 실행 시 창이 안 뜸</li><li>Import Table에 <code>AllocConsole</code>, <code>freopen</code>/<code>_wfreopen</code>, <code>SetStdHandle</code>이 함께 있으면, 이 GUI 프로그램이 스스로 콘솔을 만들어 쓴다는 뜻</li><li><code>dumpbin /headers 파일.exe</code> 결과의 <code>OPTIONAL HEADER VALUES</code> 섹션에 <code>subsystem</code> 값이 표시됨</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>실행 파일을 더블클릭했는데 아무 창도 안 뜬다고 해서 "아무것도 안 한다"고 단정하지 않는다. PE-bear나 <code>dumpbin /headers</code>로 Subsystem 필드부터 확인한다. GUI로 설정돼 있다면 콘솔 창이 안 뜨는 것이 정상이고, 실제 동작은 백그라운드에서 계속되고 있을 수 있다 — Process Explorer/Process Monitor 같은 도구로 프로세스가 실제로 살아있는지, 무슨 파일/레지스트리/네트워크 활동을 하는지 별도로 확인해야 한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) Subsystem 필드 값 확인</strong> PE-bear, CFF Explorer, 또는 <code>dumpbin /headers</code>로 <code>2</code>(GUI)인지 <code>3</code>(CUI)인지 확인한다.</p>
+<p><strong>2) 진입점 함수 시그니처와 비교</strong> IDA에서 실제 진입점(REV-0565 참고)이 <code>main</code>/<code>wmain</code> 형태(정수 <code>argc</code>, 문자열 배열 <code>argv</code>)인지, <code>WinMain</code>/<code>wWinMain</code> 형태(<code>HINSTANCE</code>, <code>HINSTANCE</code>, 문자열, <code>int</code>)인지 확인한다. Subsystem 값과 불일치하면(예: <code>main</code> 시그니처인데 Subsystem=GUI) 의도적으로 콘솔을 숨긴 것일 가능성을 의심한다.</p>
+<p><strong>3) AllocConsole 등 자체 콘솔 생성 여부 확인</strong> Import Table에 <code>AllocConsole</code>이 있으면 이 프로그램이 필요할 때 스스로 창을 만들어 쓴다는 뜻이므로, 정상적인 GUI 설계일 수 있다.</p>
+<p><strong>4) 필요하면 분석용으로 Subsystem을 임시로 바꿔서 관찰</strong></p>
+<pre><code class="language-text">editbin /subsystem:console 파일.exe</code></pre>
+<p>분석 목적으로 콘솔을 강제로 붙여서 <code>printf</code> 출력이 실제로 있는지 확인해볼 수 있다(원본 파일은 백업 후 진행).</p>
+<p><strong>5) 동적 분석 도구로 실제 동작 확인</strong> 콘솔이 안 떠도 프로세스는 살아있을 수 있으므로, Process Explorer로 프로세스 트리, Process Monitor로 파일/레지스트리/네트워크 활동을 확인한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">dumpbin /headers 파일.exe        OPTIONAL HEADER VALUES 섹션에서 subsystem 값 확인
+editbin /subsystem:windows 파일.exe   Subsystem을 GUI로 강제 변경(콘솔 숨김)
+editbin /subsystem:console 파일.exe   Subsystem을 CUI로 강제 변경(분석 시 콘솔 강제 표시)
+PE-bear: Optional Header 뷰 → Subsystem 필드 직접 확인/수정</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>subsystem  Windows GUI</code> — 콘솔 자동 생성 없음. 표준 출력이 어딘가에 연결돼 있지 않으면 <code>printf</code> 결과는 보이지 않음</li><li><code>subsystem  Windows CUI</code> — 실행 시 콘솔 창이 자동으로 뜨고, <code>stdin</code>/<code>stdout</code>/<code>stderr</code>이 그 콘솔에 연결됨</li><li><code>editbin /subsystem:console</code>로 바꾼 뒤 다시 실행했을 때 갑자기 콘솔 출력이 쏟아진다면, 원래 GUI로 위장했지만 내부적으로는 콘솔 앱과 동일한 로직(<code>printf</code> 등)을 쓰고 있었다는 뜻</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>"콘솔 창이 안 뜬다 = 프로그램이 아무것도 안 한다"고 단정하는 것 — Subsystem=GUI인 프로그램은 창 없이도 정상적으로 백그라운드 동작을 계속할 수 있다.</li><li>Subsystem 필드와 진입점 함수 시그니처(<code>main</code> vs <code>WinMain</code>)가 항상 일치해야 한다고 오해하는 것 — 링커 옵션으로 얼마든지 다르게 조합할 수 있다.</li><li><code>AllocConsole</code> 없이 GUI 서브시스템에서 <code>printf</code>를 호출하는 코드가 있으면 "이건 콘솔 프로그램이었을 것"이라고 무조건 단정하는 것 — Subsystem만 GUI로 바꿔치기됐을 가능성부터 의심해야 한다.</li><li><code>editbin /subsystem</code>으로 원본을 직접 덮어써서 원본 증거(포렌식/샘플 무결성)를 훼손하는 것 — 항상 사본에 대해 작업한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>Optional Header 전반의 필드 구조가 헷갈리면 → <a href="rev-0116-pe-coff-optional-header.html">REV-0116 PE Header COFF Optional Header 읽기</a></li><li><code>WinMain</code>/<code>wWinMain</code>/<code>DllMain</code>의 시그니처 차이가 궁금하면 → <a href="rev-0565-winmain-wwinmain-dllmain.html">REV-0565 WinMain wWinMain DllMain 진입점 차이</a></li><li>커널 드라이버의 네이티브 서브시스템이 궁금하면 → <a href="rev-0562-driver-sys-basics.html">REV-0562 드라이버(.sys) 파일을 만났을 때 최소 대응</a></li><li>진입점을 처음부터 다시 찾고 싶으면 → <a href="rev-0121-entry-point-winmain.html">REV-0121 Entry Point와 WinMain 찾기</a></li></ul>
+<h2>미니 예제</h2>
+<p><code>updater.exe</code>를 더블클릭했는데 아무 창도 뜨지 않았다고 하자.</p>
+<pre><code class="language-text">1) dumpbin /headers updater.exe 실행
+   subsystem            2 (Windows GUI)
+
+2) IDA로 진입점 확인:
+   int __cdecl main(int argc, char** argv) { ... printf(...) ... }
+   → main() 시그니처인데 Subsystem은 GUI. 의심스러운 불일치.
+
+3) Import Table에 AllocConsole/freopen이 없음
+   → 이 프로그램은 콘솔 출력을 볼 방법이 없도록 의도적으로 설계된 것으로 보임.
+
+4) 분석용 사본에 editbin /subsystem:console updater_copy.exe 적용 후 재실행
+   → 그제서야 콘솔 창이 뜨고 printf 로그가 보임, 숨겨져 있던 진단 메시지 확인 가능.</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0116-pe-coff-optional-header.html">REV-0116 — PE Header COFF Optional Header 읽기</a></li><li><a href="rev-0565-winmain-wwinmain-dllmain.html">REV-0565 — WinMain wWinMain DllMain 진입점 차이</a></li><li><a href="rev-0562-driver-sys-basics.html">REV-0562 — 드라이버(.sys) 파일을 만났을 때 최소 대응</a></li><li><a href="rev-0121-entry-point-winmain.html">REV-0121 — Entry Point와 WinMain 찾기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>IMAGE_OPTIONAL_HEADER.Subsystem</code> 필드와 <code>IMAGE_SUBSYSTEM_WINDOWS_GUI</code>/<code>_CUI</code>/<code>NATIVE</code> 상수 값: Microsoft Learn "PE Format" 공식 문서 기준 (2026-09-08 검증).</li><li><code>editbin /SUBSYSTEM</code> 링커 도구 옵션과 콘솔 자동 생성 동작: Microsoft Learn "editbin.exe" 및 "/SUBSYSTEM (Specify Subsystem)" 공식 문서 기준.</li><li><code>AllocConsole</code>, <code>freopen</code>을 통한 GUI 프로그램의 수동 콘솔 생성 방법: Microsoft Learn "Console" API 공식 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

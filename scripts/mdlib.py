@@ -3,8 +3,8 @@ Dependency-free frontmatter + Markdown helpers for the Reversing-Offline-Search-
 build pipeline. Stdlib only.
 
 This module intentionally implements a SMALL, PREDICTABLE subset of YAML and
-Markdown -- just enough for the article format described in AGENTS.md. It is
-NOT a general-purpose YAML or CommonMark parser.
+Markdown -- just enough for this project's article format. It is NOT a
+general-purpose YAML or CommonMark parser.
 """
 import html
 import re

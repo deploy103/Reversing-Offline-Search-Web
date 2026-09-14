@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Little Endian과 Big Endian · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>Little Endian과 Big Endian</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">HxD</span><span class="tag">ImHex</span><span class="tag">Python</span><span class="tag">IDA</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>엔디안(endianness)은 <strong>여러 바이트로 이루어진 값을 메모리/파일에 저장할 때 바이트를 어느 순서로 배치하는가</strong>를 뜻하며, x86/x64는 항상 <strong>리틀 엔디안</strong>(최하위 바이트가 낮은 주소에 먼저 옴)을 쓴다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>헥스에디터(HxD, ImHex)로 PE/ELF 헤더를 열었는데, 알고 있는 상수값(예: <code>0x8664</code>)이 파일에는 <code>64 86</code>처럼 순서가 뒤집혀 보일 때</li><li>4바이트나 8바이트짜리 값을 손으로 읽으려는데 어느 방향으로 읽어야 할지 헷갈릴 때</li><li>네트워크 패킷을 리버싱하는데 포트 번호나 IP 주소 필드가 예상과 다른 값으로 보일 때</li><li><code>struct.pack</code>/<code>struct.unpack</code>에서 <code>&lt;</code>나 <code>&gt;</code> 포맷 문자의 의미를 모를 때</li><li>ELF 헤더의 <code>EI_DATA</code> 바이트가 뭘 의미하는지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>CPU는 1바이트(8비트)보다 큰 값 — 16비트(2바이트), 32비트(4바이트), 64비트(8바이트) — 을 메모리나 파일에 저장할 때, 그 값을 구성하는 여러 바이트를 <strong>어떤 순서로 늘어놓을지</strong> 정해야 한다. 이 저장 순서 규칙을 <strong>엔디안(endianness, 바이트 순서)</strong>이라 부른다.</p>
+<p>크게 두 가지 방식이 있다.</p>
+<ul><li><strong>리틀 엔디안(Little Endian, LE)</strong>: 최하위 바이트(LSB, Least Significant Byte)를 가장 낮은 주소에 먼저 저장한다. "작은(little) 자리가 앞에 온다"고 외우면 된다.</li><li><strong>빅 엔디안(Big Endian, BE)</strong>: 최상위 바이트(MSB, Most Significant Byte)를 가장 낮은 주소에 먼저 저장한다. "큰(big) 자리가 앞에 온다."</li></ul>
+<p><strong>왜 이게 중요한가</strong>: 사람이 손으로 쓰는 16진수 표기(<code>0x12345678</code>)는 항상 "왼쪽이 상위 자리"인 수학적 표기다. 하지만 그 값이 실제로 메모리나 파일 바이트로 저장될 때는 CPU/파일 포맷이 정한 엔디안 규칙을 따른다. 이 둘을 혼동하는 것이 리버싱 초보자가 헥스에디터를 볼 때 가장 자주 겪는 함정이다.</p>
+<h3>32비트 값 <code>0x12345678</code>을 예로 든 헥스 덤프</h3>
+<p>이 값을 4바이트로 쪼개면 <code>12</code>, <code>34</code>, <code>56</code>, <code>78</code>이다(각각 상위→하위 자리). 이 값이 주소 <code>0x1000</code>부터 저장된다고 하자.</p>
+<p><strong>리틀 엔디안으로 저장된 경우</strong> (x86, x64에서 실제로 이렇게 저장됨):</p>
+<table><thead><tr><th>주소</th><th>0x1000</th><th>0x1001</th><th>0x1002</th><th>0x1003</th></tr></thead><tbody><tr><td>바이트</td><td><code>78</code></td><td><code>56</code></td><td><code>34</code></td><td><code>12</code></td></tr></tbody></table>
+<p>주소가 증가하는 방향으로 바이트를 나열하면 <code>78 56 34 12</code> — 원래 값과 "거꾸로" 보인다. 최하위 바이트(<code>78</code>)가 가장 먼저(가장 낮은 주소에) 온다.</p>
+<p><strong>빅 엔디안으로 저장된 경우</strong> (네트워크 프로토콜, 일부 임베디드/구형 아키텍처):</p>
+<table><thead><tr><th>주소</th><th>0x1000</th><th>0x1001</th><th>0x1002</th><th>0x1003</th></tr></thead><tbody><tr><td>바이트</td><td><code>12</code></td><td><code>34</code></td><td><code>56</code></td><td><code>78</code></td></tr></tbody></table>
+<p>이쪽은 사람이 쓰는 표기와 순서가 같다 — 최상위 바이트(<code>12</code>)가 가장 먼저 온다. "빅 엔디안은 읽는 순서 그대로"라고 기억하면 쉽다.</p>
+<h3>x86과 x64는 항상 리틀 엔디안이다</h3>
+<p>이것이 이 글에서 가장 중요한 결론이다: <strong>x86과 x64(AMD64/Intel 64) 아키텍처는 예외 없이 항상 리틀 엔디안이다.</strong> Windows PE 실행 파일이든 Linux ELF 실행 파일이든, x86/x64 CPU에서 실행되는 한 메모리에 올라간 모든 다바이트 정수(<code>int</code>, <code>DWORD</code>, <code>QWORD</code>, 포인터, 주소 등)는 리틀 엔디안으로 저장된다. 이 글의 나머지 내용 대부분은 결국 이 한 문장에서 파생된다.</p>
+<h3>ELF 헤더의 EI_DATA 바이트</h3>
+<p>ELF 포맷은 이론적으로 리틀/빅 엔디안을 모두 지원하도록 설계되어 있다. ELF 헤더(<code>e_ident</code> 배열)의 <strong>오프셋 5번 바이트</strong>가 이를 나타내는 <code>EI_DATA</code> 필드다.</p>
+<ul><li><code>01</code> = <code>ELFDATA2LSB</code> → 리틀 엔디안</li><li><code>02</code> = <code>ELFDATA2MSB</code> → 빅 엔디안</li></ul>
+<p>x86/x64 리눅스 실행 파일을 헥스에디터로 열어서 파일 맨 앞을 보면, <code>7F 45 4C 46</code>(매직 넘버 <code>\x7fELF</code>, <a href="rev-0021-x86-vs-x64.html">rev-0021-x86-vs-x64.md</a>에서 다룬 필드) 다음 바이트들 중 오프셋 5에서 거의 항상 <code>01</code>을 보게 된다. MIPS나 SPARC 같은 다른 아키텍처용 ELF에서는 <code>02</code>가 나올 수도 있지만, 이 위키가 다루는 x86/x64 대상 실전 리버싱에서는 사실상 항상 <code>01</code>(리틀 엔디안)이라고 봐도 된다.</p>
+<h3>PE COFF 헤더의 Machine 필드 — 가장 흔한 착각 지점</h3>
+<p>Windows PE 파일의 COFF 헤더에는 <code>Machine</code> 필드가 있고, 이 값이 AMD64(x64)면 <code>0x8664</code>로 알려져 있다(사람이 읽는 표준 표기). 하지만 이 값이 파일 안에 실제로 어떻게 저장되어 있는지 헥스에디터로 확인하면, 다음과 같은 순서로 보인다.</p>
+<pre><code>오프셋      바이트
++0x00       64
++0x01       86</code></pre>
+<p>즉 <code>0x8664</code>라는 값을 찾으려고 헥스에디터에서 <code>86 64</code>를 검색하면 <strong>못 찾는다.</strong> 실제 파일에는 <code>64 86</code> 순서로 들어 있기 때문이다. 이건 앞서 설명한 리틀 엔디안 규칙 그대로다 — <code>0x8664</code>를 2바이트로 쪼개면 상위 바이트 <code>86</code>, 하위 바이트 <code>64</code>이고, 리틀 엔디안은 하위 바이트를 먼저 저장하므로 <code>64 86</code> 순서가 된다.</p>
+<p><strong>이것이 리버싱 초보자가 가장 흔히 겪는 혼동이다</strong>: 문서나 툴에서 "Machine 값은 <code>0x8664</code>"라고 배웠는데, 정작 파일을 열어서 눈으로 보면 그 숫자가 안 보이고 순서가 뒤집힌 <code>64 86</code>만 보이니 "내가 잘못 찾았나?", "이 파일이 이상한가?"라고 착각하게 된다. 답은 간단하다 — 파일이 이상한 게 아니라, 리틀 엔디안이 정상 동작한 것뿐이다.</p>
+<h3>ARM은 어떨까</h3>
+<p>ARM CPU는 기술적으로 "바이 엔디안(bi-endian)"이다. 즉 부팅 시 설정에 따라 리틀 엔디안 모드로도, 빅 엔디안 모드로도 동작할 수 있게 설계되어 있다. 하지만 실전 리버싱에서 실제로 마주치는 ARM 바이너리 — 안드로이드 APK 안의 네이티브 라이브러리(<code>.so</code>), iOS 앱 — 는 거의 전부 리틀 엔디안(<code>EI_DATA</code> = <code>01</code>, 또는 Mach-O의 경우 리틀 엔디안 CPU 타입)이다. "ARM이니까 빅 엔디안일 수도 있다"고 과도하게 걱정할 필요는 없지만, 이론적으로 다를 수 있다는 사실 자체는 알아두는 게 좋다.</p>
+<h3>네트워크 바이트 오더는 빅 엔디안이다</h3>
+<p>TCP/IP 프로토콜 스택은 역사적으로 <strong>빅 엔디안을 "네트워크 바이트 오더(network byte order)"</strong>로 표준화했다. TCP/UDP 헤더의 포트 번호, IP 헤더의 여러 필드 등은 모두 빅 엔디안으로 전송된다. C 표준 라이브러리의 <code>htons()</code>/<code>htonl()</code>(host to network short/long)과 <code>ntohs()</code>/<code>ntohl()</code>(network to host)이 바로 이 변환을 위한 함수다 — x86/x64 호스트(리틀 엔디안)와 네트워크(빅 엔디안) 사이를 오갈 때 반드시 거쳐야 하는 함수라서, 패킷 파서나 네트워크 클라이언트/서버 바이너리를 리버싱할 때 이 함수 호출이 자주 등장한다.</p>
+<p>예를 들어 TCP 포트 80(HTTP)을 캡처한 패킷에서 그대로 헥스로 보면 <code>00 50</code>으로 나타난다. <code>0x50</code> = 80이고, 빅 엔디안이므로 상위 바이트(<code>00</code>)가 먼저, 하위 바이트(<code>50</code>)가 나중에 온다 — 사람이 쓰는 표기(<code>0x0050</code>)와 순서가 같다. 만약 이걸 리틀 엔디안이라고 잘못 가정하고 읽으면 <code>50 00</code> = <code>0x0050</code>... 이 경우는 상위 바이트가 <code>00</code>이라 우연히 같은 결과가 나오지만, 두 바이트가 모두 의미 있는 값(예: 포트 <code>0x1F90</code> = 8080)일 때 리틀 엔디안으로 잘못 읽으면 <code>90 1F</code> = <code>0x1F90</code>이 아니라 <code>0x901F</code>(36895)처럼 완전히 다른, 말도 안 되는 포트 번호로 오독하게 된다. 패킷 덤프를 볼 때는 "이건 네트워크 필드이므로 빅 엔디안"이라는 걸 항상 의식해야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>헥스에디터에서 알고 있는 상수(<code>0x8664</code>, <code>0x00905A4D</code>, 매직 넘버 등)를 검색했는데 안 나오고, 바이트 순서가 뒤집힌 값만 보이는 경우</li><li>IDA/Ghidra에서 <code>dd</code>(define dword)로 표시된 값이 파일 오프셋상의 바이트 나열과 반대 순서로 보이는 경우</li><li>Wireshark나 raw 소켓 덤프에서 포트 번호, 길이 필드가 이상하게 큰 값이나 작은 값으로 읽히는 경우 (엔디안을 잘못 가정)</li><li><code>struct.pack</code>/<code>struct.unpack</code> 코드에서 <code>&lt;</code>(리틀 엔디안), <code>&gt;</code>(빅 엔디안), <code>!</code>(네트워크=빅 엔디안), <code>=</code>(네이티브) 접두사가 헷갈리는 경우</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>헥스에디터로 다바이트 필드(2/4/8바이트)를 읽을 때는, <strong>그 필드가 "일반 x86/x64 메모리·파일 필드"인지 "네트워크 프로토콜 필드"인지부터 구분한다.</strong> PE/ELF 헤더나 x86/x64 메모리상의 값이면 리틀 엔디안(바이트를 거꾸로 읽는다), TCP/IP/UDP 헤더 같은 네트워크 필드면 빅 엔디안(바이트를 그대로 읽는다)이라고 가정하고 시작한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 헥스에디터에서 값을 눈으로 뒤집어 읽기</strong></p>
+<p>HxD나 ImHex에서 4바이트 <code>64 86 00 00</code>을 봤다면, 이걸 사람이 읽는 순서로 재배열하려면 뒤에서부터 앞으로 읽는다: <code>00 00 86 64</code> → <code>0x00008664</code>. 상위 0바이트는 보통 생략하고 <code>0x8664</code>로 쓴다.</p>
+<p><strong>2) ImHex의 "해석 패널" 활용하기</strong></p>
+<p>손으로 뒤집는 게 번거롭거나 실수하기 쉬우면, ImHex에서 해당 바이트 범위를 드래그로 선택한 뒤 하단/우측의 <strong>Inspector(값 해석) 패널</strong>에서 <code>u32 (little endian)</code> / <code>u32 (big endian)</code> 항목을 동시에 확인한다. HxD는 우측 하단에 선택 영역의 크기만 표시되므로, 정확한 정수 해석이 필요하면 ImHex나 파이썬 스크립트를 쓰는 편이 안전하다.</p>
+<p><strong>3) 파이썬으로 변환 (가장 빠르고 실수 없는 방법)</strong></p>
+<pre><code class="language-python">import struct
+
+# 정수 -&gt; 바이트 (엔디안 지정)
+struct.pack('&lt;I', 0x12345678)   # b'\x78\x56\x34\x12'  (리틀 엔디안)
+struct.pack('&gt;I', 0x12345678)   # b'\x12\x34\x56\x78'  (빅 엔디안)
+
+# 바이트 -&gt; 정수 (반대 방향)
+int.from_bytes(b'\x78\x56\x34\x12', 'little')  # 0x12345678
+int.from_bytes(b'\x12\x34\x56\x78', 'big')     # 0x12345678</code></pre>
+<p><code>struct</code> 포맷 문자열의 첫 글자가 엔디안을 결정한다: <code>&lt;</code>는 리틀, <code>&gt;</code>는 빅, <code>!</code>는 네트워크(빅 엔디안과 동일), <code>=</code>는 네이티브(실행 중인 머신 기준, x86/x64에서는 결국 리틀 엔디안).</p>
+<p><strong>4) PE Machine 필드를 직접 확인해보기</strong></p>
+<pre><code class="language-python">with open("sample.exe", "rb") as f:
+    data = f.read()
+
+e_lfanew = int.from_bytes(data[0x3C:0x40], "little")   # PE 헤더 시작 오프셋
+machine_off = e_lfanew + 4                               # "PE\0\0" 다음이 Machine 필드
+machine = int.from_bytes(data[machine_off:machine_off+2], "little")
+print(hex(machine))   # 0x8664 이면 AMD64(x64)</code></pre>
+<p>파일 바이트는 <code>64 86</code> 순서로 들어 있지만, <code>int.from_bytes(..., "little")</code>을 쓰면 파이썬이 알아서 순서를 뒤집어 사람이 아는 <code>0x8664</code>로 재구성해준다.</p>
+<p><strong>5) ELF EI_DATA 바이트 확인</strong></p>
+<pre><code class="language-python">with open("sample.elf", "rb") as f:
+    ei_data = f.read(16)[5]
+print("LE" if ei_data == 1 else "BE" if ei_data == 2 else "unknown")</code></pre>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python"># 자주 쓰는 struct 포맷 정리
+'&lt;B' # 1바이트 unsigned  (엔디안 무관, 1바이트는 순서가 없음)
+'&lt;H' # 2바이트 unsigned little-endian  (&gt;H 는 big-endian)
+'&lt;I' # 4바이트 unsigned little-endian  (&gt;I 는 big-endian)
+'&lt;Q' # 8바이트 unsigned little-endian  (&gt;Q 는 big-endian)
+'!H' # network byte order 2바이트 (= big-endian, 소켓 프로그래밍에서 흔히 사용)</code></pre>
+<ul><li>ImHex: 바이트 선택 후 Inspector 패널에서 엔디안별 해석값 동시 확인</li><li>HxD: 우클릭 → "선택 영역을 다른 이름으로 저장"으로 잘라내서 별도로 파이썬 분석하는 것도 실전에서 유용</li></ul>
+<h2>출력 해석</h2>
+<ul><li>파일/메모리에서 <code>78 56 34 12</code> (증가하는 주소 순)를 봤다면 → 리틀 엔디안 기준 값은 <code>0x12345678</code></li><li>파일/메모리에서 <code>12 34 56 78</code>을 봤다면 → 빅 엔디안 기준 값이거나, 리틀 엔디안이라면 실제 값은 <code>0x78563412</code>이므로 두 해석이 완전히 다른 숫자를 만든다 — 반드시 어느 엔디안인지 먼저 확정한 뒤 읽어야 한다.</li><li>PE 파일 오프셋에서 <code>64 86</code>을 봤다면 → x64 바이너리의 Machine 필드(<code>0x8664</code>)일 가능성이 매우 높다.</li><li>패킷 덤프에서 <code>00 50</code>을 봤다면 → 빅 엔디안 기준 포트 80(HTTP). 같은 바이트를 리틀 엔디안으로 잘못 읽으면 <code>0x5000</code>(20480번 포트)이 되어 완전히 틀린 해석이 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>헥스에디터에서 상수를 그대로(사람이 쓰는 순서로) 검색해서 "파일이 이상하다"고 오해하는 것 — x86/x64 파일 안의 다바이트 값은 항상 뒤집혀 저장되어 있다는 걸 잊는 것.</li><li>모든 바이너리 필드를 무조건 리틀 엔디안이라고 가정하고, 네트워크 프로토콜 필드(포트, IP, 패킷 길이 등)까지 리틀 엔디안으로 읽어서 값이 완전히 틀리는 것 — 네트워크 바이트 오더는 빅 엔디안이다.</li><li><code>struct.pack</code>/<code>unpack</code>에서 포맷 문자를 빼먹어 네이티브(<code>=</code> 취급)로 동작시키고, 이게 어떤 엔디안인지 신경 쓰지 않다가 다른 아키텍처/플랫폼에서 결과가 달라지는 것.</li><li>1바이트(8비트) 값에는 엔디안 개념이 적용되지 않는다는 걸 잊고, 1바이트짜리 필드에도 "순서"를 고민하며 시간을 낭비하는 것 — 바이트가 하나뿐이면 뒤집을 순서 자체가 없다.</li><li>엔디안(바이트 순서)과 <a href="rev-0024-twos-complement.html">REV-0024</a>에서 다룬 2의 보수(부호 해석)를 혼동하는 것 — 엔디안은 "바이트를 어떤 순서로 배치하느냐"이고, 2의 보수는 "그렇게 조합된 값을 양수/음수 중 어떻게 해석하느냐"로 서로 별개의 개념이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>바이트를 올바른 순서로 조합했는데도 값이 이상한 음수로 보인다면 → <a href="rev-0024-twos-complement.html">rev-0024-twos-complement.md</a>(2의 보수)에서 signed/unsigned 해석 문제인지 확인.</li><li>특정 바이트 폭만 남기고 싶거나 마스크 연산이 헷갈리면 → <a href="rev-0026-bit-masks.html">rev-0026-bit-masks.md</a>(비트 마스크)로 이동.</li><li>PE/ELF 헤더의 어떤 필드가 몇 바이트짜리인지부터 모르겠다면 → <a href="rev-0019-binary-basics.html">rev-0019-binary-basics.md</a>(바이너리 기초 총정리)와 <a href="rev-0021-x86-vs-x64.html">rev-0021-x86-vs-x64.md</a>(x86/x64 헤더 필드로 아키텍처 구분)로 이동해서 필드 구조부터 확인.</li><li>레지스터 크기(AL/AX/EAX/RAX)와 바이트 폭의 관계가 헷갈리면 → <a href="rev-0022-register-widths.html">REV-0022</a>(레지스터 크기)로 이동.</li><li>VA/RVA/파일 오프셋을 헥스에디터에서 직접 계산하며 엔디안까지 함께 적용해야 한다면 → <a href="rev-0028-va-rva-offset.html">rev-0028-va-rva-offset.md</a> 참고 — 헤더 필드들을 헥스에디터에서 읽을 때 반드시 리틀엔디안 순서로 뒤집어 읽어야 한다는 점이 이 글과 직결된다.</li></ul>
+<h2>미니 예제</h2>
+<p>IDA나 헥스에디터로 x64 PE 파일을 열었는데, 파일 오프셋 어딘가에서 다음 6바이트를 봤다고 하자.</p>
+<pre><code>오프셋      바이트열
+0x00F8      50 45 00 00 64 86</code></pre>
+<p><code>50 45 00 00</code>은 ASCII로 <code>PE\0\0</code> — PE 시그니처다. 바로 다음에 오는 <code>64 86</code>이 COFF 헤더의 <code>Machine</code> 필드(2바이트)다. 이 2바이트를 리틀 엔디안으로 재조합하면:</p>
+<ol><li>파일에 저장된 순서: <code>64</code>, <code>86</code> (낮은 오프셋 → 높은 오프셋)</li><li>사람이 읽는 순서로 뒤집기: <code>86</code>, <code>64</code></li><li>합치면: <code>0x8664</code></li></ol>
+<p><code>0x8664</code>는 <code>IMAGE_FILE_MACHINE_AMD64</code> 상수이므로, 이 파일은 x64용 PE 실행 파일이라는 뜻이다. 파이썬으로 같은 결과를 확인하면:</p>
+<pre><code class="language-python">&gt;&gt;&gt; raw = bytes.fromhex("6486")
+&gt;&gt;&gt; hex(int.from_bytes(raw, "little"))
+'0x8664'</code></pre>
+<p>만약 실수로 빅 엔디안으로 해석했다면 어떻게 될까:</p>
+<pre><code class="language-python">&gt;&gt;&gt; hex(int.from_bytes(raw, "big"))
+'0x6486'</code></pre>
+<p><code>0x6486</code>은 알려진 <code>Machine</code> 상수 목록에 없는 값이라 "이 파일이 이상하게 손상됐나?"라고 잘못된 결론을 내리기 쉽다. 실제로는 파일이 손상된 게 아니라, x86/x64 PE 파일은 항상 리틀 엔디안이라는 전제를 놓친 것뿐이다. 이 한 가지 원칙 — <strong>x86/x64에서는 무조건 리틀 엔디안, 예외 없음</strong> — 만 확실히 기억해도 이 글에서 다룬 혼동의 대부분을 피할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0019-binary-basics.html">rev-0019-binary-basics.md</a> — 바이너리 기초 총정리 (비트/바이트/헥스 표기)</li><li><a href="rev-0021-x86-vs-x64.html">rev-0021-x86-vs-x64.md</a> — ELF/PE 헤더 필드로 x86와 x64 구분하기 (EI_CLASS, Machine 필드)</li><li><a href="rev-0022-register-widths.html">rev-0022-register-widths.md</a> — 레지스터 크기와 바이트 폭</li><li><a href="rev-0024-twos-complement.html">rev-0024-twos-complement.md</a> — 2의 보수와 음수 표현</li><li><a href="rev-0026-bit-masks.html">rev-0026-bit-masks.md</a> — 8비트 16비트 24비트 32비트 64비트 마스크</li><li><a href="rev-0028-va-rva-offset.html">rev-0028-va-rva-offset.md</a> — VA/RVA/파일 오프셋 변환 (헤더 필드를 헥스에디터에서 리틀엔디안으로 읽는 실전 적용)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>엔디안 정의 및 리틀/빅 엔디안 개념: 컴퓨터 구조 표준 교과서(Patterson &amp; Hennessy, *Computer Organization and Design*) 기준 개념 설명 (2026-09-08 검증).</li><li>x86/x64가 항상 리틀 엔디안이라는 사실 및 ELF <code>e_ident[EI_DATA]</code> 필드(<code>ELFDATA2LSB</code>=1, <code>ELFDATA2MSB</code>=2) 정의: System V Application Binary Interface / ELF 사양 및 Intel 64 and IA-32 Architectures Software Developer's Manual 기준.</li><li>PE COFF <code>Machine</code> 필드 값(<code>IMAGE_FILE_MACHINE_AMD64</code> = <code>0x8664</code>): Microsoft PE/COFF Specification 기준.</li><li>네트워크 바이트 오더(빅 엔디안) 및 <code>htons</code>/<code>htonl</code>/<code>ntohs</code>/<code>ntohl</code>: POSIX/BSD 소켓 API 표준 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

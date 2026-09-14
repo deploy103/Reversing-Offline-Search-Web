@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SUBPS와 MULPS: SIMD 뺄셈과 곱셈 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>SUBPS와 MULPS: SIMD 뺄셈과 곱셈</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>SUBPS</code>와 <code>MULPS</code>는 각각 두 XMM 레지스터의 4개 single-precision float를 원소별로 병렬 <strong>뺄셈</strong>/<strong>곱셈</strong>하는 SSE 명령이며, 오퍼랜드 순서와 정밀도 규칙만 다를 뿐 <a href="rev-0390-addps-addss.html">ADDPS</a>와 사용 패턴이 동일하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>float</code>/벡터 연산 코드에서 <code>subps</code>, <code>mulps</code>, 또는 스칼라 버전 <code>subss</code>/<code>mulss</code>가 나와서 정수 <code>SUB</code>/<code>IMUL</code>과 뭐가 다른지 궁금할 때</li><li>3D 그래픽, 물리 연산, 신호 처리 등 벡터 수학이 들어간 함수를 분석할 때</li><li>뺄셈에서 오퍼랜드 순서(어느 쪽에서 어느 쪽을 빼는지)를 착각해 결과 부호가 반대로 해석될 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Intel 문법과 오퍼랜드 방향</h3>
+<pre><code>SUBPS xmm_dest, xmm/m128_src   ; dest = dest - src  (4개 원소 병렬)
+MULPS xmm_dest, xmm/m128_src   ; dest = dest * src  (4개 원소 병렬)
+SUBSS xmm_dest, xmm/m32_src    ; dest[0] = dest[0] - src[0], 1~3번째는 유지
+MULSS xmm_dest, xmm/m32_src    ; dest[0] = dest[0] * src[0], 1~3번째는 유지</code></pre>
+<p><code>ADDPS</code>(<a href="rev-0390-addps-addss.html">REV-0390</a>)와 마찬가지로 첫 번째 오퍼랜드가 목적지이자 좌항이다. <strong><code>SUBPS</code>는 뺄셈이므로 순서에 민감하다</strong> — <code>subps xmm0, xmm1</code>은 <code>xmm0 = xmm0 - xmm1</code>이지 그 반대가 아니다. 이는 <code>SUB</code>(REV-0048)의 방향 규칙과 동일하다.</p>
+<h3>레지스터/메모리 효과</h3>
+<p><code>PS</code>(4개 병렬)와 <code>SS</code>(1개, 나머지 보존) 구분은 <a href="rev-0390-addps-addss.html">REV-0390</a>에서 설명한 것과 완전히 동일한 규칙을 따른다.</p>
+<h3>플래그 변화</h3>
+<p>정수 <code>SUB</code>/<code>IMUL</code>과 달리 EFLAGS(CF/OF/ZF/SF)를 세팅하지 않는다. 부동소수점 예외 상태는 MXCSR에 반영된다(REV-0390 참고).</p>
+<h3>신호 있음/없음 관점 — MULPS는 IMUL/MUL과 근본적으로 다르다</h3>
+<p>정수 곱셈은 부호 있는(<code>IMUL</code>)/부호 없는(<code>MUL</code>) 두 가지 버전이 필요하고 오버플로 시 상위 레지스터에 결과가 걸쳐진다. 반면 <code>MULPS</code>는 IEEE 754 부동소수점 곱셈 규칙을 그대로 따르며 signed/unsigned 구분 자체가 없다(부호는 값의 일부). 오버플로가 나면 예외 트랩 대신 <code>+Infinity</code>/<code>-Infinity</code> 값이 되거나 MXCSR의 Overflow 플래그가 세팅된다.</p>
+<h3>스택/RSP/RIP 변화</h3>
+<p>없음.</p>
+<h3>컴파일러 패턴</h3>
+<ul><li>벡터/행렬 연산(예: <code>Vec4 operator*(Vec4 a, float s)</code>)이 <code>mulps</code>로 컴파일되는 것은 그래픽·게임 엔진류 바이너리에서 매우 흔한 패턴이다.</li><li><code>a - b</code> 형태의 float 뺄셈은 스칼라라면 <code>subss</code>, 배열이면 벡터화되어 <code>subps</code>로 나타난다.</li><li>곱셈 후 덧셈이 이어지는 <code>a*b+c</code> 패턴은 최신 CPU/컴파일러에서 FMA(Fused Multiply-Add, <code>VFMADD</code> 계열, AVX 확장)로 합쳐지기도 하지만, SSE만 대상으로 하는 코드에서는 <code>mulps</code> 다음 <code>addps</code>가 별도로 나온다.</li></ul>
+<h3>IDA/Ghidra 디컴파일</h3>
+<p><code>subss</code>/<code>mulss</code>는 <code>fVar1 = fVar2 - fVar3;</code>, <code>fVar1 = fVar2 * fVar3;</code> 형태로 그대로 연산자로 복원된다. <code>subps</code>/<code>mulps</code>는 배열 루프거나 벡터 구조체(<code>Vec4</code>) 연산자 오버로드가 인라인된 경우가 많다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>subss xmm0, xmm1</code> — 두 float의 차이 계산 (예: 거리, 델타 값)</li><li><code>mulps xmm0, xmm1</code> — 4개 float 벡터를 원소별로 곱함 (스케일링, 벡터 내적/외적의 일부)</li><li><code>mulss xmm0, xmm0</code> — 자기 자신을 곱함, 즉 <strong>제곱</strong>(<code>x * x</code>) 연산의 흔한 형태</li><li><code>mulps</code> 뒤 바로 <code>addps</code> — <code>a*b+c</code> 형태의 벡터 곱셈-누적(내적 계산 등)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>PS</code>/<code>SS</code> 접미사로 병렬(4개)인지 스칼라(1개)인지 확인한다.</li><li><code>SUBPS</code>라면 어느 오퍼랜드가 좌항(피감수)인지 순서를 정확히 읽는다.</li><li><code>MULPS</code>/<code>MULSS</code>가 자기 자신을 곱하는 패턴(<code>mulss xmm0, xmm0</code>)이면 "제곱"으로 해석한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 스칼라 뺄셈 방향 확인</strong></p>
+<pre><code class="language-asm">movss xmm0, [rbp-4]   ; a
+subss xmm0, [rbp-8]    ; xmm0 = a - b  (b를 빼는 것이지 그 반대가 아님)</code></pre>
+<p><strong>2) 제곱 패턴 인식</strong></p>
+<pre><code class="language-asm">movss xmm0, [rbp-4]
+mulss xmm0, xmm0        ; xmm0 = a * a</code></pre>
+<p><strong>3) 벡터 곱셈-누적(내적류) 인식</strong></p>
+<pre><code class="language-asm">mulps xmm0, xmm1   ; a[0..3] * b[0..3]
+addps xmm2, xmm0    ; 누적</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg/GDB의 XMM 레지스터 뷰로 <code>subps</code>/<code>mulps</code> 실행 전후 4개의 float 값 변화를 직접 비교 확인.</li><li>IDA F5: 연산자(<code>+</code>, <code>-</code>, <code>*</code>)로 정리된 결과에서 원본이 packed인지 scalar인지 알고 싶으면 디스어셈블리(원문 어셈블리)를 병행 확인해야 한다(디컴파일 결과만으로는 PS/SS 구분이 사라지는 경우가 많음).</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>subps</code>/<code>mulps</code> 결과는 4개 원소 각각 독립적으로 계산된다 — 한 원소만 이상해 보이면 그 원소에 해당하는 입력값만 따로 확인한다.</li><li><code>mulss</code>/<code>subss</code>는 0번째 원소만 바뀌고 나머지는 보존되므로, XMM 전체 128비트를 봤을 때 1~3번째 값이 실행 전후 동일해야 정상이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>SUBPS</code>의 오퍼랜드 순서를 반대로 읽어서 부호가 뒤집힌 결과를 정상으로 착각하는 것 — <code>subps xmm0, xmm1</code>은 항상 <code>xmm0 - xmm1</code>이다.</li><li><code>mulps</code>/<code>mulss</code>가 정수 <code>IMUL</code>처럼 오버플로 시 상위 레지스터에 걸치는 결과를 만든다고 착각하는 것 — 부동소수점 곱셈은 결과가 그대로 같은 크기(32비트/64비트) 레지스터 슬롯에 들어가며, 넘치면 무한대나 반올림 손실로 처리된다.</li><li><code>mulss xmm0, xmm0</code>를 "값을 자기 자신에 복사하는 이상한 코드"로 오해하는 것 — 이는 표준적인 제곱 연산이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>뺄셈 결과 부호가 예상과 반대라면 → 오퍼랜드 순서(어느 게 dest/좌항인지)부터 다시 확인.</li><li>곱셈 결과가 이상하면 → PS(4개)인지 SS(1개)인지, 그리고 두 소스가 각각 어떤 값인지 XMM 레지스터 뷰에서 직접 확인.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 스칼라 float 뺄셈</strong></p>
+<pre><code class="language-c">float delta(float a, float b) { return a - b; }</code></pre>
+<pre><code class="language-asm">movss xmm0, xmm0   ; a (인자로 이미 xmm0)
+subss xmm0, xmm1    ; xmm0 = a - b
+ret</code></pre>
+<p><strong>예제 2 — 제곱 후 합산 (거리 제곱 계산의 일부)</strong></p>
+<pre><code class="language-c">float sq = dx * dx + dy * dy;</code></pre>
+<pre><code class="language-asm">movss  xmm0, dx
+mulss  xmm0, xmm0     ; dx*dx
+movss  xmm1, dy
+mulss  xmm1, xmm1     ; dy*dy
+addss  xmm0, xmm1      ; 합산</code></pre>
+<p>**예제 3 — 벡터 스케일링 (Vec4 * scalar)**</p>
+<pre><code class="language-c">Vec4 scale(Vec4 v, float s) { return (Vec4){v.x*s, v.y*s, v.z*s, v.w*s}; }</code></pre>
+<pre><code class="language-asm">movaps xmm2, xmm1      ; scalar s를 4칸 모두 복제했다고 가정 (shufps 등으로 준비)
+mulps  xmm0, xmm2       ; v(4개) * s(4개 동일값)</code></pre>
+<p><strong>예제 4 — 벡터 뺄셈</strong></p>
+<pre><code class="language-asm">movaps xmm0, [rax]   ; a[0..3]
+subps  xmm0, [rbx]    ; a - b (원소별)
+movaps [rcx], xmm0    ; 결과 저장</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0390-addps-addss.html">REV-0390 — ADDPS와 ADDSS: SIMD 병렬/단일 덧셈</a></li><li><a href="rev-0386-movaps.html">REV-0386 — MOVAPS: 정렬된 XMM 레지스터 이동</a></li><li><a href="rev-0395-cvtsi2sd-cvttsd2si.html">REV-0395 — CVTSI2SD와 CVTTSD2SI: 정수-실수 변환</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>SUBPS</code>/<code>MULPS</code>/<code>SUBSS</code>/<code>MULSS</code> 명령어 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "SUBPS—Subtract Packed Single-Precision Floating-Point Values" / "MULPS" 섹션 기준 (2026-09-08 검증).</li><li>FMA(곱셈-누적 결합) 명령과의 관계: Intel SDM, "FMA Instruction Set" 개요 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

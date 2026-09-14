@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>libc 함수 사전: fopen fread fwrite fclose · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>libc 함수 사전: fopen fread fwrite fclose</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">ltrace</span><span class="tag">strace</span><span class="tag">objdump</span></div>
+<h2>한 줄 요약</h2>
+<p><code>fopen</code>/<code>fread</code>/<code>fwrite</code>/<code>fclose</code>는 <code>open</code>/<code>read</code>/<code>write</code>/<code>close</code> 시스템콜(REV-0634)을 감싸 <strong>애플리케이션 레벨 버퍼링</strong>을 제공하는 C 표준 입출력(stdio) 함수로, <code>FILE *</code> 구조체를 통해 상태를 관리하며 <code>fwrite</code>로 쓴 데이터가 즉시 디스크에 반영되지 않을 수 있다는 점이 리버싱/디버깅에서 자주 혼란을 준다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>call fopen@plt</code> 반환값(<code>FILE *</code>)이 <code>NULL</code>인지 확인하는 코드를 만나 파일 열기 실패 처리를 분석할 때</li><li><code>fwrite</code>로 데이터를 썼는데 <code>strace</code>로는 대응하는 <code>write</code> 시스템콜이 안 보여서 버퍼링 때문인지 확인하고 싶을 때</li><li><code>fread</code>의 반환값이 요청한 개수보다 작아서 파일 끝(EOF)인지 에러인지 구분하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<pre><code class="language-c">FILE *fopen(const char *pathname, const char *mode);
+size_t fread(void *ptr, size_t size, size_t nmemb, FILE *stream);
+size_t fwrite(const void *ptr, size_t size, size_t nmemb, FILE *stream);
+int    fclose(FILE *stream);</code></pre>
+<p><strong>fopen</strong>: <code>pathname</code>을 <code>mode</code>(<code>"r"</code>, <code>"w"</code>, <code>"a"</code>, <code>"rb"</code>, <code>"r+"</code> 등)에 따라 열고 <code>FILE *</code>(불투명 구조체 포인터)를 반환한다. 실패하면 <code>NULL</code>을 반환하고 <code>errno</code>를 설정한다. 내부적으로 <code>open(2)</code> 시스템콜을 호출해 실제 파일 디스크립터(fd)를 얻은 뒤, 그 fd를 감싸는 <code>FILE</code> 구조체(내부에 fd, 버퍼 포인터, 버퍼 크기, 현재 위치 등을 가짐)를 힙에 할당해 채운다. <code>rdi=pathname</code>, <code>rsi=mode</code>.</p>
+<p><strong>fread/fwrite</strong>: <code>size</code>바이트짜리 항목을 <code>nmemb</code>개 읽거나 쓴다. 반환값은 <strong>성공적으로 처리한 항목(요소) 개수</strong>이며, 요청한 <code>nmemb</code>보다 작으면 파일 끝에 도달했거나 에러가 발생한 것이다(<code>feof(stream)</code>/<code>ferror(stream)</code>으로 구분 가능). SysV x64 인자 순서는 <code>rdi=ptr</code>, <code>rsi=size</code>, <code>rdx=nmemb</code>, <code>rcx=stream</code>.</p>
+<p><strong>버퍼링</strong>: stdio 함수들은 기본적으로 데이터를 즉시 시스템콜로 내보내지 않고 <code>FILE</code> 구조체 안의 내부 버퍼(기본 완전 버퍼링, 터미널이면 라인 버퍼링)에 모아뒀다가 버퍼가 차거나, <code>fflush(stream)</code>이 호출되거나, <code>fclose</code>될 때 실제 <code>write(2)</code> 시스템콜로 내보낸다. 그래서 <code>fwrite</code> 호출 직후 <code>strace</code>로는 <code>write</code> 시스템콜이 안 보일 수 있고, 프로그램이 크래시로 비정상 종료되면 버퍼에 남아있던 데이터가 아예 디스크에 반영되지 않고 유실될 수 있다.</p>
+<p><strong>fclose</strong>: 버퍼에 남은 데이터를 <code>fflush</code>한 뒤 fd를 <code>close(2)</code>하고 <code>FILE</code> 구조체 메모리를 해제한다. 성공 시 <code>0</code>, 실패 시 <code>EOF</code>(-1)를 반환한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>call fopen@plt</code> 이후 반환값을 <code>test rax, rax</code> / <code>je fail</code>로 NULL 체크</li><li><code>call fread@plt</code>/<code>call fwrite@plt</code> 인자가 4개(<code>rdi, rsi, rdx, rcx</code>)로 세팅됨 — <code>read</code>/<code>write</code> 시스템콜 래퍼(REV-0634, 인자 3개)와 인자 개수로 구분 가능</li><li><code>strace</code>로 실행했을 때 프로그램 코드상 <code>fwrite</code> 호출 여러 번인데 실제 <code>write</code> 시스템콜은 한 번만(또는 몇 번만) 보임 — 버퍼링 증거</li><li><code>objdump -d</code>에서 <code>__fpending</code>, <code>__flbf</code> 같은 심볼이 함께 보이면 stdio 내부 버퍼 상태를 직접 조작/확인하는 코드</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>fopen</code>의 <code>mode</code> 문자열(<code>"r"</code>/<code>"w"</code>/<code>"rb"</code> 등)부터 확인해 읽기용인지 쓰기용인지 파악한다. 이후 <code>fread</code>/<code>fwrite</code>의 <code>size * nmemb</code>가 실제로 몇 바이트인지 계산한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>objdump -d ./chall | grep 'fopen@plt\|fread@plt\|fwrite@plt\|fclose@plt'</code>로 사용 여부 확인.</li><li>GDB에서 <code>break fopen</code> 후 <code>x/s $rdi</code>(경로), <code>x/s $rsi</code>(모드) 확인, <code>finish</code> 후 <code>print/x $rax</code>(FILE 포인터, NULL이면 실패).</li><li><code>break fread</code>(또는 fwrite) 후 <code>print $rsi</code>(size), <code>print $rdx</code>(nmemb)로 총 바이트 수(<code>size*nmemb</code>) 계산.</li><li><code>finish</code> 후 <code>print $rax</code>(실제 처리된 항목 개수)가 요청한 <code>nmemb</code>와 같은지 비교.</li><li><code>strace -e trace=open,openat,read,write,close ./chall</code>로 실제 시스템콜과 stdio 호출 횟수를 비교해 버퍼링 여부 확인.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">objdump -d ./chall | grep 'fopen@plt\|fread@plt\|fwrite@plt\|fclose@plt'
+ltrace -e 'fopen+fread+fwrite+fclose' ./chall
+strace -e trace=openat,read,write,close ./chall</code></pre>
+<p>GDB/Pwndbg: <code>break fopen</code>, <code>break fread</code>, <code>break fwrite</code>, <code>x/s $rdi</code>, <code>print/x $rax</code>, <code>print $rsi</code>, <code>print $rdx</code></p>
+<h2>출력 해석</h2>
+<ul><li><code>fopen</code> 반환값이 <code>0x0</code>(NULL)이면 파일 열기 실패 — 경로가 틀렸거나 권한 문제. <code>mode</code>에 <code>"r"</code>이 있는데 파일이 없으면 항상 이렇게 실패한다.</li><li><code>fread</code> 반환값이 <code>nmemb</code>보다 작으면 파일 끝에 도달(EOF)했거나 읽기 에러 — <code>ferror</code>/<code>feof</code> 호출이 뒤따르는지 확인하면 어느 쪽인지 알 수 있다.</li><li><code>strace</code>에서 예상보다 <code>write</code> 호출이 적게 보이면, 프로그램이 정상 종료(<code>fclose</code>나 <code>exit</code>를 거쳐 stdio가 자동 flush)했는지, 아니면 비정상 종료로 데이터가 유실됐는지 확인해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>fwrite</code> 호출이 곧바로 디스크 반영을 의미한다고 생각하는 것 — 버퍼링 때문에 <code>fclose</code>나 <code>fflush</code> 전까지는 실제 파일에 안 보일 수 있다.</li><li><code>fread</code>/<code>fwrite</code>의 반환값을 "바이트 수"로 착각하는 것 — 반환값은 <strong>항목(요소) 개수</strong>다. 실제 바이트 수를 알려면 반환값에 <code>size</code>를 곱해야 한다.</li><li><code>fopen</code> 실패를 세그폴트로 이어지는 원인으로 못 찾는 것 — <code>NULL</code>이 된 <code>FILE *</code>을 그대로 <code>fread</code>/<code>fwrite</code>에 넘기면 그 안에서 크래시가 나므로, 크래시 지점이 아니라 그 이전 <code>fopen</code> 반환값부터 확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>버퍼링 없는 저수준 시스템콜 래퍼(open/read/write/close)와 비교하려면 → REV-0634.</li><li>라이브러리 호출과 실제 시스템콜을 함께 비교하려면 → REV-0111(ltrace), REV-0112(strace).</li><li>사용자 표준 입력 함수(scanf/fgets)와의 차이가 궁금하면 → REV-0109.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">FILE *fp = fopen("data.bin", "rb");
+if (!fp) { /* 실패 처리 */ }
+char buf[64];
+size_t n = fread(buf, 1, sizeof(buf), fp);  // 최대 64바이트 읽기, n=실제 읽은 바이트 수
+fclose(fp);</code></pre>
+<pre><code class="language-gdb">(gdb) break fread
+(gdb) run
+(gdb) print $rsi
+$1 = 1
+(gdb) print $rdx
+$2 = 64
+(gdb) finish
+Value returned is $3 = 40</code></pre>
+<p><code>size=1</code>, <code>nmemb=64</code>인데 반환값이 <code>40</code>이므로 요청한 64바이트 중 실제로는 40바이트만 읽혔다 — 파일 크기가 40바이트였거나 EOF에 먼저 도달했다는 뜻이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0634-libc-open-read-write-close.html">REV-0634 — libc 함수 사전: open read write close(시스템콜 래퍼)</a></li><li><a href="rev-0112-strace-basics.html">REV-0112 — strace로 시스템 콜에서 힌트 찾기</a></li><li><a href="rev-0111-ltrace-basics.html">REV-0111 — ltrace로 라이브러리 호출 빠르게 보기</a></li><li><a href="rev-0109-input-functions.html">REV-0109 — scanf fgets read 입력 추적</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>fopen</code>/<code>fread</code>/<code>fwrite</code>/<code>fclose</code> 시그니처와 버퍼링 규칙: ISO C 표준(C11 7.21.5, 7.21.8) 및 Linux man-pages <code>fopen(3)</code>, <code>fread(3)</code>, <code>fclose(3)</code> 기준.</li><li>stdio 버퍼링 종류(완전/라인/버퍼링 없음)와 <code>fflush</code> 관계: <code>setvbuf(3)</code> man 페이지 및 glibc 매뉴얼(stdio 섹션) 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

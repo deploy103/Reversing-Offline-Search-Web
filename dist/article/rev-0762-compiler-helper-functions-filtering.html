@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>컴파일러가 생성한 헬퍼 함수(__security_check_cookie 등) 걸러내기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>컴파일러가 생성한 헬퍼 함수(__security_check_cookie 등) 걸러내기</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p><code>__security_check_cookie</code>, <code>_RTC_CheckStackVars</code>, <code>__chkstk</code>, <code>__memcpy_chk</code>, <code>__stack_chk_fail</code> 같은 함수들은 문제 출제자가 작성한 코드가 아니라 컴파일러 보안/안전 옵션(<code>/GS</code>, <code>/RTC1</code>, <code>-fstack-protector</code>, <code>_FORTIFY_SOURCE</code>)이 <strong>거의 모든 함수 안에 자동으로 끼워 넣는 가드(guard) 호출</strong>이므로, 이름 패턴과 "인자가 문제 도메인과 무관하다"는 특징만 알아두면 함수 하나하나를 열어보지 않고도 빠르게 통과시킬 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>REV-0167(Compiler Generated Code와 실제 문제 로직 구분)에서 진입점~<code>main</code> 사이의 부트스트랩 체인은 걸렀는데, <code>main</code> *안*의 여러 함수 곳곳에서도 똑같은 패턴의 낯선 호출이 반복해서 보일 때</li><li>함수 에필로그 직전에 <code>mov ecx, [rbp+var_8]</code> 후 알 수 없는 함수를 호출하는 코드가 서로 다른 함수 수십 개에서 토씨 하나 안 틀리고 똑같이 나올 때</li><li><code>memcpy</code>/<code>sprintf</code>가 아니라 <code>__memcpy_chk</code>/<code>__sprintf_chk</code>처럼 뒤에 <code>_chk</code>가 붙은 이름이 보여서 원래 함수와 다른 것인지 헷갈릴 때</li><li>스택 크기가 큰 함수 초입에 <code>__chkstk</code>/<code>__chkstk_ms</code> 호출이 있어서 이게 취약점 관련 코드인지 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>REV-0167과의 차이 — "체인"이 아니라 "산발적으로 흩뿌려진 호출"</h3>
+<p>REV-0167은 <code>entry</code>/<code>_start</code>부터 <code>main</code>까지 이어지는 <strong>부트스트랩 호출 체인</strong>을 다룬다. 이 문서는 그와 별개로, <code>main</code> 진입 이후 사용자 로직이 담긴 함수들 <strong>내부 곳곳에</strong> 컴파일러가 개별적으로 삽입하는 짧은 가드 호출을 다룬다. 즉 REV-0167이 "입구에서 한 번 거르는 필터"라면, 이 문서는 "모든 함수 내부에 반복적으로 나타나는 잡음을 거르는 필터"다.</p>
+<h3>MSVC 계열 헬퍼 함수</h3>
+<table><thead><tr><th>이름</th><th>삽입 조건</th><th>역할</th></tr></thead><tbody><tr><td><code>__security_check_cookie</code></td><td><code>/GS</code>(기본 활성화)</td><td>함수 에필로그 직전, 스택 카나리 값이 프롤로그에서 심은 값과 같은지 검사. 다르면 <code>__fastfail</code>로 즉시 종료</td></tr><tr><td><code>__security_init_cookie</code></td><td><code>/GS</code></td><td>프로그램 시작 시 카나리 시드 값을 한 번 초기화(REV-0167의 부트스트랩 체인에 위치)</td></tr><tr><td><code>_RTC_CheckStackVars</code> / <code>_RTC_CheckStackVars2</code></td><td><code>/RTC1</code>(디버그 빌드)</td><td>지역 변수 앞뒤에 심어둔 패턴이 변조됐는지 검사(버퍼 오버런 조기 탐지용, 디버그 전용이라 릴리스 빌드엔 없음)</td></tr><tr><td><code>__report_rangecheckfailure</code></td><td><code>/RTC1</code></td><td>위 검사 실패 시 호출되는 종료 루틴</td></tr><tr><td><code>__chkstk</code> / <code>__chkstk_ms</code></td><td>스택 프레임이 한 페이지(4KB)보다 클 때 자동 삽입</td><td>스택을 한 번에 크게 확장하기 전에 가드 페이지를 순차적으로 터치해 스택 오버플로우로 인한 크래시를 예방</td></tr><tr><td><code>_alloca_probe</code></td><td><code>alloca()</code>/가변 크기 지역 배열 사용 시</td><td>위와 유사하게 스택 확장 전 안전 검사</td></tr><tr><td><code>__GSHandlerCheck</code> / <code>__CxxFrameHandler3</code>/<code>4</code></td><td>C++ 예외 처리, <code>/GS</code></td><td>SEH/C++ 예외 처리 프레임 검증(REV-0446과도 연관)</td></tr></tbody></table>
+<h3>GCC/Clang(glibc) 계열 헬퍼 함수</h3>
+<table><thead><tr><th>이름</th><th>삽입 조건</th><th>역할</th></tr></thead><tbody><tr><td><code>__stack_chk_fail</code></td><td><code>-fstack-protector</code>(대부분 배포판 기본 활성화)</td><td>스택 카나리(<code>__stack_chk_guard</code>)가 변조됐을 때 호출되어 프로그램을 즉시 종료(REV-0442, REV-0676과 연관)</td></tr><tr><td><code>__memcpy_chk</code> / <code>__memset_chk</code> / <code>__sprintf_chk</code> / <code>__strcpy_chk</code></td><td><code>_FORTIFY_SOURCE</code> 매크로(Ubuntu/Debian 기본 활성화)</td><td>원래 함수에 "버퍼 크기" 인자를 하나 추가해 컴파일 타임에 알 수 있는 크기 범위를 넘으면 즉시 중단시키는 안전 래퍼. <strong>동작은 원본 함수와 완전히 동일</strong>하므로 <code>memcpy</code>로 그대로 치환해서 읽어도 무방하다</td></tr><tr><td><code>__assert_fail</code></td><td><code>assert()</code> 매크로</td><td>디버그 빌드에서 조건이 거짓일 때 메시지를 출력하고 종료</td></tr><tr><td><code>__cxa_throw</code> / <code>__cxa_begin_catch</code> / <code>__cxa_end_catch</code></td><td>C++ 예외(<code>throw</code>/<code>catch</code>)</td><td>예외 처리 런타임 지원 함수</td></tr></tbody></table>
+<h3>공통 식별 특징</h3>
+<p>이 함수들은 (1) 인자가 문제 도메인의 값(사용자 입력, 플래그 후보 문자열 등)과 무관하게 컴파일러가 자동으로 계산한 값(카나리 값, 버퍼 크기 상수, 프레임 크기)이고, (2) 서로 다른 함수 수십 개에서 완전히 동일한 바이트 패턴으로 반복되며, (3) 함수 자체의 내부 로직이 항상 똑같다(버전 하나로 고정). 이 세 가지 중 두 가지 이상이 겹치면 "가드 함수"로 잠정 분류하고 넘어가도 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>함수 에필로그 근처에서 <code>mov rcx, [rbp+var_8]</code> → <code>call __security_check_cookie</code> 패턴이 함수마다 반복</li><li>디스어셈블리에 <code>_chk</code> 접미사가 붙은 함수 이름이 보이는데, 원래 알던 CRT 함수(<code>memcpy</code>, <code>sprintf</code>)와 인자 개수가 하나 더 많음</li><li>함수 진입 직후, 지역 변수를 채우기도 전에 <code>call __chkstk</code>가 먼저 나옴(큰 지역 배열을 선언한 함수에서 흔함)</li><li>IDA Functions window에서 이런 함수들이 FLIRT 인식으로 회색/라이브러리 함수 색상으로 표시되거나, Ghidra에서 Function ID로 실제 이름이 그대로 붙어 있음(REV-0157)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>분석 중인 함수의 에필로그 직전 호출이 위 표의 이름과 일치하는지부터 확인한다. 일치하면 그 호출 자체는 검증 로직과 무관하다고 확정하고, 그 호출의 인자(카나리 변수)가 아니라 그 앞뒤에 있는 실제 조건 분기·반복문에 집중한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>함수를 열어 에필로그(<code>leave</code>/<code>ret</code> 또는 <code>mov rsp, rbp</code> 계열) 직전 호출을 확인한다.</li><li>호출 대상 이름이 위 두 표(MSVC/GCC)에 있으면 가드 함수로 분류하고 그 줄은 건너뛴다.</li><li>이름이 FLIRT/Function ID로 인식되지 않아 <code>sub_</code>/<code>FUN_</code>로 남아 있다면, 인자가 스택 지역 변수 하나뿐이고 반환값을 아무 데도 안 쓰거나 단순 비교 후 종료 계열 API(<code>__fastfail</code>, <code>abort</code>, <code>exit</code>)만 호출하는지 확인해 패턴으로 추정한다.</li><li><code>_chk</code> 접미사 함수는 원래 함수 이름(<code>memcpy</code>, <code>sprintf</code> 등)으로 마음속에서 치환해서 읽고, 추가된 크기 인자는 무시해도 로직 이해에는 지장이 없다.</li><li><code>__chkstk</code>/<code>_alloca_probe</code>가 보이면 "이 함수가 큰 지역 버퍼를 쓴다"는 정보로만 활용하고 넘어간다(버퍼 크기를 스택 프레임 배치 추정에 참고할 수는 있다).</li><li>이 필터를 통과한 뒤 남은 코드—조건 분기, 반복문, 사용자 정의 함수 호출—만 REV-0163~0166 방식으로 분석을 이어간다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: Functions window에서 이름 필터에 <code>chk</code>, <code>security</code>, <code>RTC</code> 입력해 일괄 확인, FLIRT 재적용은 <code>File → Load file → FLIRT signature file</code></li><li>Ghidra: Symbol Tree 필터에 동일 키워드 입력, Function ID는 <code>Analysis → One Shot → Function ID</code></li><li>공통: 가드 함수로 확정한 주소는 REV-0147/0161 방식으로 색상 태그나 주석(<code>// guard, skip</code>)을 남겨 다음에 다시 볼 때 바로 알아보게 한다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>__security_check_cookie(v)</code>에서 <code>v</code>가 지역 변수라면 그 값은 프롤로그에서 전역 <code>__security_cookie</code>와 XOR된 형태로 저장된 카나리이며, 사용자 입력과는 무관하다.</li><li><code>__memcpy_chk(dst, src, len, dstlen)</code>에서 마지막 인자 <code>dstlen</code>이 컴파일 타임 상수라면 컴파일러가 <code>dst</code> 버퍼의 실제 크기를 알고 있었다는 뜻이므로, 오히려 그 버퍼의 진짜 크기를 역으로 알아내는 데 활용할 수 있다(디컴파일러가 지역 배열 크기를 잘못 추정했을 때 교차검증용으로 유용).</li><li>가드 함수 호출 실패 시 도달하는 코드(<code>__fastfail</code>, <code>__stack_chk_fail</code> 이후)는 일반적인 실행 경로에서는 도달하지 않으므로, 이 경로를 검증 로직의 일부로 착각하지 않아야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>__security_check_cookie</code>나 <code>__stack_chk_fail</code> 호출을 보고 "이 문제는 스택 카나리 우회가 핵심이다"라고 성급히 결론짓는 것 — pwnable이 아닌 일반 crackme/reversing 문제라면 이 코드는 거의 항상 무관한 잡음이다.</li><li><code>_chk</code> 접미사가 붙은 함수를 완전히 다른 함수로 착각하는 것 — <code>__strcpy_chk</code>는 <code>strcpy</code>와 동작이 사실상 같고 인자만 하나 늘어난 것이다.</li><li>FORTIFY 관련 함수가 안 보인다고 "이 바이너리는 이런 보호가 없다"고 단정하는 것 — 컴파일 옵션에 따라 아예 없을 수도 있으므로 없다고 문제가 되는 것은 아니다.</li><li>이런 가드 함수들을 걸러내다가 실제로 가드 함수 근처에 숨겨둔 사용자 코드(가드 호출 바로 앞에 추가된 검증 조건 등)까지 통째로 건너뛰는 것 — 걸러야 할 것은 가드 함수 "호출 그 자체"이지 그 주변 코드 전체가 아니다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>진입점부터 <code>main</code>까지의 부트스트랩 체인 자체가 헷갈린다면 → REV-0167(Compiler Generated Code와 실제 문제 로직 구분)</li><li>스택 카나리의 정확한 체크 시퀀스가 궁금하다면 → REV-0442(스택 카나리 체크 시퀀스 분석), REV-0676(AT_RANDOM과 스택 카나리 초기화 관계)</li><li>가드 함수를 걸러낸 뒤 남은 로직에서 검증 함수를 계속 좁혀가고 싶다면 → REV-0164(Imports에서 검증 함수 후보 좁히기), REV-0166(함수 Call Graph로 핵심 로직 좁히기)</li><li>FLIRT/Function ID로 인식이 안 되는 정적 바이너리라면 → ../linux-elf/rev-0646-statically-linked-elf-analysis.md</li></ul>
+<h2>미니 예제</h2>
+<p>Ghidra 디컴파일 결과가 다음과 같다고 하자.</p>
+<pre><code class="language-c">undefined8 check_password(char *param_1) {
+  long in_FS_OFFSET;
+  int local_2c;
+  long local_28;
+
+  local_28 = *(long *)(in_FS_OFFSET + 0x28);
+  local_2c = strcmp(param_1, "s3cr3t_flag");
+  if (*(long *)(in_FS_OFFSET + 0x28) != local_28) {
+    __stack_chk_fail();
+  }
+  return CONCAT44(0, local_2c == 0);
+}</code></pre>
+<p><code>in_FS_OFFSET + 0x28</code>을 읽고 마지막에 비교하는 부분, 그리고 <code>__stack_chk_fail()</code> 호출은 전형적인 GCC 스택 카나리 패턴(REV-0442)이다. 이 부분을 무시하고 나면 실제 로직은 단 한 줄, <code>strcmp(param_1, "s3cr3t_flag")</code>뿐이라는 것이 바로 드러난다. 가드 코드를 걸러내지 않았다면 이 짧은 함수도 훨씬 복잡해 보였을 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0167-compiler-vs-problem-logic.html">REV-0167 — Compiler Generated Code와 실제 문제 로직 구분</a></li><li><a href="rev-0442-stack-canary-check.html">REV-0442 — 스택 카나리(Stack Canary) 체크 시퀀스 분석</a></li><li><a href="rev-0676-at-random-stack-canary.html">REV-0676 — AT_RANDOM과 스택 카나리 초기화 관계</a></li><li><a href="rev-0157-ghidra-auto-analysis.html">REV-0157 — Ghidra Auto Analysis 옵션</a></li><li><a href="rev-0761-crt-import-names-logic-inference.html">REV-0761 — Import된 CRT 함수 이름으로 원본 로직 추정하기</a></li><li><a href="rev-0767-flag-verification-full-static-recovery.html">REV-0767 — 정적분석만으로 Flag 검증 로직을 완전히 복원하는 절차</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>MSVC <code>/GS</code>, <code>/RTC1</code>, <code>__security_check_cookie</code>, <code>_RTC_CheckStackVars</code>, <code>__chkstk</code> 동작은 Microsoft Learn의 Buffer Security Check(<code>/GS</code>) 및 Run-Time Error Checks(<code>/RTC</code>) 공식 문서 기준으로 정리했다.</li><li>GCC <code>-fstack-protector</code>와 <code>__stack_chk_fail</code>, glibc <code>_FORTIFY_SOURCE</code>(<code>__memcpy_chk</code> 등 <code>*_chk</code> 계열)는 GCC 공식 문서 및 glibc 공식 매뉴얼(Fortification) 기준이다.</li><li>IDA FLIRT/Ghidra Function ID를 통한 라이브러리 함수 자동 인식은 각 도구의 공식 Help 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

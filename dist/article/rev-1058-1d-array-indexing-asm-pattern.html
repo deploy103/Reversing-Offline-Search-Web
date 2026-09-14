@@ -1,0 +1,109 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>1차원 배열 인덱싱이 어셈블리에서 보이는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / c-analysis</div>
+<article class="article-body">
+<h1>1차원 배열 인덱싱이 어셈블리에서 보이는 패턴</h1>
+<div class="article-meta"><span class="tag">c-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>arr[idx]</code>는 어셈블리에서 "인덱스를 64비트로 부호 확장 → 원소 크기만큼 스케일(SIB의 <code>*4</code>, <code>*8</code> 등) → 베이스 포인터에 더해서 역참조"하는 짧은 명령어 시퀀스로 컴파일되며, <code>int</code> 인덱스를 쓰는 순간 거의 항상 <code>cdqe</code>/<code>movsxd</code> 같은 부호 확장 명령이 먼저 끼어든다는 게 초보자가 자주 놓치는 부분이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>arr[idx]</code> 한 줄짜리 C 코드가 어셈블리에서 왜 <code>cdqe</code> 같은 낯선 명령어를 포함해 3~4줄로 늘어나는지 궁금할 때</li><li><code>mov eax, [rdx+rax*4]</code>처럼 대괄호 안에 곱셈이 있는 코드를 소스 레벨 배열 접근과 정확히 대응시키고 싶을 때</li><li>함수 인자로 받은 포인터(<code>int *arr</code>)와 인덱스(<code>int idx</code>)가 각각 어느 레지스터/스택 위치에 저장되고 어떻게 조합되는지 처음부터 끝까지 따라가고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>원본 C 코드</h3>
+<pre><code class="language-c">int get_at(int *arr, int idx) {
+    return arr[idx];
+}</code></pre>
+<h3>-O0 x86-64 어셈블리 (SysV, Intel 문법)</h3>
+<pre><code class="language-asm">get_at:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 0x10
+    mov     [rbp-8], rdi     ; arr  (rdi: 첫 번째 인자)
+    mov     [rbp-0xc], esi    ; idx  (esi: 두 번째 인자)
+    mov     eax, [rbp-0xc]    ; eax = idx
+    cdqe                       ; rax = (int64_t)eax  (idx를 64비트로 부호 확장)
+    mov     rdx, [rbp-8]       ; rdx = arr
+    mov     eax, [rdx+rax*4]   ; eax = *(arr + idx*4) = arr[idx]
+    leave
+    ret</code></pre>
+<h3>줄 단위 대응</h3>
+<ul><li><code>mov [rbp-8], rdi</code> / <code>mov [rbp-0xc], esi</code> — 함수 인자 두 개를 각각의 지역 스택 슬롯으로 옮기는, <code>-O0</code>에서 거의 항상 보이는 인자 저장 코드다.</li><li><code>mov eax, [rbp-0xc]</code> / <code>cdqe</code> — <code>idx</code>(32비트 <code>int</code>)를 포인터 연산에 쓰기 위해 64비트로 부호 확장한다. <code>cdqe</code>는 <code>eax</code>의 값을 부호 확장해서 <code>rax</code>에 넣는 전용 명령어다(REV-0041). <strong>인덱스가 <code>int</code>(부호 있는 32비트)이고 배열 접근에 쓰인다면 거의 항상 이 부호 확장 명령이 먼저 나온다</strong> — 이걸 놓치면 왜 <code>mov</code>가 한 줄 더 끼어드는지 헷갈릴 수 있다. 인덱스가 <code>size_t</code>나 <code>unsigned long</code>처럼 이미 64비트라면 이 확장 명령 자체가 필요 없다.</li><li><code>mov rdx, [rbp-8]</code> — 배열 베이스 포인터(<code>arr</code>)를 다시 레지스터로 불러온다.</li><li><code>mov eax, [rdx+rax*4]</code> — SIB 주소 지정 방식으로 <code>arr + idx*4</code>를 계산해서 그 주소를 역참조한다. <code>4</code>는 <code>sizeof(int)</code>이며, 이 스케일 값이 곧 배열 원소 타입의 크기를 알려주는 가장 직접적인 단서다(REV-0034에서 원소 타입별 스케일 표를 참고).</li></ul>
+<h3>디컴파일러가 복원한 pseudocode</h3>
+<pre><code class="language-c">int get_at(int *arr, int idx)
+{
+  return arr[idx];
+}</code></pre>
+<p><code>cdqe</code>, SIB 주소 계산 같은 저수준 세부사항은 디컴파일러가 완전히 흡수해서 원본과 거의 동일한 <code>arr[idx]</code> 표현으로 되돌려준다. 배열 인덱싱은 if/for 같은 제어 흐름 구문과 달리 <strong>소스 레벨 문법과 어셈블리 패턴이 거의 1:1로 대응</strong>되는 편이라, 디컴파일러 결과의 신뢰도가 높은 대표적인 케이스다. 단, IDA/Ghidra가 <code>arr</code>의 타입을 <code>int *</code>로 정확히 추론하지 못하면 <code>*(int *)(arr + idx * 4)</code>처럼 포인터 캐스팅 형태로 더 원시적으로 보여줄 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>cdqe</code> 또는 <code>movsxd reg64, reg32</code>가 배열 접근 코드 직전에 나타난다(인덱스가 부호 있는 32비트일 때).</li><li><code>[reg+reg*N]</code>(N=1,2,4,8) 형태로 대괄호 안에 곱셈이 들어간 SIB 주소 지정.</li><li>반복문 안에서 인덱스 레지스터가 매번 <code>add</code>/<code>inc</code>로 증가하고, 그 값이 계속 같은 배열 접근에 재사용된다.</li><li>원소 크기가 1/2/4/8이 아니면(구조체 배열 등) <code>imul</code>로 대체된다 — 이 경우는 REV-1064(구조체 배열 순회)와 함께 봐야 한다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>[reg+reg*N]</code> 형태를 찾으면 N 값부터 확인한다. N이 원소 타입 크기(1/2/4/8)와 일치하는지 보고, 그 앞에 <code>cdqe</code>/<code>movsxd</code>가 있는지 확인해서 인덱스 변수의 원래 타입이 부호 있는 32비트였는지 짐작한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>배열 접근으로 의심되는 <code>[reg+reg*N]</code> 명령을 찾는다.</li><li>N 값으로 원소 크기(따라서 원소 타입)를 추정한다.</li><li>인덱스 레지스터가 어디서 왔는지(함수 인자, 반복문 카운터 등) 역추적한다.</li><li>베이스 레지스터가 어디서 왔는지(함수 인자로 받은 포인터, 지역 배열의 시작 주소 등) 확인한다.</li><li><code>cdqe</code>/<code>movsxd</code>가 있다면 원본 인덱스 변수가 32비트 부호 있는 정수였다고 판단한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code>(gdb) disas get_at
+(gdb) print $rdi          ; arr 포인터 값
+(gdb) print $esi           ; idx 값
+(gdb) x/1dw $rdi+$rsi*4   ; arr[idx]를 직접 메모리에서 읽어 대조</code></pre>
+<p>IDA: 배열로 쓰이는 포인터 변수에서 <code>Y</code>(Set item type)로 배열 타입을 지정하면 이후 <code>[rdx+rax*4]</code> 패턴이 자동으로 <code>arr[idx]</code> 형태로 디컴파일된다.</p>
+<h2>출력 해석</h2>
+<ul><li><code>[reg+reg*4]</code>의 4는 <code>int</code>/<code>float</code> 배열임을 강하게 시사한다. 1이면 <code>char</code>/<code>byte</code> 배열, 8이면 <code>long</code>/<code>double</code>/포인터 배열이다.</li><li><code>cdqe</code>가 없다면 인덱스가 이미 64비트였거나(<code>size_t</code>, <code>long</code>), 혹은 <code>unsigned int</code>라서 부호 확장이 아니라 단순 상위 32비트 클리어(<code>mov eax, eax</code>처럼 보이거나 그냥 32비트 레지스터를 그대로 다음 명령의 하위 32비트로 재사용)로 처리된 경우다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>cdqe</code> 한 줄을 실제 계산과 무관한 노이즈로 여기고 건너뛰는 것 — 이는 인덱스 타입의 부호 여부를 알려주는 중요한 단서다.</li><li>SIB의 스케일 값(N)을 무시하고 "그냥 곱셈이네" 하고 넘어가는 것 — N이 곧 배열 원소 타입의 크기다.</li><li>상수 인덱스(<code>arr[3]</code>처럼 컴파일 시점에 고정된 인덱스)는 곱셈 없이 바로 고정 오프셋(<code>[rdx+0xc]</code>)으로 최적화된다는 것을 놓치고 이걸 구조체 필드 접근(REV-1060)으로 오인하는 것 — 반복문 안에서 인덱스가 변하는지, 상수인지로 구분해야 한다.</li><li><code>-O2</code> 이상에서는 배열 접근이 벡터화(SIMD, <code>movdqu</code> 등으로 여러 원소를 한 번에 로드)되거나, 인덱스 범위가 컴파일 시점에 확정되면 배열 접근 자체가 상수로 치환(constant folding)될 수 있다는 점을 놓치는 것 — 이 경우 <code>[reg+reg*4]</code> 패턴이 전혀 안 보일 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>배열 원소 타입별 스케일 표, 구조체 배열의 비표준 스케일 처리 등 더 깊은 내용은 → REV-0034(배열 접근이 어셈블리로 변하는 방식).</li><li>2차원 배열로 확장된 경우가 궁금하면 → REV-1059(2차원 배열 인덱싱이 어셈블리에서 보이는 패턴).</li><li>배열 원소가 구조체인 경우가 궁금하면 → REV-1064(구조체 배열 순회가 어셈블리에서 보이는 패턴).</li><li>부호 확장 명령어(<code>cdqe</code>, <code>movsx</code>) 자체의 세부 동작이 헷갈리면 → REV-0041.</li><li>포인터와 역참조의 기본 원리가 헷갈리면 → REV-1062(포인터 역참조가 어셈블리에서 보이는 패턴), REV-0033.</li></ul>
+<h2>미니 예제</h2>
+<p>배열에 값을 쓰는 방향(대입)도 같은 SIB 패턴을 그대로 쓰되 방향만 반대다.</p>
+<pre><code class="language-c">void set_at(int *arr, int idx, int value) {
+    arr[idx] = value;
+}</code></pre>
+<pre><code class="language-asm">set_at:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 0x18
+    mov     [rbp-8], rdi      ; arr
+    mov     [rbp-0xc], esi     ; idx
+    mov     [rbp-0x10], edx    ; value
+    mov     eax, [rbp-0xc]     ; idx
+    cdqe
+    mov     rdx, [rbp-8]       ; arr
+    mov     ecx, [rbp-0x10]    ; value
+    mov     [rdx+rax*4], ecx    ; arr[idx] = value
+    leave
+    ret</code></pre>
+<p>읽기(<code>get_at</code>)와 쓰기(<code>set_at</code>)는 <code>mov</code>의 오퍼랜드 방향만 반대이고, 주소 계산 부분(<code>cdqe</code>, <code>[rdx+rax*4]</code>)은 완전히 동일하다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0034-array-access-in-asm.html">REV-0034 — 배열 접근이 어셈블리로 변하는 방식</a></li><li><a href="rev-1059-2d-array-indexing-asm-pattern.html">REV-1059 — 2차원 배열 인덱싱이 어셈블리에서 보이는 패턴</a></li><li><a href="rev-1062-pointer-dereference-asm-pattern.html">REV-1062 — 포인터 역참조가 어셈블리에서 보이는 패턴</a></li><li><a href="rev-1064-struct-array-traversal-asm-pattern.html">REV-1064 — 구조체 배열 순회가 어셈블리에서 보이는 패턴</a></li><li><a href="rev-0042-lea.html">REV-0042 — LEA: 주소 계산인데 왜 산술 연산처럼 보이는가</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>x86-64 SIB(Scale-Index-Base) 주소 지정 방식과 스케일 제약(1/2/4/8): Intel 64 and IA-32 Architectures Software Developer's Manual, Vol.2 기준.</li><li>C 배열 인덱싱과 포인터 산술의 동치성(<code>arr[idx] == *(arr+idx)</code>) 및 부호 확장 규칙: ISO C 표준(C11) 6.5.2.1, 6.3.1.3 기준 (2026-09-10 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

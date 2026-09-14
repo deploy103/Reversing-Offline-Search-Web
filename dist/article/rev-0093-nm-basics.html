@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nm으로 심볼 찾기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>nm으로 심볼 찾기</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">입문</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">nm</span><span class="tag">binutils</span></div>
+<h2>한 줄 요약</h2>
+<p><code>nm</code>은 ELF 파일의 심볼 테이블(함수/전역 변수 이름과 주소)만 뽑아서 간단한 한 줄 목록으로 보여주는 도구로, <code>main</code>이나 특정 함수의 주소를 가장 빠르게 확인할 때 쓴다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>main</code>이나 특정 함수의 주소를 딱 한 줄로 빠르게 확인하고 싶을 때</li><li>바이너리가 strip됐는지 아닌지 빠르게 판단하고 싶을 때</li><li>정적 라이브러리(<code>.a</code>)나 오브젝트 파일(<code>.o</code>) 안에 어떤 함수가 정의/미정의 상태인지 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p><code>nm</code>(name list)은 <code>readelf -s</code>, <code>objdump -t</code>와 사실상 같은 데이터(심볼 테이블)를 보여주지만, 출력이 훨씬 간결하다 — <code>주소 타입 이름</code> 딱 세 컬럼뿐이다. 빠르게 "이 함수가 있나 없나, 주소가 뭔가"만 확인할 때는 <code>nm</code>이 가장 타이핑이 짧고 결과도 읽기 쉽다.</p>
+<h3>심볼 타입 문자 (가장 자주 보는 것들)</h3>
+<ul><li><code>T</code> (대문자) — <code>.text</code>에 정의된 전역(external) 함수. <strong>이 바이너리 안에 코드가 실제로 있다</strong>는 뜻.</li><li><code>t</code> (소문자) — <code>.text</code>에 정의된 지역(static/local) 함수.</li><li><code>U</code> — Undefined. 이 심볼은 여기 정의되어 있지 않고 <strong>외부(동적 라이브러리)에서 가져와야 한다.</strong> <code>printf</code>, <code>malloc</code> 같은 libc 함수가 여기 해당.</li><li><code>D</code> / <code>d</code> — 초기화된 데이터(<code>.data</code>) 전역/지역 변수.</li><li><code>B</code> / <code>b</code> — 초기화 안 된 데이터(<code>.bss</code>) 전역/지역 변수.</li><li><code>R</code> / <code>r</code> — 읽기 전용 데이터(<code>.rodata</code>).</li><li><code>W</code> — Weak symbol(약한 심볼, 다른 곳에서 같은 이름이 정의되면 그쪽이 우선됨).</li></ul>
+<p>대문자는 전역(다른 파일에서도 보임, <code>GLOBAL</code> bind), 소문자는 지역(그 파일 안에서만 보임, <code>LOCAL</code> bind)이라는 규칙을 기억하면 <code>readelf -s</code>의 <code>Bind</code> 컬럼과 바로 대응된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>nm ./chall</code> 실행 시 <code>nm: chall: no symbols</code>라고 나오면 strip된 바이너리(REV-0010 참고)</li><li>결과가 아주 많이 나오면 동적 심볼(<code>.dynsym</code>)까지 포함해서 보고 있는지, <code>.symtab</code>(전체 심볼)까지 있는지 구분해서 봐야 함</li></ul>
+<h2>가장 먼저 할 것</h2>
+<pre><code class="language-bash">nm ./chall | grep ' T main'</code></pre>
+<p><code>main</code>이 strip 안 된 상태로 남아있는지, 주소가 무엇인지 한 줄로 바로 확인한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 기본 실행 — 전체 심볼 테이블(.symtab)</strong></p>
+<pre><code class="language-bash">nm ./chall</code></pre>
+<p>출력 예:</p>
+<pre><code>0000000000004010 B __bss_start
+0000000000004010 b completed.0
+                 U __libc_start_main@GLIBC_2.34
+0000000000001149 T main
+0000000000001060 T _start
+0000000000001040 T puts@plt</code></pre>
+<p>strip된 바이너리라면:</p>
+<pre><code class="language-bash">$ nm ./chall_stripped
+nm: chall_stripped: no symbols</code></pre>
+<p><strong>2) 동적 심볼만 보기 (<code>-D</code>) — strip돼도 대부분 남아있음</strong></p>
+<pre><code class="language-bash">nm -D ./chall</code></pre>
+<p><code>.symtab</code>이 지워진 strip 바이너리라도 동적 링킹에 필요한 <code>.dynsym</code>은 대부분 남아있어서, <code>-D</code> 옵션으로는 <code>printf</code>, <code>puts</code> 같은 임포트된 라이브러리 함수 이름을 여전히 볼 수 있다(단, <code>main</code>처럼 사용자 정의 함수는 안 보임 — 그건 <code>.symtab</code>에만 있었기 때문).</p>
+<p><strong>3) 주소순 정렬</strong></p>
+<pre><code class="language-bash">nm -n ./chall     # 주소 오름차순 정렬 (기본은 이름순)</code></pre>
+<p><strong>4) 정의된 심볼만 필터링 (Undefined 제외)</strong></p>
+<pre><code class="language-bash">nm ./chall | grep -v ' U '</code></pre>
+<p><strong>5) Undefined(외부에서 가져오는) 심볼만 보기 — 이 바이너리가 뭘 쓰는지 파악</strong></p>
+<pre><code class="language-bash">nm -D ./chall | grep ' U '</code></pre>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">nm ./chall              # 심볼 테이블 (.symtab, strip되면 실패)
+nm -D ./chall           # 동적 심볼 (.dynsym, strip돼도 대부분 남음)
+nm -n ./chall           # 주소순 정렬
+nm -C ./chall           # C++ 이름 demangle (예: _Z3fooi -&gt; foo(int))
+nm --size-sort ./chall  # 크기순 정렬(큰 함수부터, 핵심 로직 함수 추정에 유용)</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>nm: no symbols</code>는 "<code>.symtab</code> 섹션이 없다"는 뜻이지 파일이 손상됐다는 뜻이 아니다. strip 명령이 지운 것뿐이며 실행에는 전혀 지장이 없다.</li><li><code>--size-sort</code> 결과에서 가장 큰 함수들이 대개 사용자가 작성한 핵심 로직일 확률이 높다 — 라이브러리 초기화 코드는 대체로 작고 반복적이다.</li><li><code>U printf@GLIBC_2.2.5</code>처럼 버전 문자열이 붙는 것은 glibc의 심볼 버저닝(symbol versioning) 때문 — 같은 이름의 함수가 glibc 버전마다 다른 구현일 수 있어서, 어떤 버전의 ABI를 요구하는지 명시된 것이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>nm: no symbols</code>가 나오면 "이 파일은 분석 불가능"이라고 포기하는 것 — <code>nm -D</code>로 동적 심볼은 여전히 볼 수 있고, <code>readelf -h</code>의 Entry point부터 시작해 REV-0010 방식으로 계속 분석 가능하다.</li><li><code>nm</code>의 기본 출력이 이름순 정렬이라는 걸 모르고 "코드 순서"라고 착각하는 것 — 실행 순서를 보려면 <code>-n</code>(주소순)을 써야 한다.</li><li>정적 라이브러리(<code>.a</code>) 안의 여러 <code>.o</code> 파일 심볼이 섞여 나오는 걸 보고 혼란스러워하는 것 — <code>nm libfoo.a</code>는 아카이브 안 모든 오브젝트 파일의 심볼을 순서대로 이어붙여 보여준다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>strip된 바이너리에서 어떻게 시작점을 잡는지 → <a href="rev-0010-stripped-entry-point.html">REV-0010 stripped 바이너리에서 시작점 잡는 방법</a></li><li>더 자세한 심볼 정보(바인딩, 가시성 등)가 필요하면 → <a href="rev-0091-readelf-basics.html">REV-0091 readelf 기본 사용법</a>의 <code>-s</code> 옵션</li><li>함수 코드 자체를 보고 싶으면 → <a href="rev-0092-objdump-basics.html">REV-0092 objdump 기본 사용법</a></li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ nm chall | grep -E ' [Tt] '
+0000000000001149 T main
+0000000000001060 T _start
+0000000000001030 t deregister_tm_clones
+0000000000001199 T __libc_csu_init
+
+$ nm chall | grep ' U '
+                 U __libc_start_main@GLIBC_2.34
+                 U puts@GLIBC_2.2.5</code></pre>
+<p><code>main</code>(0x1149)과 <code>_start</code>(0x1060) 주소를 즉시 확인했고, 이 바이너리가 외부에서 가져다 쓰는 함수가 <code>__libc_start_main</code>과 <code>puts</code> 둘뿐이라는 것도 함께 파악했다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0091-readelf-basics.html">REV-0091 — readelf 기본 사용법</a></li><li><a href="rev-0092-objdump-basics.html">REV-0092 — objdump 기본 사용법</a></li><li><a href="rev-0010-stripped-entry-point.html">REV-0010 — stripped 바이너리에서 시작점 잡는 방법</a></li><li><a href="rev-0009-finding-main.html">REV-0009 — main 함수가 안 보일 때 찾는 방법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>심볼 타입 문자 정의: GNU binutils <code>nm(1)</code> man page "The symbol type" 섹션 기준 (2026-09-08 검증).</li><li>glibc 심볼 버저닝: glibc 공식 문서 "Symbol Versioning" 개념 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA에서 함수 프로토타입을 수동으로 수정하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA에서 함수 프로토타입을 수동으로 수정하기</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>IDA는 대부분의 함수 원형을 표준 호출 규약(<code>__cdecl</code>, <code>__stdcall</code>, <code>__fastcall</code> 등)을 기준으로 자동 추론하지만, 최적화된 코드나 손으로 짠 어셈블리처럼 인자가 비표준 레지스터·순서로 전달되는 경우에는 <code>__usercall</code>과 <code>@&lt;레지스터명&gt;</code> 표기를 이용한 <strong>수동 프로토타입 편집</strong>이 필요하며, 간접 호출(레지스터/메모리를 통한 CALL)의 원형은 별도의 "Set call type" 절차로 지정해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>REV-0148(Y로 타입 지정하기)에서 표준 호출 규약으로 함수 원형을 고쳤는데도 호출부의 인자 표시가 여전히 이상할 때</li><li>최적화 옵션(<code>-O2</code> 이상)으로 컴파일된 함수라서 인자가 예상 밖의 레지스터(예: x86-64에서 표준 SysV 순서를 따르지 않는 내부 헬퍼 함수)로 전달되는 것 같을 때</li><li><code>call eax</code>, <code>call [ebp-8]</code>처럼 레지스터/메모리를 통한 간접 호출인데, 그 호출의 인자/반환값이 Pseudocode에서 전혀 안 보이거나 잘못 보일 때</li><li>가변 인자 함수(<code>printf</code> 계열처럼 인자 개수가 호출마다 다른 함수)를 직접 만든 헬퍼 함수에 적용하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>표준 호출 규약으로 충분한 경우</h3>
+<p>대부분의 x86/x64 함수는 <code>__cdecl</code>, <code>__stdcall</code>, <code>__fastcall</code>(x86) 또는 Windows x64/SysV x64의 표준 레지스터 순서(REV-0106, REV-0122, REV-0123 등에서 다루는 계산 규약)를 그대로 따른다. 이런 경우는 REV-0148에서 다룬 대로 <code>Y</code>를 눌러 표준 키워드가 포함된 C 선언 한 줄(<code>int __cdecl func(int a, char *b)</code>)만 입력하면 충분하다.</p>
+<h3>표준 규약으로 안 맞을 때 — <code>__usercall</code></h3>
+<p>컴파일러가 특정 헬퍼 함수를 표준 계산 규약이 아니라 그때그때 가장 효율적인 레지스터 조합으로 인라인/최적화하면, IDA는 이를 <code>__usercall</code>이라는 특수 규약으로 표시한다. <code>__usercall</code>을 쓰는 함수 원형은 각 인자 뒤에 <code>@&lt;레지스터명&gt;</code>을 붙여 정확히 어떤 레지스터(또는 스택 오프셋)로 그 인자가 들어오는지 명시한다.</p>
+<pre><code class="language-c">int __usercall calc_hash@&lt;eax&gt;(int a1@&lt;ecx&gt;, int a2@&lt;edx&gt;);</code></pre>
+<p>이 예시는 반환값이 <code>eax</code>로, 첫 번째 인자가 <code>ecx</code>로, 두 번째 인자가 <code>edx</code>로 전달된다는 것을 명시적으로 지정한 것이다. 실제 어셈블리를 보고 각 인자/반환값이 어느 레지스터에 있는지 직접 확인한 뒤 이 표기로 옮겨 적어야 한다.</p>
+<h3>간접 호출의 원형 지정 — Set call type</h3>
+<p><code>call eax</code>처럼 호출 대상이 레지스터/메모리에 담긴 함수 포인터인 경우, IDA는 그 호출이 정확히 어떤 원형의 함수를 부르는지 스스로 알 방법이 없어 인자를 전혀 인식하지 못하거나 매우 보수적으로 추정한다. 이럴 때는 해당 CALL 명령어 위에서 우클릭 → <strong>Set call type...</strong>(또는 Pseudocode에서 그 호출 표현식 위에 커서를 놓고 동일 메뉴)을 사용해, 그 호출이 어떤 원형을 따르는지 C 선언으로 직접 알려준다. 예를 들어 함수 포인터 배열(vtable, 콜백 테이블 등)을 통한 호출이라면, 그 테이블 항목들이 공통으로 따르는 원형을 이 방법으로 지정해줘야 REV-0152에서 다루는 <code>call analysis failed</code>류의 실패도 함께 해결되는 경우가 많다.</p>
+<h3>가변 인자 함수 원형</h3>
+<p><code>printf</code>처럼 인자 개수가 고정되지 않은 함수는 C 문법 그대로 <code>int __cdecl my_log(const char *fmt, ...)</code>처럼 마지막에 <code>...</code>를 붙여 지정한다. IDA는 가변 인자 함수를 호출하는 지점마다 실제 넘겨지는 인자 개수를 스택/레지스터 사용 패턴으로 추정해서 보여주려 시도하지만, 완벽하지 않으므로 REV-0163/REV-0165처럼 포맷 문자열 자체를 보고 실제 인자 개수와 타입을 교차 검증하는 것이 안전하다.</p>
+<h3>Functions 창에서 원형을 한눈에 보기</h3>
+<p>Functions 창(REV-0143)은 컬럼 설정에 따라 각 함수의 현재 원형(또는 최소한 인자 개수)을 요약해서 보여줄 수 있다. 여러 함수의 원형을 점검해야 할 때는 이 창에서 먼저 이상해 보이는 함수를 골라낸 뒤 하나씩 <code>Y</code>로 들어가 확인하는 순서가 효율적이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Pseudocode에서 함수를 호출하는 곳마다 인자가 실제 어셈블리의 레지스터 사용과 안 맞게 표시된다(너무 적거나 엉뚱한 값).</li><li>함수 원형에 <code>__usercall</code>이 이미 자동으로 붙어 있지만 <code>@&lt;reg&gt;</code> 표기가 실제 레지스터와 다르게 추론되어 있다.</li><li><code>call eax</code> 같은 간접 호출 다음 줄부터 반환값이 전혀 안 쓰이는 것처럼 보이거나, 인자 없이 호출되는 것처럼 보인다.</li><li>가변 인자 함수를 호출하는 곳마다 인자 개수가 제각각으로 추정되어 일관성이 없어 보인다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문제가 되는 CALL이 직접 호출(대상 주소가 고정)인지 간접 호출(레지스터/메모리를 통함)인지부터 구분한다. 직접 호출이면 그 함수 자체의 원형을 <code>Y</code>로 고치면 되고, 간접 호출이면 그 호출 지점에서 <strong>Set call type</strong>을 써야 한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>디스어셈블리에서 문제되는 CALL의 실제 인자 전달 방식을 먼저 손으로 추적한다(어떤 레지스터/스택 위치에 무엇이 들어가는지, REV-0106/REV-0122/REV-0123의 표준 규약과 비교).</li><li>직접 호출이면 대상 함수 이름 위에서 <code>Y</code>를 눌러 원형을 입력한다. 표준 규약과 다르면 <code>__usercall</code>과 <code>@&lt;레지스터&gt;</code> 표기를 사용한다.</li><li>간접 호출이면 CALL 명령어(또는 Pseudocode의 해당 호출 표현식) 위에서 우클릭 → <strong>Set call type...</strong>을 선택하고 C 선언으로 원형을 입력한다.</li><li>가변 인자 함수라면 원형 끝에 <code>...</code>를 추가한다.</li><li>원형을 확정한 뒤 F5로 Pseudocode를 새로고침해서 호출부 인자 표시가 실제 어셈블리와 일치하는지 재확인한다.</li><li>같은 원형을 따르는 호출이 여러 곳에 있다면(예: 같은 함수 포인터 테이블의 다른 항목들), 각 호출 지점마다 반복 적용하거나 공통 typedef를 Local Types(REV-0737)에 만들어 재사용한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li><code>Y</code>: 직접 호출 대상 함수의 원형 지정(REV-0148)</li><li>간접 호출(CALL) 위 우클릭 → <strong>Set call type...</strong>: 간접 호출의 원형 지정</li><li><code>__usercall</code>, <code>@&lt;레지스터명&gt;</code>: 비표준 레지스터 배치를 명시하는 C 선언 확장 표기</li><li><code>...</code>: 가변 인자 표시(표준 C 문법)</li><li>함수 위 우클릭 → <strong>Reanalyze function</strong>: 원형 변경 후 재분석</li></ul>
+<h2>출력 해석</h2>
+<ul><li>원형을 <code>__usercall</code> + <code>@&lt;reg&gt;</code>로 정확히 맞추면, 호출부에서 해당 레지스터에 들어있던 값이 인자 자리로 정확히 옮겨져 표시된다.</li><li>Set call type 적용 후에도 여전히 인자가 안 보인다면, 애초에 그 간접 호출이 가리키는 실제 함수가 지정한 원형과 다르거나(다형적 콜백 테이블처럼 항목마다 원형이 다른 경우), 레지스터/스택 추적 자체가 다른 이유로 실패하고 있는 것이다.</li><li>색상 표시(사용자 지정 파란색 vs 추론된 회색)는 REV-0148과 동일하게 적용되며, <code>__usercall</code> 원형도 사용자가 확정하면 파란색으로 표시된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>표준 규약(<code>__cdecl</code> 등)으로만 계속 시도하다가, 실제로는 <code>__usercall</code>이 필요한 상황이라는 걸 눈치채지 못하고 시간을 낭비하는 것.</li><li><code>@&lt;레지스터&gt;</code> 표기에서 실제 어셈블리를 확인하지 않고 추측으로 레지스터를 적어 오히려 더 잘못된 정보를 확정해버리는 것.</li><li>간접 호출에 Set call type을 적용하지 않고, 직접 호출인 것처럼 대상 함수를 찾으려 xref를 뒤지며 헤매는 것 — 함수 포인터 테이블을 통한 호출은 REV-0145(Xrefs)만으로 대상이 안 보일 수 있다.</li><li>가변 인자 함수에 <code>...</code>를 빼먹고 고정 인자 개수로만 선언해서, 실제로는 더 많은 인자를 넘기는 호출부에서 인자가 잘려 보이는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>표준 호출 규약 자체가 헷갈린다면 → REV-0106 SysV AMD64 Calling Convention, REV-0122 Microsoft x64 Calling Convention, REV-0123 Windows x86 stdcall cdecl fastcall thiscall</li><li>원형을 고쳤는데도 디컴파일이 실패한다면 → REV-0152 IDA Decompiler Failed가 뜰 때</li><li>원형에 쓸 구조체/타입 자체가 아직 없다면 → REV-0734 IDA에서 구조체를 직접 정의해서 디컴파일에 적용하기, REV-0737 IDA Local Types 창 활용하기</li><li>함수 원형 지정의 기본 조작법 자체가 헷갈린다면 → REV-0148 IDA Y로 타입 지정하기</li></ul>
+<h2>미니 예제</h2>
+<p>최적화된 x86 코드에서 다음과 같이 표준 규약과 다른 레지스터로 인자가 전달되는 헬퍼 함수가 있다고 하자.</p>
+<pre><code class="language-asm">mov ecx, [ebp+8]
+mov edx, [ebp+0Ch]
+call sub_401700</code></pre>
+<p><code>sub_401700</code> 내부를 보면 첫 인자를 <code>ecx</code>, 둘째 인자를 <code>edx</code>에서 읽고 결과를 <code>eax</code>에 담아 리턴한다. <code>sub_401700</code> 위에서 <code>Y</code>를 눌러 다음처럼 지정한다.</p>
+<pre><code class="language-c">int __usercall sub_401700@&lt;eax&gt;(int a1@&lt;ecx&gt;, int a2@&lt;edx&gt;);</code></pre>
+<p>이후 이름을 <code>calc_checksum</code>으로 바꾸면(REV-0147), 호출부도 다음처럼 정확하게 표시된다.</p>
+<pre><code class="language-c">result = calc_checksum(v1, v2);</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0148-ida-set-type.html">REV-0148 — IDA Y로 타입 지정하기</a></li><li><a href="rev-0152-ida-decompiler-failed.html">REV-0152 — IDA Decompiler Failed가 뜰 때</a></li><li><a href="rev-0734-ida-define-struct-for-decompile.html">REV-0734 — IDA에서 구조체를 직접 정의해서 디컴파일에 적용하기</a></li><li><a href="rev-0737-ida-local-types-window.html">REV-0737 — IDA Local Types 창 활용하기</a></li><li><a href="rev-0106-sysv-amd64-calling-convention.html">REV-0106 — SysV AMD64 Calling Convention</a></li><li><a href="rev-0122-ms-x64-calling-convention.html">REV-0122 — Microsoft x64 Calling Convention</a></li><li><a href="rev-0123-x86-calling-conventions.html">REV-0123 — Windows x86 stdcall cdecl fastcall thiscall</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>__usercall</code> 규약과 <code>@&lt;레지스터&gt;</code> 표기로 비표준 인자 전달 위치를 명시하는 방식, 함수 원형 편집기에서 이 표기를 입력하는 절차: Hex-Rays 공식 문서(Calling conventions, Function signature) 기준.</li><li>간접 호출에 대해 별도로 "Set call type"을 지정해야 하는 동작과 이것이 콜백 테이블/함수 포인터 분석에서 자주 쓰이는 방법이라는 점: Hex-Rays 공식 문서 및 디컴파일러 관련 공식 블로그(Igor's tip of the week 시리즈) 기준.</li><li>이 문서는 2026-09-09 기준 공개된 Hex-Rays 공식 문서 검색 결과를 바탕으로 작성했으며, 정확한 메뉴 문구는 IDA 버전에 따라 다를 수 있으므로 실제 환경에서 재확인할 것을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

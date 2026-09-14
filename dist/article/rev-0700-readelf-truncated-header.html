@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>readelf가 잘린 헤더라고 오류를 낼 때(손상된 ELF) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>readelf가 잘린 헤더라고 오류를 낼 때(손상된 ELF)</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">readelf</span><span class="tag">objdump</span><span class="tag">file</span><span class="tag">xxd</span></div>
+<h2>한 줄 요약</h2>
+<p><code>readelf</code>가 <code>Error: Reading 0x... bytes extends past end of file for section headers</code> 같은 오류를 내는 것은 파일이 진짜로 다운로드 중 잘렸거나(전송 오류), 혹은 CTF 문제 출제자가 <strong>일부러 ELF 헤더의 <code>e_shoff</code>/<code>e_shnum</code> 값을 조작해서 분석 도구를 방해</strong>했기 때문이며, 먼저 파일 크기와 다운로드 무결성을 확인하고, 그래도 안 되면 Section Header 없이도 동작하는 <code>readelf -h</code>/<code>-l</code>과 Program Header 기반 분석으로 우회하면 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>readelf -S ./chall</code> 또는 <code>readelf -a ./chall</code>을 실행했는데 <code>readelf: Error: Reading 0x... bytes extends past end of file for section headers</code>류 메시지가 뜰 때</li><li><code>Section headers are not available!</code> 또는 <code>Section headers are corrupt</code> 문구를 봤을 때</li><li>CTF에서 받은 바이너리가 이상하게 안 열려서 "다운로드가 잘못됐나?" 의심될 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>readelf 오류의 근본 원인: e_shoff/e_shnum이 파일 범위를 벗어남</h3>
+<p>ELF 헤더(REV-0089)에는 Section Header Table의 시작 오프셋(<code>e_shoff</code>)과 개수(<code>e_shnum</code>), 각 엔트리 크기(<code>e_shentsize</code>)가 들어있다. <code>readelf</code>는 이 값들을 곱하고 더해서 "Section Header Table 전체 크기"를 계산한 뒤, 그 범위가 실제 파일 크기 안에 들어오는지 검사한다. 계산된 끝 지점이 파일 끝을 넘어서면 <code>Reading N bytes extends past end of file for section headers</code>라는 오류를 내고 Section Header 파싱을 포기한다.</p>
+<p>이 상황이 생기는 원인은 크게 세 가지다.</p>
+<ol><li><strong>파일이 실제로 잘렸다</strong>: 다운로드가 중간에 끊기거나, <code>scp</code>/<code>git</code> 전송 중 오류로 파일 뒷부분이 잘려나간 경우. 파일 크기를 원본과 비교하면 바로 드러난다.</li><li><strong>CTF 바이너리가 의도적으로 조작됨</strong>: 출제자가 <code>e_shoff</code>를 아주 큰 값으로 바꾸거나 <code>e_shnum</code>을 비정상적으로 늘려서, <code>readelf</code>/<code>objdump</code> 같은 표준 도구가 Section Header를 못 읽게 만드는 안티 리버싱 트릭. 실제로 실행하는 데는 Section Header가 전혀 필요 없으므로(커널은 Program Header만 본다) 바이너리는 정상 실행되는데 정적 분석 도구만 곤란해진다.</li><li><strong><code>e_shnum == 0</code>인 정상 케이스를 readelf가 잘못 처리하는 바이너리 버그</strong>: ELF 사양상 Section Header가 없는 파일은 <code>e_shoff == 0</code>, <code>e_shnum == 0</code>이 정상인데, 일부 readelf 버전은 이 경우를 잘못 처리해 첫 섹션의 <code>sh_size</code>를 <code>e_shnum</code>으로 오인하는 알려진 버그가 있었다. 흔한 경우는 아니지만 binutils 버전에 따라 발생할 수 있다.</li></ol>
+<h3>왜 실행은 되는데 readelf만 안 되는가</h3>
+<p>프로그램을 실제로 로드하고 실행하는 커널의 ELF 로더는 <strong>Program Header만</strong> 사용한다(REV-0090). Section Header는 링커/디버거/분석 도구가 심볼, 재배치 정보 등을 더 편하게 찾기 위한 부가 정보일 뿐, 실행에는 불필요하다. 그래서 Section Header가 깨졌거나 조작된 바이너리도 <code>./chall</code>로 정상 실행되는 경우가 많고, 이 비대칭이 "실행은 되는데 readelf/objdump만 이상하다"는 상황을 만든다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-text">$ readelf -S ./chall
+readelf: Error: Reading 0x1948 bytes extends past end of file for section headers
+Section headers are not available!</code></pre>
+<p>또는</p>
+<pre><code class="language-text">$ readelf -a ./chall
+readelf: Warning: the e_shentsize field in the ELF header is larger than the size of an ELF section header
+readelf: Error: Reading 9631435 bytes extends past end of file for section headers</code></pre>
+<h2>가장 먼저 할 것</h2>
+<ol><li>파일 크기와 다운로드 무결성부터 확인한다 — 진짜 전송 오류인지 아닌지가 이후 절차를 결정한다.</li></ol>
+<pre><code class="language-bash">   ls -l ./chall
+   file ./chall</code></pre>
+<ol><li>다운로드 문제가 아니라면(파일 크기가 다른 팀원/원본과 동일하다면) 조작된 Section Header일 가능성이 높으므로, Section Header 없이 분석하는 절차로 넘어간다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 파일 무결성 재확인</strong></p>
+<pre><code class="language-bash">ls -l ./chall
+md5sum ./chall        # 문제 서버/원본 배포 파일과 해시 비교 가능하면 비교
+file ./chall</code></pre>
+<p><code>file</code> 명령이 <code>ELF 64-bit LSB ..., corrupted section header size</code>처럼 이미 손상을 감지해 알려주는 경우도 있다.</p>
+<p><strong>2) ELF 헤더 자체는 정상인지 확인 (Section Header 없이)</strong></p>
+<pre><code class="language-bash">readelf -h ./chall</code></pre>
+<p><code>readelf -h</code>는 ELF 헤더만 읽으므로 Section Header가 깨져 있어도 대부분 정상 출력된다. 여기서 <code>e_shoff</code>, <code>e_shnum</code>, <code>e_shentsize</code> 값을 직접 확인한다.</p>
+<p><strong>3) <code>e_shoff</code>가 파일 크기를 넘는지 직접 계산</strong></p>
+<pre><code class="language-bash">stat -c%s ./chall
+readelf -h ./chall | grep -E "Start of section headers|Size of section headers|Number of section headers"</code></pre>
+<p><code>Start of section headers</code>(예: 0x1948) + <code>Size of section headers</code>(보통 64바이트, 64비트 기준) × <code>Number of section headers</code>가 파일 크기를 초과하면 readelf가 오류를 내는 게 당연한 결과다.</p>
+<p><strong>4) 재다운로드로 원본 파일 확보 시도</strong> CTF 문제 서버에서 받은 파일이라면, 다시 다운로드하거나 다른 배포 경로(문제 zip 재다운로드)로 확보해서 파일 크기가 달라지는지 비교한다. 크기가 달라지면 단순 전송 오류였던 것이다.</p>
+<p><strong>5) 진짜로 조작된 것이면 Section Header 없이 분석 진행</strong> Section Header가 없어도 Program Header(REV-0090)만으로 코드/데이터 영역을 알아낼 수 있다.</p>
+<pre><code class="language-bash">readelf -l ./chall     # Program Header는 별도 오프셋이라 대부분 정상 파싱됨</code></pre>
+<p><code>PT_LOAD</code> 세그먼트 중 실행 가능(<code>R E</code>) 플래그가 있는 항목의 <code>Offset</code>, <code>VirtAddr</code>, <code>FileSiz</code>를 확인하면, 코드가 파일 어느 범위에 있고 메모리 어디에 매핑되는지 알 수 있다.</p>
+<p><strong>6) objdump로 raw 디스어셈블(섹션 정보 없이)</strong></p>
+<pre><code class="language-bash">objdump -D -b binary -m i386:x86-64 --start-address=0x1000 --adjust-vma=0x400000 ./chall</code></pre>
+<p><code>-b binary</code>로 ELF 파싱을 아예 건너뛰고 파일을 순수 바이트 스트림으로 취급해 디스어셈블할 수 있다. <code>--adjust-vma</code>로 5단계에서 확인한 <code>VirtAddr</code>와 파일 오프�이 맞도록 보정한다.</p>
+<p><strong>7) Ghidra/IDA로 우회</strong> 정적 분석 도구 중 다수(Ghidra, IDA)는 Section Header가 없어도 Program Header만으로 로드/분석이 가능하도록 설계되어 있으므로, <code>readelf</code>/<code>objdump</code>가 막히면 이런 GUI 도구로 넘어가는 것도 실용적인 선택이다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">ls -l ./chall
+readelf -h ./chall
+readelf -l ./chall
+stat -c%s ./chall
+objdump -D -b binary -m i386:x86-64 ./chall
+xxd ./chall | head -5    # 헤더 바이트 직접 확인</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>readelf -h</code>가 정상 출력되면 ELF 헤더 자체는 살아있고, Section Header Table 관련 필드(<code>e_shoff</code>, <code>e_shnum</code>)만 문제라는 뜻이다.</li><li><code>Start of section headers</code>가 <code>0</code>이고 <code>Number of section headers</code>도 <code>0</code>이면 정상적인 "Section Header 없음" 상태다 — 이 경우는 오류가 아니라 원래 그렇게 만들어진 바이너리다.</li><li><code>xxd ./chall | head</code>로 첫 64바이트를 봤을 때 <code>7f 45 4c 46</code>(<code>\x7fELF</code>)로 시작하면 최소한 ELF 매직 넘버는 살아있는 것이므로 완전히 손상된 파일은 아니다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>readelf 오류 메시지만 보고 "이 파일은 분석 불가능"이라고 포기하는 것 — 실행에는 Section Header가 필요 없으므로 대부분 여전히 분석 가능하다.</li><li>파일 크기 비교 없이 바로 "일부러 조작된 안티 리버싱 바이너리"라고 단정하는 것 — 단순 다운로드/전송 오류일 수도 있으므로 먼저 크기부터 확인해야 한다.</li><li><code>readelf -a</code>(전체 정보) 하나만 시도해보고 포기하는 것 — <code>-h</code>, <code>-l</code>처럼 Section Header에 의존하지 않는 개별 옵션은 따로 시도해볼 가치가 있다.</li><li><code>objdump -d</code>(Section Header 필요)만 쓰고 <code>-b binary</code> 모드가 있다는 걸 몰라서 raw 디스어셈블을 못 하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>ELF 헤더 필드(<code>e_shoff</code>, <code>e_shnum</code> 등) 자체의 의미가 헷갈린다면 → REV-0089 ELF 헤더 읽는 법</li><li>Program Header와 Section Header의 역할 차이를 다시 보고 싶다면 → REV-0090 ELF Program Header와 Section Header 차이</li><li>readelf 기본 사용법이 아직 익숙하지 않다면 → REV-0091 readelf 기본 사용법</li><li>Section Header가 없어서 objdump 디스어셈블 자체가 끊기거나 안 되는 경우의 대응은 → REV-0701 objdump 디스어셈블 결과가 중간에 끊길 때</li><li>애초에 이 파일이 ELF가 맞는지부터 의심된다면 → REV-0095 file 명령으로 ELF 정보 확인</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">$ ls -l chall
+-rwxr-xr-x 1 user user 16728 Sep  8 10:00 chall
+
+$ readelf -S ./chall
+readelf: Error: Reading 0x1948 bytes extends past end of file for section headers
+Section headers are not available!
+
+$ readelf -h ./chall | grep -E "Start of section|Number of section"
+  Start of section headers:          16728 (bytes into file)
+  Number of section headers:         29
+
+$ stat -c%s ./chall
+16728</code></pre>
+<p><code>Start of section headers</code>가 파일 크기(16728)와 정확히 같다 — 즉 Section Header Table을 위한 공간이 파일에 전혀 없는데도 헤더에는 "29개 섹션이 있다"고 기록되어 있는 것이다. 이는 전형적인 조작 사례이며, <code>readelf -l</code>로 Program Header만 가지고 분석을 이어가면 된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0089-elf-header.html">REV-0089 — ELF 헤더 읽는 법</a></li><li><a href="rev-0090-program-vs-section-header.html">REV-0090 — ELF Program Header와 Section Header 차이</a></li><li><a href="rev-0091-readelf-basics.html">REV-0091 — readelf 기본 사용법</a></li><li><a href="rev-0095-file-command.html">REV-0095 — file 명령으로 ELF 정보 확인</a></li><li><a href="rev-0701-objdump-disassembly-truncated.html">REV-0701 — objdump 디스어셈블 결과가 중간에 끊길 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>e_shoff</code>/<code>e_shnum</code>/<code>e_shentsize</code> 필드로 Section Header Table 범위를 계산하고 파일 크기와 비교하는 readelf의 검증 로직, 그리고 <code>Reading N bytes extends past end of file for section headers</code> 오류 문구는 GNU binutils <code>readelf</code> 소스(<code>binutils/readelf.c</code>)의 공개 동작이며 다수의 CTF 라이트업과 binutils 버그 트래커에서 재현 보고된 내용이다.</li><li>커널 ELF 로더가 실행 시 Program Header만 사용하고 Section Header를 사용하지 않는다는 사실은 Linux 커널 <code>fs/binfmt_elf.c</code>의 <code>load_elf_binary()</code> 구현 및 System V ABI 명세 기준이다.</li><li><code>objdump -b binary -m i386:x86-64</code>로 헤더 없이 raw 바이트를 디스어셈블하는 방법은 GNU objdump 공식 문서(<code>objdump(1)</code>)의 <code>-b</code>/target 옵션 설명에 기반한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>처음 보는 EXE 문제 접근 순서 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>처음 보는 EXE 문제 접근 순서</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Detect It Easy</span><span class="tag">PE-bear</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>Windows <code>.exe</code> 문제는 <strong>Detect It Easy로 실제 형식·컴파일러·패커부터 확인 → PE-bear로 섹션/임포트 훑기 → IDA/Ghidra로 F5 → 필요하면 x64dbg로 동적 확인</strong> 순서로 접근하면 헤매지 않는다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>CTF/워게임에서 <code>.exe</code> 파일 하나만 던져줬고, IDA부터 켤지 x64dbg부터 켤지 감이 안 잡힐 때</li><li>IDA로 열었더니 함수가 거의 없거나 이상한 코드만 보여서 "이게 진짜 이 프로그램 코드가 맞나" 싶을 때</li><li>.NET인지 네이티브(C/C++)인지조차 구분이 안 될 때</li></ul>
+<h2>핵심 개념</h2>
+<p><code>.exe</code>라는 확장자는 실제로 아무것도 보장하지 않는다. Windows에서 "실행 가능한 파일"은 전부 PE(Portable Executable) 포맷을 쓰지만, 그 안에는 완전히 다른 세계가 여럿 있다.</p>
+<ul><li><strong>네이티브 C/C++ (MSVC/MinGW로 컴파일)</strong>: IDA/Ghidra로 바로 디스어셈블/디컴파일이 가능한 전형적인 경우.</li><li><strong>.NET (C#/VB.NET)</strong>: PE 헤더는 있지만 실제 코드는 CIL(중간 언어) 바이트코드다. IDA로 열면 어셈블리 명령어가 거의 안 보이고 <code>mscoree.dll</code>, <code>_CorExeMain</code> 같은 것만 보인다. 이 경우 IDA가 아니라 <strong>dnSpyEx</strong>나 <strong>ILSpy</strong>로 열어야 한다.</li><li><strong>패킹된 실행파일</strong>: UPX 등으로 패킹되어 있으면 원본 코드가 압축/암호화되어 있어서 정적 분석이 거의 불가능하다. 실행 후 메모리에서 언패킹된 상태를 봐야 한다.</li><li><strong>설치 프로그램/스크립트 래퍼</strong>: 실제로는 자체 압축 실행파일(SFX)이거나 인스톨러여서 리버싱 대상이 아닐 수도 있다.</li></ul>
+<p>이 구분을 안 하고 무작정 IDA의 F5(디컴파일)를 누르면, .NET인 경우 쓰레기 같은 코드만 보고 시간을 낭비하게 된다. 그래서 첫 단계는 항상 "이게 정확히 뭐냐"를 확인하는 것이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA로 열었는데 Functions 창(Ctrl+P)에 함수가 5개 이하이고 이름이 전부 <code>.NET</code>, <code>CorExeMain</code> 관련이면 .NET 앱이다.</li><li>문자열(Shift+F12)에 <code>mscorlib</code>, <code>System.Windows.Forms</code>, <code>&lt;Module&gt;</code> 같은 게 보이면 .NET 확정.</li><li>섹션이 <code>.text</code>, <code>.rdata</code>, <code>.data</code>만 있고 크기가 매우 작은데 파일 전체 크기는 크다면 리소스에 다른 데이터(추가 실행파일, 압축 데이터)가 숨어 있을 수 있다.</li><li>IDA Functions 창에 함수가 거의 없고 <code>.text</code> 섹션 이름이 <code>UPX0</code>, <code>UPX1</code>처럼 바뀌어 있으면 UPX 패킹이다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>IDA를 켜기 전에 <strong>Detect It Easy(DIE)</strong> 를 먼저 켠다. 파일을 DIE 창에 드래그 앤 드롭하면 우측 상단에 파일 형식(PE32/PE32+, 즉 32비트/64비트), 컴파일러(Microsoft Visual C/C++, .NET, MinGW 등)가 바로 표시된다. 하단의 "Scan" 버튼을 누르면 패커(UPX, Themida 등) 탐지도 자동으로 해준다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) DIE로 형식 확인</strong></p>
+<p>DIE 실행 → 파일 드래그 → 상단 표시를 읽는다.</p>
+<ul><li><code>PE32</code> = 32비트, <code>PE32+</code> = 64비트.</li><li>"Compiler" 칸에 <code>Microsoft Visual C/C++</code>가 뜨면 네이티브 코드다. 바로 IDA로 넘어가면 된다.</li><li>"Compiler" 칸에 <code>.NET(C#)</code> 또는 <code>Microsoft Visual Studio .NET</code>이 뜨면 → IDA는 나중으로 미루고 <strong>dnSpyEx</strong>(무료, 디컴파일+디버깅 가능)로 열어야 한다. .NET 앱은 원본 C# 소스에 가깝게 복원되기 때문에 오히려 분석이 훨씬 쉽다.</li><li>하단 "Scan" 버튼을 눌러서 나오는 결과에 <code>Packer: UPX</code>처럼 뜨면 언패킹부터 해야 한다(UPX라면 <code>upx -d 파일명.exe</code>로 대부분 바로 풀린다).</li></ul>
+<p><strong>2) PE-bear로 구조 훑기</strong></p>
+<p>네이티브 코드라고 확인됐으면 PE-bear를 열어서:</p>
+<ul><li>좌측 트리에서 <strong>Sections</strong> 탭 → <code>.text</code>(코드), <code>.rdata</code>(읽기전용 데이터, 문자열 상수 포함), <code>.data</code>(전역변수) 크기를 본다.</li><li><strong>Imports</strong> 탭 → 어떤 DLL의 어떤 함수를 쓰는지 목록이 쭉 나온다. <code>scanf</code>, <code>strcmp</code>, <code>MessageBoxA</code> 같은 이름이 보이면 "입력받고 비교해서 메시지박스로 결과를 보여주는 프로그램"이라는 그림이 그려진다. <code>IsDebuggerPresent</code>, <code>CheckRemoteDebuggerPresent</code>가 있으면 안티디버깅이 있다는 뜻.</li><li><strong>Optional Header</strong> 탭 → <code>Subsystem</code> 값이 <code>WINDOWS_CUI</code>면 콘솔(터미널) 앱, <code>WINDOWS_GUI</code>면 윈도우 창을 띄우는 앱이다. 콘솔 앱이면 x64dbg로 실행해도 콘솔 창이 뜨고 입력을 넣을 수 있다.</li></ul>
+<p><strong>3) IDA/Ghidra로 정적 분석 시작</strong></p>
+<ul><li>IDA에서 파일을 열면 자동으로 분석이 시작되고 <code>Entry point</code>에 커서가 놓인다.</li><li>Ctrl+P로 함수 목록을 열어 <code>main</code>이 있는지 확인한다. 없으면 <a href="rev-0009-finding-main.html">rev-0009-finding-main.md</a> 절차를 따른다.</li><li>Shift+F12로 Strings 창을 열어 "Correct", "Wrong", "flag" 관련 문자열을 찾는다. 찾았으면 <a href="rev-0008-trace-from-strings.html">rev-0008-trace-from-strings.md</a> 방식으로 역추적한다.</li></ul>
+<p><strong>4) 필요하면 x64dbg로 동적 확인</strong></p>
+<p>정적으로 로직이 잘 안 보이거나(예: 문자열이 런타임에 생성됨, 안티디버깅 있음) 확인하고 싶으면 x64dbg로 실행하며 브레이크포인트를 건다. x64dbg는 32비트 파일은 x32dbg로 열어야 한다는 점에 주의한다(비트수가 다르면 아예 실행이 안 되거나 잘못 로드된다).</p>
+<h2>명령어/단축키</h2>
+<ul><li>DIE: 드래그 앤 드롭 → 상단 정보 확인 → 하단 "Scan" 버튼</li><li>IDA: <code>Ctrl+P</code>(함수 목록), <code>Shift+F12</code>(문자열), <code>F5</code>(디컴파일), <code>X</code>(xref)</li><li>UPX 언패킹: <code>upx -d challenge.exe</code></li><li>x64dbg: <code>F9</code>(실행/계속), <code>F2</code>(브레이크포인트), <code>F7</code>(스텝 인투), <code>F8</code>(스텝 오버)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>DIE의 "Compiler" 칸이 <code>.NET</code>이면 정적 분석 도구는 IDA가 아니라 dnSpyEx여야 한다 — 이걸 놓치면 몇 시간을 IDA에서 헤맬 수 있다.</li><li>PE-bear Imports에 <code>KERNEL32.dll</code>만 잔뜩 있고 <code>MSVCRT.dll</code>이 없다면 순수 WinAPI로 짜인 프로그램일 가능성이 높다 — <code>scanf</code> 대신 <code>ReadConsoleA</code> 같은 함수를 찾아야 한다.</li><li>Subsystem이 <code>WINDOWS_GUI</code>인데 콘솔 출력을 기대하고 있었다면, 실제로는 <code>MessageBoxA</code>나 다이얼로그로 결과가 나올 것이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>파일 형식 확인 없이 곧바로 IDA를 켜고 F5를 눌러서 .NET 어셈블리를 억지로 디스어셈블리로 읽으려는 것.</li><li>32비트 파일을 x64dbg(64비트 전용)로 열어서 "왜 안 열리지"라며 당황하는 것 — x32dbg를 써야 한다.</li><li>패킹된 걸 모르고 IDA에서 함수가 안 보인다고 스크롤만 계속 내리는 것.</li><li>Subsystem이 GUI 앱인데 콘솔에서 실행하고 입력이 안 된다고 착각하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>함수가 거의 없다 → <a href="rev-0009-finding-main.html">rev-0009-finding-main.md</a>, <a href="rev-0010-stripped-entry-point.html">rev-0010-stripped-entry-point.md</a></li><li>정적으로 볼지 동적으로 볼지 애매하다 → <a href="rev-0005-static-vs-dynamic.html">rev-0005-static-vs-dynamic.md</a></li><li>확장자와 실제 형식이 다른 것 같다 → <a href="rev-0002-dont-trust-extension.html">rev-0002-dont-trust-extension.md</a></li><li>5분째 아무 진전이 없다 → <a href="rev-0015-five-minute-checklist.html">rev-0015-five-minute-checklist.md</a></li></ul>
+<h2>미니 예제</h2>
+<p><code>crackme.exe</code>를 받았다고 하자.</p>
+<ol><li>DIE에 드롭 → <code>PE32+</code>, <code>Microsoft Visual C/C++</code>, Scan 결과 패커 없음.</li><li>PE-bear Imports → <code>scanf</code>, <code>strcmp</code>, <code>printf</code>가 보임 → "입력 받아서 strcmp로 비교하는 전형적인 crackme"라는 가설 수립.</li><li>IDA로 열고 Shift+F12 → <code>Wrong password!</code>, <code>Correct!</code> 문자열 발견.</li><li><code>Correct!</code> 더블클릭 → <code>X</code>(xref) → 이 문자열을 참조하는 함수로 이동 → 그 함수 안에서 <code>strcmp</code> 호출을 발견하면 바로 검증 로직 도달.</li></ol>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0001-first-30-seconds.html">rev-0001-first-30-seconds.md</a></li><li><a href="rev-0002-dont-trust-extension.html">rev-0002-dont-trust-extension.md</a></li><li><a href="rev-0004-first-elf.html">rev-0004-first-elf.md</a></li><li><a href="rev-0005-static-vs-dynamic.html">rev-0005-static-vs-dynamic.md</a></li><li><a href="rev-0009-finding-main.html">rev-0009-finding-main.md</a></li><li><a href="rev-0010-stripped-entry-point.html">rev-0010-stripped-entry-point.md</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Detect It Easy 공식 GitHub(horsicq/Detect-It-Easy) 기능 설명 기준.</li><li>PE-bear 공식 문서(hasherezade/pe-bear) 기준.</li><li>PE 포맷 Subsystem 필드: Microsoft Learn "PE Format" 문서 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

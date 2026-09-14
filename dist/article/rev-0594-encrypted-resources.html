@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>리소스가 암호화되어 있어 아이콘/문자열이 안 보일 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>리소스가 암호화되어 있어 아이콘/문자열이 안 보일 때</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">Resource Hacker</span><span class="tag">PE-bear</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>Resource Hacker나 PE-bear의 리소스 뷰어로 아이콘/문자열을 열었는데 깨져 보이거나 "알 수 없는 데이터"로만 뜬다면, 그 리소스가 표준 <code>RT_ICON</code>/<code>RT_STRING</code> 형식이 아니라 개발자가 <strong>직접 암호화하거나 커스텀 포맷으로 저장한 <code>RT_RCDATA</code>(원시 데이터) 리소스</strong>일 가능성이 크며, 이런 경우 정적 리소스 뷰어로는 원본을 볼 수 없고 <code>LoadResource</code>/<code>LockResource</code> 호출 지점에 브레이크포인트를 걸어 <strong>런타임에 복호화된 후의 메모리를 덤프</strong>해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Resource Hacker로 파일을 열었는데 아이콘 미리보기가 깨진 이미지로 나오거나 "이 리소스를 편집기로 열 수 없습니다" 류의 메시지가 뜰 때</li><li>PE-bear의 Resources 탭에서 버전 정보(<code>VERSIONINFO</code>)나 문자열 테이블을 열었는데 사람이 읽을 수 없는 바이트만 보일 때</li><li>실행 파일을 실제로 실행하면 정상적인 아이콘/메시지가 화면에 나타나는데, 정적으로 리소스를 열면 이상하게 보일 때(런타임 복호화가 있다는 강한 신호)</li></ul>
+<h2>핵심 개념</h2>
+<p>PE의 <code>.rsrc</code> 섹션은 트리 구조(타입 → 이름/ID → 언어)로 리소스를 저장하며, 각 리소스는 <code>RT_ICON</code>, <code>RT_BITMAP</code>, <code>RT_STRING</code>, <code>RT_VERSION</code>, <code>RT_MANIFEST</code>처럼 표준 타입으로 등록되면 Resource Hacker 같은 도구가 각 타입에 맞는 포맷(BMP/ICO 헤더, UTF-16 문자열 테이블 등)으로 해석해서 보여준다.</p>
+<p>그런데 개발자가 리소스를 표준 API(<code>LoadIcon</code>, <code>LoadString</code> 등)로 그대로 쓰지 않고, <code>RT_RCDATA</code>(정해진 포맷이 없는 원시 바이너리 데이터, ID나 이름으로만 구분)로 등록한 뒤 자기만의 방식으로 암호화/인코딩해서 저장해두고, 실행 시점에 다음과 같은 순서로 직접 복호화해서 쓰는 경우가 있다.</p>
+<ol><li><code>FindResource(hModule, lpName, lpType)</code>로 리소스 정보 핸들을 찾는다.</li><li><code>LoadResource(hModule, hResInfo)</code>로 리소스 데이터를 담은 전역 메모리 핸들을 얻는다.</li><li><code>LockResource(hGlobal)</code>로 실제 데이터에 대한 포인터를 얻는다.</li><li><code>SizeofResource(hModule, hResInfo)</code>로 크기를 얻는다.</li><li>이렇게 얻은 원시 바이트를 <strong>자체 복호화 루틴</strong>(XOR, RC4, 커스텀 알고리즘 등)에 통과시켜 실제 아이콘 이미지나 문자열, 설정 데이터로 변환한다.</li></ol>
+<p>이 경우 디스크에 저장된 <code>.rsrc</code> 섹션의 원본 바이트는 애초에 암호화된 상태이므로, Resource Hacker나 PE-bear가 아무리 잘 파싱해도 "깨진 데이터"로 보이는 것이 오히려 정상이다. 진짜 내용을 보려면 정적 리소스 뷰어가 아니라 <strong>동적으로 복호화가 끝난 시점의 메모리</strong>를 확인해야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Resource Hacker에서 아이콘 트리는 보이는데 미리보기 이미지가 깨져 있거나 "지원하지 않는 형식"이라고 뜸</li><li>PE-bear Resources 탭에서 <code>RT_RCDATA</code> 타입 아래 이름 모를 리소스가 여러 개 있고, 헥스 덤프로 보면 규칙성 없는 바이트로 가득함</li><li>IDA Imports 목록에 <code>FindResourceA/W</code>, <code>LoadResource</code>, <code>LockResource</code>, <code>SizeofResource</code>가 있고, 이를 호출한 직후 별도의 루프(XOR 등)를 도는 함수가 존재</li><li>프로그램을 실제로 실행하면 아이콘/메시지가 정상적으로 보임(즉 데이터 자체는 살아있고 손상된 게 아니라 암호화된 것)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>IDA Imports 창(REV-0119)에서 <code>FindResource</code>, <code>LoadResource</code>, <code>LockResource</code> 계열 API가 임포트되어 있는지 확인한다. 있다면 정적 리소스 뷰어를 더 붙잡고 있지 말고, x64dbg로 넘어가 이 API들에 브레이크포인트를 걸 준비를 한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 리소스 로딩 API에 브레이크포인트</strong></p>
+<ul><li>x64dbg에서 대상 파일을 연다.</li><li><code>Symbols</code> 탭에서 <code>LockResource</code>(또는 <code>LoadResource</code>)를 찾아 우클릭 → <code>Toggle Breakpoint</code>로 브레이크포인트를 건다.</li><li><code>F9</code>로 실행해 해당 API 호출 지점까지 진행한다.</li></ul>
+<p><strong>2) LockResource 반환값(포인터) 확인</strong></p>
+<ul><li><code>LockResource</code>는 리소스 데이터를 가리키는 포인터를 반환한다(x64에서는 <code>RAX</code>, x86 stdcall에서는 <code>EAX</code>). 함수가 반환하는 시점까지 <code>F8</code>(Step Over) 또는 <code>Ctrl+F9</code>(Run to Return)로 진행해 이 값을 확인한다.</li><li>이 포인터를 Dump 창(<code>Ctrl+G</code>로 주소 이동)에서 열어 아직 암호화된 원시 바이트 상태를 확인해둔다.</li></ul>
+<p><strong>3) 복호화 루틴을 지나 실제 데이터 확인</strong></p>
+<ul><li><code>LockResource</code> 이후 그 포인터를 인자로 받아 순회하며 바이트를 변형하는 루프(복호화 루틴)를 찾아 <code>F8</code>로 지나간다.</li><li>복호화가 끝난 뒤 같은 메모리 영역(또는 새로 할당된 버퍼)을 다시 Dump 창에서 확인하면, 이제는 유효한 BMP/ICO 헤더(<code>42 4D</code>나 아이콘 디렉터리 구조)나 사람이 읽을 수 있는 문자열이 보여야 한다.</li></ul>
+<p><strong>4) 복호화된 데이터 메모리 덤프로 저장</strong></p>
+<ul><li>Dump 창에서 해당 범위를 드래그로 선택한 뒤 우클릭 → <code>Binary → Save to a File</code>로 저장하면, 복호화된 순수 데이터만 별도 파일로 뽑아낼 수 있다.</li><li>이미지 데이터라면 적절한 헤더를 앞에 붙여(BMP/ICO 포맷 규격에 맞게) 이미지 뷰어로 열어 확인한다.</li></ul>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">x64dbg: Symbols 탭에서 LockResource 찾기 → 우클릭 Toggle Breakpoint
+x64dbg: F9(실행), F8(Step Over), Ctrl+F9(Run to Return)
+x64dbg: Dump 창에서 우클릭 → Binary → Save to a File</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>LockResource</code> 직후 덤프에서 규칙성 없는 바이트가 보이면 아직 복호화 전 상태이므로 정상이다(원본 <code>.rsrc</code> 데이터와 동일할 것이다).</li><li>복호화 루틴을 지난 뒤 덤프에서 <code>42 4D</code>(BMP), 아이콘 디렉터리 구조, 또는 읽을 수 있는 UTF-16 문자열이 보이면 성공적으로 원본 데이터에 도달한 것이다.</li><li>복호화 루틴을 지나도 여전히 무작위 바이트라면, 아직 완전한 복호화가 안 끝났거나(다단계 암호화) 다른 버퍼에 결과를 쓰는 함수를 놓쳤을 수 있으므로 호출 스택을 한 단계 더 따라간다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>.rsrc</code> 섹션이 깨져 있다고 파일이 손상됐다고 오해하고 분석을 포기하는 것 — 실제로 실행하면 정상 작동한다면 손상이 아니라 의도된 암호화다.</li><li>Resource Hacker로 계속 다른 뷰 모드를 시도하며 시간을 쓰는 것 — 표준 리소스 타입이 아니라 <code>RT_RCDATA</code>로 저장된 커스텀 데이터는 애초에 정적 리소스 뷰어가 해석할 방법이 없다.</li><li><code>LoadResource</code>/<code>LockResource</code>에 브레이크포인트를 걸었는데 여러 번 호출되는 경우, 원하는 리소스(아이콘 등)를 로드하는 호출이 아닌 다른 호출에서 멈춰 헷갈리는 것 — 이때는 <code>FindResource</code> 호출 시점의 인자(리소스 ID/이름)를 먼저 확인해서 원하는 리소스를 로드하는 호출만 골라 스텝한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>리소스 섹션 구조 자체가 헷갈리면 → REV-0141(Resource Section과 숨겨진 데이터 확인)을 먼저 읽는다.</li><li>어떤 API가 호출되는지는 알겠는데 그 인자/반환값 규칙이 헷갈리면 → REV-0122/REV-0123(호출 규약)을 참고한다.</li><li>복호화 루틴 자체가 암호 알고리즘처럼 보이면 → REV-0140(Crypt API BCrypt API 흔적 찾기)을 참고해 표준 암호 API를 쓰는지부터 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p>IDA에서 다음과 같은 함수를 봤다고 하자.</p>
+<pre><code class="language-c">HRSRC hRes = FindResourceW(hModule, MAKEINTRESOURCE(101), RT_RCDATA);
+HGLOBAL hGlobal = LoadResource(hModule, hRes);
+BYTE* pData = (BYTE*)LockResource(hGlobal);
+DWORD size = SizeofResource(hModule, hRes);
+for (DWORD i = 0; i &lt; size; i++)
+    pData[i] ^= 0x5A;  // 단순 XOR 복호화</code></pre>
+<p>x64dbg에서 <code>LockResource</code> 반환 직후 <code>pData</code>가 가리키는 메모리를 보면 XOR로 뒤섞인 바이트가 보인다. 이 <code>for</code> 루프를 <code>F8</code>로 다 지나간 뒤 같은 주소를 다시 보면, 매 바이트가 <code>0x5A</code>와 XOR되어 원래의 BMP 아이콘 데이터로 복원된 것을 확인할 수 있다. 이 시점의 메모리를 파일로 덤프하면 정상적인 이미지 뷰어로 열어볼 수 있는 아이콘 파일이 된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0141-resource-section.html">REV-0141 — Resource Section과 숨겨진 데이터 확인</a></li><li><a href="rev-0140-crypt-bcrypt-api.html">REV-0140 — Crypt API BCrypt API 흔적 찾기</a></li><li><a href="rev-0119-import-table.html">REV-0119 — Import Table에서 중요한 API 찾기</a></li><li><a href="rev-0138-guess-function-from-api-name.html">REV-0138 — Windows API 이름으로 기능 추측하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>.rsrc</code> 섹션의 타입/이름/언어 3단 트리 구조와 <code>RT_ICON</code>/<code>RT_RCDATA</code> 등 표준 리소스 타입 정의는 Microsoft PE/COFF 형식 및 Win32 리소스 공식 문서 기준.</li><li><code>FindResource</code>/<code>LoadResource</code>/<code>LockResource</code>/<code>SizeofResource</code> API 시그니처와 동작 순서는 Microsoft Learn Win32 API 공식 문서 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

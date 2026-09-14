@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Frida 스크립트로 함수 인자/반환값 후킹하기 심화 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dotnet-android</div>
+<article class="article-body">
+<h1>Frida 스크립트로 함수 인자/반환값 후킹하기 심화</h1>
+<div class="article-meta"><span class="tag">dotnet-android</span><span class="tag">중급</span><span class="tag">android</span><span class="tag">APK</span><span class="tag">Frida</span></div>
+<h2>한 줄 요약</h2>
+<p><a href="rev-0256-frida-basics.html">REV-0256</a>에서 다룬 <code>Java.perform</code> + <code>implementation</code> 기본 후킹을 넘어, <strong>오버로드된 메서드를 정확히 지정해서 후킹하는 법, 인자로 들어온 객체(배열/커스텀 클래스)의 내부 값을 읽는 법, 반환값을 강제로 바꿔치기하는 법, 이미 살아있는 인스턴스를 찾아 그 필드를 직접 들여다보는 법</strong>까지 익히면 단순 관찰을 넘어 실제 검증 로직을 실행 중에 우회/조작하는 실전 CTF 워크플로우를 구성할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>같은 이름의 메서드가 인자 타입만 다르게 여러 개 있어서(<code>verify(String)</code>, <code>verify(byte[])</code>) 어떤 것을 후킹해야 할지 Frida 스크립트에서 지정법을 모를 때</li><li>후킹한 함수의 인자가 <code>String</code>이 아니라 커스텀 클래스 객체나 배열이라 <code>console.log</code>로 찍어도 <code>[object Object]</code>처럼 의미 없는 값만 나올 때</li><li>검증 함수의 반환값을 무조건 <code>true</code>로 바꿔서 결과를 강제로 통과시키고 싶을 때(학습 목적의 우회 검증)</li><li>이미 앱 내부에서 생성되어 돌아다니는 특정 클래스의 인스턴스를 찾아 그 안의 필드 값을 실행 중에 확인하고 싶을 때</li><li><code>implementation</code> 후킹 스크립트를 짰는데 <code>Error: ... has no overload matching</code> 같은 오류를 만났을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>오버로드 메서드 정확히 지정하기 — overload()</h3>
+<p>자바/코틀린은 같은 이름의 메서드를 인자 타입/개수만 다르게 여러 개 정의(오버로드)할 수 있다. <code>Checker.verify.implementation = ...</code>처럼 그냥 메서드 이름만 쓰면, 오버로드가 하나뿐일 때는 문제없지만 여러 개면 Frida가 "어떤 걸 말하는지 모르겠다"는 오류를 낸다. 이때 <code>.overload(...)</code>로 인자 타입을 정확히 지정한다.</p>
+<pre><code class="language-javascript">Java.perform(function () {
+    var Checker = Java.use("com.example.ctf.Checker");
+
+    // verify(String) 버전만 정확히 후킹
+    Checker.verify.overload("java.lang.String").implementation = function (input) {
+        console.log("[*] verify(String) called: " + input);
+        return this.verify(input);
+    };
+
+    // verify(byte[]) 버전은 따로 후킹
+    Checker.verify.overload("[B").implementation = function (inputBytes) {
+        console.log("[*] verify(byte[]) called, length=" + inputBytes.length);
+        return this.verify(inputBytes);
+    };
+});</code></pre>
+<p>인자 타입 문자열은 자바의 완전한 클래스 이름(<code>java.lang.String</code>, <code>int</code>, <code>boolean</code>)을 쓰고, 배열은 JNI 타입 디스크립터 표기(<code>[B</code> = <code>byte[]</code>, <code>[Ljava.lang.String;</code> = <code>String[]</code>, <a href="rev-0976-jni-signature-reading.html">REV-0976</a> 참고)를 그대로 쓴다는 점이 핵심이다.</p>
+<h3>인자가 객체/배열일 때 값을 읽는 법</h3>
+<p><code>console.log(arg)</code>로 커스텀 객체를 찍으면 <code>[object Object]</code>처럼 무의미한 문자열만 나온다. 객체의 실제 필드를 읽으려면 그 필드 이름으로 직접 접근하거나, 배열이라면 인덱스로 순회해야 한다.</p>
+<pre><code class="language-javascript">Java.perform(function () {
+    var Checker = Java.use("com.example.ctf.Checker");
+    Checker.verify.overload("[B").implementation = function (inputBytes) {
+        // Java byte[] -&gt; JS 배열로 변환해서 값 확인
+        var jsArray = [];
+        for (var i = 0; i &lt; inputBytes.length; i++) {
+            jsArray.push(inputBytes[i] &amp; 0xff);  // signed byte -&gt; unsigned 표현
+        }
+        console.log("[*] bytes = " + jsArray.join(","));
+        return this.verify(inputBytes);
+    };
+
+    // 커스텀 객체 인자의 필드 읽기 예시
+    var Request = Java.use("com.example.ctf.Request");
+    var Handler = Java.use("com.example.ctf.Handler");
+    Handler.handle.overload("com.example.ctf.Request").implementation = function (req) {
+        console.log("[*] req.userId = " + req.userId.value);   // 필드 접근은 .value
+        console.log("[*] req.getToken() = " + req.getToken()); // 메서드는 그대로 호출
+        return this.handle(req);
+    };
+});</code></pre>
+<p><code>Java.use</code>로 감싼 객체의 <strong>필드</strong>는 <code>.value</code>를 붙여야 실제 값을 읽거나 쓸 수 있고(<code>req.userId.value</code>), <strong>메서드</strong>는 일반 자바 호출처럼 그냥 괄호로 호출하면 된다는 차이를 기억해야 한다.</p>
+<h3>반환값 강제로 바꾸기 — return 값 자체를 다르게</h3>
+<p><a href="rev-0256-frida-basics.html">REV-0256</a>에서는 <code>this.xxx(...)</code>의 원본 결과를 그대로 <code>return</code>해서 순수 관찰만 했다. 검증 로직을 이해했는지 확인하는 학습 목적으로 결과를 강제로 바꾸고 싶다면, 원본 호출 자체를 생략하거나 결과를 무시하고 원하는 값을 반환하면 된다.</p>
+<pre><code class="language-javascript">Java.perform(function () {
+    var Checker = Java.use("com.example.ctf.Checker");
+    Checker.verify.overload("java.lang.String").implementation = function (input) {
+        var real = this.verify(input);
+        console.log("[*] real result = " + real + " (input=" + input + ")");
+        return true; // 원래 결과와 무관하게 항상 true를 반환하도록 강제
+    };
+});</code></pre>
+<p>이 방식은 문제 풀이 자체를 대신 해주는 것이 아니라, "이 함수가 이런 조건에서 이렇게 동작한다"는 것을 확인한 뒤 그 다음 화면/로직으로 넘어가서 마저 분석을 이어가기 위한 검증 수단으로 쓰는 것이 바람직하다.</p>
+<h3>이미 존재하는 인스턴스 찾기 — Java.choose</h3>
+<p>후킹을 걸기 전에 이미 생성되어 있던 객체(예: 앱이 시작하자마자 만들어 둔 설정 객체)의 현재 필드 값을 보고 싶다면, 새 인스턴스를 만들 필요 없이 힙에서 살아있는 인스턴스를 직접 찾아올 수 있다.</p>
+<pre><code class="language-javascript">Java.perform(function () {
+    Java.choose("com.example.ctf.Config", {
+        onMatch: function (instance) {
+            console.log("[*] found instance, secretKey = " + instance.secretKey.value);
+        },
+        onComplete: function () {
+            console.log("[*] scan complete");
+        }
+    });
+});</code></pre>
+<p><code>onMatch</code>는 힙에서 발견된 인스턴스마다 한 번씩 호출되고, <code>onComplete</code>는 전체 스캔이 끝났을 때 한 번 호출된다. 이 방법은 특정 시점에 값이 이미 세팅되어 있는데 그 초기화 코드가 어디인지 못 찾겠을 때 특히 유용하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>후킹 스크립트 실행 시 <code>Error: verify(): has more than one overload. Please use .overload(...)</code> 오류가 출력됨.</li><li><code>console.log</code>로 인자를 출력했더니 <code>[object Object]</code>나 의미 없는 해시값만 나옴.</li><li>같은 이름의 메서드가 JADX 트리에 여러 줄(파라미터 목록만 다르게) 나열되어 있음.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>JADX/smali에서 후킹 대상 메서드의 정확한 파라미터 타입 목록부터 확인한다. 오버로드가 있는지, 인자가 원시 타입인지 객체/배열인지를 미리 알아야 <code>.overload(...)</code> 문자열과 필드 접근 코드를 정확히 작성할 수 있다.</p>
+<h2>단계별 절차</h2>
+<ol><li>JADX에서 후킹할 메서드의 전체 시그니처(이름, 파라미터 타입, 개수)를 확인한다.</li><li>오버로드가 여러 개면 각각을 <code>.overload("타입1", "타입2", ...)</code>로 구분해서 후킹 스크립트를 작성한다.</li><li>인자가 배열이면 인덱스로 순회, 커스텀 객체면 관심 필드를 <code>.value</code>로 접근하는 코드를 추가한다.</li><li><code>frida -U -f 패키지명 -l script.js --no-pause</code>로 실행해 콘솔 로그로 실제 값을 확인한다.</li><li>로직을 이해한 뒤 결과를 강제로 바꿔보고 싶다면 <code>return</code> 값을 원하는 값으로 고정해 앱 동작이 실제로 바뀌는지 검증한다.</li><li>특정 시점의 이미 초기화된 객체 값이 궁금하면 <code>Java.choose</code>로 힙을 스캔해 직접 값을 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">frida -U -f com.example.ctf -l hook.js --no-pause
+frida -U -n com.example.ctf -l hook.js   # 이미 실행 중인 프로세스에 스크립트 재주입</code></pre>
+<pre><code class="language-javascript">// 오버로드 지정 템플릿
+Klass.method.overload("java.lang.String", "int").implementation = function (s, i) { ... };
+
+// 필드 읽기/쓰기 템플릿
+instance.fieldName.value;             // 읽기
+instance.fieldName.value = newValue;  // 쓰기</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>.overload(...)</code>에 넘긴 타입 문자열이 실제 시그니처와 하나라도 다르면(대소문자, 전체 패키지 경로 누락 등) 여전히 "no overload matching" 오류가 나므로, JADX에 표시된 전체 타입 이름을 정확히 그대로 옮겨야 한다.</li><li>강제로 <code>return true</code>를 반환했는데도 앱 동작이 안 바뀐다면, 실제 판정에 쓰이는 함수가 후킹한 함수가 아니라 그 함수를 호출하는 상위 함수일 수 있으므로 호출 스택을 한 단계 더 위로 넓혀야 한다.</li><li><code>Java.choose</code>의 <code>onMatch</code>가 한 번도 안 불린다면, 아직 그 클래스의 인스턴스가 생성되지 않은 시점이므로(생성 이후 다시 스캔하거나) 생성 시점 이후로 스크립트 실행 타이밍을 옮겨야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>오버로드가 하나뿐인 메서드에도 습관적으로 <code>.overload(...)</code>를 안 써서 나중에 새 오버로드가 추가된 앱 버전에서 스크립트가 갑자기 깨지는 것 — 처음부터 정확한 타입을 지정해두면 안전하다.</li><li>배열 인자를 그냥 <code>console.log(arr)</code>로 찍어서 <code>[object Object]</code> 로그만 보고 "값이 안 나온다"고 착각하는 것 — 인덱스로 순회하거나 <code>Array.from</code>류 변환이 필요하다는 것을 놓치는 경우.</li><li>객체 필드에 <code>.value</code> 없이 <code>instance.fieldName</code>만 접근해서 실제 값이 아니라 필드 래퍼 객체 자체를 로그로 찍어버리는 것.</li><li><code>return true</code>로 강제 우회했는데 그 뒤에도 추가 검증이 한 겹 더 있어서 여전히 실패하는데, 첫 번째 우회가 성공했다고 착각하고 다음 단계로 넘어가지 못하는 것 — 강제 우회 후에도 실제 앱 화면/로그로 최종 결과까지 확인해야 한다.</li><li><code>Java.choose</code>를 <code>Java.perform</code> 콜백 바깥에서 호출해서 "클래스를 찾을 수 없다"는 오류를 만나는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>Frida 기본 개념(attach/spawn, frida-server 준비)이 아직 헷갈리면 → <a href="rev-0256-frida-basics.html">REV-0256 Frida로 함수 관찰하는 기본 흐름</a></li><li>네이티브(<code>.so</code>) 함수까지 후킹하고 싶다면 → <a href="rev-0975-frida-native-library-hooking.html">REV-0975 Frida로 Native 라이브러리 함수 후킹하기</a></li><li>JNI 타입 디스크립터(<code>[B</code>, <code>Ljava/lang/String;</code> 등) 표기 규칙이 헷갈리면 → <a href="rev-0976-jni-signature-reading.html">REV-0976 JNI 네이티브 함수 시그니처(Signature) 읽는 법</a></li><li>후킹 대상 클래스/메서드를 smali 레벨에서 다시 확인하고 싶으면 → <a href="rev-0252-smali-basics.html">REV-0252 smali 기초 문법</a></li></ul>
+<h2>미니 예제</h2>
+<p><code>PasswordChecker</code>에 오버로드된 두 메서드가 있고, 하나는 <code>String</code>, 하나는 <code>byte[]</code>을 받는다고 하자.</p>
+<pre><code class="language-java">public class PasswordChecker {
+    public boolean check(String input) { ... }
+    public boolean check(byte[] inputBytes) { ... }
+}</code></pre>
+<p>다음 스크립트로 두 오버로드를 각각 후킹하고, <code>String</code> 버전은 결과를 강제로 통과시켜본다.</p>
+<pre><code class="language-javascript">Java.perform(function () {
+    var Checker = Java.use("com.example.ctf.PasswordChecker");
+
+    Checker.check.overload("java.lang.String").implementation = function (input) {
+        var real = this.check(input);
+        console.log("[*] check(String) input=" + input + " real=" + real);
+        return true; // 강제 통과 (학습/검증 목적)
+    };
+
+    Checker.check.overload("[B").implementation = function (bytes) {
+        var arr = [];
+        for (var i = 0; i &lt; bytes.length; i++) arr.push(bytes[i] &amp; 0xff);
+        console.log("[*] check(byte[]) bytes=" + arr.join(","));
+        return this.check(bytes);
+    };
+});</code></pre>
+<pre><code class="language-bash">frida -U -f com.example.ctf -l hook.js --no-pause</code></pre>
+<p>앱에서 비밀번호를 입력하고 확인 버튼을 누르면, 콘솔에 실제 입력값과 원본 반환값(<code>real</code>)이 먼저 찍히고, 이후 강제로 <code>true</code>가 반환되어 앱은 항상 "성공" 화면으로 넘어간다. 이 결과로 <code>check(String)</code>이 실제로 어떤 값에 대해 <code>false</code>를 반환했는지 확인한 뒤, 그 로직 자체를 마저 정적으로 분석해 진짜 정답을 찾는 다음 단계로 넘어갈 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0256-frida-basics.html">REV-0256 — Frida로 함수 관찰하는 기본 흐름</a></li><li><a href="rev-0975-frida-native-library-hooking.html">REV-0975 — Frida로 Native 라이브러리 함수 후킹하기</a></li><li><a href="rev-0976-jni-signature-reading.html">REV-0976 — JNI 네이티브 함수 시그니처(Signature) 읽는 법</a></li><li><a href="rev-0252-smali-basics.html">REV-0252 — smali 기초 문법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>Java.use</code>, <code>.overload(...)</code>, <code>Java.choose</code>, 필드 접근(<code>.value</code>) API는 Frida 공식 문서(frida.re, "JavaScript API" 및 "Frida Java Bridge")를 기준으로 정리했다.</li><li>JNI 배열/객체 타입 디스크립터 표기(<code>[B</code>, <code>[Ljava.lang.String;</code> 등)는 오라클 공식 JNI 명세를 기준으로 확인했다.</li><li>위 스크립트/예제는 CTF 학습용으로 재구성한 것이며 특정 실제 문제의 정답이 아니다 (2026-09-09 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

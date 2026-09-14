@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Detect It Easy로 컴파일러 패커 확인 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>Detect It Easy로 컴파일러 패커 확인</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">Detect It Easy</span></div>
+<h2>한 줄 요약</h2>
+<p>Detect It Easy(DIE)는 파일 시그니처 데이터베이스와 섹션 엔트로피(entropy) 분석을 결합해 "이 실행 파일이 어떤 컴파일러/링커로 만들어졌는지, UPX 같은 패커로 압축됐는지"를 자동으로 판별해주는 무료 툴로, 정적 분석을 시작하기 전에 가장 먼저 돌려보는 것이 정석이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA에서 함수가 이상하게 적게 잡히거나 코드가 알아볼 수 없는 스텁으로만 보일 때, 패킹 여부를 먼저 확인하고 싶을 때</li><li>파일이 Visual C++인지 MinGW인지 .NET인지 Delphi/Go/Rust로 만들어졌는지, 즉 어떤 언어/컴파일러 산출물인지 감을 잡고 싶을 때</li><li>섹션 이름이 <code>UPX0</code>, <code>UPX1</code>, <code>.aspack</code> 처럼 낯설어서 패커 종류를 특정하고 싶을 때</li><li>CTF 문제 파일을 받자마자 습관적으로 돌리는 "가장 먼저 할 파일 진단" 단계가 필요할 때</li><li><code>file</code> 명령(리눅스/WSL)으로 대략적인 정보만 봤는데 더 자세한 컴파일러/패커 시그니처가 필요할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>시그니처 스캔이란</h3>
+<p>DIE는 내부에 방대한 시그니처(패턴) 데이터베이스를 가지고 있다. 각 시그니처는 "이 바이트 패턴이 파일의 특정 위치(주로 엔트리 포인트 근처)에 있으면 이 컴파일러/링커/패커다"라는 규칙이다. 예를 들어 UPX로 패킹된 파일은 압축 해제 스텁의 시작 부분이 거의 항상 똑같은 몇 바이트 패턴으로 시작하기 때문에, DIE는 그 패턴만 보고 "UPX"라고 즉시 알려줄 수 있다. 이는 예전 PEiD와 같은 원리이며, DIE는 그 후속작 성격의 툴로 시그니처 데이터베이스가 훨씬 더 활발히 관리되고 있다.</p>
+<h3>엔트로피(Entropy)로 패킹/암호화 의심하기</h3>
+<p>시그니처가 매칭되지 않는 "알 수 없는" 패커나 커스텀 암호화의 경우, DIE는 각 섹션의 <strong>엔트로피 값(0~8, 바이트당 비트 단위)</strong>을 계산해서 보여준다. 일반적인 컴파일된 코드(<code>.text</code>)나 텍스트 데이터는 엔트로피가 보통 5~6 정도인 반면, 압축되거나 암호화된 데이터는 거의 랜덤에 가까운 패턴이라 엔트로피가 7.5 이상, 특히 7.9~8에 가까운 값이 나온다. 섹션 엔트로피가 8에 가깝다면 시그니처로 패커를 못 찾았더라도 "이 섹션은 무언가로 압축/암호화되어 있다"고 강하게 의심할 수 있다.</p>
+<h3>컴파일러/링커 식별이 왜 중요한가</h3>
+<p>어떤 컴파일러로 만들어졌는지 알면 분석 방향이 크게 달라진다.</p>
+<ul><li><strong>MSVC(Visual C++)</strong>: 표준적인 CRT 초기화 코드(<code>__scrt_common_main</code>, <code>security_init_cookie</code> 등)와 예측 가능한 프롤로그/에필로그 패턴을 가진다.</li><li><strong>MinGW/GCC</strong>: Windows에서도 <code>__libc_start_main</code>과 비슷한 초기화 흐름을 갖는 경우가 있고, printf 계열 함수 구현이 MSVC와 다르다.</li><li><strong>.NET(C#/VB.NET)</strong>: 네이티브 x86/x64 코드가 아니라 CIL(중간 언어) 바이트코드이므로, IDA/x64dbg 대신 dnSpyEx나 ILSpy로 열어야 한다. DIE가 ".NET"이라고 알려주면 애초에 툴 선택 자체를 바꿔야 한다는 뜻이다.</li><li><strong>Go / Rust</strong>: 정적 링크된 방대한 런타임이 함께 포함되어 있어 함수 개수가 매우 많고 심볼 이름이 특이한 패턴(<code>runtime.</code>, 해시 접미사 등)을 갖는다.</li></ul>
+<p>이걸 미리 알면 "왜 함수가 이렇게 많지", "왜 CRT 초기화 코드가 낯설지" 같은 혼란을 줄일 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>DIE 실행 후 파일을 열면 상단에 <strong>파일 타입(PE32/PE32+), 아키텍처, 엔디안</strong>이 요약되어 표시된다.</li><li>가운데 큰 텍스트 상자에 스캔 결과 문자열이 나타난다. 예: <code>Microsoft Visual C/C++(...)  [EXE64]</code>, <code>UPX(3.96)[NRV,brute]</code>, <code>.NET(4.0.30319)[-]</code> 처럼 표기된다.</li><li>오른쪽 또는 하단에 <strong>Entropy</strong> 탭이 있어 섹션별 이름, 크기, 엔트로피 값을 표로 보여준다.</li><li>결과가 애매하면 문자열 끝에 <code>?</code>가 붙거나 <code>Unknown</code>이라고 표시되어, 확신도가 낮다는 것을 알려준다.</li><li>하단에 <strong>Deep scan</strong> 또는 <strong>Heuristic scan</strong> 버튼이 있어, 기본 스캔에서 못 찾은 경우 더 느리지만 정밀한 스캔을 돌릴 수 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>파일을 열자마자 상단 결과 텍스트를 확인해서 패커 이름이 뜨는지부터 본다. <code>UPX</code>, <code>ASPack</code>, <code>Themida</code>, <code>VMProtect</code> 같은 이름이 뜨면 그 즉시 "이 파일은 언패킹부터 해야 정적 분석이 의미 있다"는 결론을 내리고, 정적 분석(IDA F5 등)보다 언패킹/동적 분석 쪽으로 방향을 튼다. 아무것도 안 뜨고 컴파일러 이름만 나오면 패킹되지 않은 파일이므로 곧바로 IDA/PE-bear로 넘어가도 된다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 파일 열기</strong></p>
+<p>DIE 실행 후 상단 "..." 버튼이나 <code>File → Open</code>으로 대상 파일을 선택하거나 드래그&amp;드롭한다.</p>
+<p><strong>2) 기본 스캔 결과 확인</strong></p>
+<p>가운데 결과 창에서 컴파일러/링커/패커 이름을 확인한다. 여러 줄로 나올 수도 있는데, 보통 위쪽이 가장 구체적인(바깥쪽) 레이어, 즉 실제로 실행되는 첫 코드에 대한 판정이다.</p>
+<p><strong>3) 패커가 감지됐다면 버전/옵션까지 기록</strong></p>
+<p>예를 들어 <code>UPX(3.96)[NRV,brute]</code>처럼 나오면 UPX 버전까지 알 수 있어, 나중에 <code>upx -d</code>로 언패킹을 시도할 때 버전 호환성 문제를 줄이는 데 도움이 된다.</p>
+<p><strong>4) Entropy 탭에서 섹션별 엔트로피 확인</strong></p>
+<p>각 섹션의 엔트로피 값을 확인한다. 특정 섹션만 7.9 이상으로 튄다면 그 섹션이 압축/암호화되어 있다는 뜻이다.</p>
+<p><strong>5) 결과가 애매하면 Deep/Heuristic scan 실행</strong></p>
+<p>기본 스캔에서 <code>Unknown</code>이 나왔다면 Deep scan 버튼을 눌러 더 넓은 범위의 시그니처와 휴리스틱을 적용해본다. 이래도 안 잡히면 알려지지 않은 커스텀 패커/프로텍터일 가능성이 있다.</p>
+<p><strong>6) Hex/Import 등 부가 탭 확인(있는 경우)</strong></p>
+<p>DIE 버전에 따라 내장 Hex Viewer나 Import 목록 탭이 있어, PE-bear 없이도 간단한 구조 확인이 가능하다.</p>
+<h2>명령어/단축키</h2>
+<ul><li><code>File → Open</code> 또는 드래그&amp;드롭 : 파일 열기</li><li>결과 텍스트 우클릭 : 상세 시그니처 정보 보기(버전에 따라 지원)</li><li>Entropy 탭 클릭 : 섹션별 엔트로피 표로 전환</li><li>Deep scan / Heuristic scan 버튼 : 정밀 재스캔</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>Microsoft Visual C/C++</code> + 버전 숫자 : MSVC로 컴파일된 일반적인 네이티브 바이너리. 패킹 안 됨.</li><li><code>UPX(버전)[옵션]</code> : UPX로 패킹됨. <code>upx -d</code>로 대부분 자동 언패킹 가능.</li><li><code>Themida</code>, <code>VMProtect</code>, <code>.NET Reactor</code>, <code>Enigma Protector</code> 등 : 상용 프로텍터/난독화 툴. 단순 언패킹이 아니라 별도의 심화 분석(가상머신 기반 보호 등)이 필요할 수 있음.</li><li><code>.NET(버전)</code> : 네이티브 디스어셈블러 대신 dnSpyEx/ILSpy로 열어야 함.</li><li>컴파일러 이름 없이 <code>Unknown</code> : 알려지지 않은 컴파일러/링커이거나, 시그니처 DB가 최신이 아니거나, 이미 커스텀 패킹된 상태.</li><li>섹션 엔트로피가 대부분 5~6대인데 한 섹션만 7.9 이상 : 그 섹션에 압축/암호화된 데이터(코드 또는 리소스)가 들어있다는 강한 신호.</li></ul>
+<h3>PEiD와의 관계</h3>
+<p>2000년대에 널리 쓰였던 PEiD는 오랫동안 업데이트가 멈추면서 최신 컴파일러/패커 시그니처를 인식하지 못하게 되었다. Detect It Easy는 PEiD와 같은 시그니처 스캔 방식(그리고 PEiD의 <code>.sig</code> 시그니처 데이터베이스와 호환되는 형식)을 이어받으면서도, 자체 시그니처 문법(<code>.sg</code>)과 활발한 커뮤니티 업데이트, 엔트로피 분석, .NET/Go/Rust 같은 최신 런타임 인식까지 추가한 사실상의 후속 표준 툴이다. 오래된 자료에서 "PEiD로 확인"이라는 표현이 나오면 지금은 DIE로 대체해서 읽어도 무방하다.</p>
+<h2>명령줄(콘솔) 버전</h2>
+<p>DIE는 GUI뿐 아니라 콘솔 버전(<code>diec</code>)도 함께 배포되어, 자동화 스크립트나 대량의 파일을 일괄 스캔할 때 유용하다.</p>
+<pre><code class="language-text">diec -j sample.exe</code></pre>
+<p><code>-j</code> 옵션은 결과를 JSON 형식으로 출력해주므로, Python 스크립트로 여러 CTF 문제 파일을 한 번에 스캔해서 패커 여부만 먼저 걸러내는 식의 자동화에 활용할 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li>시그니처 결과를 100% 확신하는 것 — 시그니처는 알려진 패턴과의 일치일 뿐이라, 패커가 살짝 변형되거나 최신 버전이면 오탐/미탐이 날 수 있다. 엔트로피 등 다른 근거와 교차검증해야 한다.</li><li>엔트로피가 높다고 무조건 "패킹됨"으로 단정하는 것 — 이미 압축된 리소스(예: PNG 아이콘, 압축된 데이터 파일을 리소스로 내장)만 있어도 해당 섹션 엔트로피가 높게 나올 수 있다. 어느 섹션이 높은지(코드 섹션인지 리소스 섹션인지) 구분해서 봐야 한다.</li><li>DIE 결과만 보고 바로 정적 분석으로 넘어가서, 실제로는 패킹된 코드를 "함수가 왜 이렇게 없지"라며 헤매는 것 — 패커가 감지되면 언패킹이나 동적 분석을 먼저 고려해야 한다.</li><li>32비트/64비트를 헷갈려서 잘못된 아키텍처의 디버거(x32dbg 대신 x64dbg 등)로 여는 것 — DIE 상단의 PE32/PE32+ 표시로 먼저 확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>패커가 감지됐다면 → 언패킹 후 다시 정적 분석(추후 패킹/안티분석 카테고리 문서 참고)</li><li>패커가 없다고 나왔다면 → REV-0125 PE-bear로 헤더 분석하는 방법으로 넘어가 섹션/임포트를 확인</li><li>동적으로 직접 실행하며 확인하고 싶다면 → REV-0127 x64dbg로 EXE 첫 분석 시작</li><li>.NET으로 판정됐다면 → dnSpyEx/ILSpy 관련 문서(작성 예정)를 참고해 네이티브 디스어셈블러 대신 사용</li></ul>
+<h2>미니 예제</h2>
+<p>UPX로 패킹된 <code>packed.exe</code>를 DIE로 확인하는 흐름:</p>
+<pre><code class="language-text">1. DIE 실행 → packed.exe 드래그&amp;드롭
+2. 상단: PE32+ / AMD64 / EXE
+3. 결과 창: "UPX(3.96)[NRV,brute] -&gt; Markus Oberhumer &amp; Laszlo Molnar &amp; John Reiser"
+4. Entropy 탭: UPX0 섹션 엔트로피 0.0(비어있음, 압축 해제 후 채워짐), UPX1 섹션 엔트로피 7.98(압축된 실제 코드)
+5. 결론: UPX 패킹이 확실하므로 upx -d packed.exe로 언패킹 시도 후 재분석</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0125-pe-bear-basics.html">REV-0125 — PE-bear로 헤더 분석하는 방법</a></li><li><a href="rev-0127-x64dbg-first-analysis.html">REV-0127 — x64dbg로 EXE 첫 분석 시작</a></li><li><a href="rev-0142-ida-first-open.html">REV-0142 — IDA에 바이너리 처음 열었을 때 해야 할 것</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Detect It Easy의 시그니처 스캔/엔트로피 분석 방식은 DIE 공식 GitHub 저장소(horsicq/Detect-It-Easy) 및 배포된 GUI 동작 기준.</li><li>엔트로피 값과 압축/암호화 데이터의 상관관계(랜덤에 가까울수록 엔트로피가 8비트/바이트에 근접)는 정보이론(Shannon entropy)의 일반적 정의 및 실무 리버싱 레퍼런스 기준(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

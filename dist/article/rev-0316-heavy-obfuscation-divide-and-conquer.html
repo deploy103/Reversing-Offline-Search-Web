@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>난독화가 심한 문제를 포기하지 않고 쪼개서 접근하는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>난독화가 심한 문제를 포기하지 않고 쪼개서 접근하는 법</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>심하게 난독화된 코드는 "전체를 다 이해해야 한다"는 부담을 버리고 <strong>입력에서 출력까지의 데이터 흐름 중 아주 작은 한 조각(변수 하나, 바이트 하나)만 추적하는 작업을 여러 번 반복해 쌓아가는 방식</strong>으로 접근하면, 실제로는 명령어 하나하나를 다 읽지 않고도 검증 로직 전체를 복원할 수 있는 경우가 많다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디컴파일 코드나 어셈블리를 봤는데 변수/분기가 너무 많고 복잡해서 어디서부터 손대야 할지 막막할 때</li><li>"이 코드 전체를 이해하기 전엔 한 발짝도 못 나간다"는 생각에 압도되어 아예 시작을 못 하고 있을 때</li><li>몇 번 시도했다가 복잡함에 질려서 문제를 덮어두고 다른 걸 하고 있을 때</li><li>Control Flow Flattening, Opaque Predicate 등 알려진 난독화 기법(REV-0231, REV-0232)이 섞여 있어 코드 흐름 자체를 눈으로 따라가기 어려울 때</li></ul>
+<h2>핵심 개념</h2>
+<p>이 글은 REV-0231(Control Flow Flattening), REV-0232(Opaque Predicate), REV-0233(문자열 난독화) 같은 <strong>특정 난독화 기법을 기술적으로 해체하는 방법</strong>을 다루지 않는다. 그런 기법들의 원리는 각 문서에서 따로 다룬다. 이 글이 다루는 것은 그보다 앞선 문제, 즉 <strong>난독화가 여러 겹 겹쳐 있어서 심리적으로 압도당해 아예 분석을 시작하거나 계속하지 못하는 상태</strong>를 어떻게 극복하느냐는 전략이다.</p>
+<h3>"전부 이해해야 한다"는 착각 버리기</h3>
+<p>초보자가 난독화된 코드 앞에서 가장 먼저 하는 실수는 위에서부터 아래까지 모든 명령어의 의미를 순서대로 완벽히 이해하려는 것이다. 실제로 검증 로직을 복원하는 데 필요한 것은 <strong>입력이 최종 비교 지점까지 어떻게 변환되는지에 대한 데이터 흐름</strong>이지, 코드에 있는 모든 명령어의 의도를 아는 게 아니다. 난독화 기법 대부분(불투명 술어, 제어 흐름 평탄화, 죽은 코드 삽입)은 실제 데이터 흐름에는 영향을 주지 않으면서 코드 볼륨과 분기 복잡도만 늘리는 것이 목적이다. 즉 상당 부분은 애초에 "이해할 필요가 없는" 코드다.</p>
+<h3>쪼개서 접근하는 구체적 방법</h3>
+<ol><li><strong>최종 비교 지점부터 거꾸로 시작한다</strong>: 전체를 처음부터 읽지 말고, <code>strcmp</code>/<code>memcmp</code>나 최종 성공/실패 분기가 있는 지점을 먼저 찾는다(REV-0006, REV-0008). 그 지점에서 비교되는 값이 어디서 왔는지, 딱 한 단계만 거슬러 올라간다.</li><li><strong>변수 하나만 계속 추적한다</strong>: 한 번에 전체 로직을 이해하려 하지 말고, 최종 비교값에 영향을 준 변수 하나를 정하고 그 변수가 어디서 만들어졌는지(대입문, 함수 호출 반환값)만 계속 거슬러 올라간다. IDA/Ghidra에서 변수 위에 커서를 놓고 우클릭 → Jump to xref, 또는 변수 이름 더블클릭으로 정의 위치를 빠르게 오갈 수 있다.</li><li><strong>동적으로 실제 값을 찍어본다</strong>: 정적으로 눈으로 따라가는 게 너무 느리면, 그 변수가 쓰이는 지점에 브레이크포인트를 걸고 실제 실행 중 값이 어떻게 바뀌는지 관찰한다(REV-0005). 난독화된 코드라도 실제 실행 값은 난독화되지 않은 진짜 값이므로, 동적 관찰이 정적으로 코드를 읽는 것보다 훨씬 빠를 때가 많다.</li><li><strong>이해한 조각을 노트에 누적한다</strong>: "변수 A는 입력의 3번째 바이트에서 왔고, 어떤 함수를 거쳐 변수 B가 됐다"처럼 작은 조각을 확인할 때마다 REV-0014 방식의 노트에 바로바로 적는다. 조각들이 쌓이면 어느 순간 전체 그림이 이어진다 — 처음부터 전체 그림을 그리려 하지 않는다.</li><li><strong>막힌 조각은 건너뛰고 다른 조각으로 옮긴다</strong>: 하나의 변수 추적이 막히면(예: 함수가 재귀적이거나 너무 복잡함) 그 조각에 매몰되지 말고, 다른 조각(다른 변수, 다른 비교 지점)으로 옮겨서 진행률을 유지한다. 나중에 다른 조각에서 얻은 정보가 막혔던 조각을 이해하는 데 도움이 되는 경우가 많다.</li></ol>
+<h3>심리적으로 포기하지 않는 방법</h3>
+<p>막막함은 대부분 "얼마나 더 해야 끝나는지 모르는 상태"에서 온다. 위 방식대로 작은 조각을 하나씩 확인하고 노트에 기록하면, 눈에 보이는 진행률(확인된 조각 개수)이 생기기 때문에 "전혀 진전이 없다"는 느낌 자체를 줄일 수 있다. 또한 REV-0310으로 애초에 "이 문제는 시간이 오래 걸린다"고 예상하고 시작했다면, 복잡한 코드를 보고 놀라는 대신 예상대로라고 받아들이기가 더 쉽다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>함수 하나의 그래프 뷰(IDA Graph view)가 노드와 화살표로 가득 차서 한 화면에 안 들어온다.</li><li>같은 값을 여러 번 재대입하거나, 의미 없어 보이는 산술 연산(더했다가 다시 빼는 등)이 반복된다.</li><li>조건 분기가 실제로는 항상 같은 방향으로만 가는 것 같은데(불투명 술어 의심) 이유를 알 수 없다.</li><li>변수 이름이 전부 <code>v1</code>, <code>v2</code>, <code>v3</code>처럼 의미 없이 나열되어 있고 개수가 수십 개다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>전체 코드를 위에서부터 읽으려는 시도를 멈춘다. 대신 최종 성공/실패 분기(<code>strcmp</code>, <code>memcmp</code>, 또는 flag 출력 직전 조건문)를 먼저 찾아서 그 지점부터 시작한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>최종 비교/성공 분기 지점을 먼저 찾는다(REV-0006, REV-0008)</li><li>그 지점에서 비교되는 변수 하나를 정한다</li><li>그 변수가 어디서 정의됐는지 딱 한 단계만 거슬러 올라간다(정적으로 xref 확인 또는 동적으로 브레이크포인트)</li><li>확인한 조각을 노트에 즉시 기록한다(REV-0014)</li><li>다음 변수로 넘어가 같은 방식을 반복한다</li><li>한 조각이 너무 오래 걸리면 표시만 해두고 다른 조각으로 넘어간다</li><li>조각이 충분히 쌓이면(보통 전체 흐름의 60~70% 정도) 전체 그림을 다시 노트에서 정리해본다</li><li>남은 빈 조각을 채우며 전체 로직을 완성한다</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 변수/함수 이름 위에서 <code>X</code>(xref 확인), 그래프 뷰에서 <code>Space</code>(그래프/텍스트 뷰 전환), <code>Ctrl+마우스휠</code>(그래프 확대/축소)</li><li>GDB: 특정 지점에서 <code>watch 변수</code> 또는 <code>break *주소</code> 후 <code>print 변수</code>로 동적 값 확인</li><li>노트: 조각 단위 기록 템플릿 예시 — <code>[변수명] = [값/출처] (확인 방법: 정적/동적, 확실함/가설)</code></li></ul>
+<h2>출력 해석</h2>
+<ul><li>동적으로 확인한 실제 값이 정적 코드에서 예상한 것과 다르다면, 정적으로 읽은 부분에 난독화 트릭(불투명 술어, 죽은 코드)이 섞여 있었다는 신호다 — 그 부분은 무시하고 실제 값 기준으로 계속 진행한다.</li><li>조각들을 이어봤는데 전체 흐름이 앞뒤가 안 맞으면, 중간에 놓친 조각(다른 함수를 거치는 경로)이 있다는 뜻이므로 그 구간만 다시 추적한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>여전히 전체 코드를 순서대로 다 이해하려고 시도하다가 같은 화면에서 몇 시간째 멈춰 있는 것.</li><li>막힌 조각 하나에 매몰되어 다른 쉬운 조각으로 옮기지 않는 것 — 진행률이 0으로 느껴져 포기하고 싶어지는 주된 원인이다.</li><li>확인한 조각을 노트에 기록하지 않아서, 나중에 이미 확인했던 걸 또 확인하는 것.</li><li>정적으로만 계속 씨름하고 동적 검증(실제 값 찍어보기)으로 전환하지 않는 것 — 난독화된 코드일수록 동적 관찰이 훨씬 빠른 지름길이 되는 경우가 많다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>어떤 난독화 기법인지 구체적으로 알아야 다음을 진행할 수 있다 → REV-0231 Control Flow Flattening 기초, REV-0232 Opaque Predicate 기초, REV-0233 문자열 난독화가 보일 때</li><li>정적 분석 자체가 안 통해서 동적으로 전환해야 한다 → REV-0005 문제를 정적 분석부터 할지 동적 분석부터 할지 결정하는 법, REV-0241 패커와 난독화 때문에 디컴파일이 틀릴 때 정적/동적 전환</li><li>노트 작성 방식 자체가 익숙하지 않다 → REV-0014 리버싱 노트 작성법: 함수 이름 바꾸기와 가설 기록</li><li>이 문제가 원래 시간이 오래 걸리는 게 맞는지 재확인하고 싶다 → REV-0310 리버싱 문제 난이도를 빠르게 가늠하는 체크포인트</li></ul>
+<h2>미니 예제</h2>
+<p>그래프 뷰가 노드 80개로 가득 찬 함수를 마주쳤다. 전체를 읽는 대신 함수 끝의 <code>return v12 == 0x4C2A;</code> 한 줄만 찾아서 시작했다. <code>v12</code>가 어디서 왔는지 한 단계 거슬러 올라가니 <code>v12 = v9 ^ v3;</code>이었고, 다시 <code>v9</code>와 <code>v3</code>을 각각 추적했다. <code>v3</code>은 단순히 입력 버퍼의 2번째 바이트였고, <code>v9</code>는 또 다른 변수 세 개를 거쳐 계산된 값이었다. 이런 식으로 6번 정도 "한 단계씩 거슬러 올라가기"를 반복하니, 실제로 읽어야 했던 코드는 전체 80개 노드 중 12개 정도뿐이었다 — 나머지 68개는 그 변수들과 무관한 죽은 코드/불투명 술어였다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0231-control-flow-flattening.html">REV-0231 — Control Flow Flattening 기초</a></li><li><a href="rev-0232-opaque-predicates.html">REV-0232 — Opaque Predicate 기초</a></li><li><a href="rev-0233-string-obfuscation.html">REV-0233 — 문자열 난독화가 보일 때</a></li><li><a href="rev-0241-switch-to-dynamic-when-packed.html">REV-0241 — 패커와 난독화 때문에 디컴파일이 틀릴 때 정적/동적 전환</a></li><li><a href="rev-0006-finding-check-function.html">REV-0006 — Flag 검증 함수 찾는 가장 흔한 경로</a></li><li><a href="rev-0014-reversing-notes.html">REV-0014 — 리버싱 노트 작성법: 함수 이름 바꾸기와 가설 기록</a></li><li><a href="rev-0310-difficulty-triage-checkpoints.html">REV-0310 — 리버싱 문제 난이도를 빠르게 가늠하는 체크포인트</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>난독화 코드에 대한 데이터 흐름 중심 축소 분석(backward slicing 개념) 및 점진적 노트 누적 전략: CTF 리버싱 실전 경험칙 및 일반적인 프로그램 분석(program slicing) 개념 요약 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

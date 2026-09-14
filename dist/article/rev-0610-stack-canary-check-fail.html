@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>카나리 체크 실패로 프로그램이 바로 종료될 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>카나리 체크 실패로 프로그램이 바로 종료될 때</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">x64dbg</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>IDA/x64dbg에서 <code>__security_check_cookie</code>가 실패로 처리되어 프로그램이 즉시 종료되는 경우, 원인은 대부분 (1) 정말로 스택 버퍼를 넘치게 만든 오버플로우가 있었거나 (2) 리버서가 코드를 패치하면서 그 함수의 스택 프레임(특히 카나리가 저장된 지역 변수)을 건드려 버렸기 때문이므로, 먼저 "내가 방금 패치한 코드가 스택 레이아웃을 바꿨는지"부터 확인하는 것이 가장 빠른 진단이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>바이너리를 직접 패치(바이트 수정, NOP 채우기, 함수 후킹 등)한 뒤부터 갑자기 프로그램이 실행 즉시 종료될 때</li><li>x64dbg에서 <code>_security_check_cookie</code>/<code>__report_gsfailure</code> 근처에서 실행이 멈추고 프로세스가 죽을 때</li><li>명령어 레벨에서 <code>INT 0x29</code>(x64) 또는 <code>int 3</code>/<code>ud2</code> 계열 강제 종료 명령이 실행되는 것을 목격했을 때</li></ul>
+<h2>핵심 개념</h2>
+<p><code>/GS</code> 옵션으로 컴파일된 함수의 에필로그에는 다음과 같은 흐름이 삽입된다(x64 기준 개념적 흐름).</p>
+<pre><code class="language-asm">mov  rcx, [rsp+local_cookie]   ; 저장해둔 카나리 값 로드
+xor  rcx, rbp                  ; 프레임 포인터와 XOR (저장 시와 동일한 방식으로 복원)
+call __security_check_cookie   ; 실제 검사</code></pre>
+<p><code>__security_check_cookie</code> 내부는 대략 다음과 같이 동작한다.</p>
+<pre><code class="language-asm">cmp  rcx, cs:__security_cookie
+jne  report_failure
+ret</code></pre>
+<p>즉 함수가 시작할 때 심어둔 카나리 값과, 끝날 때 다시 계산한 값을 비교해서 다르면 <code>__report_gsfailure</code>로 점프해 <code>__fastfail(FAST_FAIL_STACK_COOKIE_CHECK_FAILURE)</code>(코드 2)를 실행한다. 이는 x64에서 <code>INT 0x29</code> 명령으로 구현되어, 커널에 즉시 프로세스 종료를 요청한다. 이 명령이 실행되면 예외 핸들러조차 개입할 여지 없이 프로세스가 그 자리에서 죽는다.</p>
+<p>리버서 입장에서 이 검사가 "갑자기, 그리고 원인 모르게" 실패하는 가장 흔한 이유는 실제 버퍼 오버플로우가 아니라 <strong>분석 중인 사람이 직접 만든 부작용</strong>이다.</p>
+<ul><li>함수 중간의 명령어를 <code>NOP</code>으로 밀어버리면서 스택 정렬이나 로컬 변수 오프셋이 어긋난 경우</li><li>함수 하나를 후킹(트램폴린 삽입)하면서 카나리가 저장된 스택 슬롯을 실수로 덮어쓴 경우</li><li>디버거로 강제로 레지스터(특히 <code>RBP</code>/<code>RSP</code>)를 바꿔놓고 실행을 재개한 경우 — 카나리 계산이 <code>RBP</code>/<code>RSP</code>와 XOR되는 방식이므로 이 값이 원래와 다르면 검사가 실패한다</li><li>함수의 반환 주소나 스택 프레임 크기를 착각하고 스택에 값을 덮어쓴 경우</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>x64dbg 로그에 <code>INT3</code>나 크래시 없이 곧바로 프로세스 종료 이벤트만 뜨고, 예외 코드는 <code>0xC0000409</code></li><li>IDA 디스어셈블리에서 함수 끝부분에 <code>call __security_check_cookie</code>가 있고 그 직전에 카나리 값을 로드하는 코드가 있음</li><li>방금 패치를 적용한 함수와 크래시가 발생한 함수가 동일함</li><li>x64dbg로 스텝 실행하며 <code>RSP</code>/<code>RBP</code> 값을 강제로 바꾼 직후부터 문제가 시작됨</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>크래시 직전에 내가(혹은 이전 세션에서) 어떤 패치를 적용했는지 되짚어본다. 특히 그 패치가 카나리 검사가 있는 함수 내부였는지 확인한다.</li><li>IDA에서 해당 함수의 스택 프레임(<code>Alt+K</code>)을 열어 카나리 변수와 내가 건드린 위치의 상대 오프셋을 비교한다.</li><li>패치를 적용하기 전 원본 바이너리로 같은 입력을 넣고 재현되는지 먼저 확인해, 패치 때문인지 원래부터 있던 오버플로우인지를 가른다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 원본과 비교해서 원인 좁히기</strong></p>
+<ul><li>패치 전 원본 파일을 별도로 보관해 두고 동일한 입력으로 실행해본다. 원본에서는 문제가 없고 패치 후에만 재현된다면, 패치 자체가 스택 레이아웃을 깬 것이다.</li></ul>
+<p><strong>2) 패치가 스택을 건드렸는지 확인</strong></p>
+<ul><li>IDA의 스택 프레임 뷰(<code>Alt+K</code>)에서 카나리 변수(대개 <code>var_8</code>처럼 표시되며 보안 쿠키 XOR 코드와 연결된 변수)의 오프셋을 확인한다.</li><li>내가 패치한 명령어가 이 변수보다 낮은 주소(스택에서 더 아래쪽, 버퍼 쪽)에 쓰기를 하는 코드였다면 카나리를 밀어냈을 가능성이 크다.</li><li>명령어 크기를 착각해서 <code>NOP</code> 패딩이 다음 명령어 경계를 침범하지 않았는지도 바이트 단위로 재확인한다.</li></ul>
+<p><strong>3) 진짜 오버플로우인지 확인</strong></p>
+<ul><li>패치와 무관하게 원본에서도 재현된다면 REV-0609(스택이 깨졌다는 예외가 발생할 때)의 절차대로 실제 버퍼 오버플로우 지점을 역추적한다.</li></ul>
+<p><strong>4) 임시로 검사를 우회(주의해서)</strong></p>
+<ul><li>분석 목적상 이 검사 자체를 잠시 꺼야 한다면(예: 이미 알려진 오버플로우를 이용한 익스플로잇을 테스트하려는 것이 아니라 다른 로직을 보기 위해서라면), <code>call __security_check_cookie</code> 명령어를 <code>NOP</code>으로 채우거나, <code>__security_check_cookie</code> 함수 시작에 바로 <code>RET</code>을 넣어 항상 통과하도록 패치할 수 있다. 단, 이는 실제 오버플로우로 인한 반환 주소 변조까지 함께 무시하게 되므로, 그 이후 크래시가 다른 형태(예: 잘못된 주소로 점프)로 나타날 수 있음을 감안해야 한다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>Alt+K</code>(스택 프레임 뷰), <code>X</code>(교차 참조로 <code>__security_check_cookie</code> 호출부 전체 확인)</li><li>x64dbg: 레지스터 창에서 <code>RSP</code>/<code>RBP</code> 확인, 덤프 창에서 스택 메모리 직접 검사</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>__security_check_cookie</code> 진입 시 <code>RCX</code>(x64 기준) 값이 전역 <code>__security_cookie</code>와 다르면 실패다. 두 값을 나란히 놓고 어느 비트가 다른지 보면, 어느 방향(버퍼 쪽인지 다른 스택 변수 쪽인지)에서 덮어써졌는지 힌트를 얻을 수 있다.</li><li>값이 규칙적으로 어긋난다면(예: 항상 정확히 4바이트만 밀려 있음) 패치한 명령어의 크기 계산 실수일 가능성이 높다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>패치 직후 발생한 크래시를 무조건 "원래 프로그램에 있던 버그"로 오해하고 패치 자체를 의심하지 않는 것.</li><li>카나리 검사를 통째로 무력화한 뒤, 실제로는 반환 주소가 이미 오염되어 있어서 다음 <code>RET</code>에서 잘못된 주소로 점프해 또 다른 크래시가 나는데 이를 "새로운 버그"로 착각하는 것.</li><li><code>RBP</code>/<code>RSP</code>를 디버거에서 임의로 수정하고 실행을 재개하면서, 이 값이 카나리 계산에 쓰인다는 사실을 잊고 왜 실패하는지 못 찾는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>애초에 스택 카나리 메커니즘 자체를 더 자세히 알고 싶다면 → REV-0609(스택이 깨졌다는 예외가 발생할 때)를 확인한다.</li><li>함수 프레임/호출 규약이 헷갈린다면 → REV-0122(MS x64 호출 규약), REV-0124(Shadow Space)를 확인한다.</li><li>패치 이후 다른 예외 핸들러로 튀는 것 같다면 → REV-0608을 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p>어떤 함수의 조건 분기를 우회하려고 다음처럼 5바이트 <code>CALL</code> 명령어를 3바이트 <code>JMP</code>로 바꾸고 남는 2바이트를 <code>NOP</code>으로 채웠다고 하자.</p>
+<pre><code class="language-asm">; 패치 전
+call sub_401500      ; 5바이트
+; 패치 후
+jmp  sub_401600       ; 2바이트(짧은 점프라고 착각)
+nop
+nop
+nop                    ; 실제로는 3바이트가 남아야 하는데 계산 실수로 스택 정리 명령까지 침범</code></pre>
+<p>이처럼 명령어 바이트 수 계산을 착각해 다음 명령(스택 정리나 카나리 저장 코드)까지 지워버리면, 함수가 끝날 때 카나리 값이 애초에 저장되지 않았거나 손상되어 검사가 실패한다. IDA에서 패치 전후의 디스어셈블리를 나란히 비교하며 명령어 경계를 바이트 단위로 확인하는 것이 이런 실수를 막는 가장 확실한 방법이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0609-stack-corruption-exception.html">REV-0609 — 스택이 깨졌다는 예외가 발생할 때(Stack Corruption)</a></li><li><a href="rev-0122-ms-x64-calling-convention.html">REV-0122 — Microsoft x64 Calling Convention</a></li><li><a href="rev-0124-shadow-space.html">REV-0124 — Shadow Space가 무엇인지</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>__security_cookie</code>/<code>__security_check_cookie</code>의 XOR 기반 계산 방식과 실패 시 <code>__report_gsfailure</code>를 통한 즉시 종료(<code>__fastfail</code>, <code>INT 0x29</code>) 메커니즘은 Microsoft MSRC의 스택 손상 완화 공개 문서 및 다수의 리버스 엔지니어링 기술 자료 기준이다.</li><li>패치/후킹 과정에서 스택 레이아웃이 어긋나 카나리 검사가 실패하는 문제는 일반적인 바이너리 패칭 실무에서 널리 알려진 실수 패턴이며, 이 문서의 대응 절차는 그러한 실무 관행을 정리한 것이다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

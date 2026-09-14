@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CreateFile ReadFile WriteFile 입력 데이터 추적 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>CreateFile ReadFile WriteFile 입력 데이터 추적</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>CreateFile</code>/<code>ReadFile</code>/<code>WriteFile</code>은 프로그램이 파일(또는 파일처럼 다뤄지는 파이프/장치)과 데이터를 주고받는 지점이므로, 이 세 함수의 정확한 인자 순서를 알고 <code>CALL</code> 직전에 x86은 스택을, x64는 <code>RCX</code>/<code>RDX</code>/<code>R8</code>/<code>R9</code> 레지스터를 확인하는 법을 익히면 프로그램이 어떤 파일을 열어 어떤 데이터를 읽고 쓰는지 바로 추적할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>임포트 목록에서 <code>CreateFileW</code>/<code>CreateFileA</code>, <code>ReadFile</code>, <code>WriteFile</code>을 발견하고 이 프로그램이 어떤 파일을 다루는지 알아내야 할 때</li><li>x64dbg로 <code>WriteFile</code> 호출 직전에 멈춰서 실제로 어떤 데이터가 파일에 쓰이는지(예: 암호화된 결과, 플래그) 확인하고 싶을 때</li><li><code>ReadFile</code>로 읽어들인 버퍼가 이후 어떻게 가공되는지(복호화, 검증) 추적해야 할 때</li><li>x86과 x64에서 인자를 확인하는 방법이 달라서 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<p>세 함수 모두 <code>kernel32.dll</code>(내부적으로는 <code>KernelBase.dll</code>)이 제공하는 표준 Win32 파일 입출력 API다. 정확한 인자 순서를 외워두면 호출 지점만 봐도 절반은 분석이 끝난다.</p>
+<p><strong><code>CreateFileW</code></strong> — 파일을 열거나 새로 만들어 핸들을 얻는다.</p>
+<pre><code class="language-c">HANDLE CreateFileW(
+    LPCWSTR               lpFileName,           // 1. 파일 경로(유니코드 문자열)
+    DWORD                  dwDesiredAccess,      // 2. 원하는 접근 권한(GENERIC_READ/WRITE 등)
+    DWORD                  dwShareMode,          // 3. 다른 프로세스와 공유 방식
+    LPSECURITY_ATTRIBUTES  lpSecurityAttributes, // 4. 보안 속성(대개 NULL)
+    DWORD                  dwCreationDisposition,// 5. 열기/만들기 방식(OPEN_EXISTING, CREATE_ALWAYS 등)
+    DWORD                  dwFlagsAndAttributes, // 6. 파일 속성/플래그
+    HANDLE                 hTemplateFile         // 7. 템플릿 파일 핸들(대개 NULL)
+);</code></pre>
+<p>반환값은 성공 시 유효한 <code>HANDLE</code>(정수값), 실패 시 <code>INVALID_HANDLE_VALUE</code>(<code>-1</code>, 즉 <code>0xFFFFFFFF</code>/<code>0xFFFFFFFFFFFFFFFF</code>)이다. 이 반환값(<code>EAX</code>/<code>RAX</code>)을 이후 <code>ReadFile</code>/<code>WriteFile</code>의 첫 인자로 그대로 넘기는 패턴이 매우 흔하다.</p>
+<p><strong><code>ReadFile</code></strong> — 열린 파일에서 데이터를 읽어 버퍼에 채운다.</p>
+<pre><code class="language-c">BOOL ReadFile(
+    HANDLE       hFile,                  // 1. CreateFile이 반환한 핸들
+    LPVOID       lpBuffer,               // 2. 읽은 데이터를 저장할 버퍼 주소
+    DWORD        nNumberOfBytesToRead,   // 3. 읽으려는 바이트 수
+    LPDWORD      lpNumberOfBytesRead,    // 4. 실제로 읽은 바이트 수가 저장될 주소
+    LPOVERLAPPED lpOverlapped            // 5. 비동기 입출력용 구조체 주소(동기 방식이면 NULL)
+);</code></pre>
+<p><strong><code>WriteFile</code></strong> — 열린 파일에 버퍼의 데이터를 써넣는다.</p>
+<pre><code class="language-c">BOOL WriteFile(
+    HANDLE       hFile,                   // 1. 파일 핸들
+    LPCVOID      lpBuffer,                // 2. 써넣을 데이터가 있는 버퍼 주소
+    DWORD        nNumberOfBytesToWrite,   // 3. 쓰려는 바이트 수
+    LPDWORD      lpNumberOfBytesWritten,  // 4. 실제로 쓴 바이트 수가 저장될 주소
+    LPOVERLAPPED lpOverlapped             // 5. 비동기 입출력용(동기면 NULL)
+);</code></pre>
+<p><code>ReadFile</code>과 <code>WriteFile</code>은 인자 구조가 완전히 대칭이며, 2번 인자(버퍼)의 방향만 반대(읽기는 "채워지는 곳", 쓰기는 "읽어가는 곳")라는 점만 기억하면 헷갈리지 않는다. 두 함수 모두 <code>BOOL</code>(성공 시 0이 아닌 값)을 반환한다.</p>
+<p>이 함수들을 호출할 때 인자가 어디에 실리는지는 아키텍처와 호출 규약에 따라 다르다.</p>
+<ul><li><strong>x86(32비트, <code>stdcall</code>)</strong>: 인자는 오른쪽(마지막 인자)부터 왼쪽(첫 인자) 순서로 스택에 <code>push</code>된다. <code>CALL</code> 명령이 실행되는 순간 스택에는 이미 모든 인자가 쌓여 있고, <code>CALL</code>이 리턴 주소를 추가로 <code>push</code>한다. 따라서 함수 진입 직후 기준으로 <code>[esp]</code>가 리턴 주소, <code>[esp+4]</code>가 첫 번째 인자, <code>[esp+8]</code>이 두 번째 인자... 순서로 이어진다.</li><li><strong>x64(Microsoft x64 호출 규약)</strong>: 정수/포인터 타입 인자 앞 4개는 순서대로 <code>RCX</code>, <code>RDX</code>, <code>R8</code>, <code>R9</code> 레지스터에 담긴다. 5번째 인자부터는 스택에 쌓이며, 호출자(caller)는 그 앞에 32바이트(4개 레지스터分)의 "섀도우 스페이스(shadow space)"를 항상 예약해둬야 한다. <code>ReadFile</code>/<code>WriteFile</code>은 인자가 5개이므로 5번째 인자(<code>lpOverlapped</code>)만 스택에서, 그것도 섀도우 스페이스 뒤(<code>[rsp+0x28]</code> 부근, 리턴 주소 <code>[rsp]</code> + 섀도우 스페이스 0x20)에서 찾아야 한다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>CALL</code> 대상 이름이 <code>CreateFileW</code>인 명령어 바로 위쪽에 <code>lea</code>/<code>push</code>(x86) 또는 <code>mov r9d, ...</code> / <code>mov r8, ...</code> / <code>lea rdx, ...</code> / <code>lea rcx, ...</code>(x64, 인자가 역순으로 세팅되는 경우가 흔함)가 연이어 나옴</li><li><code>CreateFileW</code> 반환값(<code>eax</code>/<code>rax</code>)이 곧바로 지역 변수나 전역 변수에 저장된 뒤, 몇 줄 뒤 <code>ReadFile</code>이나 <code>WriteFile</code>의 첫 인자로 다시 로드되는 패턴</li><li><code>ReadFile</code> 호출 직후 반환값(<code>eax</code>)을 <code>test eax, eax</code> / <code>cmp eax, 0</code>으로 검사해서 실패 시 에러 처리로 분기하는 코드</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>대상 바이너리가 x86인지 x64인지부터 확인한다(REV-0136에서 다룬 PE-bear의 Machine 필드로 쉽게 확인 가능).</li><li><code>CreateFileW</code>(또는 <code>CreateFileA</code>)의 첫 번째 인자(파일 경로 문자열)부터 확인해서 "이 프로그램이 어떤 파일을 다루는가"를 먼저 파악한다.</li><li>그 핸들이 이후 <code>ReadFile</code>/<code>WriteFile</code> 어디로 이어지는지 데이터 흐름을 추적한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 정적 분석(IDA)</strong></p>
+<ul><li>임포트 목록에서 <code>CreateFileW</code>를 찾아 <code>X</code>(교차 참조)로 호출 위치를 나열한다.</li><li>각 호출 지점 직전의 인자 세팅 코드를 보고, 첫 번째 인자로 쓰이는 문자열 리터럴이나 변수를 확인한다. Hex-Rays 디컴파일(<code>F5</code>)을 쓰면 <code>CreateFileW(L"data.bin", GENERIC_READ, ...)</code> 형태로 훨씬 읽기 편하게 나온다.</li></ul>
+<p><strong>2) 동적 분석 - x86</strong></p>
+<ul><li>x64dbg(x32dbg)에서 <code>bp CreateFileW</code> 후 실행한다.</li><li>브레이크포인트가 걸리면 함수 진입 직후이므로, Stack 창에서 <code>[esp]</code>=리턴 주소, <code>[esp+4]</code>=<code>lpFileName</code>, <code>[esp+8]</code>=<code>dwDesiredAccess</code> 순서로 값을 확인한다. <code>[esp+4]</code>에 있는 주소를 우클릭 → "Follow in Dump"하면 실제 파일 경로 문자열(유니코드)이 보인다.</li></ul>
+<p><strong>3) 동적 분석 - x64</strong></p>
+<ul><li><code>bp ReadFile</code> 또는 <code>bp WriteFile</code>로 브레이크포인트를 건다.</li><li>브레이크포인트가 걸린 순간 Registers 창에서 <code>RCX</code>(hFile), <code>RDX</code>(lpBuffer), <code>R8</code>(바이트 수)를 바로 확인한다. <code>RDX</code>를 우클릭 → "Follow in Dump"하면 실제 버퍼 내용을 볼 수 있다.</li><li><code>WriteFile</code>이라면 이 시점(함수 진입 직후, 아직 실제로 파일에 쓰기 전)에서 <code>RDX</code>가 가리키는 메모리를 보면 "지금 막 파일에 쓰이려는 데이터"를 그대로 확인할 수 있다. 이는 암호화된 출력 결과나 최종 flag 데이터를 가로채는 데 매우 유용하다.</li><li>5번째 인자(<code>lpOverlapped</code>)까지 확인해야 한다면 <code>[rsp+0x28]</code>(함수 진입 직후 기준, 리턴 주소 8바이트 + 섀도우 스페이스 0x20바이트)을 스택 창에서 확인한다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp CreateFileW</code>, <code>bp ReadFile</code>, <code>bp WriteFile</code> (임포트 함수명으로 바로 브레이크포인트 설정 가능)</li><li>x64dbg 레지스터 확인(x64): <code>RCX</code>, <code>RDX</code>, <code>R8</code>, <code>R9</code> 창에서 직접 값 확인, 우클릭 → "Follow in Dump"로 메모리 내용 확인</li><li>x64dbg 스택 확인(x86): Stack 창에서 <code>[esp+4]</code>, <code>[esp+8]</code> 형태로 오프셋 직접 계산</li><li>IDA: <code>X</code>(교차 참조), <code>F5</code>(Hex-Rays 디컴파일로 인자를 한눈에)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>CreateFileW</code> 반환값이 <code>0xFFFFFFFF</code>(x86) 또는 <code>0xFFFFFFFFFFFFFFFF</code>(x64, <code>INVALID_HANDLE_VALUE</code>)이면 파일 열기에 실패한 것이다. 이후 코드가 이 값을 검사하지 않고 그냥 <code>ReadFile</code>에 넘긴다면 버그이거나, 의도적으로 실패를 무시하는 경로일 수 있다.</li><li><code>dwDesiredAccess</code>가 <code>GENERIC_READ</code>(0x80000000)면 읽기 전용, <code>GENERIC_WRITE</code>(0x40000000)면 쓰기, 둘 다 OR 되어 있으면 읽기/쓰기 모두 가능하다는 뜻이다.</li><li><code>dwCreationDisposition</code>이 <code>CREATE_ALWAYS</code>(2)면 파일이 있어도 덮어쓰며 새로 만들고, <code>OPEN_EXISTING</code>(3)이면 파일이 없으면 실패한다. 이 값으로 "이 파일을 새로 만드는 코드인지, 기존 파일을 여는 코드인지" 바로 알 수 있다.</li><li><code>ReadFile</code>/<code>WriteFile</code>의 반환값(<code>BOOL</code>)이 0이면 실패, 0이 아니면 성공이며, 실제로 처리된 바이트 수는 반환값이 아니라 4번째 인자(<code>lpNumberOfBytesRead</code>/<code>Written</code>)가 가리키는 <code>DWORD</code> 변수에 별도로 저장된다는 점에 유의한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>ReadFile</code>/<code>WriteFile</code>의 성공 여부를 반환값(<code>BOOL</code>)이 아니라 4번째 인자(처리된 바이트 수)로 착각하는 것. 반환값과 바이트 수는 서로 다른 값이며 둘 다 확인해야 정확하다.</li><li>x64에서 다섯 번째 인자를 찾을 때 섀도우 스페이스 0x20을 빼먹고 스택 오프셋을 잘못 계산하는 것. 함수 진입 직후 기준 <code>[rsp]</code>=리턴 주소이므로 5번째 인자는 <code>[rsp+0x28]</code>이다(리턴 주소 8바이트 + 섀도우 스페이스 0x20바이트).</li><li><code>CreateFileA</code>(ANSI)와 <code>CreateFileW</code>(유니코드)를 같은 것으로 생각해서 문자열을 1바이트 단위로 읽어버리는 것. <code>W</code> 버전은 2바이트(UTF-16LE) 단위이므로 덤프 창에서 "UTF-16" 표시 옵션으로 봐야 문자열이 제대로 보인다.</li><li><code>WriteFile</code> 호출 직전이 아니라 직후에 브레이크포인트를 걸어서, 이미 파일에 쓰인 뒤의 상태만 보고 "데이터가 어디서 왔는지" 못 찾는 것. 데이터 자체를 가로채려면 호출 직전(브레이크포인트가 함수 진입 시 걸리므로 자연히 이 시점)에 버퍼를 확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>함수 이름 자체가 낯설어 인자 순서를 짐작하기 어렵다면 → REV-0138(Windows API 이름으로 기능 추측하는 법)을 먼저 참고한다.</li><li>읽거나 쓰는 데이터가 암호화되어 있다면 → REV-0140(Crypt API BCrypt API 흔적 찾기)에서 관련 API 흔적을 함께 확인한다.</li><li>파일이 아니라 PE 내부 리소스에서 데이터가 오는 것 같다면 → REV-0141(Resource Section과 숨겨진 데이터 확인)을 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p>x64 바이너리를 x64dbg로 열고 <code>bp WriteFile</code> 후 실행했더니 다음과 같이 멈췄다고 하자.</p>
+<pre><code class="language-text">RCX = 0x0000000000000094   (hFile, 이전 CreateFileW의 반환값과 일치)
+RDX = 0x000001F2A3C04010   (lpBuffer)
+R8  = 0x0000000000000020   (nNumberOfBytesToWrite = 32)</code></pre>
+<p><code>RDX</code>를 우클릭 → "Follow in Dump"하면 다음과 같은 32바이트가 보인다.</p>
+<pre><code class="language-text">1F2A3C04010  43 54 46 7B 64 33 62 75  67 5F 66 31 6C 33 5F 77
+1F2A3C04020  31 74 68 5F 72 33 61 64  5F 66 31 6C 33 7D 00 00</code></pre>
+<p>ASCII로 변환하면 <code>CTF{d3bug_f1l3_w1th_r3ad_f1l3}</code>가 되며, 이는 프로그램이 파일에 쓰기 직전의 평문 데이터를 그대로 가로챈 것이다. 파일이 실제로 디스크에 기록되기를 기다리지 않고, <code>WriteFile</code> 호출 시점에 메모리에서 바로 값을 읽어냈기 때문에 가능한 방법이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0138-guess-function-from-api-name.html">REV-0138 — Windows API 이름으로 기능 추측하는 법</a></li><li><a href="rev-0140-crypt-bcrypt-api.html">REV-0140 — Crypt API BCrypt API 흔적 찾기</a></li><li><a href="rev-0141-resource-section.html">REV-0141 — Resource Section과 숨겨진 데이터 확인</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>CreateFileW</code>/<code>ReadFile</code>/<code>WriteFile</code>의 함수 시그니처와 인자 순서, 반환값 의미는 Microsoft Win32 API 공식 문서 기준이다.</li><li>Microsoft x64 호출 규약(<code>RCX</code>/<code>RDX</code>/<code>R8</code>/<code>R9</code>, 섀도우 스페이스 0x20바이트)과 x86 <code>stdcall</code>의 스택 인자 전달 방식은 Microsoft x64 소프트웨어 규약 공식 문서 기준이다.</li><li>위 미니 예제의 값과 flag 문자열은 설명을 위해 구성한 예시이며 실제 특정 문제의 데이터가 아니다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

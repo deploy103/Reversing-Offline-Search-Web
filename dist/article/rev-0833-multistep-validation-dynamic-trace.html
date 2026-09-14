@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>멀티스텝 검증 로직을 스텝별로 나눠서 동적으로 추적하는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>멀티스텝 검증 로직을 스텝별로 나눠서 동적으로 추적하는 법</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>길이 검사 → 체크섬 → 문자별 비교 → 최종 비교처럼 여러 단계가 순차적으로 이어지는 검증 로직은 한 번에 전부 이해하려 하지 말고, 각 단계의 경계(함수 호출 지점, 분기 지점)마다 브레이크포인트를 걸어 "이 단계는 통과했다/실패했다"를 하나씩 확인하며 단계별로 상태를 기록해 나가는 것이 효율적이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>정적 분석에서 이미 "이 문제는 Stage 1/2/3처럼 여러 단계로 나뉘어 있다"는 것을 확인했고(REV-0314), 이제 각 단계를 실제로 동적으로 따라가며 확정하고 싶을 때</li><li>이전 단계를 통과해야만 다음 단계 코드에 도달하는 구조라서, 매번 처음부터 입력을 넣고 실행해야 다음 단계를 볼 수 있어 비효율적일 때</li><li>단계가 몇 개인지, 각 단계가 정확히 어디서 시작하고 끝나는지조차 아직 명확하지 않을 때</li><li>각 단계마다 서로 다른 알고리즘(XOR, 덧셈, 테이블 조회 등)이 쓰여서 한 번에 전체를 이해하기보다 단계별로 나눠 정복하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>단계 경계를 먼저 특정한다</h3>
+<p>멀티스텝 검증은 보통 함수 호출 여러 개가 순차적으로 이어지거나(<code>check_length()</code> → <code>check_checksum()</code> → <code>check_chars()</code>), 하나의 큰 함수 안에서 <code>if</code> 블록들이 순서대로 쌓여 있는 형태(<code>if (!step1()) return 0; if (!step2()) return 0; ...</code>)로 나타난다. 각 단계의 시작 주소와, 그 단계가 실패했을 때 빠지는 지점(공통 실패 경로로 점프하는지, 각자 다른 실패 메시지를 갖는지)을 먼저 정적 분석으로 대략 파악해둔다.</p>
+<h3>각 단계에 "체크포인트 브레이크포인트"를 건다</h3>
+<p>각 단계의 시작 지점과, 그 단계의 성공/실패가 갈리는 분기 지점에 브레이크포인트를 건다. 이렇게 하면 프로그램을 한 번 실행하면서도 "지금 몇 번째 단계인지"를 브레이크포인트가 걸리는 순서로 바로 알 수 있다.</p>
+<h3>이전 단계를 강제로 통과시켜 다음 단계에 빨리 도달한다</h3>
+<p>REV-0825(인자 조작), REV-0826(플래그 조작), REV-0827(RIP 이동)에서 배운 기법들을 조합하면, 아직 이전 단계를 만족하는 진짜 입력을 몰라도 그 단계의 분기를 강제로 성공 쪽으로 보내 다음 단계에 곧바로 도달할 수 있다. 이는 "전체를 순서대로 다 풀어야만 다음을 볼 수 있는" 제약을 깨고, 단계들을 독립적으로 병렬 분석할 수 있게 해준다.</p>
+<h3>단계별 상태를 기록해 나간다</h3>
+<p>각 단계를 통과시킬 때마다, 그 단계가 정확히 무엇을 검사했는지(REV-0828의 입출력 관찰, REV-0832의 상수 대조 방법 활용), 어떤 값이 필요한지를 노트에 정리한다. 이 기록을 쌓아가면 마지막에는 "Stage 1은 길이 8 이상, Stage 2는 각 바이트의 합이 0x100, Stage 3는 각 문자를 XOR 0x20 한 것이 특정 문자열과 같아야 함"처럼 전체 조건을 하나의 명세로 재구성할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>디스어셈블리나 디컴파일 결과에 <code>if (!check_a(...)) goto fail;</code> 형태의 블록이 연속으로 여러 개 나열됨</li><li>실행 중 "Stage 1 OK", "Stage 2 OK" 같은 메시지가 순서대로 출력되다가 특정 지점에서 멈춤</li><li>같은 실패 메시지("Wrong!")가 여러 다른 위치에서 호출되어, 어느 단계에서 실패했는지 메시지만으로는 구분이 안 됨</li><li>앞 단계에서 만든 값(체크섬, 변환된 버퍼)을 뒷 단계가 그대로 인자로 넘겨받는 구조</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>정적 분석(가능하면 REV-0314와 함께)으로 전체 검증 함수의 대략적인 구조(몇 개의 하위 검사로 이뤄져 있는지, 각 검사가 실패하면 어디로 가는지)를 스케치한 뒤, 각 하위 검사의 시작 주소에 브레이크포인트를 걸 준비를 한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>정적 분석으로 전체 검증 로직을 하위 단계 목록으로 정리(예: Stage 1: 길이 검사, Stage 2: 체크섬, Stage 3: 문자별 비교)</li><li>각 Stage의 시작 주소와 실패 분기 주소에 브레이크포인트를 걸어둠</li><li>임의의 입력으로 실행 → 어느 Stage까지 도달하는지 확인</li><li>도달한 마지막 Stage에서 REV-0828 방식으로 인자/반환값을 관찰해 그 단계의 통과 조건을 추론</li><li>조건을 추론했으면 REV-0825/0826으로 그 단계를 강제로 통과시켜 다음 Stage로 진입</li><li>다음 Stage에서 3~5를 반복</li><li>모든 Stage를 강제로 통과시킨 뒤, 지금까지 기록한 각 단계 조건을 조합해 실제로 전체를 만족하는 진짜 입력을 역산</li><li>역산한 입력을 처음부터(강제 조작 없이) 넣어 실제로 통과하는지 최종 검증</li></ol>
+<h2>명령어/단축키</h2>
+<p>GDB(Linux):</p>
+<pre><code>break stage1_check
+break stage2_check
+break stage3_check
+run
+info registers rax        ; 각 stage 진입/반환 시 상태 확인
+set $rax = 1               ; 강제 통과가 필요하면 반환값 자체를 조작(REV-0825/0826과 조합)</code></pre>
+<p>x64dbg(Windows):</p>
+<pre><code>bp stage1_check
+bp stage2_check
+bp stage3_check
+F9 로 순서대로 진행하며 각 Stage 도달 여부 확인</code></pre>
+<h2>출력 해석</h2>
+<ul><li>브레이크포인트가 Stage 1, Stage 2까지는 걸리고 Stage 3에서 안 걸린다면, 지금 입력으로는 Stage 2를 통과하지 못했다는 뜻이다. 이 경우 Stage 2의 실패 조건부터 다시 분석해야 한다.</li><li>각 Stage 진입 시 인자 값(REV-0175)과 이전 Stage가 남긴 중간 결과(스택/힙에 저장된 값)를 비교하면, 뒷 단계가 앞 단계의 결과를 어떻게 가공해서 쓰는지(예: Stage 1이 계산한 체크섬을 Stage 2가 검증)까지 알 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>모든 단계를 한 번의 실행으로 전부 이해하려다가 정보량에 압도되어 중간에 포기하는 것 — 단계를 하나씩 끊어서 접근해야 함</li><li>이전 단계를 강제로 통과시킨 상태에서 관찰한 다음 단계의 동작을, 실제 정상 입력으로도 똑같이 재현될 것이라 가정하는 것 — 강제로 만든 상태가 실제 정상 흐름과 미묘하게 다를 수 있으므로, 최종적으로는 반드시 강제 조작 없이 검증(절차의 8번)해야 함</li><li>실패 메시지가 공통이라서 "지금 어느 단계에서 실패했는지" 확인하지 않고 전체를 한 덩어리로 취급하는 것</li><li>각 단계에서 알아낸 조건을 기록하지 않고 넘어가서, 나중에 전체를 조합할 때 앞 단계 조건을 다시 확인해야 하는 비효율</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>정적 분석으로 다단계 구조 자체를 먼저 파악하는 방법은 → REV-0314 다단계 검증(Stage 1/2/3)이 있는 문제 공략법</li><li>각 단계의 입출력을 관찰하는 구체적 방법은 → REV-0828 동적분석으로 검증 함수의 입출력만 계속 관찰하는 전략</li><li>이전 단계를 강제로 통과시키는 구체적 조작법은 → REV-0825 디버거에서 함수 인자를 실행 중 값으로 바꿔서 실험하기, REV-0826 디버거에서 분기 조건을 강제로 바꿔서 실험하기(Flag 조작)</li><li>발견한 각 단계의 상수를 정적분석과 다시 맞춰보고 싶다면 → REV-0832 동적분석 중 발견한 상수를 정적분석과 다시 대조하는 법</li></ul>
+<h2>미니 예제</h2>
+<pre><code>(gdb) break stage1_check
+(gdb) break stage2_check
+(gdb) break stage3_check
+(gdb) run
+Breakpoint 1, stage1_check (len=4) at chall.c:20
+(gdb) finish
+Value returned is $1 = 0      ; Stage 1 실패 (길이 4는 부족)</code></pre>
+<p>Stage 1에서 반환값 <code>0</code>(실패)을 확인한 뒤, 입력 길이를 늘려 재실행하자 Stage 1을 통과하고 Stage 2까지 도달했다. 이런 식으로 한 단계씩 조건을 확정해가며 전체 검증 로직을 재구성할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0314-multi-stage-validation-strategy.html">REV-0314 — 다단계 검증(Stage 1/2/3)이 있는 문제 공략법</a></li><li><a href="rev-0828-observe-io-validation-function.html">REV-0828 — 동적분석으로 검증 함수의 입출력만 계속 관찰하는 전략</a></li><li><a href="rev-0825-modify-function-args-runtime.html">REV-0825 — 디버거에서 함수 인자를 실행 중 값으로 바꿔서 실험하기</a></li><li><a href="rev-0826-force-flag-manipulation.html">REV-0826 — 디버거에서 분기 조건을 강제로 바꿔서 실험하기(Flag 조작)</a></li><li><a href="rev-0832-cross-check-runtime-constants-static.html">REV-0832 — 동적분석 중 발견한 상수를 정적분석과 다시 대조하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>다단계 검증 로직을 단계별로 분해해 접근하는 전략: 일반적인 CTF 리버싱 문제 풀이 방법론(순차 검증 문제 유형) 기준.</li><li>GDB <code>break</code>, <code>finish</code>를 이용한 함수 단위 반환값 확인: GNU GDB 공식 매뉴얼 기준.</li><li>강제 상태 조작(REV-0825/0826)과 실제 검증 결과의 차이를 최종적으로 재검증해야 한다는 원칙은 저자의 실전 경험 기반 정리 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

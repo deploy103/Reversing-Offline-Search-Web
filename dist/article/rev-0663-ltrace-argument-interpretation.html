@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ltrace 결과에서 라이브러리 호출 인자 해석하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>ltrace 결과에서 라이브러리 호출 인자 해석하기</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">ltrace</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>ltrace</code>는 프로그램이 호출하는 라이브러리 함수의 이름과 인자를 실행 중에 그대로 출력해주지만, 인자가 문자열/정수/포인터 중 무엇인지는 함수 프로토타입을 알고 있을 때만 정확히 해석되므로, 출력에 보이는 각 값이 어떤 타입이고 몇 번째 인자가 어떤 의미인지를 표준 라이브러리 함수 시그니처와 함께 읽는 법을 알아야 실전에서 바로 쓸 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>ltrace ./chall</code>을 돌렸는데 <code>strcmp("admin", "\x00\x01\x02...")</code> 처럼 인자 중 하나가 이상한 바이트로 나와서 뭘 뜻하는지 모를 때</li><li><code>ltrace</code> 출력에서 함수 호출 뒤에 <code>= 0</code> 같은 값이 붙어 있는데 이게 반환값이라는 것을 놓치고 있을 때</li><li>여러 인자를 받는 함수(<code>memcpy</code>, <code>snprintf</code> 등) 호출에서 몇 번째 인자가 버퍼이고 몇 번째가 크기인지 헷갈릴 때</li><li><code>ltrace</code>가 문자열 인자를 중간에서 잘라서(<code>...</code>) 보여줘서 전체 값을 못 보고 있을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>ltrace가 하는 일 — PLT 호출 가로채기</h3>
+<p><code>ltrace</code>는 동적 링킹된 바이너리가 PLT(REV-0100)를 거쳐 외부 라이브러리 함수(<code>libc</code> 등)를 호출할 때마다 그 호출을 가로채서, 함수 이름과 전달되는 인자, 그리고 반환값을 화면에 출력해준다. 원리상 <code>strace</code>(REV-0112)가 커널 syscall 경계를 가로채는 것과 비슷하지만, <code>ltrace</code>는 한 단계 위(라이브러리 함수 호출 경계)에서 동작한다는 차이가 있다. 그래서 <code>strcmp</code>, <code>malloc</code>, <code>printf</code>처럼 소스 레벨에서 호출한 함수 이름 그대로를 볼 수 있어, 어셈블리를 한 줄도 안 읽고도 "이 프로그램이 지금 무슨 라이브러리 함수를 쓰고 있는지" 감을 잡을 수 있다.</p>
+<h3>인자 개수와 타입은 어떻게 아는가 — 프로토타입 추측</h3>
+<p><code>ltrace</code>는 실행 중인 함수의 진짜 프로토타입(인자가 몇 개고 각각 무슨 타입인지)을 알 방법이 소스 없이는 없다. 대신 시스템에 설치된 <code>libc</code> 등의 알려진 라이브러리 함수 목록(대략적인 시그니처 데이터베이스, 보통 <code>/etc/ltrace.conf</code> 및 배포된 설정 파일)을 참고해 "이 함수 이름이면 인자가 몇 개고 각각 문자열/정수/포인터로 추정된다"는 규칙을 적용한다. <code>strcmp(const char*, const char*)</code>처럼 잘 알려진 함수는 인자 두 개 모두 문자열로 올바르게 표시되지만, 잘 알려지지 않은 함수나 사용자 정의 함수(정적 링킹된 경우 등)는 인자를 그냥 정수/포인터 형태로만 보여준다. 즉 <strong><code>ltrace</code> 출력이 "문자열처럼" 보이면 실제로 문자열일 확률이 높지만, 숫자로만 나온 인자는 실제로 포인터인데 타입을 몰라서 raw 값만 보여주는 것일 수도 있다</strong>는 점을 항상 의심해야 한다.</p>
+<h3>반환값 읽는 위치 — <code>=</code> 뒤</h3>
+<p><code>ltrace</code> 한 줄의 형식은 대략 다음과 같다.</p>
+<pre><code>funcname(arg1, arg2, ...) = 반환값</code></pre>
+<p><code>=</code> 뒤에 오는 값이 그 함수 호출의 반환값이다. 예를 들어 <code>strcmp("admin", "guest") = 1</code>에서 <code>1</code>은 <code>strcmp</code>의 반환값이며, 0이 아니므로 두 문자열이 다르다는 뜻이다(REV-0110 참고). 반환값이 나오기 전에 프로그램이 그 함수 안에서 다른 라이브러리 함수를 추가로 호출하면, 중첩된 형태로 안쪽 호출이 먼저 출력되고 바깥쪽 호출의 <code>=</code> 결과가 나중에 나올 수 있다.</p>
+<h3>문자열 인자가 잘려 보이는 이유 — 기본 길이 제한</h3>
+<p><code>ltrace</code>는 기본적으로 문자열 인자를 일정 길이(기본값 32바이트 전후, 버전에 따라 다름)까지만 출력하고 나머지는 <code>"..."</code>로 생략한다. 실제로는 문자열이 더 길지만 화면이 지저분해지는 것을 막기 위한 기본 동작이다. 전체 문자열을 보고 싶으면 <code>-s</code> 옵션에 원하는 길이를 지정해야 한다.</p>
+<pre><code class="language-bash">ltrace -s 200 ./chall</code></pre>
+<h3>자식 프로세스까지 보고 싶을 때 — <code>-f</code></h3>
+<p>프로그램이 <code>fork()</code>로 자식 프로세스를 만드는 경우(REV-0637), 기본 <code>ltrace</code>는 부모 프로세스의 호출만 추적한다. 자식 프로세스의 라이브러리 호출까지 함께 보려면 <code>-f</code> 옵션이 필요하다.</p>
+<pre><code class="language-bash">ltrace -f ./chall</code></pre>
+<h3>특정 함수만 골라 보고 싶을 때 — <code>-e</code></h3>
+<p><code>ltrace</code> 출력이 너무 많아서 노이즈가 심할 때는 관심 있는 함수만 필터링할 수 있다.</p>
+<pre><code class="language-bash">ltrace -e 'strcmp+strncmp+memcmp' ./chall</code></pre>
+<p>비교 함수만 걸러서 보면 "입력 검증 로직이 어디서 어떤 값과 비교하는지"를 빠르게 좁힐 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>터미널에 <code>funcname(...) = 값</code> 형태의 줄이 프로그램 실행과 함께 실시간으로 쭉 출력됨</li><li>문자열 인자 뒤에 <code>"..."</code>가 붙어 잘려 보임</li><li>포인터/구조체 인자가 <code>0x7ffd1234abcd</code> 같은 16진수 주소로만 표시됨</li><li><code>malloc(24) = 0x5555...</code>처럼 반환값이 힙 주소로 나오는 줄이 반복됨</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>ltrace ./chall</code>을 옵션 없이 먼저 한 번 돌려서 전체적으로 어떤 함수들이 호출되는지 흐름을 파악한다. 그다음 관심 있는 함수(주로 입력을 받는 함수, 비교하는 함수)가 보이면 <code>-s</code>(문자열 길이), <code>-e</code>(필터), <code>-f</code>(자식 프로세스)를 조합해 좁혀 들어간다.</p>
+<h2>단계별 절차</h2>
+<ol><li>기본 실행으로 전체 흐름 확인: <code>ltrace ./chall</code></li><li>문자열이 잘려 보이면 길이를 늘려 재실행: <code>ltrace -s 300 ./chall</code></li><li>관심 함수만 남기고 필터링: <code>ltrace -e 'strcmp+strlen+memcpy' ./chall</code></li><li>인자로 숫자만 나오는 함수가 있으면 그 함수 이름으로 man 페이지(<code>man 3 함수이름</code>)를 찾아 실제 프로토타입 확인</li><li>프로토타입을 알았다면 GDB로 그 함수 호출 직전에 브레이크포인트를 걸고 SysV 호출 규약(REV-0106)에 따라 <code>$rdi</code>, <code>$rsi</code>, <code>$rdx</code>, <code>$rcx</code> 등을 직접 읽어 <code>ltrace</code>가 놓친 인자 의미를 재구성</li><li>자식 프로세스가 있는 프로그램이면 <code>-f</code> 옵션 추가</li><li>결과를 파일로 저장해두고 싶으면 <code>ltrace -o trace.log ./chall</code></li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">ltrace ./chall                              # 기본 실행
+ltrace -s 300 ./chall                       # 문자열 인자 최대 300자까지 출력
+ltrace -f ./chall                           # fork된 자식 프로세스까지 추적
+ltrace -e 'strcmp+strncmp' ./chall          # 지정 함수만 필터링
+ltrace -o trace.log ./chall                 # 결과를 파일로 저장
+ltrace -S ./chall                           # 라이브러리 호출과 syscall을 함께 출력
+ltrace -c ./chall                           # 함수별 호출 횟수/소요 시간 요약만 출력</code></pre>
+<h2>출력 해석</h2>
+<pre><code>strlen("hello world")                           = 11
+malloc(12)                                      = 0x55d1234a10
+strcpy(0x55d1234a10, "hello world")              = 0x55d1234a10
+strcmp("hello world", "secret_pw")               = 1</code></pre>
+<ul><li>첫 줄: <code>strlen</code>이 문자열 <code>"hello world"</code>를 받아 길이 <code>11</code>을 반환했다.</li><li>둘째 줄: <code>malloc(12)</code>로 12바이트를 요청해 힙 주소 <code>0x55d1234a10</code>을 반환받았다. 실제 청크 크기는 REV-0655에서 설명하듯 반올림되지만 <code>ltrace</code>는 요청 크기만 보여준다.</li><li>셋째 줄: 방금 받은 힙 주소로 문자열을 복사했다. 인자 순서(대상, 원본)를 아는 것이 중요하다 — <code>strcpy</code>는 첫 번째 인자가 목적지다.</li><li>넷째 줄: <code>strcmp</code>가 <code>0</code>이 아닌 <code>1</code>을 반환했으므로 두 문자열이 다르다는 뜻이며, 여기서 두 번째 인자 <code>"secret_pw"</code>가 프로그램 내부에 하드코딩된 비교 대상(정답)일 가능성이 높다 — CTF 문제에서 자주 보는 패턴이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>ltrace</code> 인자가 숫자로만 나온 것을 보고 "이 함수는 인자가 의미 없다"고 넘기는 것 — 실제로는 구조체 포인터인데 <code>ltrace</code>가 타입을 몰라 raw 주소만 보여주는 경우가 많다. 이럴 때는 GDB로 직접 그 주소를 덤프해서 확인해야 한다.</li><li>문자열이 <code>"..."</code>로 잘린 것을 눈치채지 못하고 전체 값을 다 봤다고 착각하는 것 — <code>-s</code> 옵션 없이 짧게 잘린 비밀번호/플래그를 놓치는 경우가 흔하다.</li><li>정적 링킹 바이너리에서 <code>ltrace</code>를 돌렸는데 아무 출력도 안 나와서 "프로그램이 멈췄다"고 오해하는 것 — 정적 바이너리는 PLT를 거치지 않으므로 <code>ltrace</code>가 원래 거의 아무것도 못 잡는다(REV-0698 참고).</li><li><code>ltrace</code> 출력의 함수 호출 순서를 소스 코드의 함수 호출 순서와 100% 동일하다고 믿는 것 — 컴파일러 최적화로 순서가 바뀌거나 인라이닝될 수 있다.</li><li>반환값(<code>=</code> 뒤)을 인자의 일부로 착각해서 인자 개수를 잘못 세는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>정적 링킹 바이너리에서 <code>ltrace</code>가 아무것도 안 보여주면 → REV-0698 ltrace가 정적 바이너리에서 아무것도 안 보여줄 때</li><li><code>ltrace</code>가 잡아주지 못하는 저수준 시스템 콜까지 봐야 하면 → REV-0112 strace로 시스템 콜 빠르게 보기, REV-0662 strace 결과를 파일/네트워크 시스템콜로 필터링해서 노이즈 줄이기</li><li><code>ltrace</code> 대신 GDB로 정확한 레지스터 인자를 직접 확인하는 법이 필요하면 → REV-0106 SysV AMD64 Calling Convention, REV-0657 GDB에서 함수 반환값을 finish로 확인하는 법</li><li>자주 보는 비교 함수 호출 패턴(strcmp/memcmp가 입력 검증에 쓰이는 전형적 모양)이 궁금하면 → REV-0110 strcmp strncmp memcmp 비교 추적</li><li><code>ltrace</code> 자체 사용법 기초가 부족하면 → REV-0111 ltrace로 라이브러리 호출 빠르게 보기</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ ltrace -s 100 ./login
+__libc_start_main(0x4011a6, 1, 0x7ffd...) = ...
+printf("Password: ")                              = 10
+fgets("wrongpass\n", 100, 0x7f8a1c2ba980)          = 0x7ffd1234abc0
+strcspn("wrongpass\n", "\n")                       = 9
+strcmp("wrongpass", "s3cr3t_flag")                 = 1
+puts("Access denied")                              = 14
++++ exited (status 1) +++</code></pre>
+<p><code>fgets</code>로 사용자 입력을 받고(<code>"wrongpass\n"</code>), <code>strcspn</code>으로 개행 문자를 제거한 뒤(길이 9 반환), <code>strcmp</code>로 하드코딩된 값 <code>"s3cr3t_flag"</code>와 비교한다. 반환값이 <code>1</code>(0이 아님)이므로 실패 경로(<code>puts("Access denied")</code>)로 빠졌다는 것을 소스 코드 없이 <code>ltrace</code> 출력만으로 완전히 재구성할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0111-ltrace-basics.html">REV-0111 — ltrace로 라이브러리 호출 빠르게 보기</a></li><li><a href="rev-0698-ltrace-static-binary-no-output.html">REV-0698 — ltrace가 정적 바이너리에서 아무것도 안 보여줄 때</a></li><li><a href="rev-0112-strace-basics.html">REV-0112 — strace로 시스템 콜에서 힌트 찾기</a></li><li><a href="rev-0662-strace-filter-file-network-syscalls.html">REV-0662 — strace 결과를 파일/네트워크 시스템콜로 필터링해서 노이즈 줄이기</a></li><li><a href="rev-0106-sysv-amd64-calling-convention.html">REV-0106 — SysV AMD64 Calling Convention</a></li><li><a href="rev-0110-comparison-functions.html">REV-0110 — strcmp strncmp memcmp 비교 추적</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>ltrace</code> 옵션(<code>-s</code>, <code>-f</code>, <code>-e</code>, <code>-o</code>, <code>-S</code>, <code>-c</code>)의 동작: <code>ltrace(1)</code> 공식 매뉴얼 페이지 기준.</li><li><code>ltrace</code>가 알려진 라이브러리 함수 시그니처 정보를 참고해 인자 타입을 추정한다는 동작 방식: <code>ltrace</code> 공식 문서 및 <code>/etc/ltrace.conf</code> 설정 파일 형식 기준.</li><li><code>strcmp</code>/<code>fgets</code>/<code>strcspn</code> 등 표준 C 라이브러리 함수 시그니처: POSIX 및 C 표준 라이브러리 문서(<code>man 3</code>) 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

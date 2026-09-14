@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WinAPI 레지스트리 함수 사전: RegCloseKey RegDeleteKey · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>WinAPI 레지스트리 함수 사전: RegCloseKey RegDeleteKey</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>RegCloseKey</code>는 <code>RegOpenKeyExW</code>/<code>RegCreateKeyExW</code>로 얻은 <code>HKEY</code> 핸들을 정리하는 짝 함수이고, <code>RegDeleteKeyW</code>/<code>RegDeleteKeyExW</code>는 키 자체(그 안의 모든 값 포함)를 삭제하며, <code>RegDeleteValueW</code>는 키는 남기고 특정 값 하나만 지우는 함수라는 세 가지의 "닫기 vs 삭제 범위" 차이를 구분하는 것이 핵심이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>RegOpenKeyExW</code>/<code>RegCreateKeyExW</code>와 짝을 이루는 <code>RegCloseKey</code> 호출 위치를 찾아 핸들 생명주기를 파악해야 할 때</li><li>레지스트리 키 전체를 지우는 코드(<code>RegDeleteKeyW</code>)와 값 하나만 지우는 코드(<code>RegDeleteValueW</code>)를 구분해야 할 때</li><li>악성코드/설치 프로그램이 흔적을 지우는(자동실행 등록 삭제 등) 패턴을 분석할 때</li><li><code>RegDeleteKeyExW</code>에만 있는 <code>samDesired</code>(WOW64 관련) 인자가 왜 필요한지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<p><strong><code>RegCloseKey</code></strong> — 열려 있는 <code>HKEY</code> 핸들을 닫는다.</p>
+<pre><code class="language-c">LSTATUS RegCloseKey(HKEY hKey);</code></pre>
+<p>인자가 핸들 하나뿐인 가장 단순한 레지스트리 API다. <code>CloseHandle</code>과 비슷한 역할이지만, 레지스트리 핸들 전용으로 별도 함수가 존재한다는 점에 유의한다(일반 <code>CloseHandle</code>로 <code>HKEY</code>를 닫으면 안 된다). 미리 정의된 루트 키(<code>HKEY_LOCAL_MACHINE</code> 등)는 애초에 닫을 필요가 없다 — <code>RegOpenKeyExW</code>/<code>RegCreateKeyExW</code>로 새로 얻은 핸들만 닫으면 된다.</p>
+<p><strong><code>RegDeleteKeyW</code></strong> — 하위 키 하나를 통째로 삭제한다.</p>
+<pre><code class="language-c">LSTATUS RegDeleteKeyW(HKEY hKey, LPCWSTR lpSubKey);</code></pre>
+<p><code>lpSubKey</code>가 가리키는 키와 그 <strong>안에 있는 모든 값</strong>이 함께 삭제된다. 32비트 Windows나 64비트 Windows에서 이 함수는 하위 키가 더 있으면(즉 비어있지 않으면) 실패한다는 제약이 있다 — 하위 트리 전체를 지우려면 <code>RegDeleteTree</code>(별도 함수, Vista 이상)가 필요하다.</p>
+<p><strong><code>RegDeleteKeyExW</code></strong> — WOW64 리다이렉션을 제어할 수 있는 확장판.</p>
+<pre><code class="language-c">LSTATUS RegDeleteKeyExW(HKEY hKey, LPCWSTR lpSubKey, REGSAM samDesired, DWORD Reserved);</code></pre>
+<p><code>samDesired</code>에 <code>KEY_WOW64_32KEY</code>(0x0200) 또는 <code>KEY_WOW64_64KEY</code>(0x0100)를 지정해서, 64비트 프로세스가 32비트 전용 레지스트리 뷰(<code>SOFTWARE\WOW6432Node</code> 등)를 명시적으로 대상 지정할 수 있다. 32비트 프로그램을 64비트 Windows에서 분석할 때 "코드는 <code>SOFTWARE\Vendor</code>를 지웠다는데 실제로는 <code>SOFTWARE\WOW6432Node\Vendor</code>가 지워졌다"는 혼란이 이 리다이렉션 때문에 생긴다.</p>
+<p><strong><code>RegDeleteValueW</code></strong> — 키는 남기고 값 하나만 삭제한다.</p>
+<pre><code class="language-c">LSTATUS RegDeleteValueW(HKEY hKey, LPCWSTR lpValueName);</code></pre>
+<p><code>lpValueName</code>이 <code>NULL</code>이거나 빈 문자열이면 "기본값(default value)"을 삭제한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>RegOpenKeyExW</code>(또는 <code>RegCreateKeyExW</code>) 호출 이후 함수 마지막 부분에서 <code>RegCloseKey</code>가 짝을 이뤄 호출됨. 짝이 안 보이면 핸들 누수이거나, 다른 분기(에러 경로)에서 닫는 구조일 수 있다.</li><li><code>RegDeleteKeyW</code>/<code>RegDeleteValueW</code> 호출 인자로 <code>Run</code>/<code>RunOnce</code> 하위의 특정 값 이름이 들어가면, 자동실행 등록을 스스로 지우는(흔적 제거) 코드일 가능성.</li><li>설치 제거(uninstall) 루틴에서 <code>RegDeleteKeyW</code>가 여러 번 연속 호출되는 패턴 — 설정 트리를 하나씩 정리하는 것.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>RegDeleteKeyW</code>와 <code>RegDeleteValueW</code>를 먼저 구분한다 — 전자는 인자가 <code>(hKey, lpSubKey)</code>로 키 경로를 받고, 후자는 <code>(hKey, lpValueName)</code>으로 이미 열린 키 안의 값 이름을 받는다는 인자 이름의 차이로 즉시 구분할 수 있다.</p>
+<h2>단계별 절차</h2>
+<ol><li>IDA에서 <code>RegCloseKey</code>를 <code>X</code>(xref)로 찾고, 어떤 <code>RegOpenKeyExW</code>/<code>RegCreateKeyExW</code> 호출과 데이터 흐름상 짝을 이루는지(같은 <code>HKEY</code> 지역변수를 공유하는지) 확인한다.</li><li><code>RegDeleteKeyW</code>/<code>RegDeleteValueW</code> 호출을 찾아 <code>F5</code> 디컴파일로 인자(경로 또는 값 이름)를 확인한다.</li><li>x64dbg에서 <code>bp RegDeleteKeyW</code> 후 <code>RDX</code>(lpSubKey)를 Follow in Dump해 정확히 어떤 키가 삭제 대상인지 확인한다.</li><li><code>Ctrl+F9</code>로 리턴까지 실행해 반환값이 <code>0</code>(성공)인지, 실패라면 어떤 코드인지(예: <code>ERROR_ACCESS_DENIED</code>) 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>bp RegCloseKey</code>, <code>bp RegDeleteKeyW</code>, <code>bp RegDeleteValueW</code>, <code>Ctrl+F9</code>(리턴까지 실행)</li><li>IDA: <code>X</code>(xref), <code>F5</code>(디컴파일)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>반환값 <code>0</code>(<code>ERROR_SUCCESS</code>)이 성공(레지스트리 API 공통 규칙, REV-0500 참고).</li><li><code>RegDeleteKeyW</code>가 실패하면서 코드가 <code>ERROR_ACCESS_DENIED</code>(5)를 반환한다면 권한 부족(관리자 권한 필요한 <code>HKEY_LOCAL_MACHINE</code> 하위를 일반 권한으로 시도했을 가능성)이다.</li><li><code>RegCloseKey</code>가 호출 안 되는 함수라도 프로세스가 곧 종료된다면 OS가 알아서 핸들을 정리하므로 실질적 문제는 없다 — 다만 리버싱 관점에서는 "짝이 안 맞는 지점"이 프로그램 흐름을 이해하는 단서가 될 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>레지스트리 핸들(<code>HKEY</code>)을 일반 <code>CloseHandle</code>로 닫으려는 코드로 착각하는 것 — 반드시 <code>RegCloseKey</code>를 써야 하며 코드에서도 그렇게 나타난다.</li><li><code>RegDeleteKeyW</code>가 하위 키가 있는 트리도 통째로 지운다고 오해하는 것 — 실제로는 하위 키가 있으면 실패하며, 트리 전체 삭제는 별도의 <code>RegDeleteTree</code> API가 담당한다.</li><li>32비트 바이너리를 64비트 OS에서 분석하면서 WOW64 리다이렉션을 고려하지 않고 "코드가 지운 경로"와 "실제로 지워진 레지스트리 경로"가 같다고 가정하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>이 핸들을 처음 여는 단계가 궁금하면 → REV-0500 확인.</li><li>삭제 전에 값을 읽거나 쓰는 흐름이 궁금하면 → REV-0501 확인.</li><li>자동실행 등록/삭제와 관련된 전체 흐름을 다시 정리하고 싶다면 REV-0500부터 순서대로 다시 본다.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">HKEY hKey;
+if (RegOpenKeyExW(HKEY_CURRENT_USER,
+        L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Run",
+        0, KEY_WRITE, &amp;hKey) == ERROR_SUCCESS) {
+    RegDeleteValueW(hKey, L"MyAutorun");  // 값 하나만 삭제, 키 자체는 유지
+    RegCloseKey(hKey);
+}</code></pre>
+<p><code>RegDeleteValueW</code>는 <code>Run</code> 키 자체를 지우지 않고 그 안의 <code>MyAutorun</code> 항목만 제거하므로, 다른 프로그램이 같은 <code>Run</code> 키에 등록한 값들은 영향받지 않는다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0500-regopenkeyex-regcreatekeyex.html">REV-0500 — WinAPI 레지스트리 함수 사전: RegOpenKeyEx RegCreateKeyEx</a></li><li><a href="rev-0501-regqueryvalueex-regsetvalueex.html">REV-0501 — WinAPI 레지스트리 함수 사전: RegQueryValueEx RegSetValueEx</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>RegCloseKey</code>/<code>RegDeleteKeyW</code>/<code>RegDeleteKeyExW</code>/<code>RegDeleteValueW</code> 시그니처와 동작(하위 키 존재 시 삭제 실패, WOW64 리다이렉션)은 Microsoft Win32 API 공식 문서 기준(2026-09-08 확인 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

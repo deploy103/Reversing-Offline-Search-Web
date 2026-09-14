@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Write-up] rev-basic-5 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / writeup</div>
+<article class="article-body">
+<h1>[Write-up] rev-basic-5</h1>
+<div class="article-meta"><span class="tag">writeup</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">Python</span><span class="tag">Detect It Easy</span></div>
+<h2>한 줄 요약</h2>
+<p>rev-basic-5는 입력의 인접한 두 바이트를 더한 값(<code>input[i] + input[i+1]</code>)이 고정 배열 값과 같아야 하는 유형이라, 변수 하나씩 바로 구할 수 없는 대신 마지막 바이트가 널 바이트(0)라는 사실을 실마리로 삼아 배열 끝에서부터 역순으로 하나씩 값을 확정해 나가야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>드림핵 rev-basic-5 검증 함수에서 <code>*(a1+i+1) + *(a1+i) == byte_140003000[i]</code> 처럼 인접한 두 원소를 더하는 식을 만났는데, 미지수가 두 개씩 얽혀서 바로 하나씩 못 구할 때</li><li>앞의 XOR 문제(REV-1004)처럼 한 인덱스에 하나의 값만 걸려 있는 게 아니라서 "어디서부터 손을 대야 할지" 감이 안 잡힐 때</li><li>배열의 마지막 값이 왜 0으로 끝나는지, 그게 왜 실마리가 되는지 이해가 안 될 때</li></ul>
+<h2>핵심 개념</h2>
+<p>지금까지의 문제들은 인덱스 <code>i</code> 하나에 대해 입력 바이트 하나만 결정하면 되는 식이었다. rev-basic-5는 다르다. 검증 함수는 <code>for (i = 0; i &lt; 0x18; ++i)</code>(0x18 = 24) 루프를 돌며 <code>입력[i] + 입력[i+1] == byte_140003000[i]</code>인지 확인한다. 즉 하나의 식에 두 개의 미지수(<code>입력[i]</code>, <code>입력[i+1]</code>)가 동시에 들어 있어서, 이 식 하나만 봐서는 어느 쪽도 바로 결정할 수 없다.</p>
+<p>이럴 때 쓰는 전략이 "경계 조건에서 시작해 역방향으로 확정해 나가는 것"이다. 입력 버퍼는 C 문자열이므로 실제 정답 길이 다음 바이트는 반드시 0(널 바이트)이어야 한다. 그리고 아스키 문자는 항상 0 이상의 값이다(음수가 될 수 없다). 이 두 가지 제약을 결합하면, 배열의 마지막 항 근처에서 "두 값을 더해서 특정 값이 되는데 한쪽이 반드시 0이어야 한다"는 조건이 성립하는 지점을 찾을 수 있고, 거기서부터 시작해 하나씩 이전 값을 역산해 나가면 전체 24바이트를 순서대로 채울 수 있다. 이는 REV-0218에서 다루는 "길이 검증부터 역추적하는" 접근과 REV-0200의 덧셈 기반 변환 역산을 함께 적용한 사례에 해당한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>실행 흐름은 이전 문제들과 동일: <code>Input : </code> → 입력 → <code>Correct</code>/<code>Wrong</code>.</li><li>검증 함수 디컴파일 결과에 <code>if (*(a1 + i + 1) + *(a1 + i) != byte_140003000[i]) return 0;</code> 형태의 코드가 24회 반복된다.</li><li><code>byte_140003000</code> 배열의 마지막 값이 유난히 작은 수(예: 0에 가까운 값)로 끝나는 경우가 많다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>DIE로 파일 확인 후 IDA에서 검증 함수를 F5로 디컴파일해 정확한 수식과 반복 횟수를 확인한다. 그다음 <code>byte_140003000</code> 배열 전체를 Hex View에서 순서대로 받아 적는다. 값을 다 받아 적었다면 곧바로 "마지막 값부터 역으로 풀 수 있는가"를 종이에 몇 개만 손으로 시도해보고, 규칙이 보이면 파이썬 스크립트로 자동화한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>DIE로 파일 확인, 실행해서 입출력 문구 확인.</li><li>IDA에서 검증 함수를 F5로 디컴파일, 정확한 인덱스 범위와 덧셈 식을 확인.</li><li><code>byte_140003000</code> 배열 24개 값을 Hex View에서 순서대로 추출.</li><li>아스키 문자는 음수가 될 수 없다는 제약과, 문자열이 널 바이트로 끝난다는 제약을 이용해 배열 끝 쪽 두 항의 관계부터 확정한다.</li><li>확정된 값을 기준으로 그 앞의 식에 대입해 하나씩 역방향으로 풀어 나간다.</li><li>24바이트를 모두 채웠으면 16진수 문자열로 조합해 CyberChef의 From Hex 기능이나 파이썬 <code>bytes.fromhex(...)</code>로 아스키 문자열로 변환한다.</li><li>별도로 같은 역산 로직을 C나 Python으로 다시 구현해 앞쪽 식부터 순서대로 검증해보는 것도 실수를 줄이는 방법이다.</li><li>도출한 문자열을 실제로 입력해 <code>Correct</code>가 나오는지 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>F5</code>(디컴파일), Hex View에서 배열 주소로 이동해 바이트 값 확인.</li><li>CyberChef: "From Hex" 레시피로 16진수 문자열을 바로 아스키로 변환.</li><li>Python: <code>bytes.fromhex('41 6c 6c...'.replace(' ', '')).decode()</code>.</li></ul>
+<h2>출력 해석</h2>
+<p><code>*(a1+i+1) + *(a1+i) != byte_140003000[i]</code>라는 조건에서 <code>!=</code>가 성립하면(즉 다르면) 즉시 0을 반환하고 함수가 끝난다. 배열 값 중 마지막 항이 예를 들어 <code>0x00</code>이라면, "입력의 마지막 두 바이트를 더한 값이 0이어야 한다"는 뜻이다. 아스키 문자가 음수일 수 없으므로 두 값 다 0보다 클 수 없고, 결국 두 값 모두 0(널 바이트)이라는 결론이 나온다. 이렇게 한쪽 끝을 확정하면, 그 값을 다음 식(한 인덱스 앞)에 대입해 나머지 미지수를 순서대로 풀 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li>미지수가 두 개씩 얽힌 식을 앞에서부터(인덱스 0부터) 풀려고 시도하다가 항상 정보가 부족해 막히는 것 — 경계 조건이 있는 쪽(배열 끝)부터 풀어야 한다.</li><li>아스키 문자가 음수일 수 없다는 제약을 놓쳐서, 두 값의 조합 후보를 지나치게 넓게 잡아 여러 경우의 수를 다 시도해야 하는 상황을 만드는 것.</li><li>16진수로 조합한 값을 문자열로 바꿀 때 바이트 순서를 거꾸로 넣어 전혀 다른 문자열이 나오는 것.</li><li>배열 크기(0x18 = 24)를 반복 횟수와 정답 길이 그대로 받아들이지 않고 1개 어긋나게 세어 마지막 문자를 놓치는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>미지수 하나짜리 XOR 수식이 궁금하면 REV-1004(rev-basic-3)를 먼저 복습한다.</li><li>"길이 검증부터 역추적"하는 일반적인 방법이 궁금하면 REV-0218을 참고한다.</li><li>다음 문제인 rev-basic-6의 치환 테이블 방식은 REV-1007을 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-python">table = [...]  # byte_140003000에서 읽은 24개의 값
+n = len(table)
+buf = [0] * (n + 1)  # buf[n]은 항상 0(널 바이트)으로 가정
+
+for i in range(n - 1, -1, -1):
+    # table[i] == buf[i] + buf[i+1]
+    buf[i] = table[i] - buf[i + 1]
+
+flag = ''.join(chr(b) for b in buf[:-1])
+print(flag)</code></pre>
+<p><code>buf[n]</code>을 0으로 고정하고 배열 끝에서부터 거꾸로 <code>buf[i] = table[i] - buf[i+1]</code>을 적용하면, 인접한 두 미지수가 얽힌 식이라도 순서대로 하나씩 풀려나간다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0218-length-check-backtrace.html">REV-0218 — 길이 검증부터 역추적하는 법</a></li><li><a href="rev-0200-add-sub-constant-transform.html">REV-0200 — ADD SUB 상수 기반 문자 변환</a></li><li><a href="rev-0222-reimplement-in-python.html">REV-0222 — 검증 루틴을 Python으로 그대로 재현하기</a></li><li>[REV-1004 — [Write-up] rev-basic-3](rev-1004-writeup-rev-basic-3.html)</li><li>[REV-1005 — [Write-up] rev-basic-4](rev-1005-writeup-rev-basic-4.html)</li><li>[REV-1007 — [Write-up] rev-basic-6](rev-1007-writeup-rev-basic-6.html)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>드림핵 워게임 rev-basic-5 챌린지(reversing 태그, Bronze 4 티어, 풀이자 2803명, 2026-09-09 조회 기준).</li><li>참고 블로그: <code>velog.io/@a_dawn/rev-basic-5</code> — IDA 디컴파일과 CyberChef를 사용해 인접 바이트 합산 검증식(<code>*(a1+i+1) + *(a1+i) == byte_140003000[i]</code>)을 확인하고, 아스키 문자가 음수가 될 수 없다는 제약과 널 바이트 종료 조건을 이용해 배열 끝에서부터 역순으로 값을 복원한 절차를 조사함. 이 글에서는 최종적으로 16진수 값을 문자열로 변환하는 과정까지 확인했으나, 정확한 <code>DH{}</code> 제출 형식의 최종 플래그 문구가 본문에 직접 인용되어 있지는 않았다.</li><li>위 원문의 문장을 그대로 인용하지 않고, "인접 원소 합산 + 경계 조건 역추적"이라는 패턴만 재구성해 한국어로 새로 서술했다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

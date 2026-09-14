@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLIRT 시그니처가 안 맞아서 라이브러리 함수를 놓칠 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>FLIRT 시그니처가 안 맞아서 라이브러리 함수를 놓칠 때</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>FLIRT(Fast Library Identification and Recognition Technology)는 컴파일된 라이브러리 함수의 바이트 패턴을 미리 만들어둔 시그니처 데이터베이스(<code>.sig</code> 파일)와 비교해서 이름을 자동으로 붙여주는 기능인데, 대상 바이너리를 빌드한 컴파일러 종류·버전·최적화 옵션이 시그니처 데이터베이스가 만들어진 환경과 다르면 바이트 패턴 자체가 달라져 매칭이 실패하며, 이 경우 다른 버전의 <code>.sig</code> 파일을 시도하거나, 같은 라이브러리의 알려진 빌드로 직접 시그니처를 만들거나(FLAIR 도구의 <code>sigmake</code>), 문자열/상수 기반 수동 식별로 전환해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>File → Load file → FLIRT signature file로 적용했는데 Output window에 매칭된 함수 수가 0이거나 극히 적을 때</li><li>정적 링킹된 바이너리(REV-0646)인데 <code>malloc</code>, <code>printf</code> 같은 흔한 libc 함수 이름이 FLIRT 적용 후에도 계속 <code>sub_</code>로 남아 있을 때</li><li>Ghidra의 Function ID 분석 후에도 라이브러리 함수가 대부분 <code>FUN_</code>으로 남아 있을 때</li><li>특정 함수 하나만 시그니처와 거의 일치하는데 1~2바이트 차이로 매칭이 안 될 때</li></ul>
+<h2>핵심 개념</h2>
+<p>FLIRT 시그니처는 함수의 앞부분 바이트 패턴(가변 부분은 와일드카드 처리)과 체크섬을 기록해두고, 대상 바이너리에서 같은 패턴을 찾는 방식으로 동작한다. 이 매칭이 실패하는 원인은 대부분 다음 중 하나다.</p>
+<ol><li><strong>컴파일러/버전 불일치</strong>: 같은 함수(<code>malloc</code>)라도 GCC 9와 GCC 13이 만들어내는 바이트 코드가 다를 수 있고, 애초에 다른 libc 구현(glibc vs musl, REV-0647 참고)이면 완전히 다른 코드다. IDA가 기본 제공하는 <code>.sig</code> 파일은 특정 컴파일러/버전 계열을 기준으로 만들어졌으므로, 그 범위를 벗어나면 매칭되지 않는다.</li><li><strong>최적화 옵션 차이</strong>: <code>-O0</code>으로 컴파일된 함수와 <code>-O2</code>/<code>-O3</code>로 컴파일된 함수는 인라이닝(REV-0799), 명령어 재배치, 레지스터 할당이 완전히 달라 바이트 수준에서 다른 함수처럼 보인다.</li><li><strong>인라이닝으로 함수 경계 자체가 없음</strong>: 대상 함수가 통째로 다른 곳에 인라인되어 애초에 "함수 하나"로 존재하지 않으면(REV-0799), FLIRT처럼 함수 단위 매칭을 하는 기법은 원천적으로 적용할 수 없다.</li><li><strong>LTO/링크 최적화로 코드가 재배치·병합됨</strong>: REV-0800처럼 여러 컴파일 단위가 합쳐지면, 원래 시그니처 데이터베이스가 기대하는 함수 경계·주변 코드 패턴과 달라져 매칭률이 떨어진다.</li><li><strong>부분 일치로 인한 오탐/누락</strong>: 짧은 함수는 우연히 다른 라이브러리 함수와 바이트가 비슷해 잘못 매칭되거나, 반대로 체크섬이 살짝 어긋나 정상적으로 일치하는 함수도 놓칠 수 있다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>FLIRT 적용 후 Output window에 "0 function(s) applied" 또는 이에 준하는 낮은 매칭 수</li><li>Ghidra Function ID 분석 후에도 대부분의 정적 링킹 함수 이름이 자동 이름(<code>FUN_</code>)으로 남음</li><li>일부 함수만 매칭되고 나머지 대부분(같은 라이브러리인데)은 안 됨 — 버전/최적화 옵션 차이 가능성</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>바이너리를 만든 컴파일러/라이브러리 버전을 추정할 단서(빌드 문자열, <code>.comment</code> 섹션, 문제 배포 환경 설명)부터 찾는다. 정확한 버전을 알면 그에 맞는 <code>.sig</code>를 고르거나 직접 만들 수 있다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 빌드 환경 단서 수집</strong></p>
+<pre><code class="language-bash">readelf -p .comment chall    # GCC 버전 문자열이 남아있는 경우가 많음
+strings chall | grep -i "GCC\|glibc\|musl"</code></pre>
+<p>libc 종류(glibc/musl, REV-0647)와 대략의 버전을 먼저 좁힌다.</p>
+<p><strong>2) 다른 버전의 sig 파일 시도</strong> IDA에 기본 포함된 <code>.sig</code> 외에 공개적으로 배포되는 추가 시그니처 모음이 있다면 여러 버전을 순서대로 적용해보고 매칭 수를 비교한다.</p>
+<p><strong>3) 직접 시그니처 생성(FLAIR 도구)</strong> 같은 버전의 libc/라이브러리를 정적 링킹한 참조용 바이너리를 별도로 구해 컴파일한 뒤(가능하다면 동일한 컴파일러/옵션으로), Hex-Rays의 FLAIR 도구 모음(<code>pat</code>으로 패턴 추출 → <code>sigmake</code>로 <code>.sig</code> 생성)을 이용해 직접 시그니처를 만들어 적용한다.</p>
+<p><strong>4) FunctionID(Ghidra) 데이터베이스 보강</strong> Ghidra는 자체 FunctionID 데이터베이스를 프로젝트에 추가할 수 있다. 같은 라이브러리의 알려진 빌드에서 FID 데이터베이스를 생성해 적용하면 이후 유사한 바이너리 분석에도 재사용 가능하다.</p>
+<p><strong>5) 수동 식별로 전환</strong> 시그니처를 못 만들거나 여전히 안 맞으면, 문자열(REV-0163)·상수(REV-0165)·함수 시그니처 패턴(인자 개수, 호출 구조)으로 "이 함수는 아마 <code>malloc</code>이다"처럼 개별적으로 식별해 이름을 붙인다. 표준 라이브러리 함수는 대체로 알려진 상수/에러 메시지를 참조하므로 실마리가 있다.</p>
+<p><strong>6) 인라이닝/LTO가 원인인지 재확인</strong> 매칭 실패의 근본 원인이 사실 인라이닝(REV-0799)이나 LTO(REV-0800)로 함수 경계 자체가 사라진 것이라면, 시그니처 파일을 아무리 바꿔도 해결되지 않는다. 이 경우 시그니처 접근 자체를 포기하고 코드 패턴 인식으로 전환한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">readelf -p .comment &lt;binary&gt;
+strings &lt;binary&gt; | grep -i "gcc\|glibc\|musl\|clang"</code></pre>
+<ul><li>IDA: File → Load file → FLIRT signature file</li><li>FLAIR 도구: <code>pat &lt;object files&gt;</code> → <code>sigmake &lt;pat file&gt; &lt;sig file&gt;</code></li><li>Ghidra: Function ID 관련 메뉴에서 FID 데이터베이스 추가</li></ul>
+<h2>출력 해석</h2>
+<ul><li>FLIRT 적용 후 매칭 수가 극히 적으면(수십 개 중 한두 개) 라이브러리 버전이 크게 다르다는 신호다.</li><li>직접 만든 시그니처가 원본과 완전히 같은 컴파일 환경에서 나왔다면 거의 100%에 가까운 매칭률을 기대할 수 있다 — 그보다 낮다면 컴파일 옵션(최적화 레벨 등)이 미묘하게 다른 것이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>기본 제공 <code>.sig</code> 하나만 시도하고 바로 포기하는 것 — 여러 버전을 시도해야 한다.</li><li>매칭 실패의 원인이 인라이닝/LTO 때문일 수 있다는 것을 고려하지 않고 계속 다른 sig 파일만 찾아 헤매는 것.</li><li>직접 시그니처를 만들 때 참조 바이너리의 컴파일러/최적화 옵션을 원본과 다르게 해서 여전히 매칭이 안 되는 것.</li><li>FLIRT 매칭이 안 된 함수를 전부 "분석할 가치 없는 라이브러리 코드"로 무시해버리는 것 — 매칭 안 된 함수 중에도 실제 문제 로직과 상호작용하는 것이 있을 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>원인이 함수 경계 자체가 없는 인라이닝이라면 → REV-0799</li><li>원인이 LTO로 인한 컴파일 단위 병합이라면 → REV-0800</li><li>정적 링킹 바이너리 분석 전반의 전략이 궁금하면 → REV-0646</li><li>glibc/musl 차이 때문에 헷갈린다면 → REV-0647</li><li>이름이 아예 안 붙는 기본 상황 전반이 궁금하면 → REV-0791</li></ul>
+<h2>미니 예제</h2>
+<p>정적 링킹된 바이너리에 FLIRT를 적용했더니 300개 라이브러리 함수 중 5개만 매칭됐다고 하자. <code>readelf -p .comment</code>로 확인해보니 <code>GCC: (Ubuntu 13.2.0)</code>라는 문자열이 나왔는데, 기본 제공된 <code>.sig</code>는 훨씬 오래된 GCC 버전 기준으로 만들어진 것이었다. 같은 우분투 버전의 GCC로 정적 링킹된 참조 바이너리를 하나 만들어 FLAIR의 <code>pat</code>/<code>sigmake</code>로 새 시그니처를 생성해 적용하니 매칭률이 크게 올라갔다. 그래도 매칭 안 된 나머지는 인라이닝된 짧은 함수들이었으므로, 이 부분은 REV-0799 절차로 개별 확인했다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0791-sub-prefix-unnamed-function.html">REV-0791 — 변수 이름이 계속 sub_ 형태로만 나올 때</a></li><li><a href="rev-0799-inlined-function-boundary.html">REV-0799 — 인라인된 함수 때문에 원래 함수 경계를 못 찾을 때</a></li><li><a href="rev-0800-lto-merged-compilation-units.html">REV-0800 — 여러 컴파일 단위가 하나로 합쳐져 함수가 너무 많을 때(LTO)</a></li><li><a href="rev-0646-statically-linked-elf-analysis.html">REV-0646 — 정적 링킹된(Statically Linked) ELF 분석 접근법</a></li><li><a href="rev-0647-musl-vs-glibc-reversing.html">REV-0647 — musl libc와 glibc 차이가 리버싱에 미치는 영향</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>FLIRT(Fast Library Identification and Recognition Technology)의 패턴 매칭 원리와 FLAIR 도구 모음(<code>pat</code>, <code>sigmake</code>)을 이용한 커스텀 시그니처 생성 절차는 Hex-Rays 공식 문서("FLIRT technology", "FLAIR" 관련 페이지) 기준.</li><li>Ghidra Function ID(FID) 데이터베이스 개념은 Ghidra 공식 문서(Function ID 관련 챕터) 기준.</li><li>컴파일러/최적화 옵션에 따라 동일 함수의 바이트 코드가 달라진다는 점은 컴파일러 일반론(코드 생성 비결정성)에 근거한다.</li><li>이 글은 2026-09-09 기준으로 작성되었다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

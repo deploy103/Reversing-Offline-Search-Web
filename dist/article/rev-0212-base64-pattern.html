@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Base64 인코딩 검증 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>Base64 인코딩 검증 패턴</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>바이너리 안에 64글자짜리 문자열 상수(전형적으로 <code>ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/</code>)가 있고, 입력을 3바이트씩 묶어 4글자로 늘리면서 <code>&gt;&gt;2</code>, <code>&amp;0x3F</code>, <code>&lt;&lt;4</code>, <code>&lt;&lt;6</code> 같은 6비트 단위 시프트가 보이면 Base64 인코딩/디코딩 루틴이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>출력 문자열 길이가 입력 길이의 약 4/3배(3바이트→4글자)로 늘어나는 함수를 봤을 때</li><li>결과 문자열 끝에 <code>=</code> 패딩이 0~2개 붙는 걸 봤을 때</li><li>rodata에 64글자 정도의 알파벳+숫자+기호 문자열이 있는데 순서가 어딘가 익숙해 보일 때</li><li>디컴파일 코드에 <code>&amp; 0x3F</code>(63)이라는 마스크가 반복적으로 등장할 때 — 6비트를 다루는 것의 강력한 힌트</li></ul>
+<h2>핵심 개념</h2>
+<p>Base64는 이진 데이터를 인쇄 가능한 ASCII 문자로 표현하기 위한 인코딩이다. 원리는 단순하다: <strong>입력 3바이트(24비트)를 6비트씩 4조각으로 잘라서</strong>, 각 6비트 값(0~63)을 64글자 알파벳 테이블에 대응시킨다.</p>
+<p><strong>표준 Base64 알파벳</strong></p>
+<pre><code>ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/</code></pre>
+<p>인덱스 0은 <code>A</code>, 25는 <code>Z</code>, 26은 <code>a</code>, 51은 <code>z</code>, 52는 <code>0</code>, 61은 <code>9</code>, 62는 <code>+</code>, 63은 <code>/</code>이다. URL-safe 변형은 마지막 두 글자만 <code>-</code>와 <code>_</code>로 바뀐다. 이 64바이트 문자열이 <code>.rodata</code>에 그대로 있으면 Base64로 거의 확정이다.</p>
+<p><strong>패딩(<code>=</code>)</strong>: 입력 길이가 3의 배수가 아니면 마지막 그룹을 0으로 채우고, 부족한 출력 글자 수만큼 <code>=</code>를 붙인다. 1바이트 남으면 <code>==</code>, 2바이트 남으면 <code>=</code>가 붙는다.</p>
+<p><strong>비트 연산 패턴 (인코딩)</strong></p>
+<p>3바이트를 4개의 6비트 인덱스로 쪼개는 공식은 다음과 같다:</p>
+<pre><code>idx0 = (byte0 &gt;&gt; 2) &amp; 0x3F
+idx1 = ((byte0 &amp; 0x03) &lt;&lt; 4) | ((byte1 &gt;&gt; 4) &amp; 0x0F)
+idx2 = ((byte1 &amp; 0x0F) &lt;&lt; 2) | ((byte2 &gt;&gt; 6) &amp; 0x03)
+idx3 = byte2 &amp; 0x3F</code></pre>
+<p>디컴파일 결과에서 <code>&gt;&gt; 2</code>, <code>&lt;&lt; 4</code>, <code>&lt;&lt; 2</code>, <code>&amp; 0x3F</code>, <code>&amp; 0x0F</code>, <code>&amp; 0x03</code>이 한 함수 안에 몰려 있으면 이 공식을 그대로 구현한 것이다. 반대로 디코딩은 4글자(각 6비트)를 3바이트(각 8비트)로 다시 합치는 역연산이며, 공식은 다음과 같다:</p>
+<pre><code>byte0 = (idx0 &lt;&lt; 2) | (idx1 &gt;&gt; 4)
+byte1 = ((idx1 &amp; 0x0F) &lt;&lt; 4) | (idx2 &gt;&gt; 2)
+byte2 = ((idx2 &amp; 0x03) &lt;&lt; 6) | idx3</code></pre>
+<p>디코딩 구현은 유효하지 않은 문자를 걸러내기 위한 256바이트짜리 역방향 룩업 테이블(문자→0~63, 잘못된 문자는 -1이나 0x80 같은 특수값)을 쓰는 경우가 흔하다. 이 테이블은 인코딩용 64바이트 알파벳 테이블과는 별개의 상수이므로, <code>.rodata</code>에 64바이트 테이블과 256바이트 테이블이 함께 있다면 인코딩/디코딩 양쪽 로직이 모두 구현되어 있다는 뜻이다.</p>
+<p><strong>Intel x64 인코딩 스니펫 예시</strong></p>
+<pre><code class="language-asm">movzx   eax, byte [rsi]        ; eax = byte0
+mov     ecx, eax
+shr     cl, 2                   ; cl = byte0 &gt;&gt; 2  (idx0)
+movzx   ecx, byte [rcx+b64_table]
+mov     [rdi], cl               ; out[0] = table[idx0]
+and     eax, 3                  ; eax = byte0 &amp; 0x03
+shl     eax, 4
+movzx   edx, byte [rsi+1]       ; byte1
+mov     r8d, edx
+shr     r8b, 4
+or      eax, r8d                ; idx1
+movzx   eax, byte [rax+b64_table]
+mov     [rdi+1], al             ; out[1] = table[idx1]</code></pre>
+<p><code>shr cl, 2</code> 뒤에 곧바로 테이블 인덱싱(<code>movzx ecx, byte [rcx+b64_table]</code>)이 이어지는 패턴이 반복적으로 나오면, 이게 바로 Base64 인코딩의 6비트 슬라이싱을 어셈블리 레벨에서 확인하는 방법이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>.rodata</code>에 있는 64바이트 문자열: <code>41 42 43 ... 5A 61 62 ... 7A 30 31 ... 39 2B 2F</code> (아스키로 <code>A-Za-z0-9+/</code>)</li><li><code>movzx eax, byte [rsi]</code> 뒤에 <code>shr al, 2</code>, 그다음 같은 테이블을 가리키는 <code>movzx eax, byte [rax+table_addr]</code></li><li>디코딩 쪽에서는 <code>and eax, 3Fh</code> 직후 시프트-OR 조합으로 바이트 재조립</li><li>루프 stride가 인코딩은 입력 3 / 출력 4, 디코딩은 입력 4 / 출력 3</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>.rodata</code>/<code>.rdata</code>를 문자열 뷰(IDA <code>Shift+F12</code>)로 열어서 64자 내외의 문자열을 찾는다. 표준 알파벳 순서(<code>A-Z</code>, <code>a-z</code>, <code>0-9</code>, <code>+/</code>)와 정확히 일치하면 표준 Base64, 순서가 다르면 커스텀 알파벳(REV-0214)일 가능성을 함께 열어둔다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 알파벳 테이블 확인</strong></p>
+<p>문자열 창에서 64자 문자열을 찾아 실제로 <code>A</code>부터 순서대로 나열되어 있는지 육안으로 확인한다.</p>
+<p><strong>2) 인코드/디코드 방향 판별</strong></p>
+<p>함수가 바이트 배열을 문자열로 바꾸면(3→4 stride) 인코딩, 문자열을 바이트 배열로 바꾸면(4→3 stride) 디코딩이다.</p>
+<p><strong>3) 비트 마스크 확인</strong></p>
+<p><code>&amp; 0x3F</code>(63)가 있으면 6비트 단위 처리가 확실하다. IDA에서 상수 위에 커서를 놓고 <code>H</code>로 10진 표시하면 <code>63</code>으로 바로 확인된다.</p>
+<p><strong>4) 파이썬으로 직접 구현해서 검증</strong></p>
+<p><code>base64</code> 표준 라이브러리를 쓰지 않고 직접 짜보면 비트 연산 이해가 바이너리 로직과 정확히 맞아떨어지는지 검증할 수 있다.</p>
+<pre><code class="language-python">B64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+
+def b64_decode(s: str) -&gt; bytes:
+    s = s.rstrip("=")
+    bits = "".join(f"{B64.index(c):06b}" for c in s)
+    bits = bits[:len(bits) - (len(bits) % 8)]
+    return bytes(int(bits[i:i+8], 2) for i in range(0, len(bits), 8))
+
+def b64_encode(data: bytes) -&gt; str:
+    bits = "".join(f"{b:08b}" for b in data)
+    while len(bits) % 6:
+        bits += "0"
+    out = "".join(B64[int(bits[i:i+6], 2)] for i in range(0, len(bits), 6))
+    while len(out) % 4:
+        out += "="
+    return out</code></pre>
+<p><strong>5) 실제 값으로 검증</strong></p>
+<pre><code class="language-python">assert b64_decode("aGVsbG8=") == b"hello"
+assert b64_encode(b"hello") == "aGVsbG8="</code></pre>
+<p><code>"aGVsbG8="</code>를 표준 <code>base64.b64decode</code>로도 확인해보면 정확히 <code>b"hello"</code>가 나오는 걸 알 수 있다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>Shift+F12</code>(문자열 창)에서 길이 60~64 정도로 필터링</li><li>파이썬 대조 검증: <code>import base64; base64.b64decode("aGVsbG8=")</code> → <code>b'hello'</code></li><li>IDA 상수 확인: <code>&amp; 3Fh</code> 위에서 <code>H</code>로 10진 토글 → 63 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>직접 구현한 <code>b64_decode</code> 결과가 파이썬 표준 <code>base64.b64decode</code>와 다르면, 테이블 순서가 표준과 다르거나(커스텀 알파벳) 패딩 처리 로직이 다를 수 있다.</li><li>결과 바이트가 사람이 읽을 수 없는 쓰레기 값이면, 애초에 Base64가 아니라 겉모습만 비슷한 다른 인코딩(Base32, Base85 등)일 수 있으니 알파벳 길이(정확히 64자인지)를 다시 확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>알파벳 테이블 문자열은 봤지만 순서를 확인하지 않고 표준 Base64로 단정하는 것 — CTF에서는 알파벳을 섞은 커스텀 Base64가 매우 흔하다(아래 참고).</li><li>패딩(<code>=</code>) 처리를 빼먹고 디코딩해서 길이가 안 맞는 것 — <code>rstrip("=")</code>을 반드시 먼저 하거나, 패딩 문자를 6비트 0으로 취급해서 마지막 그룹 처리를 정확히 한다.</li><li>URL-safe 변형(<code>+/</code> 대신 <code>-_</code>)을 놓치고 표준 알파벳으로 디코딩을 시도해 실패하는 것 — 테이블의 마지막 두 글자를 반드시 확인한다.</li><li>Base64를 다른 Base-N 인코딩과 혼동하는 것 — 알파벳 길이를 세어보면 쉽게 구분된다. <strong>Base32</strong>는 알파벳이 32자(<code>A-Z2-7</code>)이고 5바이트를 8글자로 늘리며 5비트 단위로 자른다(<code>&amp; 0x1F</code> 마스크가 보이면 Base32 후보). <strong>Base85/Ascii85</strong>는 알파벳이 85자로 4바이트를 5글자로 압축한다(3바이트→4글자보다 압축률이 높음, 나눗셈/거듭제곱 85 연산이 특징). 정확히 64자 테이블 + <code>&amp; 0x3F</code> 마스크 + 3:4 stride 세 가지가 함께 있어야 Base64로 확정할 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>알파벳 순서가 표준과 다르면(예: <code>0123456789ABCDEF...</code>처럼 숫자가 앞에 오는 등) → <a href="rev-0214-custom-alphabet-substitution.html">rev-0214-custom-alphabet-substitution.md</a>에서 셔플된 알파벳 처리법 확인. 아래 미니 예제 2도 참고.</li><li>훨씬 단순한 1:2 비율 인코딩이면 → <a href="rev-0213-hex-encoding-pattern.html">rev-0213-hex-encoding-pattern.md</a>.</li><li>이 인코딩 자체가 역산 가능한지 확신이 안 서면 → <a href="rev-0221-is-it-invertible.html">rev-0221-is-it-invertible.md</a> (Base64는 정보 손실이 없는 순수 재표현이라 항상 역산 가능).</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 표준 Base64 확인</strong></p>
+<p><code>.rodata</code>에서 다음 문자열을 발견했다:</p>
+<pre><code>"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"</code></pre>
+<p>정확히 표준 순서이므로 표준 Base64 테이블이다. <code>b64_decode("aGVsbG8=")</code>를 실행하면 <code>b"hello"</code>가 나온다 — 'h'=0x68='01101000', 'e'=0x65='01100101', ... 이 비트열을 6비트씩 자르면 <code>011010 000110 010101 101100 011011 000110 1111</code>(패딩 전)이 되고, 각 6비트 값이 알파벳 인덱스 26('a'), 22('W')... 등으로 대응하는 걸 직접 손으로 따라가 봐도 일치한다.</p>
+<p><strong>예제 2 — 셔플된 커스텀 알파벳</strong></p>
+<p>다른 문제에서는 <code>.rodata</code>에 다음과 같은 64자 문자열이 있었다:</p>
+<pre><code>"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+/"</code></pre>
+<p>표준 알파벳과 글자 구성은 같지만 <strong>숫자가 맨 앞으로 온</strong> 순서다. 이건 여전히 Base64의 3→4 비트 패킹 구조를 그대로 쓰되, 알파벳 테이블만 바꾼 경우다. 앞의 <code>b64_decode</code> 함수에서 <code>B64</code> 변수만 이 문자열로 교체하면 그대로 동작한다:</p>
+<pre><code class="language-python">B64_SHUFFLED = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz+/"
+
+def b64_decode_custom(s: str, table: str) -&gt; bytes:
+    s = s.rstrip("=")
+    bits = "".join(f"{table.index(c):06b}" for c in s)
+    bits = bits[:len(bits) - (len(bits) % 8)]
+    return bytes(int(bits[i:i+8], 2) for i in range(0, len(bits), 8))
+
+print(b64_decode_custom("wMFVy2E=", B64_SHUFFLED))</code></pre>
+<p>즉 비트 패킹 로직(3바이트↔4글자, 6비트 마스크)은 절대 바뀌지 않고, 바뀌는 건 알파벳 매핑 테이블 하나뿐이라는 걸 기억하면 어떤 변형이 나와도 당황하지 않는다.</p>
+<p><strong>심화 예제 — 문자열 창에서 발견한 값을 그대로 디코딩하는 완결된 스크립트</strong></p>
+<p>IDA Strings 창(<code>Shift+F12</code>)에서 다음과 같은 수상한 문자열을 발견했다고 하자: <code>"ZmxhZ3tiNjRfb2t9"</code>. 아래 스크립트를 그대로 실행하면 이게 무엇인지 즉시 알 수 있다.</p>
+<pre><code class="language-python">import base64
+# ↑ 파이썬 표준 라이브러리에 내장된 base64 모듈을 불러온다.
+#   이 모듈에는 표준 Base64 인코딩/디코딩 함수가 이미 구현되어 있다.
+
+def try_base64_decode(s: str) -&gt; bytes | None:
+    # ↑ 문자열 하나를 받아서, Base64로 디코딩이 되면 그 결과를,
+    #   디코딩이 실패하면 None(값이 없음)을 돌려주는 함수를 정의한다.
+    try:
+        # ↑ try 블록 안의 코드를 실행해보고, 에러가 나면 except로 넘어간다.
+        raw = base64.b64decode(s, validate=True)
+        # ↑ validate=True를 주면 Base64 알파벳에 맞지 않는 문자가 섞여 있을 때
+        #   조용히 무시하지 않고 확실하게 에러를 내도록 만든다.
+        return raw
+        # ↑ 디코딩에 성공했으면 원본 바이트를 돌려준다.
+    except Exception as e:
+        # ↑ 디코딩 과정에서 어떤 에러든 발생하면 이 블록이 실행된다.
+        print("디코딩 실패:", e)
+        # ↑ 왜 실패했는지 이유를 화면에 출력해서 디버깅에 도움을 준다.
+        return None
+        # ↑ 실패했다는 뜻으로 None을 돌려준다.
+
+if __name__ == "__main__":
+    # ↑ 이 파일을 직접 실행할 때만 아래 코드를 수행한다.
+    found_string = "ZmxhZ3tiNjRfb2t9"
+    # ↑ IDA Strings 창에서 실제로 발견했다고 가정한 문자열.
+
+    result = try_base64_decode(found_string)
+    # ↑ 앞서 만든 함수로 이 문자열을 디코딩해본다.
+
+    if result is not None:
+        # ↑ 디코딩이 성공해서 result가 None이 아니라면
+        print("디코딩 성공! 원본 바이트:", result)
+        # ↑ 디코딩된 바이트 그대로를 출력한다.
+        print("문자열로 보면:", result.decode())
+        # ↑ ASCII 문자열로 다시 해석해서 사람이 읽기 좋은 형태로 보여준다.
+    else:
+        # ↑ result가 None이라면(디코딩 실패)
+        print("이 문자열은 표준 Base64가 아닙니다.")
+        # ↑ 다른 인코딩(커스텀 알파벳 등)일 가능성을 알려준다.</code></pre>
+<p>이 스크립트를 그대로 실행하면 다음과 같이 출력된다(직접 계산해서 검증한 값):</p>
+<pre><code>디코딩 성공! 원본 바이트: b'flag{b64_ok}'
+문자열로 보면: flag{b64_ok}</code></pre>
+<p>즉 IDA에서 발견한 <code>"ZmxhZ3tiNjRfb2t9"</code>라는 정체불명의 문자열이, 사실은 <code>b"flag{b64_ok}"</code>를 표준 Base64로 인코딩한 결과였다는 것을 스크립트 실행 한 번으로 확인할 수 있다. 반대로 인코딩 쪽을 검증하려면 <code>base64.b64encode(b"flag{b64_ok}")</code>를 실행해서 같은 문자열이 나오는지 대조해보면 된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0213-hex-encoding-pattern.html">rev-0213-hex-encoding-pattern.md</a> — 더 단순한 1바이트↔2글자 인코딩</li><li><a href="rev-0214-custom-alphabet-substitution.html">rev-0214-custom-alphabet-substitution.md</a> — 알파벳이 섞인 경우의 일반적 대응법</li><li><a href="rev-0221-is-it-invertible.html">rev-0221-is-it-invertible.md</a> — 정보 손실 없는 재표현은 항상 역산 가능</li><li><a href="rev-0208-fnv-16777619.html">rev-0208-fnv-16777619.md</a> — 반대로 역산 불가능한 해시의 예</li></ul>
+<h2>출처/검증</h2>
+<ul><li>Base64 인코딩 명세: IETF RFC 4648, "The Base16, Base32, and Base64 Data Encodings" — 알파벳 테이블, 패딩 규칙, URL-safe 변형의 원출처 (2026-09-08 검증).</li><li>표준 라이브러리 대조: Python 공식 문서 <code>base64</code> 모듈 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

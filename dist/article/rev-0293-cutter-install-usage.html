@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cutter 설치와 기본 사용법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / tools</div>
+<article class="article-body">
+<h1>Cutter 설치와 기본 사용법</h1>
+<div class="article-meta"><span class="tag">tools</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Cutter</span><span class="tag">radare2</span><span class="tag">rizin</span></div>
+<h2>한 줄 요약</h2>
+<p>Cutter는 radare2(현재는 rizin 포크 기반)의 분석 엔진을 그대로 사용하면서 함수 목록, 디스어셈블리, 그래프, 디컴파일러를 마우스로 클릭하며 볼 수 있게 만든 무료 오픈소스 GUI 프론트엔드다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>radare2 명령어를 외우기 전에 먼저 눈으로 구조를 훑어보고 싶을 때</li><li>IDA Free/Ghidra와 비슷한 느낌의 무료 GUI 디스어셈블러가 필요할 때</li><li>radare2로 커맨드라인 분석을 하다가, 특정 함수만 그래프나 디컴파일된 형태로 빠르게 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Cutter는 radare2 프로젝트에서 시작되어 현재는 radare2의 후속/포크 프로젝트인 <strong>rizin</strong>을 분석 엔진으로 사용하는 GUI다. 즉 Cutter 자체는 디스어셈블 로직을 새로 구현한 것이 아니라, <a href="rev-0291-radare2-install-first-command.html">REV-0291</a>/<a href="rev-0292-radare2-commands-cheatsheet.html">REV-0292</a>에서 다룬 <code>aaa</code>, <code>afl</code>, <code>pdf</code> 같은 명령어들이 내부적으로 그대로 실행되고, 그 결과를 창과 패널로 보여주는 것이다. 그래서 Cutter의 하단에는 실제 rizin/radare2 콘솔 명령을 직접 입력할 수 있는 콘솔 창이 항상 남아 있다 — GUI로 못 찾는 기능은 그 콘솔에 원래 명령어를 그대로 치면 된다.</p>
+<p>Cutter는 자체 디컴파일러가 없는 대신, 여러 디컴파일러 플러그인(<code>decompiler</code>)을 선택해 붙일 수 있다. 대표적으로:</p>
+<ul><li><strong>native</strong>(rizin 자체 내장 pseudocode 생성기, 별도 설치 불필요)</li><li><strong>Ghidra 디컴파일러 플러그인</strong>(Ghidra의 디컴파일 엔진을 그대로 가져와 붙이는 방식, 더 정교한 pseudocode 제공)</li></ul>
+<p>오프라인 대회 환경이라면 대회 전에 원하는 디컴파일러 플러그인까지 미리 설치해서 검증해 두어야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>Cutter를 켜는 건 특정 코드 패턴을 봤을 때가 아니라, "커맨드라인 radare2보다 지금은 화면으로 구조를 훑어보는 게 더 빠르겠다"고 판단했을 때다. 함수가 많고 서로 호출 관계가 복잡한 바이너리일수록 GUI의 함수 목록/그래프가 유리하다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>설치 후 Cutter를 실행하고, 시작 화면에서 분석할 파일을 선택한다. "Auto analysis" 옵션 창이 뜨면 기본값(대략 <code>aaa</code>에 대응하는 수준)을 그대로 두고 진행한다.</p>
+<h2>단계별 절차</h2>
+<h3>1) 설치 — Windows</h3>
+<p>공식 GitHub 릴리스(<code>https://github.com/rizinorg/cutter/releases</code>)에서 Windows용 <code>Cutter-vX.X.X-Windows-x86_64.zip</code> 또는 설치 프로그램(installer)을 받는다. 압축形 배포판은 압축만 풀면 바로 실행되는 포터블 형태라 오프라인 대회용 USB/외장 SSD에 폴더째 복사해 가기 좋다.</p>
+<h3>2) 설치 — Linux</h3>
+<p>공식 릴리스에서 <code>.AppImage</code> 파일을 받아 실행 권한만 주면 별도 설치 없이 바로 실행된다.</p>
+<pre><code class="language-bash">chmod +x Cutter-vX.X.X-Linux-x86_64.AppImage
+./Cutter-vX.X.X-Linux-x86_64.AppImage</code></pre>
+<p>일부 배포판은 저장소 패키지(<code>sudo apt install cutter</code> 등)로도 제공하지만, 버전이 오래된 경우가 많아 AppImage를 권장한다.</p>
+<h3>3) 첫 실행 — 파일 열기와 자동 분석</h3>
+<ol><li>Cutter 실행 후 "Open File"로 대상 바이너리를 선택한다.</li><li>분석 옵션 창에서 architecture/bits가 올바르게 자동 감지되었는지 확인하고 "OK"를 눌러 자동 분석을 시작한다.</li><li>분석이 끝나면 좌측에 <strong>Functions</strong> 패널이 채워진다.</li></ol>
+<h3>4) 기본 화면 구성</h3>
+<ul><li><strong>Functions 패널</strong>(좌측): <code>afl</code>과 동일한 함수 목록. 함수를 더블클릭하면 해당 함수로 이동.</li><li><strong>Disassembly 뷰</strong>(중앙): <code>pdf</code>와 동일한 정보를 줄 단위로 보여줌.</li><li><strong>Graph 뷰</strong>: radare2 Visual 그래프 모드(<code>VV</code>)와 동일한 정보를 마우스로 확대/축소하며 볼 수 있음.</li><li><strong>Decompiler 패널</strong>(우측 또는 탭): 선택한 디컴파일러 플러그인으로 생성한 pseudo-C 코드.</li><li><strong>Hexdump 뷰</strong>: <code>px</code>와 동일한 raw 바이트 보기.</li><li><strong>하단 콘솔</strong>: radare2/rizin 명령을 직접 입력하는 창. GUI에 없는 기능은 여기서 원래 명령어로 해결한다.</li></ul>
+<h3>5) 문자열/임포트 확인</h3>
+<p>상단 메뉴 또는 좌측 패널에서 <strong>Strings</strong>(<code>iz</code>에 대응), <strong>Imports</strong>(<code>ii</code>에 대응) 탭을 클릭하면 커맨드라인 명령을 몰라도 클릭만으로 같은 정보를 볼 수 있다.</p>
+<h2>명령어/단축키</h2>
+<table><thead><tr><th>동작</th><th>방법</th></tr></thead><tbody><tr><td>함수로 이동</td><td>Functions 패널에서 더블클릭, 또는 <code>Ctrl+G</code> 후 함수명/주소 입력</td></tr><tr><td>그래프 뷰 전환</td><td>상단 탭에서 "Graph" 클릭</td></tr><tr><td>디컴파일러 코드 보기</td><td>상단 탭에서 "Decompiler" 클릭 (없으면 Edit → Preferences에서 플러그인 활성화)</td></tr><tr><td>원본 콘솔 명령 실행</td><td>하단 콘솔에 radare2 명령(예: <code>iz</code>, <code>afl</code>) 직접 입력</td></tr><tr><td>주소로 이동</td><td><code>Ctrl+G</code></td></tr><tr><td>이름 바꾸기(rename)</td><td>함수/변수 우클릭 → Rename, 또는 <code>N</code></td></tr></tbody></table>
+<h2>출력 해석</h2>
+<p>Decompiler 패널에 나오는 pseudo-C 코드는 IDA의 F5나 Ghidra의 Decompile 결과와 비슷하지만, 사용하는 디컴파일러 엔진(native/Ghidra 플러그인)에 따라 변수명, 표현식 형태, 최적화 정도가 달라질 수 있다. 한 디컴파일러 결과가 이상하게 보이면 다른 디컴파일러 플러그인으로 전환해서 비교해보는 것도 방법이다.</p>
+<h2>Cutter를 언제 쓰고 radare2 커맨드라인을 언제 쓸까</h2>
+<p>실전에서는 둘을 상황에 따라 오간다. 함수가 몇 개 안 되는 작은 바이너리나 서버 SSH 세션처럼 GUI를 띄우기 번거로운 환경에서는 커맨드라인 radare2(<a href="rev-0291-radare2-install-first-command.html">REV-0291</a>)가 더 빠르다. 반대로 함수 수가 수십~수백 개인 큰 바이너리에서 호출 관계를 눈으로 훑거나, 여러 함수를 오가며 이름을 붙이고(rename) 주석을 다는 작업이 많다면 Cutter의 클릭 기반 탐색과 그래프 뷰가 훨씬 효율적이다. 콘솔 창이 항상 열려 있으므로 "GUI로 훑다가 특정 명령 하나만 커맨드라인으로 실행"하는 혼합 사용도 자연스럽다.</p>
+<h2>흔한 실수</h2>
+<ul><li>Cutter를 radare2와 "별개의 도구"로 착각해서 두 도구의 명령어 체계가 다를 거라 예상하는 것 — 내부 엔진이 사실상 같으므로, 콘솔 창에 <a href="rev-0292-radare2-commands-cheatsheet.html">REV-0292</a>의 명령어를 그대로 입력해도 동작한다.</li><li>디컴파일러 플러그인을 하나도 설치/활성화하지 않고 "Decompiler 탭이 비어있다"고 당황하는 것 — Edit → Preferences → Plugins에서 활성화 여부를 확인해야 한다.</li><li>오프라인 대회 당일에 처음 AppImage/zip을 풀어보는 것 — 반드시 사전에 실행까지 검증해서 의존 라이브러리 누락 등의 문제를 미리 걸러내야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>Cutter 콘솔에 칠 명령어가 기억 안 나면 → <a href="rev-0292-radare2-commands-cheatsheet.html">REV-0292 radare2 명령어 치트시트</a></li><li>커맨드라인만으로 충분한 경우의 첫 세션 흐름은 → <a href="rev-0291-radare2-install-first-command.html">REV-0291 radare2 설치와 첫 명령</a></li><li>보호 기법(RELRO/Canary/NX/PIE)까지 같이 확인하고 싶으면 → <a href="rev-0096-checksec.html">REV-0096 checksec 결과 읽는 법</a></li></ul>
+<h2>미니 예제</h2>
+<p>Cutter로 <code>chall</code>을 열고 Functions 패널에서 <code>main</code>을 더블클릭하면 중앙 Disassembly 뷰가 <code>main</code> 코드로 이동한다. 이어서 상단 "Graph" 탭을 누르면 같은 함수가 조건 분기 블록 단위의 박스와 화살표로 다시 그려진다 — <code>cmp</code>/<code>jne</code> 뒤에 갈라지는 두 갈래 흐름을 코드 한 줄씩 읽지 않고 그림으로 먼저 파악할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0291-radare2-install-first-command.html">REV-0291 — radare2 설치와 첫 명령</a></li><li><a href="rev-0292-radare2-commands-cheatsheet.html">REV-0292 — radare2 명령어 치트시트</a></li><li><a href="rev-0096-checksec.html">REV-0096 — checksec 결과 읽는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Cutter가 rizin(구 radare2 포크)을 분석 엔진으로 사용한다는 관계, 배포 형태(Windows zip/installer, Linux AppImage), 디컴파일러 플러그인 구조: Cutter 공식 GitHub 저장소(<code>https://github.com/rizinorg/cutter</code>) 및 공식 웹사이트 소개 문서 기준.</li><li>화면 패널 이름(Functions/Graph/Decompiler/Hexdump)과 단축키는 Cutter 공식 문서 기준이며, 버전마다 메뉴 위치가 조금씩 바뀔 수 있어 실제 실행 화면과 대조 검증은 하지 못했다. 설치 직후 Help 메뉴에서 현재 버전의 최신 안내를 다시 확인할 것을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

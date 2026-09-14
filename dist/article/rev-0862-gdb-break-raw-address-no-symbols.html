@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GDB에서 브레이크포인트 주소를 심볼 없이 절대주소로 지정해야 할 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>GDB에서 브레이크포인트 주소를 심볼 없이 절대주소로 지정해야 할 때</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>GDB에서 함수 이름으로 브레이크포인트를 걸 수 없는 스트립된(symbol이 제거된) 바이너리나 심볼이 없는 코드 영역에서는 <code>break *0x401234</code>처럼 주소 앞에 <strong>반드시 별표(<code>*</code>)를 붙여</strong> 절대주소로 지정해야 하며, 별표를 빠뜨리면 GDB가 그 숫자를 소스 라인 번호로 오해해서 엉뚱한 오류를 낸다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>strip</code>된 바이너리라 <code>break main</code>, <code>break check_password</code> 같은 함수 이름 지정이 <code>Function "check_password" not defined</code>로 실패할 때(REV-0689 참고)</li><li>IDA/Ghidra/objdump로 확인한 정확한 주소에 브레이크포인트를 걸고 싶은데 GDB 문법을 몰라서 <code>break 0x401234</code>라고 쳤다가 이상한 오류를 만났을 때</li><li><code>No symbol table is loaded, no symbols</code> 같은 메시지가 뜨면서 함수 이름 기반 명령이 전부 실패할 때</li><li>PIE 바이너리라서 베이스 주소를 더한 실제 런타임 주소를 직접 계산해서 걸어야 할 때(REV-0693, REV-0194 참고)</li></ul>
+<h2>핵심 개념</h2>
+<h3><code>break 0x401234</code>와 <code>break *0x401234</code>의 차이</h3>
+<p>GDB의 <code>break</code> 명령은 기본적으로 "linespec"(파일명:줄번호, 함수명, 또는 그냥 숫자)을 받는다. 별표 없이 그냥 숫자를 주면 GDB는 이것을 <strong>소스 코드의 줄 번호</strong>로 해석하려고 시도한다. 소스 정보가 없거나 그 줄 번호가 존재하지 않으면 <code>No line 0x401234 in the current file.</code> 같은 오류가 난다. 반면 별표를 붙인 <code>*0x401234</code>는 "이것은 줄 번호가 아니라 메모리 주소 표현식이다"라는 뜻으로, GDB가 심볼 정보 없이도 그 주소에 직접 브레이크포인트를 건다.</p>
+<h3>심볼이 없을 때 함수 이름을 쓸 수 없는 이유</h3>
+<p><code>strip</code> 명령으로 심볼 테이블이 제거된 바이너리는 GDB가 함수 이름과 주소를 매핑할 방법이 없다. 이 상태에서 <code>break some_func</code>를 치면 <code>Function "some_func" not defined.</code>가 뜬다(REV-0689). 이런 경우 objdump, IDA, Ghidra, radare2 등 정적 분석 도구로 미리 확인해둔 <strong>주소</strong>를 직접 써야 하며, 이때 문법이 바로 <code>break *0xADDR</code>이다.</p>
+<h3>PIE 바이너리에서는 베이스 주소를 더해야 한다</h3>
+<p>대상 바이너리가 PIE(Position Independent Executable)라면 정적 분석 도구가 보여주는 주소는 "파일 오프셋 기준" 또는 "베이스 0 기준"인 경우가 많다. 실행 중에는 ASLR에 의해 실제 로드 베이스가 매번 달라지므로, <code>*0xADDR</code> 형태로 절대주소를 걸려면 그 베이스 주소를 알아내 정적 오프셋에 더해야 한다(REV-0194, REV-0693 참고). 함수 이름이 살아있는 심볼이라면 차라리 <code>break some_func</code>처럼 이름으로 거는 편이 베이스 계산 실수를 피할 수 있어 더 안전하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>(gdb) break 0x401234</code> 입력 후 <code>No line 0x401234 in the current file.</code> 오류가 뜬다.</li><li><code>(gdb) break check_password</code> 입력 후 <code>Function "check_password" not defined.</code> 오류가 뜬다(스트립된 바이너리, REV-0689).</li><li><code>(gdb) info functions</code> 실행 시 결과가 텅 비어 있거나, 시스템 라이브러리 함수 몇 개만 보인다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>대상이 스트립되어 있는지 확인한다: <code>file target</code> 결과에 <code>not stripped</code> 대신 <code>stripped</code>가 보이면 심볼이 없는 것이다(REV-0095 참고).</li><li>심볼이 없다면 objdump/IDA/Ghidra로 목표 주소를 먼저 확정한다.</li><li>그 주소 앞에 별표(<code>*</code>)를 붙여 <code>break *0xADDR</code> 형태로 건다.</li></ol>
+<h2>단계별 절차</h2>
+<ol><li>정적 분석 도구로 목표 명령어의 주소를 확인한다. objdump 예시:</li></ol>
+<pre><code>   objdump -d target | grep -A2 "위치 근처 명령어"</code></pre>
+<ol><li>PIE 바이너리라면 실행 중 실제 베이스 주소를 먼저 확인한다.</li></ol>
+<pre><code>   (gdb) start
+   (gdb) info proc mappings</code></pre>
+<p>(Pwndbg라면 <code>vmmap</code> 한 줄로 더 보기 좋게 확인 가능)</p>
+<ol><li>정적 오프셋에 베이스 주소를 더해 실제 런타임 주소를 계산한다.</li><li>별표를 붙여 브레이크포인트를 건다.</li></ol>
+<pre><code>   (gdb) break *0x555555555234</code></pre>
+<ol><li><code>run</code> 또는 <code>continue</code>로 실행해 해당 주소에서 멈추는지 확인한다.</li><li>반복 실행마다 베이스가 바뀌는 것이 번거롭다면, PIE 오프셋을 자동으로 계산해주는 방법(REV-0194의 <code>break *(0x1234 + (($_base = (unsigned long)&amp;_start) - 0x1000))</code> 류의 트릭이나 Pwndbg의 심볼 지원)을 활용한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li><code>break *0xADDR</code> — 주소에 소프트웨어 브레이크포인트(별표 필수)</li><li><code>break *ADDR_EXPR</code> — 표현식도 가능(예: <code>break *($rip+0x10)</code>)</li><li><code>info proc mappings</code> — 현재 프로세스의 메모리 맵(베이스 주소 확인)</li><li><code>info breakpoints</code> — 현재 걸린 브레이크포인트 목록과 실제 해석된 주소 확인</li><li><code>file target</code> — 스트립 여부 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>Breakpoint 1 at 0x401234</code>처럼 뜨면 정상적으로 그 주소에 브레이크포인트가 걸린 것이다.</li><li><code>info breakpoints</code> 결과에 <code>&lt;PENDING&gt;</code>이 보이면 해당 주소/심볼이 아직 유효하지 않다는 뜻이며, 대개 모듈이 아직 로드되지 않았거나 주소 계산이 틀렸을 때 나타난다.</li><li><code>No line 0x401234 in the current file.</code>은 별표를 빠뜨렸다는 신호이지, 주소 자체가 잘못됐다는 뜻이 아니다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>별표를 빠뜨리고 <code>break 0x401234</code>라고만 써서 "줄 번호로 브레이크포인트를 걸 수 없다"는 오류를 주소 자체 문제로 오해하는 것.</li><li>PIE 바이너리에서 IDA가 보여주는 오프셋을 베이스 주소 없이 그대로 <code>break *0xADDR</code>에 넣어서 엉뚱한 위치(혹은 매핑되지 않은 메모리)에 걸리는 것 — 결과적으로 브레이크포인트가 절대 히트되지 않는다.</li><li>스트립된 바이너리인 줄 모르고 함수 이름으로 계속 시도하며 시간을 낭비하는 것 — <code>file</code> 명령으로 미리 확인하는 습관이 필요하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>주소를 정확히 걸었는데도 안 멈춘다면 → PIE 베이스 계산이 맞는지 다시 확인한다(REV-0693 참고).</li><li>함수 이름 자체는 살아있는데도 안 걸린다면 → 동적 링킹된 함수라 아직 심볼이 해석 안 된 경우일 수 있다(REV-0696 참고).</li><li>여전히 <code>Cannot access memory at address</code> 오류가 뜬다면 → REV-0687을 참고해 메모리 접근 오류 원인을 좁힌다.</li></ul>
+<h2>미니 예제</h2>
+<pre><code>$ file target
+target: ELF 64-bit LSB pie executable, x86-64, ..., stripped
+
+(gdb) start
+Temporary breakpoint 1, 0x0000555555555139 in _start ()
+(gdb) info proc mappings
+...
+0x555555555000  0x555555556000  0x1000  0x0  r-xp   /path/target
+(gdb) break *0x555555555234
+Breakpoint 2 at 0x555555555234
+(gdb) continue</code></pre>
+<p>정적 분석에서 확인한 오프셋 <code>0x1234</code>에 베이스 <code>0x555555555000</code>을 더해 <code>0x555555555234</code>를 계산하고, 별표를 붙여 절대주소 브레이크포인트로 걸어서 스트립된 바이너리에서도 원하는 지점에 정확히 멈출 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0689-gdb-function-not-defined.html">REV-0689 — GDB에서 breakpoint를 걸었는데 Function not defined라고 할 때</a></li><li><a href="rev-0693-pie-breakpoint-address-mismatch.html">REV-0693 — PIE 바이너리에서 GDB 브레이크포인트 주소가 계속 안 맞을 때</a></li><li><a href="rev-0194-gdb-pie-breakpoints.html">REV-0194 — PIE 바이너리 GDB 브레이크포인트 잡기</a></li><li><a href="rev-0696-breakpoint-symbol-missing-dynamic.html">REV-0696 — 동적 링킹된 함수에 브레이크포인트가 심볼 없이는 안 걸릴 때</a></li><li><a href="rev-0186-gdb-break.html">REV-0186 — GDB break와 address breakpoint</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>break</code> 명령의 linespec 문법과 <code>*address</code> 표기: GNU GDB 공식 매뉴얼 "Setting Breakpoints" 섹션 기준.</li><li>스트립된 바이너리에서 심볼 조회 실패 동작: GNU GDB 공식 매뉴얼 및 binutils <code>strip</code> 문서 기준.</li><li>2026-09-09 검증.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -89,7 +89,7 @@ IDA에서는 이런 함수들이 서로 다른 주소의 별개 `sub_`로 보이
 ## 단계별 절차
 **1) 접미사가 붙은 심볼 모아보기 (Linux)**
 ```bash
-nm ./binary | grep -E '\.(constprop|isra|part|cold)\.' 
+nm ./binary | grep -E '\.(constprop|isra|part|cold)\.'
 objdump -d --demangle ./binary | grep '^[0-9a-f]* <.*\.(constprop|isra|part|cold)'
 ```
 

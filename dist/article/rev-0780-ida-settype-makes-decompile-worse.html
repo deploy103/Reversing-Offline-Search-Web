@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA에서 타입 지정 후 디컴파일이 더 이상해질 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA에서 타입 지정 후 디컴파일이 더 이상해질 때</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p><code>Y</code>로 타입을 지정한 직후부터 디컴파일 결과가 이상해졌다면, 원인을 헤매기 전에 <strong>가장 최근에 지정한 타입을 되돌려서(Undo) 정말 그 조작이 원인이었는지부터 확정</strong>하는 것이 먼저이며, 확정되면 그 다음은 증상 종류(인자 개수/반환 타입/구조체 오프셋 중 무엇이 꼬였는지)에 따라 각각의 전용 심화 문서로 넘어가는 것이 가장 빠르다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>함수 원형이나 구조체를 <code>Y</code>로 지정한 직후부터 Pseudocode가 이전보다 이상해졌는데, 정말 방금 한 조작 때문인지 확신이 안 설 때</li><li>구조체 타입 하나를 지정했는데 그 구조체를 쓰는 <strong>다른 함수들</strong>까지 줄줄이 이상해져서 어디서부터 손대야 할지 막막할 때</li><li>이미 <code>Reanalyze function</code>을 눌러버려서 되돌릴 수 없는 건 아닌지 불안할 때</li><li>앞으로 타입을 지정하기 전에 미리 검증해서 이런 상황 자체를 줄이고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Hex-Rays 디컴파일러는 사용자가 <code>Y</code>로 명시적인 타입/원형을 지정하면 <strong>그 정보를 절대적으로 신뢰</strong>하고 그에 맞춰 마이크로코드를 재구성한다. 즉 방금 지정한 타입이 실제 동작과 다르면 결과가 이상해지는 것은 디컴파일러의 오류가 아니라 "사용자가 준 잘못된 정보를 성실하게 반영한 결과"다. 이 글은 개별 원인(인자 개수, 반환 타입, 구조체 오프셋)을 깊이 파고들기보다, <strong>"방금 한 행동이 진짜 원인이 맞는지 확인하고, 안전하게 되돌리고, 올바른 다음 문서로 갈아타는" 절차 자체</strong>에 집중한다. 세부 원인별 진단 방법은 이미 별도 문서로 정리되어 있다.</p>
+<ul><li><strong>인자 개수/타입을 잘못 지정한 경우</strong> → REV-0795(함수 인자 개수를 디컴파일러가 잘못 추론했을 때)에서 다루는 것과 같은 증상(가짜 <code>a2</code>, <code>a3</code> 변수, 사라진 인자)이 나타난다.</li><li><strong>반환 타입을 잘못 지정한 경우</strong> → REV-0796(반환 타입을 디컴파일러가 잘못 추론했을 때)과 같은 증상(있지도 않은 반환값 사용 코드, 반대로 무시됨)이 나타난다.</li><li><strong>구조체 크기/오프셋을 잘못 지정한 경우</strong> → REV-0797(구조체 크기를 잘못 추정해서 오프셋이 꼬일 때)과 같은 증상(<code>field_18</code>이 범위 밖으로 나가거나 서로 다른 필드가 겹쳐 보임)이 나타난다.</li></ul>
+<p>여기서 중요한 차이는, 저 세 문서는 <strong>디컴파일러가 스스로 추론했다가 자동으로 틀린 경우</strong>까지 포함해서 다루지만, 이 글은 <strong>"방금 내가 직접 Y로 지정한 조작이 범인인지 아닌지조차 불확실한 상황"</strong>을 정리하는 진단 절차라는 점이다. 특히 구조체처럼 <strong>여러 함수가 공유하는 타입</strong>을 잘못 지정하면, 그 타입을 참조하는 모든 함수가 동시에 영향을 받으므로 피해 범위를 파악하는 것 자체가 별도의 작업이 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>타입을 지정한 함수 하나만 이상해진 게 아니라, 같은 구조체/타입을 쓰는 것으로 보이는 다른 함수들도 동시에 이상한 변수/필드 접근을 보이기 시작함.</li><li>Pseudocode 창을 오가며 "이게 방금 내가 만든 문제인지, 원래 있던 문제인지" 스스로도 헷갈리는 상태.</li><li><code>Ctrl+Z</code>를 누르면 되돌아갈 것 같긴 한데, 이미 여러 단계(타입 지정 → Reanalyze → 이름 변경)를 거쳐서 정확히 몇 번 되돌려야 할지 불확실함.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>지금 열려 있는 함수에서 <code>Ctrl+Z</code>를 눌러 가장 최근 조작부터 하나씩 되돌리면서, 어느 시점에 결과가 "정상으로 보이는 상태"로 돌아오는지 확인한다. 이 한 단계만으로도 원인이 방금 한 타입 지정인지 아닌지가 바로 갈린다.</p>
+<h2>단계별 절차</h2>
+<ol><li>문제가 생긴 함수에서 <code>Ctrl+Z</code>를 눌러 한 단계씩 되돌린다. 되돌릴 때마다 Pseudocode를 확인해 "이상한 변수/필드"가 사라지는 시점을 찾는다.</li><li>되돌렸을 때 정상으로 보인다면, 방금 지정한 타입이 원인이라는 것이 확정된 것이다. 이제 증상을 구체적으로 분류한다.</li></ol>
+<ul><li>인자 개수/타입이 문제였다면 → REV-0795의 절차대로 실제 호출부에서 레지스터/스택을 직접 세어 정확한 원형을 다시 만든다.</li><li>반환값 사용 여부가 이상하다면 → REV-0796의 절차대로 호출자 쪽에서 <code>eax</code>/<code>rax</code>를 실제로 읽는지부터 확인한다.</li><li>구조체 필드 접근이 이상하다면 → REV-0797의 절차대로 그 포인터에 대한 모든 오프셋 접근을 xref로 모아 실제 크기를 재구성한다.</li></ul>
+<ol><li>문제의 타입이 <strong>여러 함수가 공유하는 구조체/타입</strong>이었다면, 그 타입을 쓰는 다른 함수 목록부터 먼저 파악한다. Local Types 창(<code>Shift+F1</code>)에서 해당 구조체를 찾아 관련 정보를 확인하고, 그 타입으로 지정된 변수를 가진 함수들을 하나씩 열어 피해 범위를 확인한 뒤, REV-0797의 절차로 구조체를 다시 정의하고 나서 영향받은 함수들을 순서대로 <code>Reanalyze function</code> 한다.</li><li>이미 <code>Reanalyze function</code>을 여러 번 눌러서 Undo 이력이 애매해졌다면, 최후의 수단으로 그 함수의 타입을 <code>Y</code>에서 지우고(원형을 기본/미지정 상태로) 처음부터 다시 자동 추론을 시켜본 뒤, 자동 추론 결과와 지금 결과를 비교해서 무엇이 달라졌는지 확인한다.</li><li>다음번에 같은 상황을 줄이려면, 타입을 지정하기 전에 먼저 대상 함수를 호출하는 지점을 <code>X</code>로 찾아 실제 인자 개수/레지스터를 눈으로 확인하고, 구조체는 그 포인터에 대한 모든 접근 오프셋을 미리 나열해본 뒤 지정하는 "먼저 확인, 나중에 지정" 습관을 들인다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li><code>Ctrl+Z</code> : 실행 취소(원인 확정용 진단 도구로 활용)</li><li><code>Y</code> : 타입/원형 재지정</li><li><code>Shift+F1</code> : Local Types 창(공유 구조체의 영향 범위 확인)</li><li><code>X</code> : 실제 호출부로 이동해 인자/반환값 사용 여부 확인</li><li>함수 시작 주소 우클릭 → <code>Reanalyze function</code></li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>Ctrl+Z</code>로 되돌렸을 때 문제가 사라진다면 원인이 확정된 것이므로, 이제 증상별 전용 문서(REV-0795/0796/0797)로 넘어가면 된다.</li><li>되돌려도 문제가 그대로라면, 원인은 방금 한 타입 지정이 아니라 다른 곳(예: 원래부터 있던 자동 추론 오류)에 있다는 뜻이므로 REV-0795/0796/0797을 먼저 훑어 자동 추론 오류 패턴과 비교해본다.</li><li>여러 함수가 동시에 이상해졌다면 공유 타입(구조체) 문제일 가능성이 매우 높다 — 함수 하나만 고치고 끝내면 나머지 함수에서 같은 문제가 재발한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>방금 한 조작이 원인인지 확인도 안 하고 곧바로 REV-0795/0796/0797의 세부 절차부터 따라 하다가 엉뚱한 곳을 고치는 것 — 먼저 Undo로 원인부터 확정해야 한다.</li><li>공유 구조체를 고쳤는데 그 구조체를 쓰는 다른 함수들을 재확인하지 않고 "이 함수 하나만 고치면 끝"이라고 생각하는 것.</li><li>Undo 이력이 꼬였다고 포기하고 타입을 아예 기본 상태로 초기화하지 않은 채 계속 새로운 타입을 덧씌우며 문제를 키우는 것.</li><li>타입을 지정하기 전에 실제 호출부/오프셋을 확인하는 습관 없이 "일단 지정해보고 이상하면 그때 고치자"는 식으로 반복 시행착오만 하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>인자 개수/원형 자체가 문제라면 → REV-0795 함수 인자 개수를 디컴파일러가 잘못 추론했을 때</li><li>반환 타입이 문제라면 → REV-0796 반환 타입을 디컴파일러가 잘못 추론했을 때</li><li>구조체 오프셋이 문제라면 → REV-0797 구조체 크기를 잘못 추정해서 오프셋이 꼬일 때</li><li>타입 지정 기본 사용법이 헷갈린다면 → REV-0148 IDA Y로 타입 지정하기</li></ul>
+<h2>미니 예제</h2>
+<p>공용 구조체 <code>PACKET</code>을 하나 정의해서 여러 함수의 인자 타입으로 지정했는데, 그중 <code>parse_header</code> 함수의 Pseudocode가 갑자기 이상해진 상황.</p>
+<pre><code class="language-text">1. parse_header에서 Ctrl+Z를 눌러 되돌려보니 PACKET 타입을 씌우기 전 상태에서는 정상적으로 보임 → 방금 한 구조체 지정이 원인으로 확정
+2. Shift+F1(Local Types)에서 PACKET을 참조하는 다른 함수를 확인 → parse_body, parse_footer도 같은 구조체를 씀
+3. parse_body를 열어보니 마찬가지로 필드 접근이 이상함을 확인(피해 범위가 이 구조체를 쓰는 함수 전체임을 확인)
+4. REV-0797 절차대로 PACKET을 쓰는 모든 함수에서 오프셋 접근을 xref로 모아 실제 필드 크기를 재구성
+5. PACKET 정의를 수정한 뒤 parse_header, parse_body, parse_footer를 순서대로 Reanalyze function</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0795-wrong-argument-count.html">REV-0795 — 함수 인자 개수를 디컴파일러가 잘못 추론했을 때</a></li><li><a href="rev-0796-wrong-return-type.html">REV-0796 — 반환 타입을 디컴파일러가 잘못 추론했을 때</a></li><li><a href="rev-0797-wrong-struct-size-offset.html">REV-0797 — 구조체 크기를 잘못 추정해서 오프셋이 꼬일 때</a></li><li><a href="rev-0148-ida-set-type.html">REV-0148 — IDA Y로 타입 지정하기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Hex-Rays 디컴파일러가 사용자가 지정한 타입/원형을 그대로 신뢰하여 마이크로코드를 재구성한다는 동작 방식: Hex-Rays 공식 사용자 가이드 "Type information" 및 "Function signature" 섹션 기준.</li><li>Local Types(공유 타입 라이브러리)가 여러 함수에 동시에 영향을 준다는 구조: Hex-Rays 공식 문서 "Local types" 섹션 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

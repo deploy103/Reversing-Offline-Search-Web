@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IRET와 IRETD: 인터럽트 반환 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>IRET와 IRETD: 인터럽트 반환</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>IRET</code>/<code>IRETD</code>(그리고 64비트의 <code>IRETQ</code>)는 인터럽트나 예외 처리 루틴의 마지막에 실행되어, 스택에서 명령어 포인터·코드 세그먼트·플래그 레지스터를 한꺼번에 복원함으로써 인터럽트 발생 직전의 실행 상태로 완전히 되돌아가는 명령어다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>인터럽트 서비스 루틴(ISR), 예외 핸들러, OS 커널/드라이버 코드에서 <code>iret</code>, <code>iretd</code>를 만났을 때</li><li><a href="rev-0414-retf.html"><code>RETF</code></a>(REV-0414)와 <code>IRET</code>가 비슷해 보이는데 정확히 무엇이 다른지 궁금할 때</li><li>안티 디버깅 코드에서 TF(Trap Flag)를 다루는데 <code>iret</code>이 관련되어 있을 때</li><li>커널 익스플로잇/CTF 문제에서 "가짜 인터럽트 스택 프레임을 만들어 iret으로 유저 모드에 복귀"하는 기법을 분석할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>IRET     ; 16비트: IP, CS, FLAGS를 POP
+IRETD    ; 32비트: EIP, CS, EFLAGS를 POP
+IRETQ    ; 64비트: RIP, CS, RFLAGS를 POP (경우에 따라 RSP, SS까지)</code></pre>
+<p>셋 다 오퍼랜드가 없다 — 니모닉 자체가 오퍼랜드 크기를 나타낸다(어셈블러에 따라 그냥 <code>IRET</code>으로 쓰고 모드에 맞게 자동으로 크기가 결정되기도 한다).</p>
+<h3>실제로 하는 일 — RETF보다 한 단계 더 복원</h3>
+<p><a href="rev-0414-retf.html"><code>RETF</code></a>가 CS와 IP(오프셋) 두 가지만 스택에서 복원하는 반면, <code>IRET</code>/<code>IRETD</code>는 <strong>여기에 더해 FLAGS/EFLAGS까지 통째로 복원</strong>한다:</p>
+<pre><code>IRET (16비트) 스택에서 POP하는 순서:
+  1. IP
+  2. CS
+  3. FLAGS
+
+IRETD (32비트):
+  1. EIP
+  2. CS
+  3. EFLAGS
+
+IRETQ (64비트, long mode):
+  1. RIP
+  2. CS
+  3. RFLAGS
+  (권한 레벨이 바뀌는 인터럽트라면 추가로) 4. RSP  5. SS</code></pre>
+<p>64비트 모드에서는 인터럽트/예외가 발생할 때 CPU가 항상 <strong>SS:RSP까지 포함한 전체 프레임</strong>을 스택에 저장하도록 설계되어 있어서(특권 레벨이 안 바뀌는 경우에도 마찬가지로 취급되는 구현이 많음), <code>IRETQ</code>는 상황에 따라 5개 항목 모두를 복원할 수 있다.</p>
+<h3>하드웨어 예외의 에러 코드 처리 — 잊기 쉬운 함정</h3>
+<p>일부 예외(<code>#GP</code>, <code>#PF</code>, <code>#DF</code> 등)는 CPU가 인터럽트 프레임을 만들 때 <strong>에러 코드(error code)를 추가로 스택에 push</strong>한다. 이 에러 코드는 <code>IRET</code>이 자동으로 처리해주지 않으므로, 핸들러는 <code>IRET</code>을 실행하기 <strong>직전에 반드시 <code>add rsp, 8</code>(또는 해당 크기만큼) 같은 명령으로 에러 코드를 수동으로 버려야 한다.</strong> 이걸 빠뜨리면 <code>IRET</code>이 엉뚱한 값을 RIP/CS/RFLAGS로 잘못 해석해서 곧바로 크래시(대개 <code>#GP</code> 또는 <code>#UD</code> 연쇄 발생)로 이어진다.</p>
+<h3>플래그 변화</h3>
+<p><code>IRET</code>은 목적 자체가 "플래그를 포함해 실행 상태 전체를 복원"하는 것이므로, <strong>거의 모든 플래그(CF, ZF, SF, OF, TF, IF, DF 등)가 스택에 있던 값으로 완전히 교체</strong>된다. 이 점이 <code>RETF</code>(플래그를 전혀 안 건드림)와의 결정적 차이이며, <code>IRET</code> 자체는 "일부 플래그만 세팅하는" 일반 산술 명령어들과는 근본적으로 다른 특수 명령어다.</p>
+<h3>signed/unsigned 관점</h3>
+<p>해당 없음 — 실행 컨텍스트 복원 명령어다.</p>
+<h3>스택/RSP 변화</h3>
+<p>인터럽트 진입 시 CPU가 자동으로 쌓아둔 프레임을 그대로 되돌리는 것이므로, <code>IRET</code> 실행 후 RSP는 인터럽트가 발생하기 직전 값으로 정확히 복귀한다(에러 코드를 미리 정리했다는 전제하에).</p>
+<h3>사용 위치 — 커널 모드 전용</h3>
+<p><code>IRET</code>은 사실상 <strong>인터럽트 서비스 루틴(ISR), CPU 예외 핸들러, 하이퍼바이저, 부트로더의 저수준 코드</strong>에서만 나타난다. 일반 사용자 모드 애플리케이션 코드에는 절대 등장하지 않는다 — 애초에 유저 모드 코드는 인터럽트를 직접 다루지 않으며, 부적절한 상황에서 <code>IRET</code>을 실행하면 권한 검사에 걸려 <code>#GP</code> 예외가 발생한다.</p>
+<h3>컴파일러 패턴</h3>
+<p>C 컴파일러가 일반 애플리케이션 코드에서 <code>IRET</code>을 생성하는 일은 없다. OS 커널/드라이버 소스에서 <code>__declspec(naked)</code> 인터럽트 핸들러나 어셈블리로 직접 작성된 ISR의 맨 끝에서만 나타난다.</p>
+<h3>IDA/Ghidra에서 보이는 형태</h3>
+<p><code>iretd</code>/<code>iretq</code> 그대로 표시된다. 이 명령어가 있는 함수는 Hex-Rays가 일반 함수처럼 디컴파일하지 못하는 경우가 많다(반환 방식 자체가 표준 호출 규약과 다르기 때문) — 어셈블리 원문으로 스택 프레임을 직접 추적하는 것이 정확하다.</p>
+<h3>리버싱 의미</h3>
+<ul><li><strong>커널/드라이버 리버싱</strong>: <code>iret</code>은 IDT(Interrupt Descriptor Table)에 등록된 핸들러의 끝을 표시하는 강한 신호다. 핸들러 시작부터 <code>iret</code>까지의 코드가 하나의 완결된 인터럽트 처리 로직이다.</li><li><strong>커널 익스플로잇/CTF</strong>: 커널 취약점을 이용해 임의 코드 실행에 성공한 뒤, 다시 안전하게 유저 모드로 복귀하기 위해 <strong>가짜 인터럽트 스택 프레임(SS, RSP, RFLAGS, CS, RIP를 원하는 값으로 손수 구성)을 만들고 <code>iretq</code>를 실행</strong>해서 유저 모드 셸로 복귀하는 것이 커널 익스플로잇의 정석적인 마무리 기법("iret to user mode")이다.</li><li><strong>안티 디버깅/플래그 조작</strong>: <code>IRET</code>이 TF(Trap Flag)까지 복원한다는 점을 이용해, 인터럽트 핸들러가 의도적으로 조작된 FLAGS 값을 스택에 심어두고 <code>IRET</code>으로 복귀시켜 싱글 스텝 상태를 강제로 켜거나 끄는 저수준 트릭도 존재한다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>ISR/예외 핸들러의 맨 끝에 위치한 <code>iretd</code>/<code>iretq</code></li><li><code>iret</code> 직전의 <code>add rsp, 8</code> — 하드웨어가 push한 에러 코드를 수동으로 버리는 코드(#GP, #PF 등 처리기에서 흔함)</li><li>커널 익스플로잇 코드에서 <code>push ss; push rsp; pushfq; push cs; push 목적지; iretq</code> 형태로 유저 모드 복귀 프레임을 손수 구성하는 패턴</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>이 함수가 IDT에 등록된 인터럽트/예외 핸들러인지(진입점 이름, 주변 참조) 확인한다.</li><li><code>iret</code> 직전에 에러 코드를 정리하는 <code>add rsp, N</code>이 있는지 확인한다 — 있다면 이 예외가 하드웨어 에러 코드를 동반하는 종류(#GP, #PF, #DF 등)임을 알 수 있다.</li><li>스택에 최종적으로 남는 값들이 IP/CS/FLAGS(그리고 필요시 RSP/SS) 순서로 올바르게 구성되어 있는지 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 기본 ISR 패턴</strong></p>
+<pre><code class="language-asm">my_isr:
+    pushad                  ; 레지스터 보존 (REV-0412 참고)
+    ; ... 인터럽트 처리 ...
+    popad                    ; 레지스터 복원
+    iretd                     ; EIP, CS, EFLAGS 복원 후 원래 실행 지점으로 복귀</code></pre>
+<p><strong>2) 에러 코드가 있는 예외 핸들러 (예: #GP)</strong></p>
+<pre><code class="language-asm">gp_fault_handler:
+    ; 스택: [에러코드][EIP][CS][EFLAGS] (하드웨어가 자동으로 push)
+    ; ... 에러코드를 이용한 처리 ...
+    add   esp, 4              ; 에러 코드 버리기 (필수!)
+    iretd                      ; 이제 스택 최상단이 EIP이므로 정상 복귀</code></pre>
+<p><strong>3) 커널 익스플로잇의 "iret to user mode" 패턴</strong></p>
+<pre><code class="language-asm">; 커널 컨텍스트에서 유저 모드로 안전하게 복귀
+push  user_ss
+push  user_rsp
+pushfq
+push  user_cs
+push  user_rip
+iretq                          ; 5개 값을 한 번에 로드하며 유저 모드로 전환</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>WinDbg/GDB(커널 디버깅): 인터럽트 핸들러 진입/종료 지점에 브레이크포인트를 걸어 <code>iret</code> 실행 전 스택 프레임(IP/CS/FLAGS 등)을 직접 덤프해서 확인</li><li>IDA: IDT 관련 심볼(<code>KiInterruptDispatch</code> 계열 등, 커널 이미지 분석 시)을 통해 ISR 경계를 먼저 파악한 뒤 <code>iret</code> 위치를 추적</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>iret</code> 실행 직전 스택 최상단이 항상 IP/EIP/RIP여야 한다 — 만약 그 위치에 엉뚱한 값(정리 안 된 에러 코드 등)이 남아있다면 실행이 잘못된 주소로 튀며 크래시로 이어진다.</li><li><code>iret</code> 실행 후 FLAGS/EFLAGS/RFLAGS가 인터럽트 발생 직전 값과 동일해야 정상이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>IRET</code>을 <code>RETF</code>와 같은 것으로 착각하는 것 — <code>IRET</code>은 CS/IP에 더해 FLAGS까지(그리고 상황에 따라 RSP/SS까지) 복원하므로 스택에서 꺼내는 항목 수가 다르다.</li><li>에러 코드를 동반하는 예외 핸들러에서 <code>iret</code> 전에 에러 코드를 정리하는 <code>add rsp, N</code>을 빠뜨리는 것 — 이는 실제 커널 프로그래밍에서도 매우 흔한 치명적 버그다.</li><li><code>IRET</code>을 유저 모드 애플리케이션 코드에서도 볼 수 있다고 가정하는 것 — 정상적인 유저 모드 코드에는 절대 나타나지 않으며, 나타난다면 커널/드라이버 코드이거나 특수한(익스플로잇 등) 상황이다.</li><li><code>IRET</code>이 복원하는 FLAGS 값에 따라 TF(싱글 스텝)나 IF(인터럽트 허용)가 바뀔 수 있다는 것을 간과해서, <code>iret</code> 직후 디버거의 동작(예상치 못한 싱글 스텝 예외 발생 등)이 이상해 보이는 것을 이해하지 못하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>iret</code> 실행 직후 크래시가 난다면 → 직전에 에러 코드를 정리하는 <code>add rsp, N</code>이 빠졌는지, 스택에 남은 값들의 순서가 IP/CS/FLAGS(순)로 맞는지 확인한다.</li><li>이 코드가 왜 유저 모드가 아닌 곳에 있는지 궁금하면 → IDT 등록 여부, 함수가 커널 이미지(ntoskrnl.exe, vmlinux 등) 소속인지 확인한다.</li><li>커널 익스플로잇 코드를 분석 중인데 <code>iretq</code> 앞에 5개의 <code>push</code>가 있다면 → 이는 "가짜 인터럽트 프레임을 만들어 유저 모드로 복귀"하는 표준 마무리 기법이므로, 각 push 값(SS, RSP, RFLAGS, CS, RIP)이 무엇을 가리키는지 하나씩 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 기본 ISR</strong></p>
+<pre><code class="language-asm">timer_isr:
+    pushad
+    call  handle_timer_tick
+    popad
+    iretd</code></pre>
+<p><strong>예제 2 — 에러 코드가 있는 예외 핸들러</strong></p>
+<pre><code class="language-asm">page_fault_handler:
+    ; 스택: [error_code][eip][cs][eflags]
+    push  eax
+    mov   eax, [esp+4]      ; error_code 읽기
+    call  log_page_fault
+    pop   eax
+    add   esp, 4              ; error_code 정리 (필수)
+    iretd</code></pre>
+<p><strong>예제 3 — 커널 익스플로잇의 iret to user mode</strong></p>
+<pre><code class="language-asm">; RIP=shellcode_addr, CS=user_cs, RFLAGS=원하는 플래그,
+; RSP=user_stack, SS=user_ss로 유저 모드 복귀
+push  user_ss
+push  user_stack
+push  0202h              ; 원하는 RFLAGS (IF 세팅 등)
+push  user_cs
+push  shellcode_addr
+iretq</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0414-retf.html">REV-0414 — RETF: Far 반환</a></li><li><a href="rev-0413-far-call-jmp.html">REV-0413 — 원거리(Far) CALL과 JMP 기초</a></li><li><a href="rev-0411-pusha-popa.html">REV-0411 — PUSHA와 POPA: 레거시 32비트 일괄 저장/복원</a></li><li><a href="rev-0412-pushad-popad.html">REV-0412 — PUSHAD와 POPAD 차이</a></li><li><a href="rev-0046-pushf-popf.html">REV-0046 — PUSHF와 POPF: 플래그 저장과 복원</a></li><li><a href="rev-0079-int-0x80.html">REV-0079 — INT와 INT 0x80: 인터럽트 기반 시스템 콜</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>IRET/IRETD/IRETQ 명령어의 스택 복원 순서(IP/EIP/RIP, CS, FLAGS/EFLAGS/RFLAGS, 권한 전환 시 RSP/SS 포함), 하드웨어 예외의 에러 코드 처리: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "IRET/IRETD—Interrupt Return" 섹션 및 Volume 3A "Interrupt and Exception Handling" 챕터 기준 (2026-09-08 검증).</li><li>커널 익스플로잇의 "iret to user mode" 복귀 기법: 다수의 공개 커널 익스플로잇/CTF 문서 및 리버싱 교육 자료에서 공통적으로 설명하는 관찰된 실무 기법.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

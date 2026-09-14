@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>인라인된 함수 때문에 원래 함수 경계를 못 찾을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>인라인된 함수 때문에 원래 함수 경계를 못 찾을 때</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>컴파일러 최적화(<code>-O2</code> 이상)는 짧고 자주 불리는 함수를 CALL/RET 오버헤드 없이 호출부 코드 안에 그대로 복사해 넣는 <strong>인라이닝(inlining)</strong>을 적용하며, 이 경우 그 헬퍼 함수는 아예 독립된 함수로 존재하지 않고(심볼도, CALL도 없음) 여러 호출부에 똑같거나 비슷한 코드 블록이 반복되어 나타나므로, "이 로직을 처리하는 함수를 찾자"는 접근 대신 반복되는 코드 패턴 자체를 식별해서 그 부분만 별도 로직으로 이해하는 방식으로 전환해야 한다 — 이는 REV-0154(함수 경계가 잘못 잡힘)와 달리 애초에 그 경계가 "존재하지 않는" 경우다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>서로 다른 두 함수의 pseudocode 안에서 거의 동일한 코드 블록(예: 문자열 길이 계산, 간단한 체크섬 계산)이 CALL 없이 반복해서 나타날 때</li><li>소스에 분명히 있을 법한 짧은 헬퍼 함수(<code>is_valid_char</code>, <code>min</code>, <code>clamp</code> 등)의 이름이 Functions 창 어디에도 없을 때</li><li>FLIRT/FunctionID로 라이브러리 함수를 찾으려 했는데(REV-0804) 매칭이 실패하는 이유가 애초에 그 함수가 통째로 인라인되어 독립된 코드 블록 자체가 없기 때문일 때</li><li>함수 경계 문제(REV-0154)의 해결 절차를 다 시도했는데도 "잘라낼 CALL도, 나눌 지점도" 안 보일 때</li></ul>
+<h2>핵심 개념</h2>
+<p>컴파일러가 함수를 인라인하면, 그 함수의 코드(명령어들)는 호출자의 코드 흐름 안으로 그대로 복사되고, 원래의 CALL/RET 쌍은 사라진다. 이는 REV-0154에서 다루는 "함수 경계가 잘못 잡힌 것"과는 근본적으로 다르다 — 그쪽은 실제 함수 시작/끝이 존재하는데 디스어셈블러가 그 위치를 잘못 판단한 경우이고, 인라이닝은 <strong>애초에 독립된 함수 경계 자체가 바이너리에 존재하지 않는</strong> 경우다. 즉 "잘못 잡힌 경계를 바로잡는 것"이 아니라 "원래 없는 경계를 억지로 만들려고 하면 안 되는 것"이다.</p>
+<p>인라이닝이 자주 일어나는 조건:</p>
+<ul><li>함수 본문이 매우 짧을 때(몇 줄 이내)</li><li>컴파일러가 자주 호출되는 함수라고 판단했을 때(핫패스 최적화)</li><li><code>static inline</code>으로 선언되었거나 헤더에 정의된 짧은 함수(C++ 클래스의 getter/setter, 연산자 오버로드 등)</li><li>링크 타임 최적화(LTO)가 켜져 있어 여러 파일에 걸친 인라이닝까지 가능한 경우(REV-0800과 연관)</li></ul>
+<p>인라인된 코드는 원래 함수 하나였다는 흔적(반복되는 명령어 시퀀스)은 남아 있지만, 심볼도 CALL도 없으므로 IDA/Ghidra의 Functions 창에는 절대 별도 항목으로 나타나지 않는다. FLIRT 시그니처도 "이 위치에서 이 크기만큼의 코드가 시작해서 끝난다"는 함수 단위 매칭을 전제로 하므로, 함수 경계 자체가 없는 인라인 코드에는 적용되지 않는다(REV-0804).</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>서로 무관해 보이는 두 함수의 pseudocode 앞부분(또는 특정 구간)이 변수 이름만 다르고 로직 구조가 완전히 동일함</li><li>짧은 루프(예: 널 종료 문자열 길이를 세는 <code>while(*p) p++, len++;</code> 패턴)가 CALL 없이 여러 곳에 그대로 등장함</li><li>그 코드 블록 근처에 진입/탈출을 알리는 프롤로그/에필로그(스택 프레임 셋업)가 없음 — 인라인된 코드는 호출자의 스택 프레임을 그대로 씀</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>반복되는 것으로 의심되는 코드 블록을 2~3곳에서 나란히 비교해서, 정말 동일한 로직인지(변수 이름/오프셋만 다를 뿐 명령어 구조가 같은지) 확인한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 반복 패턴 확인</strong> 의심되는 코드 블록을 서로 다른 함수에서 최소 2곳 이상 찾아 나란히 놓고 비교한다. 명령어 종류와 순서, 분기 구조가 같다면 인라인된 동일 헬퍼 함수일 가능성이 높다.</p>
+<p><strong>2) CALL/RET 유무로 인라이닝 여부 확정</strong> 그 블록 진입/탈출 지점에 CALL이 없고, 그 블록 실행 전후로 스택 프레임이 별도로 생성되지 않는다면(호출자의 로컬 변수 영역을 그대로 공유한다면) 인라인된 것이 확실하다. CALL이 있다면 이는 REV-0154(함수 경계 문제) 쪽이지 인라이닝이 아니다.</p>
+<p><strong>3) 억지로 함수로 분리하지 않기</strong> 인라인된 코드는 실제로 독립된 함수가 아니므로, 무리하게 <code>P</code>(Create function)로 별도 함수를 만들려고 하면 오히려 스택 프레임 분석이 꼬인다. 대신 그 코드 블록 전체를 주석이나 그룹으로 묶어 "이 부분은 strlen 계산에 해당함"처럼 표시만 해둔다.</p>
+<p><strong>4) 알려진 라이브러리 함수 패턴과 대조</strong> <code>strlen</code>, <code>memcpy</code>, <code>strcmp</code> 같은 흔한 함수는 컴파일러별로 잘 알려진 인라인 코드 패턴(이 저장소의 REV-0449 strlen 인라인 패턴 등)이 있다. 이런 패턴 목록과 대조하면 "이 블록이 사실은 strlen이다"처럼 정체를 빠르게 특정할 수 있다.</p>
+<p><strong>5) 반복되는 각 위치에 동일한 주석/이름 규칙 적용</strong> 같은 헬퍼가 여러 곳에 인라인되어 있다면, 각 위치에 일관된 주석("inlined: is_printable_char")을 남겨 다음에 다시 분석하지 않도록 한다.</p>
+<p><strong>6) 함수 경계 문제와 계속 헷갈리면</strong> REV-0154의 진단 절차(진짜 경계 오류 vs 정상 구조 구분)를 먼저 다시 밟아, 이게 "잘못 잡힌 경계"가 아니라 "원래 없는 경계"임을 확정한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>코드 비교: 두 pseudocode 창을 나란히 띄우고(Windows → New window) 수동 비교</li><li>IDA: 우클릭 → Add comment 로 인라인 블록에 주석 남기기</li><li>Ghidra: Function Comparison 창(Window → Function Comparison, 버전에 따라 위치 다름)으로 두 코드 블록의 유사도 시각적 비교</li></ul>
+<h2>출력 해석</h2>
+<ul><li>두 블록이 명령어 순서까지 완전히 동일하면 확실한 인라이닝이고, 일부만 비슷하면 컴파일러가 우연히 비슷한 코드를 생성한 것일 수 있으니 신중히 판단한다.</li><li>FLIRT를 적용했는데도 흔한 라이브러리 함수 이름이 하나도 안 붙는다면, strip이 아니라 애초에 통째로 인라인되어 함수 단위 매칭 대상 자체가 없는 경우일 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>인라인된 코드를 억지로 별도 함수로 쪼개려다 스택 프레임 분석을 망가뜨리는 것.</li><li>반복되는 코드 블록을 각각 독립적인 로직으로 착각해서 매번 처음부터 다시 분석하는 것 — 한 번 정체를 파악하면 나머지는 "같은 패턴"이라고 표시만 하면 된다.</li><li>REV-0154(함수 경계 오류)와 이 문제를 혼동해서 "함수를 재생성"하는 절차만 반복 시도하는 것.</li><li>짧은 코드 블록이라고 무시하고 넘어갔다가, 사실 그 안에 핵심 검증 로직(인라인된 비교 함수)이 들어있는 것을 놓치는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>실제로 함수 경계가 잘못 잡힌 것인지 먼저 구분하고 싶다면 → REV-0154</li><li>여러 컴파일 단위가 합쳐지는 LTO 환경이라 인라이닝 범위가 더 넓다면 → REV-0800</li><li>FLIRT 매칭이 안 되는 이유가 이것 때문인지 확인하려면 → REV-0804</li><li>strlen 인라인 패턴 같은 구체적 예시가 필요하면 → REV-0449</li></ul>
+<h2>미니 예제</h2>
+<p><code>check_flag</code>와 <code>check_password</code>라는 이름 있는 두 함수의 pseudocode 앞부분에, <code>for (i = 0; s[i]; i++);</code> 형태의 동일한 루프가 변수 이름만 다르게(<code>s</code>/<code>i</code> 대신 <code>buf</code>/<code>idx</code>) 반복되어 나온다고 하자. 두 함수 어디에도 <code>strlen</code> 호출은 없다. 이는 <code>strlen</code>이 컴파일러에 의해 두 곳 모두에 인라인되었기 때문이다. 이 경우 별도로 <code>strlen</code> 함수를 찾으려 하지 말고, 그 루프 블록에 "inlined strlen"이라는 주석만 남기고 각 함수의 나머지 진짜 로직(플래그 검증 부분)에 집중한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0154-ida-wrong-function-boundary.html">REV-0154 — IDA에서 함수 경계가 잘못 잡혔을 때</a></li><li><a href="rev-0800-lto-merged-compilation-units.html">REV-0800 — 여러 컴파일 단위가 하나로 합쳐져 함수가 너무 많을 때(LTO)</a></li><li><a href="rev-0804-flirt-signature-mismatch.html">REV-0804 — FLIRT 시그니처가 안 맞아서 라이브러리 함수를 놓칠 때</a></li><li><a href="rev-0449-strlen-inline-pattern.html">REV-0449 — strlen이 인라인 최적화되는 패턴</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>함수 인라이닝(inline expansion)이 컴파일러 최적화 단계에서 CALL/RET 오버헤드를 제거하기 위해 적용된다는 것은 GCC/Clang/MSVC 공식 최적화 문서에서 공통적으로 설명하는 표준 최적화 기법이다.</li><li>FLIRT가 함수 단위의 코드 패턴 매칭을 전제로 하며, 인라인되어 함수 경계가 사라진 코드에는 적용되지 않는다는 점은 Hex-Rays 공식 문서("FLIRT technology")의 동작 원리에 근거한 논리적 귀결이다.</li><li>이 글은 2026-09-09 기준으로 작성되었다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

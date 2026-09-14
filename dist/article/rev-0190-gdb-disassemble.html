@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GDB disassemble와 현재 RIP 주변 보기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>GDB disassemble와 현재 RIP 주변 보기</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>disassemble</code>(줄여서 <code>disas</code>)은 함수 전체나 지정한 주소 범위를 어셈블리 명령어 목록으로 보여주는 GDB 명령으로, <code>disas</code>만 치면 현재 <code>$rip</code>가 속한 함수 전체를, <code>disas $rip,+20</code>처럼 쓰면 현재 위치부터 20바이트 범위만 보여주며, 화살표(<code>=&gt;</code>)로 지금 실행 중인 명령어 위치를 항상 표시해준다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>지금 멈춰있는 함수 전체의 어셈블리 코드를 한눈에 보고 싶을 때</li><li>함수 전체를 다 보기엔 너무 길어서, 현재 위치 주변 몇십 바이트만 짧게 보고 싶을 때</li><li>GDB가 보여주는 어셈블리 문법이 IDA/objdump와 다르게 생겨서(AT&amp;T 문법) 혼란스러울 때</li><li><code>disas</code>로 본 코드에서 지금 실행 중인 명령어가 어디인지 못 찾겠을 때</li><li>함수 이름 없이 특정 주소 범위만 디스어셈블하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>인자 없는 <code>disassemble</code> — 현재 함수 전체</h3>
+<p>그냥 <code>disas</code>를 치면 현재 <code>$rip</code>가 속한 함수 전체를 처음부터 끝까지 디스어셈블해서 보여준다. 함수가 아주 크지 않다면 가장 직관적인 방법이다.</p>
+<h3>함수 이름을 지정하기</h3>
+<pre><code class="language-gdb">disas main
+disas check_password</code></pre>
+<p>현재 멈춘 위치와 상관없이 원하는 함수를 지정해서 볼 수 있다. 실행 중이 아니어도(즉 <code>run</code>/<code>start</code> 전에도) 정적으로 디스어셈블이 가능하다 — 다만 이 경우 PIE 바이너리라면 표시되는 주소가 실제 런타임 주소가 아니라 링크 타임 기준 주소(대개 베이스 0으로 가정한 값)일 수 있다는 점을 기억해야 한다(REV-0194 참고).</p>
+<h3>범위를 직접 지정하기 — <code>START,END</code>와 <code>START,+LENGTH</code></h3>
+<p>함수 전체가 너무 길 때는 범위를 좁혀서 볼 수 있다.</p>
+<pre><code class="language-gdb">disas 0x401234,0x401260      # 시작 주소부터 끝 주소까지
+disas $rip,+20               # 현재 위치부터 20바이트만
+disas $rip-10,$rip+10        # 현재 위치 앞뒤로</code></pre>
+<p><code>+길이</code> 문법이 특히 실전에서 자주 쓰인다 — "지금부터 딱 몇 바이트만 빠르게 보고 싶다"는 상황에 정확히 맞는다.</p>
+<h3>지금 실행 중인 명령어 표시 — <code>=&gt;</code> 화살표</h3>
+<p><code>disassemble</code>은 함수 안에 <code>$rip</code>가 포함되어 있으면(즉 지금 그 함수 안에서 멈춰있으면) 그 줄 앞에 <code>=&gt;</code> 화살표를 붙여서 표시해준다. 함수가 길어도 이 화살표만 찾으면 지금 어디에 있는지 바로 알 수 있다. <code>$rip</code>가 그 함수 안에 없다면(예: <code>disas main</code>을 다른 함수 안에서 멈춘 채 조회) 화살표 없이 그냥 코드만 보여준다.</p>
+<h3>AT&amp;T 문법 vs Intel 문법</h3>
+<p>GDB의 기본 어셈블리 출력은 <strong>AT&amp;T 문법</strong>이다. 이는 IDA, Ghidra, objdump(기본 상태 기준)가 흔히 쓰는 <strong>Intel 문법</strong>과 표기 순서가 반대다.</p>
+<ul><li>AT&amp;T: <code>mov %rax, %rbx</code> — 오퍼랜드 순서가 "출발지, 목적지"</li><li>Intel: <code>mov rbx, rax</code> — 오퍼랜드 순서가 "목적지, 출발지"</li></ul>
+<p>또한 AT&amp;T는 레지스터에 <code>%</code>, 즉시값에 <code>$</code>를 붙이고 메모리 참조를 <code>-0x4(%rbp)</code>처럼 쓰는 반면, Intel은 <code>[rbp-0x4]</code>처럼 대괄호를 쓴다. IDA에 익숙한 사람이 GDB의 기본 출력을 보면 오퍼랜드 순서가 뒤바뀐 것처럼 느껴져 헷갈리기 쉽다. 다행히 GDB에서 손쉽게 전환할 수 있다.</p>
+<pre><code class="language-gdb">set disassembly-flavor intel</code></pre>
+<p>이 한 줄이면 이후 모든 <code>disas</code>, <code>x/i</code> 출력이 IDA와 동일한 Intel 문법(<code>mov rbx, rax</code>, <code>[rbp-0x4]</code>)으로 나온다. <code>~/.gdbinit</code>에 이 줄을 추가해두면 GDB를 켤 때마다 자동으로 적용된다. Pwndbg는 기본적으로 Intel 문법을 쓰도록 설정돼 있는 경우가 많다.</p>
+<h3>원본 바이트/소스 코드 함께 보기 — <code>/r</code>, <code>/s</code>, <code>/m</code></h3>
+<p><code>disassemble</code> 뒤에 슬래시 옵션을 붙이면 추가 정보를 함께 볼 수 있다.</p>
+<pre><code class="language-gdb">disas /r main     # 각 명령어의 raw 기계어 바이트도 함께 표시
+disas /s main     # 소스 코드가 있다면 소스 줄과 섞어서 표시(최신 방식)
+disas /m main     # 소스 줄 기준으로 정렬해서 표시(예전 방식, 최적화 코드에서 순서가 꼬일 수 있음)</code></pre>
+<p><code>/r</code>은 패치할 바이트 오프셋을 확인하거나, 특정 명령어가 몇 바이트짜리인지 셀 때 유용하다. <code>/s</code>는 소스와 어셈블리를 대응시켜 이해할 때 좋다.</p>
+<h3><code>x/Ni $rip</code>와의 차이</h3>
+<p>REV-0189에서 다룬 <code>x/3i $rip</code>도 명령어를 디스어셈블해서 보여주지만, <code>disassemble</code>과의 차이는 다음과 같다.</p>
+<ul><li><code>x/Ni</code>: 정해진 개수만큼 명령어를 나열. 함수 경계 개념이 없다.</li><li><code>disassemble</code>: 기본적으로 함수 단위, 또는 명시한 주소 범위 단위로 보여주며, 현재 위치를 <code>=&gt;</code>로 강조해준다.</li></ul>
+<p>빠르게 몇 줄만 보고 싶으면 <code>x/Ni $rip</code>, 함수 전체 흐름이나 정확한 범위를 보고 싶으면 <code>disassemble</code>을 쓰는 식으로 구분해서 쓰면 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>disas</code>를 쳤는데 오퍼랜드 순서가 IDA와 반대로 보이는 것(AT&amp;T 문법 기본값)</li><li><code>=&gt;</code> 화살표가 붙은 줄이 지금 <code>$rip</code> 위치라는 것을 알고 있어야 브레이크포인트 이후 흐름을 따라가기 쉬움</li><li>함수가 너무 길어서 <code>disas</code>만 쳤을 때 화면이 넘쳐 위쪽 내용이 스크롤되어 사라짐(<code>disas $rip,+40</code>처럼 좁혀서 다시 볼 필요)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>GDB를 처음 쓴다면 가장 먼저 <code>set disassembly-flavor intel</code>부터 설정한다. IDA/Ghidra와 표기가 통일되어야 코드를 비교하며 분석하기가 훨씬 수월하다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) Intel 문법으로 전환(최초 1회, <code>.gdbinit</code>에 추가 권장)</strong></p>
+<pre><code class="language-gdb">set disassembly-flavor intel</code></pre>
+<p><strong>2) 현재 함수 전체 보기</strong></p>
+<pre><code class="language-gdb">disas</code></pre>
+<p><strong>3) 필요하면 특정 함수 지정</strong></p>
+<pre><code class="language-gdb">disas check_password</code></pre>
+<p><strong>4) 범위를 좁혀서 현재 위치 주변만 보기</strong></p>
+<pre><code class="language-gdb">disas $rip,+20</code></pre>
+<p><strong>5) 원본 바이트나 소스 줄까지 함께 보고 싶다면</strong></p>
+<pre><code class="language-gdb">disas /r $rip,+20
+disas /s check_password</code></pre>
+<h2>명령어/단축키</h2>
+<pre><code class="language-gdb">set disassembly-flavor intel
+disas
+disas FUNC
+disas START,END
+disas $rip,+LEN
+disas /r FUNC
+disas /s FUNC
+disas /m FUNC</code></pre>
+<h2>출력 해석</h2>
+<pre><code>Dump of assembler code for function check_password:
+   0x0000555555555169 &lt;+0&gt;:	push   rbp
+   0x000055555555516a &lt;+1&gt;:	mov    rbp,rsp
+=&gt; 0x000055555555516d &lt;+4&gt;:	sub    rsp,0x20
+   0x0000555555555171 &lt;+8&gt;:	mov    QWORD PTR [rbp-0x18],rdi
+   ...
+End of assembler dump.</code></pre>
+<p><code>&lt;+0&gt;</code>, <code>&lt;+1&gt;</code>, <code>&lt;+4&gt;</code>는 함수 시작으로부터의 바이트 오프셋이다. <code>=&gt;</code>가 붙은 줄이 지금 실행하려는 명령어이며, 다음에 <code>stepi</code>를 치면 바로 이 명령어가 실행된다.</p>
+<h2>흔한 실수</h2>
+<ul><li>AT&amp;T 문법인 줄 모르고 오퍼랜드 순서를 IDA처럼 읽어서 소스/목적지를 반대로 해석하는 것 — <code>set disassembly-flavor intel</code>로 미리 바꿔두면 이 문제 자체가 사라진다.</li><li><code>disas</code>로 함수 전체를 보다가 화면이 넘쳐서 <code>=&gt;</code> 화살표를 놓치는 것 — 필요하면 <code>disas $rip,+30</code>처럼 범위를 좁혀서 다시 조회한다.</li><li>실행 전(정적 상태)에 PIE 바이너리를 <code>disas main</code>으로 봤을 때 나온 주소를 실제 런타임 주소로 착각하는 것(REV-0194 참고).</li><li><code>/m</code> 옵션이 최적화된 코드에서 소스 줄 순서와 실제 실행 순서가 다르게 보일 수 있다는 걸 모르고 흐름을 오해하는 것 — 최신 GDB에서는 <code>/s</code>가 더 정확하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>명령어를 한 개씩 실행하며 실제 흐름을 확인하고 싶다면 → REV-0187 GDB stepi nexti continue</li><li>특정 레지스터나 메모리 값과 대조해가며 보고 싶다면 → REV-0188 GDB info registers와 flags 확인, REV-0189 GDB x 명령으로 메모리 보기</li><li>Pwndbg를 쓰면 <code>context</code> 한 번으로 디스어셈블+레지스터+스택을 자동으로 같이 보여준다 → REV-0193 Pwndbg context telescope vmmap</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-gdb">(gdb) set disassembly-flavor intel
+(gdb) disas $rip,+20
+Dump of assembler code from 0x555555555185 to 0x555555555199:
+=&gt; 0x0000555555555185 &lt;main+8&gt;:	lea    rax,[rbp-0x50]
+   0x0000555555555189 &lt;main+12&gt;:	mov    rdi,rax
+   0x000055555555518c &lt;main+15&gt;:	call   0x555555555169 &lt;check_password&gt;
+   0x0000555555555191 &lt;main+20&gt;:	test   eax,eax
+   0x0000555555555193 &lt;main+22&gt;:	je     0x5555555551a5 &lt;main+40&gt;
+End of assembler dump.</code></pre>
+<p>현재 위치(<code>=&gt;</code>)부터 20바이트 범위만 짧게 확인하면서, 곧 <code>check_password</code>를 호출하고 그 리턴값을 <code>test</code>로 검사한 뒤 분기한다는 흐름을 한눈에 파악할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0187-gdb-stepi-nexti-continue.html">REV-0187 — GDB stepi nexti continue</a></li><li><a href="rev-0189-gdb-x-examine-memory.html">REV-0189 — GDB x 명령으로 메모리 보기</a></li><li><a href="rev-0193-pwndbg-context-telescope-vmmap.html">REV-0193 — Pwndbg context telescope vmmap</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>disassemble</code> 명령 문법(<code>START,END</code>, <code>START,+LENGTH</code>, <code>/r</code>, <code>/s</code>, <code>/m</code> 옵션): GDB 공식 온라인 문서("Source and Machine Code") 기준.</li><li><code>set disassembly-flavor</code> 옵션과 AT&amp;T/Intel 문법 차이: GDB 공식 문서 "Machine Code" 섹션 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

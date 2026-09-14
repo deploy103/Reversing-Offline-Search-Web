@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>함수가 어디서 호출되는지 동적으로도 못 찾을 때(간접 호출/콜백) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>함수가 어디서 호출되는지 동적으로도 못 찾을 때(간접 호출/콜백)</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>정적 분석 도구의 Xref(교차 참조)가 간접 호출(레지스터/메모리를 통한 CALL, 함수 포인터, vtable 가상 함수, 콜백 인자로 넘겨진 함수)을 자동으로 찾지 못할 때는, 목표 함수의 진입점 자체에 브레이크포인트를 걸어 실행을 멈춘 뒤 그 시점의 <strong>리턴 주소(스택 최상단 또는 링크 레지스터)</strong>와 <strong>콜스택</strong>을 직접 읽으면 실제 호출부를 역으로 알아낼 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA/Ghidra에서 함수를 클릭하고 <code>X</code>(Xref)를 눌러도 "호출하는 곳이 없다"고 나오는데, 실행하면 분명히 그 함수가 실행될 때(REV-0790, REV-0794 참고)</li><li>함수 포인터 테이블이나 콜백 등록(예: <code>SetTimer</code>, <code>CreateThread</code>, <code>qsort</code>의 비교 함수)으로 호출되어 정적으로는 호출부를 알 수 없을 때</li><li>C++ 가상 함수(vtable)라서 정적 Xref에는 vtable 슬롯만 보이고 실제로 어떤 코드가 그 슬롯을 호출하는지 안 보일 때</li><li>이미 정적으로 포기하고 동적으로 확인하려는데, 구체적으로 무엇을 봐야 하는지 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 정적 Xref가 간접 호출을 못 잡는가</h3>
+<p><code>call sub_401000</code>처럼 대상 주소가 코드에 그대로 박혀 있는 <strong>직접 호출</strong>은 정적 분석 도구가 디스어셈블리만 보고도 호출부-피호출부 관계를 알 수 있다. 하지만 <code>call rax</code>, <code>call [rbx+8]</code>, <code>call qword ptr [rdi+0x10]</code>처럼 <strong>레지스터나 메모리 값을 통해</strong> 호출하는 간접 호출은, 그 레지스터/메모리에 실제로 어떤 주소가 들어갈지가 실행 시점에야 결정되므로 정적 분석만으로는 원칙적으로 알아낼 수 없다(함수 포인터 테이블, vtable, 콜백 인자 전달이 전형적인 예다).</p>
+<h3>리턴 주소가 곧 호출부의 증거다</h3>
+<p>CALL 명령어는 다음 명령어의 주소(리턴 주소)를 스택에 자동으로 push한 뒤 대상으로 점프한다(REV-0071 참고). 즉 목표 함수의 진입점에 멈춰서 스택 최상단(x86/x64는 <code>[rsp]</code>)을 읽으면, 그 값이 바로 "이 함수를 호출한 CALL 명령어의 바로 다음 주소"다. 여기서 5바이트(일반적인 <code>call rel32</code> 인코딩 길이 기준, 정확히는 그 CALL 명령어의 인코딩 길이만큼)를 빼거나, 그 주소를 IDA/Ghidra에서 직접 열어 바로 위 명령어를 보면 실제 CALL 명령어와 그 CALL이 어떤 레지스터/메모리를 사용했는지 눈으로 확인할 수 있다.</p>
+<h3>콜스택으로 여러 단계 위까지 추적</h3>
+<p>디버거의 콜스택(x64dbg Call Stack, GDB <code>bt</code>)은 이 리턴 주소 역추적을 여러 프레임에 대해 한 번에 보여준다. 목표 함수 안에서 <code>bt</code>를 치면 바로 위 호출자뿐 아니라 그 위의 호출자, 또 그 위까지 한 번에 볼 수 있어 "이 콜백이 결국 어떤 API/이벤트 루프에서 트리거됐는지" 흐름 전체를 파악할 수 있다.</p>
+<h3>여러 곳에서 호출되는 함수라면 매번 다를 수 있다</h3>
+<p>간접 호출로 실행되는 함수는 상황에 따라 서로 다른 호출부에서 불릴 수 있다(예: 콜백이 여러 이벤트에 공용으로 등록된 경우). 한 번 멈춰서 본 호출부가 유일한 호출부라고 단정하지 말고, 여러 번 히트시켜서 매번의 리턴 주소를 비교해봐야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA/Ghidra에서 함수에 대해 Xref to를 확인해도 결과가 비어 있거나, vtable 슬롯 하나만 나온다(REV-0794 virtual-call-no-xref 참고).</li><li>어셈블리 상에서 그 함수를 가리키는 것은 함수 포인터가 저장된 데이터 영역뿐이고, 그 포인터를 실제로 호출하는 코드는 <code>call [reg]</code> 형태로만 존재한다.</li><li>디버거로 함수 진입점에 브레이크포인트를 걸면 정상적으로 히트되어, 정적으로는 안 보이던 실행 경로가 실제로 존재함을 확인할 수 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>목표 함수의 정확한 시작 주소를 정적 분석으로 확인한다.</li><li>그 주소에 실행 브레이크포인트를 건다.</li><li>히트된 순간 스택 최상단 값(리턴 주소)과 콜스택을 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>x64dbg</strong></p>
+<ol><li>목표 함수 시작 주소에 <code>F2</code>로 브레이크포인트를 건다.</li><li><code>F9</code>로 실행해 히트시킨다.</li><li>Call Stack 창을 확인해 바로 위 호출자의 주소와 모듈명을 확인한다.</li><li>Dump 창에서 <code>[RSP]</code>(x64) 또는 <code>[ESP]</code>(x86) 값을 직접 확인해 Call Stack 창 결과와 대조한다.</li><li>그 리턴 주소를 더블클릭하거나 <code>Ctrl+G</code>로 이동해, 바로 위 줄의 CALL 명령어와 그 오퍼랜드(어떤 레지스터/메모리를 썼는지)를 확인한다.</li></ol>
+<p><strong>GDB / Pwndbg</strong></p>
+<ol><li>함수 시작 주소에 브레이크포인트를 건다.</li></ol>
+<pre><code>   break *0x401000</code></pre>
+<ol><li><code>run</code>/<code>continue</code>로 히트시킨다.</li><li>콜스택 전체를 확인한다.</li></ol>
+<pre><code>   bt</code></pre>
+<ol><li>리턴 주소 하나를 직접 확인하고 싶다면 스택 최상단을 읽는다.</li></ol>
+<pre><code>   x/gx $rsp</code></pre>
+<ol><li>그 리턴 주소 근처 명령어를 디스어셈블해 실제 CALL 명령어를 확인한다.</li></ol>
+<pre><code>   x/5i &lt;리턴주소&gt;-20</code></pre>
+<ol><li>여러 호출 경로가 있는지 확인하려면 브레이크포인트를 지우지 않고 여러 번 <code>continue</code>해서 매번 <code>bt</code>를 비교한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>F2</code>(브레이크포인트), Call Stack 창(자동 표시), Dump 창에서 <code>[RSP]</code> 확인</li><li>GDB/Pwndbg: <code>break *ADDR</code>, <code>bt</code>, <code>x/gx $rsp</code>, <code>x/Ni &lt;addr&gt;</code>(디스어셈블), Pwndbg <code>context</code>(스택/백트레이스 자동 표시)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>bt</code>의 <code>#1</code> 프레임 주소가 곧 호출부 근처 위치다. 그 주소에서 몇 바이트 앞으로 가서 실제 <code>call</code> 명령어를 찾으면 된다.</li><li>리턴 주소를 코드로 디스어셈블했을 때 바로 그 앞 명령어가 <code>call rax</code>, <code>call [rdi+0x18]</code>처럼 간접 호출 형태라면, 이것이 정적 Xref가 못 잡았던 이유를 직접 확인한 것이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>스택 최상단 값을 리턴 주소라고 확신 없이 넘어가는 것 — 함수 진입 직후(프롤로그 실행 전)라면 <code>[rsp]</code>가 곧 리턴 주소가 맞지만, 프롤로그 몇 줄을 이미 지난 시점이면 스택 배치가 달라져 있을 수 있으니 반드시 "함수 시작 주소"에 정확히 브레이크포인트를 걸어야 한다.</li><li>한 번만 히트시켜 보고 "이게 유일한 호출부"라고 단정하는 것 — 콜백/가상 함수는 여러 곳에서 불릴 수 있다.</li><li>vtable 가상 함수인 경우, 리턴 주소만 보고 실제로 어떤 객체 타입을 통해 호출됐는지(다형성)까지는 알 수 없다는 점을 놓치는 것 — 이 경우 <code>this</code> 포인터(REV-0444 참고)도 함께 확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>vtable 가상 함수 호출이라 정적으로 아예 흔적이 없다면 → REV-0794(virtual call no xref)를 함께 참고한다.</li><li>콜백 함수인데 호출부가 API 내부(예: 시스템 DLL 안)라서 소스가 안 보인다면 → 그 API 이름 자체가 곧 "무엇이 이 콜백을 트리거했는지"에 대한 단서이므로 API 문서를 확인한다.</li><li>여러 스레드에서 동시에 같은 콜백을 부르는 구조라면 → REV-0617(멀티스레드에서 API 호출 순서가 달라 보일 때)도 함께 고려한다.</li></ul>
+<h2>미니 예제</h2>
+<pre><code>(gdb) break *0x401500
+(gdb) run
+Breakpoint 1, 0x0000000000401500 in target_callback ()
+(gdb) bt
+#0  0x0000000000401500 in target_callback ()
+#1  0x0000000000401a22 in dispatch_events ()
+#2  0x0000000000401c10 in main ()
+(gdb) x/3i 0x401a22-10
+   0x401a18:  mov    rax, [rbx+0x8]
+   0x401a1c:  mov    rdi, rbx
+   0x401a1f:  call   rax</code></pre>
+<p><code>dispatch_events</code> 함수 안에서 <code>rbx+0x8</code>에 저장된 함수 포인터를 <code>call rax</code>로 간접 호출하고 있었다는 것을, 정적 Xref 없이 리턴 주소 역추적만으로 확인했다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0790-xref-missing-indirect-call.html">REV-0790 — 함수가 어디서 호출되는지 Xref로 안 잡힐 때(간접 호출)</a></li><li><a href="rev-0794-virtual-call-no-xref.html">REV-0794 — 가상함수 호출이라 Xref로 대상 함수를 못 찾을 때</a></li><li><a href="rev-0171-run-until-return.html">REV-0171 — Run Until Return과 함수 빠져나오기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>CALL 명령어가 리턴 주소를 스택에 push하는 동작과 그로부터 호출부를 역추적하는 방식: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "CALL—Call Procedure" 섹션 기준.</li><li>GDB <code>bt</code>, <code>x/i</code> 명령으로 리턴 주소와 호출부 명령어를 확인하는 절차: GNU GDB 공식 매뉴얼 "Examining the Stack", "Examining Memory" 섹션 기준.</li><li>2026-09-09 검증.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

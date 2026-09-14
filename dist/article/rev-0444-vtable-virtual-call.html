@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>vtable과 가상함수 호출 패턴 분석 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>vtable과 가상함수 호출 패턴 분석</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>C++의 가상함수 호출은 객체 맨 앞에 숨어있는 vptr(가상 테이블 포인터)을 읽고, 그 vtable 배열에서 함수 슬롯을 다시 읽어 <code>call</code>하는 <strong>이중 역참조(double dereference)</strong> 패턴으로 컴파일되며, 이 때문에 정적 xref만으로는 호출 대상을 바로 찾을 수 없다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>mov rax, [rcx]</code> 다음에 <code>call [rax+0x10]</code>처럼 레지스터를 두 번 거쳐 <code>call</code>하는 코드를 만났을 때</li><li>Hex-Rays 디컴파일이 <code>(**(void (__fastcall ***)(void *, ...))this)(this, ...)</code>처럼 알아보기 힘든 함수 포인터 캐스팅 덩어리로 나올 때</li><li>C++ 바이너리에서 <code>obj-&gt;method()</code> 호출부가 REV-0071(CALL) 방식의 일반 direct call로는 안 보일 때</li><li>객체 생성자에서 <code>mov qword ptr [rcx], offset ??_7ClassName@@6B@</code> 같은 심볼이 보일 때</li><li><code>X</code>(Xrefs to)를 눌러도 어떤 함수를 호출하는지 찾을 수 없어서 답답할 때(REV-0794 참고)</li></ul>
+<h2>핵심 개념</h2>
+<h3>vtable과 vptr의 역할</h3>
+<p>클래스에 <code>virtual</code> 함수가 하나라도 있으면, 컴파일러는 그 클래스(정확히는 클래스 계층 전체)마다 <strong>하나의 vtable(가상 함수 테이블)</strong> 을 만든다. vtable은 함수 포인터들의 배열로, 보통 읽기 전용 데이터 영역(.rodata/.rdata)에 위치하며, 슬롯 순서는 클래스 선언에서 virtual 함수가 등장한 순서와 일치한다.</p>
+<p>이 클래스의 객체 하나하나는 자기 메모리 맨 앞(대부분 오프셋 0)에 <strong>vptr</strong>이라는 숨은 포인터 멤버를 갖는다. 생성자가 실행될 때 이 vptr에 자기 클래스의 vtable 주소가 채워진다. 가상함수를 호출할 때는:</p>
+<ol><li>객체(<code>this</code>)에서 vptr을 읽는다 (<code>mov rax, [rcx]</code> — 객체 시작 8바이트).</li><li>vtable에서 원하는 슬롯을 읽는다 (<code>mov rax, [rax+slot*8]</code> — slot은 virtual 함수 선언 순서에 따른 인덱스).</li><li>그 주소로 간접 호출한다 (<code>call rax</code>).</li></ol>
+<p>이 "포인터를 두 번 따라가는" 구조 때문에 vtable 기반 호출을 <strong>이중 역참조</strong>라고 부른다.</p>
+<h3><code>this</code> 포인터 전달</h3>
+<p>가상함수도 결국 평범한 함수이므로 일반 호출 규약(REV-0071 참고)을 그대로 따른다. 다만 첫 번째 인자 자리에 항상 <strong>객체 자기 자신의 주소(<code>this</code>)</strong> 가 암묵적으로 들어간다.</p>
+<ul><li><strong>Itanium C++ ABI (GCC/Clang, Linux)</strong>: SysV 규약대로 <code>RDI = this</code>, 두 번째 인자부터 <code>RSI, RDX, ...</code>.</li><li><strong>MSVC (Windows x64)</strong>: <code>RCX = this</code>, 두 번째 인자부터 <code>RDX, R8, R9, ...</code>.</li></ul>
+<h3>전형적인 어셈블리 (x64 SysV)</h3>
+<pre><code class="language-cpp">class Shape {
+public:
+    virtual int area();     // slot 0
+    virtual void draw();    // slot 1
+};
+Shape* s = ...;
+int a = s-&gt;area();</code></pre>
+<pre><code class="language-asm">mov     rdi, [rbp-8]     ; rdi = s (this 포인터, 1번째 인자)
+mov     rax, [rdi]        ; rax = *this = vptr (vtable 주소)
+mov     rax, [rax]        ; rax = vtable[0] = Shape::area의 실제 주소 (slot 0)
+call    rax                ; area(this) 호출 — this는 이미 rdi에 있음</code></pre>
+<p><code>draw()</code>(slot 1)를 부른다면 두 번째 로드가 <code>mov rax, [rax+8]</code>이 된다 — 슬롯 인덱스 × 8(64비트 포인터 크기)만큼 오프셋이 붙는다.</p>
+<h3>생성자에서 vptr을 세팅하는 코드</h3>
+<pre><code class="language-asm">; Shape::Shape(this) 생성자 안
+mov     qword ptr [rdi], offset ??_7Shape@@6B@   ; MSVC 심볼 예시: 이 클래스의 vtable 주소를 vptr에 대입</code></pre>
+<p>Itanium ABI(GCC/Clang)에서는 <code>_ZTV5Shape</code>(vtable for Shape)처럼 이름 붙는다. 이 대입문이 생성자 맨 앞부분에 나온다는 것은, "이 함수가 이 클래스의 생성자"라는 강력한 단서가 된다 — REV-0446(C++ 생성자/소멸자 호출 패턴)에서 더 자세히 다룬다.</p>
+<h3>점프 테이블과의 구분</h3>
+<p>REV-0441에서 다룬 switch 점프 테이블과 vtable은 겉보기엔 둘 다 "메모리 배열에서 주소를 읽어 간접 분기"라는 점에서 비슷하지만, 결정적인 차이가 있다.</p>
+<table><thead><tr><th>구분</th><th>점프 테이블</th><th>vtable</th></tr></thead><tbody><tr><td>원소가 가리키는 곳</td><td>같은 함수 내부의 기본 블록</td><td>서로 다른, 완전히 독립된 함수</td></tr><tr><td>사용하는 명령</td><td><code>jmp</code> (반환 주소 안 남김)</td><td><code>call</code> (반환 주소 남김)</td></tr><tr><td>역참조 횟수</td><td>1회 (<code>jmp [table+idx*4]</code>)</td><td>보통 2회 (<code>this→vptr→vtable[slot]</code>)</td></tr></tbody></table>
+<p><code>call [rax+offset]</code> 형태에서 그 직전에 <code>mov rax, [rcx]</code>처럼 <strong>객체로부터 먼저 포인터를 읽어오는 단계</strong>가 있다면 vtable일 가능성이 매우 높다.</p>
+<h3>다중 상속과 thunk 함수</h3>
+<p>클래스가 여러 부모를 다중 상속하면, 객체 하나가 <strong>부모별로 여러 개의 vptr</strong>을 가질 수 있다(각 부모 서브객체마다 하나씩). 이 경우 특정 부모 인터페이스를 통해 가상함수를 호출하면, <code>this</code> 포인터가 실제 객체 시작 주소가 아니라 그 부모 서브객체의 오프셋 위치를 가리켜야 한다. 컴파일러는 이를 위해 <strong>thunk</strong>라는 작은 도우미 함수를 생성한다.</p>
+<pre><code class="language-asm">; thunk 예시: this를 원래 객체 주소로 보정한 뒤 실제 구현으로 점프
+thunk_func:
+    sub     rcx, 0x10        ; this 포인터를 실제 객체 시작으로 보정
+    jmp     real_impl         ; CALL이 아니라 JMP로 위임 (tail call과 유사)</code></pre>
+<p>vtable 슬롯 하나가 실제 함수가 아니라 이런 thunk를 가리키는 경우가 있으므로, 함수 진입부에 <code>this</code> 보정처럼 보이는 <code>add</code>/<code>sub</code>가 있으면 다중 상속 관련 코드임을 의심해볼 수 있다.</p>
+<h3>IDA/Ghidra 디컴파일에서 보이는 형태</h3>
+<p>IDA가 vtable 구조를 정확히 인식하지 못하면, Hex-Rays는 이 이중 역참조 호출을 다음과 같이 매우 읽기 힘든 형태로 그대로 노출한다.</p>
+<pre><code class="language-c">(**(void (__fastcall ***)(void *, ...))this)(this, 5);</code></pre>
+<p>이건 "<code>this</code>가 가리키는 곳에서 함수 포인터 배열의 포인터를 읽고, 그 배열의 0번째 함수를 <code>this</code>와 인자 <code>5</code>로 호출한다"는 뜻을 억지로 C 캐스팅 문법으로 표현한 것이다. IDA에 <strong>Class Informer</strong> 같은 플러그인을 쓰거나, 수동으로 vtable 구조체를 정의(<code>Structs</code> 창)해 타입을 지정해주면 <code>this-&gt;vfptr-&gt;area(this)</code>처럼 훨씬 읽기 쉬운 형태로 바뀐다. Ghidra는 C++ 클래스 분석 기능(버전에 따라 다름)으로 유사한 개선을 제공한다.</p>
+<h3>리버싱 관점에서의 의미</h3>
+<p>가상함수 호출은 <strong>정적 xref로 호출자를 추적할 수 없다는 점</strong>이 가장 중요하다. 함수 <code>Shape::area</code>를 <code>X</code>(Xrefs to)로 찾아도, 실제로는 vtable 데이터 안의 함수 포인터 슬롯만 그 주소를 참조할 뿐, 호출부(<code>call rax</code>) 자체는 그 함수 이름을 전혀 언급하지 않기 때문에 "어디서 호출되는지" 정적 분석만으로는 바로 안 보인다(REV-0794). 대신:</p>
+<ol><li>vtable을 .rodata/.rdata에서 찾아 어떤 함수들이 몇 번째 슬롯에 들어있는지 먼저 파악하고,</li><li>그 vtable 자체를 참조하는 곳(주로 생성자)을 xref로 찾아 클래스 경계를 알아내며,</li><li>동적으로는 <code>call rax</code> 지점에 브레이크포인트를 걸고 실행 시 RAX 값을 확인해 실제 호출되는 함수를 특정한다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>mov reg, [this_reg]</code> 다음에 <code>call [reg+offset]</code> 또는 <code>mov reg, [reg+offset]; call reg</code>처럼 두 단계 역참조 후 호출</li><li>Hex-Rays에서 <code>(**(...)this)(this, ...)</code>처럼 함수 포인터 캐스팅이 여러 겹으로 중첩된 표현</li><li>생성자로 추정되는 함수 앞부분에 <code>mov [rcx], offset ??_7...@@6B@</code> 또는 <code>_ZTV...</code> 주소 대입</li><li><code>X</code>(Xrefs to)를 눌러도 호출자가 하나도 안 나오는 함수(간접 호출로만 불리는 경우)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>call</code> 대상이 레지스터/메모리 계산식인지 확인하고, 그 직전에 객체 포인터에서 값을 읽어오는 <code>mov</code>가 있는지 본다.</li><li>있다면 몇 단계를 거쳐 역참조되는지(1회=점프 테이블 가능성, 2회=vtable 가능성) 센다.</li><li>vtable로 판단되면 .rodata/.rdata에서 그 배열의 시작 주소를 찾아 슬롯별 함수 주소를 먼저 나열해둔다.</li></ol>
+<h2>단계별 절차</h2>
+<ol><li>객체 포인터에서 첫 8바이트(x64)/4바이트(x86)를 읽는 코드(<code>mov rax, [rcx]</code>)를 찾는다 — vtable 포인터를 읽는 전형적인 패턴이다.</li><li>그 vtable 포인터에 오프셋을 더해 함수 포인터를 읽는 코드(<code>mov rax, [rax+8]</code> 등)를 찾는다 — 오프셋/8이 몇 번째 가상함수인지 알려준다.</li><li>읽어온 함수 포인터로 간접 호출(<code>call rax</code>)하는 지점을 확인한다.</li><li>vtable 자체의 실제 주소(보통 <code>.rodata</code>)를 Hex View로 열어 함수 포인터들을 나열하고, 각각이 실제로 어떤 함수인지 하나씩 이동해서 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: vtable 데이터가 있는 주소에서 우클릭 → "Create struct from selection" 또는 <code>Structs</code> 창(Shift+F9)에서 구조체를 정의해 슬롯에 타입을 지정.</li><li>Ghidra: C++ 클래스 분석 기능(버전에 따라 Window → Class 관련 뷰)으로 vtable/클래스 자동 인식.</li><li>x64dbg/GDB: <code>call rax</code> 직전에 브레이크포인트를 걸고 RAX(또는 대상 레지스터) 값을 확인해 실제 호출되는 함수 주소를 동적으로 특정.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>이중 역참조 <code>call</code> 패턴을 보고 무조건 switch 점프 테이블로 오인하는 것 — 대상이 여러 독립 함수인지(vtable), 한 함수 내부 블록인지(점프 테이블)로 구분해야 한다.</li><li>Hex-Rays의 <code>(**(void (***)(void))this)()</code> 같은 표현을 "디컴파일 실패, 분석 불가능"으로 포기하는 것 — 실제로는 vtable 구조를 수동으로 지정하면 대부분 정리된다.</li><li>가상함수 호출의 인자 개수를 셀 때 <code>this</code>(암묵적 첫 번째 인자)를 빼먹고 세는 것.</li><li><code>X</code>(Xrefs to)로 가상함수 호출자를 못 찾았을 때 "이 함수는 아무데서도 안 불린다"고 결론짓는 것 — vtable을 통한 간접 호출이라 정적 xref에 안 잡히는 것뿐일 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>vtable 시작 주소 바로 앞의 데이터가 궁금하면 → REV-0445(RTTI)에서 타입 정보 구조를 확인한다.</li><li>이 클래스의 생성자/소멸자를 찾고 vptr 대입 위치를 활용하는 방법이 궁금하면 → REV-0446.</li><li>여전히 xref로 호출자를 못 찾겠다면 → 정적 분석 카테고리의 관련 트러블슈팅 문서(가상함수 호출로 인한 xref 실패)를 참고하고, 동적 분석으로 전환한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 단일 상속, x64 SysV 가상함수 호출</strong></p>
+<pre><code class="language-cpp">class Base { public: virtual int foo(); };
+Base* p = ...;
+int r = p-&gt;foo();</code></pre>
+<pre><code class="language-asm">mov     rdi, [rbp-8]   ; this
+mov     rax, [rdi]      ; vptr
+mov     rax, [rax]      ; vtable[0] = foo 주소
+call    rax              ; foo(this)</code></pre>
+<p><strong>예제 2 — MSVC x64, slot 1 호출</strong></p>
+<pre><code class="language-asm">mov     rcx, [rbp+0x10]   ; this (MSVC는 RCX)
+mov     rax, [rcx]         ; vptr
+call    qword ptr [rax+8]  ; vtable[1](=두 번째 virtual 함수), this는 이미 rcx</code></pre>
+<p><strong>예제 3 — 생성자에서 vptr 세팅</strong></p>
+<pre><code class="language-asm">; Base::Base(this)
+mov     qword ptr [rcx], offset ??_7Base@@6B@   ; vtable 주소를 객체 첫 8바이트에 기록
+mov     rax, rcx
+ret</code></pre>
+<p><strong>예제 4 — Hex-Rays 원시 디컴파일 vs 구조체 지정 후</strong></p>
+<pre><code class="language-c">// 구조체 미지정 상태
+(**(int (__fastcall ***)(void *))this)(this);
+
+// vtable 구조체를 지정한 뒤
+this-&gt;vfptr-&gt;foo(this);</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0441-switch-jump-table.html">REV-0441 — Switch문 점프 테이블(Jump Table) 완전 분석</a></li><li><a href="rev-0445-rtti-traces.html">REV-0445 — RTTI(런타임 타입 정보) 흔적 분석</a></li><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li><li><a href="rev-0446-constructor-destructor-pattern.html">REV-0446 — C++ 생성자/소멸자 호출 패턴 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>vtable/vptr 구조와 가상함수 호출 시 이중 역참조 방식: Itanium C++ ABI("Run-time Type Identification" 및 가상 함수 호출 규약 절) 공식 스펙 기준 (2026-09-08 검증).</li><li>MSVC 측 vtable 심볼 규칙(<code>??_7...@@6B@</code>)과 x64 thiscall(RCX=this) 관례: Microsoft C++ 이름 맹글링 및 x64 calling convention 공식 문서 기준.</li><li>다중 상속 thunk 함수의 <code>this</code> 보정 패턴: Itanium C++ ABI "Virtual Table Thunks" 절 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

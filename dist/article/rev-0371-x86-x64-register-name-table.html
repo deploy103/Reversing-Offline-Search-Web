@@ -1,0 +1,77 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>x86/x64 레지스터 전체 이름 대조표 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>x86/x64 레지스터 전체 이름 대조표</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>x86/x64의 범용 레지스터 16개(x86은 8개)는 폭에 따라 64/32/16/8비트 이름이 각각 따로 있고, 여기에 포인터·플래그·세그먼트·명령어 포인터 레지스터까지 합쳐 이 문서 한 장으로 전체 이름을 대조할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA/GDB/x64dbg에서 낯선 레지스터 이름(<code>R13D</code>, <code>SIL</code>, <code>RFLAGS</code>, <code>FS</code> 등)이 나왔는데 이게 정확히 몇 비트짜리이고 무슨 역할인지 바로 찾고 싶을 때</li><li>레지스터 이름 전체를 한 표로 정리해두고 필요할 때마다 찾아보고 싶을 때</li><li>세그먼트 레지스터(<code>FS</code>, <code>GS</code>)나 플래그 레지스터 이름이 범용 레지스터와 헷갈릴 때</li><li>x86과 x64에서 존재하는 레지스터 개수 차이를 빠르게 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>x86/x64 레지스터는 크게 4종류로 나뉜다: 범용 레지스터(GPR), 포인터/인덱스 레지스터(GPR에 포함되지만 특수 용도), 플래그 레지스터, 세그먼트 레지스터, 명령어 포인터. 아래 표들은 각각을 폭/역할별로 정리한 것이다.</p>
+<h3>범용 레지스터 전체 대조표 (64/32/16/8비트)</h3>
+<table><thead><tr><th>64비트(x64)</th><th>32비트</th><th>16비트</th><th>8비트(하위)</th><th>8비트(상위, 레거시)</th><th>전통적 용도</th></tr></thead><tbody><tr><td>RAX</td><td>EAX</td><td>AX</td><td>AL</td><td>AH</td><td>누산기(Accumulator), 반환값</td></tr><tr><td>RBX</td><td>EBX</td><td>BX</td><td>BL</td><td>BH</td><td>베이스(Base)</td></tr><tr><td>RCX</td><td>ECX</td><td>CX</td><td>CL</td><td>CH</td><td>카운터(Counter), 4번째 인자(SysV)/1번째 인자(Win)</td></tr><tr><td>RDX</td><td>EDX</td><td>DX</td><td>DL</td><td>DH</td><td>데이터(Data), 3번째 인자(SysV)/2번째 인자(Win)</td></tr><tr><td>RSI</td><td>ESI</td><td>SI</td><td>SIL</td><td>(없음)</td><td>Source Index, 1번째 인자(SysV)</td></tr><tr><td>RDI</td><td>EDI</td><td>DI</td><td>DIL</td><td>(없음)</td><td>Destination Index, 2번째 인자(SysV)</td></tr><tr><td>RBP</td><td>EBP</td><td>BP</td><td>BPL</td><td>(없음)</td><td>Base Pointer(스택 프레임 기준)</td></tr><tr><td>RSP</td><td>ESP</td><td>SP</td><td>SPL</td><td>(없음)</td><td>Stack Pointer</td></tr><tr><td>R8</td><td>R8D</td><td>R8W</td><td>R8B</td><td>(없음)</td><td>5번째 인자(SysV)/3번째 인자(Win), x64 전용</td></tr><tr><td>R9</td><td>R9D</td><td>R9W</td><td>R9B</td><td>(없음)</td><td>6번째 인자(SysV)/4번째 인자(Win), x64 전용</td></tr><tr><td>R10</td><td>R10D</td><td>R10W</td><td>R10B</td><td>(없음)</td><td>여분 레지스터, x64 전용</td></tr><tr><td>R11</td><td>R11D</td><td>R11W</td><td>R11B</td><td>(없음)</td><td>여분 레지스터, x64 전용</td></tr><tr><td>R12</td><td>R12D</td><td>R12W</td><td>R12B</td><td>(없음)</td><td>여분 레지스터, x64 전용</td></tr><tr><td>R13</td><td>R13D</td><td>R13W</td><td>R13B</td><td>(없음)</td><td>여분 레지스터, x64 전용</td></tr><tr><td>R14</td><td>R14D</td><td>R14W</td><td>R14B</td><td>(없음)</td><td>여분 레지스터, x64 전용</td></tr><tr><td>R15</td><td>R15D</td><td>R15W</td><td>R15B</td><td>(없음)</td><td>여분 레지스터, x64 전용</td></tr></tbody></table>
+<p><strong>x86(32비트) 모드에는 위 표의 32/16/8비트 열까지만 존재</strong>하며(<code>R8</code>~<code>R15</code> 계열과 64비트 열은 x64 전용), <code>SIL</code>/<code>DIL</code>/<code>BPL</code>/<code>SPL</code>(SI/DI/BP/SP의 8비트 하위 이름)도 x64 모드(REX 프리픽스 필요)에서만 쓸 수 있다.</p>
+<h3>명령어 포인터 / 플래그 레지스터</h3>
+<table><thead><tr><th>64비트</th><th>32비트</th><th>16비트</th><th>역할</th></tr></thead><tbody><tr><td>RIP</td><td>EIP</td><td>IP</td><td>명령어 포인터(다음에 실행할 명령어 주소)</td></tr><tr><td>RFLAGS</td><td>EFLAGS</td><td>FLAGS</td><td>상태 플래그(ZF, CF, SF, OF, PF, AF 등)</td></tr></tbody></table>
+<p>주요 플래그 비트: <code>ZF</code>(Zero, 결과가 0이면 1) · <code>CF</code>(Carry, 자리올림/빌림 발생) · <code>SF</code>(Sign, 결과가 음수면 1) · <code>OF</code>(Overflow, signed 오버플로 발생) · <code>PF</code>(Parity, 하위 바이트의 1비트 개수가 짝수) · <code>AF</code>(Auxiliary Carry, BCD 연산용).</p>
+<h3>세그먼트 레지스터 (x64에서는 역할이 축소됨)</h3>
+<table><thead><tr><th>이름</th><th>역할</th></tr></thead><tbody><tr><td><code>CS</code></td><td>코드 세그먼트</td></tr><tr><td><code>DS</code></td><td>데이터 세그먼트(레거시)</td></tr><tr><td><code>SS</code></td><td>스택 세그먼트</td></tr><tr><td><code>ES</code></td><td>확장 데이터 세그먼트(레거시)</td></tr><tr><td><code>FS</code></td><td>x64 Windows: TEB(Thread Environment Block) 접근에 사용(<code>fs:[0x30]</code> 등)</td></tr><tr><td><code>GS</code></td><td>x64 Linux: 스레드 로컬 스토리지(TLS) 접근에 사용, x64 Windows: 일부 시스템 구조체 접근</td></tr></tbody></table>
+<p>x64에서는 플랫(flat) 메모리 모델을 쓰므로 <code>CS</code>/<code>DS</code>/<code>SS</code>/<code>ES</code>는 사실상 항상 베이스 주소 0으로 고정되어 실질적 의미가 거의 없고, <code>FS</code>/<code>GS</code>만 스레드별 특수 데이터 구조 접근용으로 실제 활용된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>x64dbg/GDB 레지스터 창에 <code>RAX</code>~<code>R15</code>까지 16개가 표시(x64)되거나 <code>EAX</code>~<code>EDI</code>까지 8개만 표시(x86)</li><li>디스어셈블리에 <code>mov rax, fs:[30h]</code>(Windows, TEB 접근) 또는 <code>mov rax, gs:[0]</code>(Linux, TLS 접근) 형태로 세그먼트 레지스터 사용</li><li>조건 분기 직전에 <code>RFLAGS</code>/<code>EFLAGS</code>의 특정 비트(<code>ZF</code>, <code>SF</code> 등)를 검사하는 <code>cmp</code>/<code>test</code> 뒤의 <code>jz</code>/<code>js</code> 등</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>낯선 레지스터 이름을 보면 먼저 접두사/접미사로 폭을 판별한다(<code>R</code>+없음=64비트, <code>E</code>+없음 또는 <code>D</code>로 끝남=32비트, <code>W</code>로 끝나거나 2글자 레거시=16비트, <code>B</code>/<code>L</code>/<code>H</code>로 끝남=8비트). 그 다음 이 표에서 같은 행을 찾아 전체 폭 계열과 용도를 확인한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>레지스터 이름의 접두사/접미사만 보고 비트 폭을 먼저 판별한다.</li><li>표의 해당 열에서 같은 행(같은 물리 레지스터 계열)을 찾아 다른 폭 이름들도 함께 확인한다.</li><li>그 레지스터가 범용(GPR)인지, 플래그인지, 세그먼트인지 표의 구분으로 확인한다.</li><li>범용 레지스터라면 호출 규약상 몇 번째 인자에 대응하는지(Windows/SysV 열) 함께 확인한다.</li><li><code>FS</code>/<code>GS</code> 같은 세그먼트 레지스터가 나오면 일반 산술 레지스터가 아니라 TEB/TLS 접근용 특수 레지스터임을 감안하고 문맥을 다시 읽는다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code>(gdb) info registers        # 전체 레지스터 한 번에 확인 (x64: rax~r15+rip+eflags)
+(gdb) p $eflags              # 플래그 레지스터 값
+(gdb) p/x $fs_base            # x64 GDB에서 FS 베이스 주소 확인</code></pre>
+<p>x64dbg: 레지스터 패널 우클릭 → "Change view" → 32/16/8비트 서브 레지스터 값도 함께 표시 가능.</p>
+<h2>출력 해석</h2>
+<ul><li><code>info registers</code>에서 <code>r8</code>~<code>r15</code>가 보이면 그 프로세스는 확실히 x64(64비트)로 실행 중이다.</li><li><code>eflags</code> 값의 특정 비트가 1인지 확인하려면 표준 비트 위치(<code>ZF</code>=bit6, <code>CF</code>=bit0, <code>SF</code>=bit7, <code>OF</code>=bit11)를 기준으로 마스킹해서 읽는다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>R8</code>~<code>R15</code>가 x86(32비트) 모드에도 있다고 착각하는 것 — x64 전용이다.</li><li><code>AH</code>/<code>BH</code>/<code>CH</code>/<code>DH</code>(레거시 상위 바이트) 이름 방식이 <code>R8</code>~<code>R15</code>, <code>SI</code>/<code>DI</code>/<code>BP</code>/<code>SP</code> 계열에도 있다고 착각하는 것 — 이 계열은 상위 바이트 별명이 아예 없다.</li><li>세그먼트 레지스터 <code>FS</code>/<code>GS</code>를 일반 범용 레지스터처럼 산술 연산에 쓸 수 있다고 착각하는 것 — 이들은 메모리 접근 시 베이스 세그먼트를 지정하는 특수 용도로만 쓰인다(<code>fs:[...]</code> 형태).</li><li><code>RFLAGS</code>를 다른 범용 레지스터처럼 직접 <code>mov</code>로 자유롭게 읽고 쓸 수 있다고 착각하는 것 — 플래그는 대개 <code>pushf</code>/<code>popf</code> 또는 개별 조건 분기/<code>SETcc</code>/<code>CMOVcc</code> 명령어를 통해 간접적으로 다룬다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>32/64비트 부분 쓰기가 상위 비트에 미치는 영향(제로 익스텐션 규칙)이 궁금하면 → REV-0022 32비트와 64비트 레지스터 차이</li><li>x86과 x64 아키텍처 전반의 차이가 궁금하면 → REV-0021 x86와 x64를 구분하는 법</li><li>함수 인자가 어느 레지스터로 전달되는지(Windows/SysV 차이) 궁금하면 → REV-0032 함수 인자와 반환값이 어디에 있는지</li></ul>
+<h2>미니 예제</h2>
+<p>Windows x64 TEB 접근 코드에서 <code>FS</code>/<code>GS</code> 대신 <code>GS</code>가 쓰이는 예(x64는 <code>GS</code> 사용, x86 Windows는 <code>FS</code> 사용):</p>
+<pre><code class="language-asm">mov     rax, gs:[30h]     ; x64 Windows: GS 세그먼트 기준 오프셋 0x30 = TEB 주소</code></pre>
+<p>x86(32비트) Windows에서는 같은 목적으로 <code>FS</code>를 쓴다(<code>mov eax, fs:[30h]</code>). 아키텍처가 바뀌면서 같은 역할의 세그먼트 레지스터 이름이 바뀐 대표적인 사례이므로, 32비트/64비트 바이너리를 오가며 분석할 때 헷갈리지 않도록 이 표로 확인하는 습관이 유용하다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0022-register-widths.html">REV-0022 — 32비트와 64비트 레지스터 차이</a></li><li><a href="rev-0021-x86-vs-x64.html">REV-0021 — x86와 x64를 구분하는 법</a></li><li><a href="rev-0032-args-and-return-location.html">REV-0032 — 함수 인자와 반환값이 어디에 있는지</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>x86/x64 범용 레지스터, 플래그 레지스터, 세그먼트 레지스터 정의: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 1(Basic Architecture) 기준 (2026-09-09 검증).</li><li>Windows x64에서 GS를 통한 TEB 접근, x86에서 FS를 통한 TEB 접근: Microsoft 공식 문서(Thread Environment Block) 및 Linux <code>x86_64</code> ABI의 GS 기반 TLS 관례 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

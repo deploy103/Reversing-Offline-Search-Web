@@ -1,0 +1,96 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>리버싱 문제 파일을 받았을 때 30초 트리아지 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>리버싱 문제 파일을 받았을 때 30초 트리아지</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">file</span><span class="tag">Detect It Easy</span><span class="tag">strings</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>문제 파일을 받으면 열기 전에 <strong>file 타입 → 아키텍처 → 문자열 → 임포트 → 보호기법</strong> 순서로 30초 안에 훑어서, 이후 분석 방향(정적/동적, 어떤 도구)을 먼저 정한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>CTF나 워게임에서 처음 보는 실행 파일을 받았고, 뭐부터 눌러야 할지 감이 안 잡힐 때</li><li>무작정 IDA부터 켜고 스크롤만 하다가 시간을 날리고 있을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>리버싱은 "무작정 디스어셈블러를 켜고 코드를 읽는 것"이 아니다. 실제로는 <strong>파일 자체가 이미 많은 정보를 갖고 있고</strong>, 그 정보를 먼저 뽑아내면 코드를 읽을 때 어디를 봐야 하는지가 훨씬 명확해진다. 30초 트리아지는 "이 파일이 무엇인지, 어떤 도구로, 어디서부터 봐야 하는지"를 결정하는 사전 정찰 단계다.</p>
+<p>핵심은 순서다:</p>
+<ol><li><strong>확장자 말고 실제 형식</strong> — <code>.exe</code>인데 사실 .NET이거나, 확장자가 없는데 ELF일 수 있다.</li><li><strong>아키텍처/비트수</strong> — x86인지 x64인지에 따라 레지스터 이름과 호출 규약이 통째로 바뀐다.</li><li><strong>문자열</strong> — "Correct!", "Wrong flag", "Enter password" 같은 문자열이 있으면 검증 로직으로 가는 지도가 생긴다.</li><li><strong>임포트 함수 목록</strong> — <code>scanf</code>, <code>strcmp</code>, <code>IsDebuggerPresent</code> 등 이름만 봐도 무엇을 하는 프로그램인지 짐작 가능.</li><li><strong>섹션/보호 기법</strong> — 패킹되었는지, 스택 카나리·NX·PIE가 켜져 있는지에 따라 접근 방식이 달라진다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>파일 아이콘이 EXE인데 실제로는 Mono/.NET일 수도 있음 (아이콘/확장자는 신뢰 불가)</li><li><code>strings</code> 결과에 <code>mscorlib</code>, <code>System.</code> 같은 문자열이 보이면 .NET</li><li><code>readelf -h</code> 또는 <code>file</code> 결과에 <code>ELF 64-bit LSB</code>처럼 명확히 표시됨</li><li>IDA/Ghidra가 함수를 거의 못 찾으면 stripped 또는 패킹 의심</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>바이너리를 IDA에 던지기 <strong>전에</strong> 터미널(또는 Detect It Easy)에서 파일 타입부터 확인한다. Windows라면 PowerShell + Detect It Easy(DIE), Linux/WSL이라면 <code>file</code> 명령을 쓴다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 파일 형식 확인</strong></p>
+<p>Linux/WSL:</p>
+<pre><code class="language-bash">file ./challenge</code></pre>
+<p>출력 예시:</p>
+<pre><code>challenge: ELF 64-bit LSB pie executable, x86-64, version 1 (SYSV), dynamically linked, ...</code></pre>
+<p>이 한 줄에 이미 "ELF, 64비트, PIE(주소가 실행마다 바뀜), 동적 링크"라는 정보가 다 들어있다.</p>
+<p>Windows: Detect It Easy(DIE)를 실행하고 파일을 드래그 앤 드롭하면 우측 상단에 파일 형식(PE32/PE32+), 컴파일러, 패커 여부가 바로 표시된다.</p>
+<p><strong>2) 문자열 훑기</strong></p>
+<pre><code class="language-bash">strings -n 6 ./challenge | less</code></pre>
+<p><code>-n 6</code>은 최소 길이 6 이상인 문자열만 보여줘서 노이즈를 줄인다. <code>Correct</code>, <code>Wrong</code>, <code>flag{</code>, <code>password</code> 같은 단어를 찾는다. 찾으면 그 문자열의 주소를 기억해 둔다 (나중에 IDA에서 이 문자열을 참조하는 코드로 바로 점프할 것이다).</p>
+<p><strong>3) 임포트/링크된 함수 확인</strong></p>
+<p>Linux:</p>
+<pre><code class="language-bash">readelf -d ./challenge | grep NEEDED
+nm -D ./challenge 2&gt;/dev/null | grep ' U '</code></pre>
+<p>Windows: PE-bear나 IDA의 Imports 탭에서 확인. <code>scanf</code>, <code>strcmp</code>, <code>IsDebuggerPresent</code>, <code>ptrace</code> 같은 이름이 보이면 각각 "입력받음", "비교함", "안티디버깅 있음"이라는 힌트다.</p>
+<p><strong>4) 보호 기법 확인 (Linux)</strong></p>
+<pre><code class="language-bash">checksec --file=./challenge</code></pre>
+<p><code>Canary</code>, <code>NX</code>, <code>PIE</code>, <code>RELRO</code> 값이 나온다. 이 단계는 리버싱보다 pwn에 더 중요하지만, PIE가 켜져 있으면 "실행할 때마다 함수 주소가 바뀐다"는 걸 미리 알고 시작해야 GDB에서 당황하지 않는다.</p>
+<p><strong>5) 방향 결정</strong></p>
+<ul><li>문자열에 "Enter flag"류가 있고 함수 몇 개면 → 정적 분석(IDA F5)으로 바로 검증 로직을 읽는다.</li><li>문자열이 거의 안 보이고 섹션 엔트로피가 높으면 → 패킹 의심, 동적 분석(디버거로 실행 후 언패킹된 코드 관찰)부터 고려한다.</li></ul>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">file ./challenge
+strings -n 6 ./challenge
+readelf -h ./challenge
+readelf -d ./challenge
+checksec --file=./challenge</code></pre>
+<p>Windows에서는 Detect It Easy 실행 → 파일 드롭 → 상단 "File type" / "Compiler" / 하단 스캔 버튼(패커 탐지)을 확인한다.</p>
+<h2>출력 해석</h2>
+<ul><li><code>file</code> 결과에 <code>pie executable</code>이 있으면 PIE가 켜져 있다는 뜻 (Position Independent Executable). 주소가 매번 바뀐다.</li><li><code>readelf -d</code> 결과에서 <code>NEEDED libc.so.6</code> 등은 이 바이너리가 어떤 공유 라이브러리에 의존하는지 보여준다.</li><li>DIE에서 "Packer: UPX"라고 뜨면 언패킹부터 해야 코드가 제대로 보인다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>확장자만 보고 "이건 그냥 EXE겠지"라고 단정하는 것 — .NET이나 설치 스크립트일 수 있다.</li><li><code>strings</code> 결과를 안 보고 바로 어셈블리부터 읽기 시작하는 것 — 문자열이 지도 역할을 한다.</li><li>32비트/64비트를 확인하지 않고 레지스터 이름(<code>eax</code> vs <code>rax</code>)에 혼란을 겪는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>file</code> 명령이 없다면 WSL이나 Git Bash에 <code>file</code> 패키지가 설치되어 있는지 확인 (<code>sudo apt install file</code>).</li><li>문자열이 하나도 안 보인다면 → REV-0002(확장자/실제 형식 확인)와 패킹 의심 체크리스트(REV-0224)로 이동.</li><li>함수가 하나도 안 보인다면 → REV-0009(main이 안 보일 때), REV-0010(stripped에서 시작점 잡기)로 이동.</li></ul>
+<h2>미니 예제</h2>
+<p>가상의 CTF 문제 <code>crackme</code>를 받았다고 하자.</p>
+<pre><code class="language-bash">$ file crackme
+crackme: ELF 64-bit LSB executable, x86-64, ... not stripped
+
+$ strings -n 6 crackme | grep -i -E "correct|wrong|flag"
+Correct! Here is your flag:
+Wrong password, try again.</code></pre>
+<p>이 두 줄만으로 "입력을 받아서 비교하는 crackme이고, 두 문자열 중 하나를 출력하는 분기가 있다"는 사실을 알 수 있다. 다음 할 일은 IDA에서 <code>Correct!</code> 문자열을 더블클릭 → Xrefs(X 키)로 이 문자열을 참조하는 함수로 이동하는 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0002-dont-trust-extension.html">REV-0002 — 확장자를 믿으면 안 되는 이유와 실제 파일 형식 확인법</a></li><li><a href="rev-0009-finding-main.html">REV-0009 — main 함수가 안 보일 때 찾는 방법</a></li><li><a href="rev-0010-stripped-entry-point.html">REV-0010 — stripped 바이너리에서 시작점 잡는 방법</a></li><li><a href="rev-0100-plt-got.html">REV-0100 — PLT와 GOT 기초</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>file(1)</code>, <code>strings(1)</code>, <code>readelf(1)</code> — GNU binutils 공식 man page 내용 기준으로 작성 (2026-09-08 검증).</li><li>Detect It Easy 공식 GitHub(horsicq/Detect-It-Easy) 기능 설명 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

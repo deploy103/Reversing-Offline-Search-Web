@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Linux에서 x86 32비트 바이너리 실행 환경 준비(multilib) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>Linux에서 x86 32비트 바이너리 실행 환경 준비(multilib)</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">readelf</span></div>
+<h2>한 줄 요약</h2>
+<p>64비트 리눅스 배포판은 기본적으로 32비트(<code>ELF 32-bit</code>) 실행 파일이 필요로 하는 32비트용 동적 링커와 <code>libc</code>를 설치해두지 않으므로, <code>file</code>로 확인한 아키텍처가 <code>Intel 80386</code>인 바이너리를 실행하려면 <code>dpkg --add-architecture i386</code>(Debian/Ubuntu) 또는 <code>gcc-multilib</code>/32비트 호환 패키지군(multilib)을 별도로 설치해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>file ./chall</code> 결과가 <code>ELF 32-bit LSB executable, Intel 80386</code>인데 <code>./chall</code>을 실행하면 <code>bash: ./chall: No such file or directory</code>가 뜨고, 파일이 분명히 그 자리에 있는데도 이런 오류가 날 때</li><li><code>ldd ./chall</code>이 <code>libc.so.6 =&gt; not found</code>를 출력할 때(32비트용 <code>libc.so.6</code>이 시스템에 없는 경우)</li><li>GDB로 32비트 바이너리를 디버깅하려는데 레지스터가 64비트 이름(<code>$rax</code> 등)으로만 보이고 이상하게 동작할 때</li><li>CTF pwn 문제가 32비트(x86)로 나왔는데 최근 설치한 64비트 전용 Ubuntu/Kali에서 바로 실행이 안 될 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>"No such file or directory"인데 파일은 있다 — 진짜 원인은 인터프리터</h3>
+<p>32비트 ELF 실행 파일도 64비트 ELF와 마찬가지로 <code>PT_INTERP</code> 세그먼트에 자신을 로드할 동적 링커 경로(보통 <code>/lib/ld-linux.so.2</code>)가 박혀 있다. 커널은 실행 요청을 받으면 이 인터프리터 경로가 실제로 존재하는지 확인하는데, 64비트 전용으로 설치된 시스템에는 이 32비트 전용 링커 파일 자체가 없다. 이때 셸이 내는 오류 메시지가 "커널이 실행 파일 자체를 못 찾음"과 똑같은 <code>No such file or directory</code>라서, 처음 보면 마치 파일이 없는 것처럼 착각하기 쉽다. <code>readelf -l ./chall | grep interpreter</code>로 요구되는 인터프리터 경로를 확인하고, <code>ls -l /lib/ld-linux.so.2</code>로 실제로 그 파일이 있는지 대조해보면 원인이 명확해진다.</p>
+<h3>multilib이란</h3>
+<p>64비트(x86-64) 리눅스 배포판이 32비트(i386/x86) 바이너리도 실행할 수 있도록, 커널의 32비트 호환 실행 지원(대부분의 x86-64 CPU와 리눅스 커널은 기본적으로 32비트 유저랜드 코드 실행을 지원)과 함께 32비트용 <code>libc</code>, <code>libm</code>, 동적 링커 등을 나란히 설치해두는 구성을 <strong>multilib</strong>이라 부른다. 커널 자체는 대부분 이미 32비트 실행을 지원하므로, 실제로 부족한 건 유저 공간의 32비트 라이브러리/링커 파일들이다.</p>
+<h3>배포판별 설치 패키지</h3>
+<ul><li><strong>Debian/Ubuntu</strong>: 먼저 32비트 아키텍처를 활성화한 뒤 패키지를 설치해야 한다.</li></ul>
+<pre><code class="language-bash">  sudo dpkg --add-architecture i386
+  sudo apt update
+  sudo apt install libc6:i386 libncurses5:i386 libstdc++6:i386</code></pre>
+<p>컴파일까지 32비트로 하고 싶다면 <code>gcc-multilib</code>, <code>g++-multilib</code>도 추가로 설치한다.</p>
+<ul><li><strong>Kali Linux</strong>: 위와 동일한 <code>dpkg --add-architecture i386</code> 절차를 따르되, 최신 Kali는 배포 저장소 설정이 조금씩 바뀌므로 공식 문서의 최신 안내를 따르는 것이 안전하다.</li><li><strong>CTF/pwn용으로 특히 자주 필요한 패키지</strong>: <code>libc6-dbg:i386</code>(32비트 libc 디버그 심볼, GDB에서 libc 내부 함수를 스텝 실행할 때 필요), <code>libssl-dev:i386</code> 등 문제에서 요구하는 개별 라이브러리.</li></ul>
+<h3>GDB/Pwndbg에서 32비트 바이너리를 다룰 때</h3>
+<p>32비트 프로세스를 디버깅할 때는 GDB가 자동으로 32비트 레지스터 세트(<code>$eax</code>, <code>$ebx</code>, <code>$esp</code>, <code>$ebp</code>, <code>$eip</code> 등)를 사용하도록 전환한다. 다만 32비트용 GDB 자체 또는 GDB의 32비트 지원 라이브러리가 없으면 <code>attach</code>/<code>run</code>이 실패할 수 있으므로, <code>libc6-dbg:i386</code>과 함께 시스템의 GDB가 멀티아키텍처를 지원하는 빌드인지도 확인 대상이다(대부분의 리눅스 배포판 기본 GDB 패키지는 x86/x86-64를 함께 지원한다).</p>
+<h3>pwntools/Python에서의 아키텍처 지정</h3>
+<p>익스플로잇 스크립트를 짤 때는 <code>pwntools</code>의 <code>context.arch = 'i386'</code>(또는 <code>context(arch='i386', os='linux')</code>)로 명시적으로 32비트를 지정해야 레지스터/ROP 가젯 검색/<code>shellcraft</code> 출력이 올바르게 32비트 기준으로 동작한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>file ./chall</code> → <code>ELF 32-bit LSB executable, Intel 80386, ...</code></li><li><code>./chall</code> 실행 시 <code>bash: ./chall: No such file or directory</code> (파일은 실재)</li><li><code>ldd ./chall</code> → <code>./lib/ld-linux.so.2: No such file or directory</code> 또는 <code>libc.so.6 =&gt; not found</code></li><li><code>readelf -l ./chall | grep interpreter</code> 결과 경로가 실제로 시스템에 없음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>file ./chall</code>로 32비트임을 확인한 뒤, <code>readelf -l ./chall | grep -A1 INTERP</code>로 요구되는 인터프리터 경로를, <code>ls -l &lt;그 경로&gt;</code>로 실제 존재 여부를 확인한다. 없으면 바로 multilib 패키지 설치로 넘어간다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>file ./chall</code>로 <code>Intel 80386</code>(32비트) 여부 확인</li><li><code>readelf -l ./chall | grep interpreter</code>로 필요한 동적 링커 경로 확인 (보통 <code>/lib/ld-linux.so.2</code>)</li><li><code>ls -l /lib/ld-linux.so.2</code> 또는 <code>ls -l /lib/i386-linux-gnu/</code>로 32비트 링커/라이브러리 유무 확인</li><li>없으면 Debian/Ubuntu 계열에서 아키텍처 추가 및 설치</li></ol>
+<pre><code class="language-bash">   sudo dpkg --add-architecture i386
+   sudo apt update
+   sudo apt install libc6:i386 libncurses5:i386</code></pre>
+<ol><li>다시 <code>./chall</code> 실행해서 정상 동작 확인</li><li>GDB로 디버깅해야 한다면 그대로 <code>gdb ./chall</code> 실행 — 최신 GDB는 대상 ELF의 클래스(<code>ELFCLASS32</code>)를 보고 자동으로 32비트 모드로 전환한다</li><li>컴파일까지 필요하면 <code>gcc-multilib</code> 설치 후 <code>gcc -m32 -o test test.c</code>로 검증</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">file ./chall
+readelf -l ./chall | grep -A1 interpreter
+ldd ./chall
+sudo dpkg --add-architecture i386
+sudo apt update
+sudo apt install libc6:i386 libncurses5:i386 gcc-multilib
+gdb ./chall</code></pre>
+<p>pwntools:</p>
+<pre><code class="language-python">context.arch = 'i386'
+context.os = 'linux'</code></pre>
+<h2>출력 해석</h2>
+<p><code>readelf -l ./chall</code>에서:</p>
+<pre><code>INTERP         0x000154 0x08049154 0x08049154 0x00013 0x00013 R   0x1
+      [Requesting program interpreter: /lib/ld-linux.so.2]</code></pre>
+<p><code>[Requesting program interpreter: /lib/ld-linux.so.2]</code>가 바로 커널이 실행 시 찾는 경로다. 이 경로가 로컬 시스템에 없으면 셸이 "파일을 못 찾는다"는 오류를 내는 진짜 이유가 여기 있다는 것이 확정된다. <code>libc6:i386</code> 설치 후에는 <code>/lib/i386-linux-gnu/libc.so.6</code>, <code>/lib/ld-linux.so.2</code> 경로에 실제 파일이 생긴다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>No such file or directory</code>를 보고 파일 경로나 실행 권한(<code>chmod +x</code>) 문제로 오해해서 엉뚱한 곳을 고치는 것 — 32비트 바이너리라면 항상 인터프리터 존재 여부부터 확인해야 한다.</li><li><code>apt install libc6-i386</code>처럼 아키텍처 접미사(<code>:i386</code>) 없이 옛날 패키지명을 그대로 시도해서 최신 배포판에서 패키지를 못 찾는 것 — <code>dpkg --add-architecture i386</code> 방식이 현재 Debian/Ubuntu 표준이다.</li><li><code>dpkg --add-architecture i386</code> 후 <code>apt update</code>를 빼먹고 바로 <code>apt install</code>을 시도해서 "Unable to locate package" 오류를 만나는 것.</li><li>32비트 바이너리인 걸 눈치채지 못하고 GDB에서 계속 64비트 레지스터(<code>$rax</code>)로 값을 확인하려다 이상한 값만 보는 것 — 32비트 프로세스에서는 <code>$eax</code>, <code>$ebx</code> 등 32비트 이름을 써야 한다.</li><li>CPU가 실제로 32비트 실행을 지원하지 않는 특수 환경(일부 클라우드 인스턴스, ARM 기반 서버 등)에서 multilib을 설치해도 커널/CPU 자체가 32비트 유저랜드를 지원하지 않아 여전히 실행이 안 되는 경우를 구분하지 못하는 것 — 이 경우 x86 호환 VM/컨테이너를 별도로 준비해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>32비트 ELF의 헤더/인터프리터 구조 자체가 헷갈리면 → REV-0649 ELF Interpreter(ld-linux.so)가 하는 일</li><li><code>LD_LIBRARY_PATH</code>로 특정 라이브러리 경로를 지정하는 방법이 필요하면 → REV-0651 LD_LIBRARY_PATH와 라이브러리 탐색 순서</li><li>공유 라이브러리 자체를 분석해야 한다면 → REV-0652 공유 라이브러리(.so) 자체를 분석 대상으로 다루기</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ file ./chall
+chall: ELF 32-bit LSB executable, Intel 80386, version 1 (SYSV), dynamically linked, interpreter /lib/ld-linux.so.2, ...
+
+$ ./chall
+bash: ./chall: No such file or directory
+
+$ readelf -l ./chall | grep interpreter
+      [Requesting program interpreter: /lib/ld-linux.so.2]
+
+$ ls -l /lib/ld-linux.so.2
+ls: cannot access '/lib/ld-linux.so.2': No such file or directory
+
+$ sudo dpkg --add-architecture i386
+$ sudo apt update
+$ sudo apt install -y libc6:i386
+$ ./chall
+사용법: ./chall &lt;input&gt;</code></pre>
+<p>32비트 링커가 없어서 나던 "No such file or directory"가 <code>libc6:i386</code> 설치 이후 정상적으로 프로그램 자체의 사용법 메시지로 바뀐 것을 확인할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0649-ld-linux-so-interpreter.html">REV-0649 — ELF Interpreter(ld-linux.so)가 하는 일</a></li><li><a href="rev-0651-ld-library-path-search-order.html">REV-0651 — LD_LIBRARY_PATH와 라이브러리 탐색 순서</a></li><li><a href="rev-0652-shared-library-so-analysis.html">REV-0652 — 공유 라이브러리(.so) 자체를 분석 대상으로 다루기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>ELF <code>PT_INTERP</code> 세그먼트와 커널의 인터프리터 경로 해석 방식: System V ABI 및 ELF Specification 기준.</li><li>Debian/Ubuntu의 <code>dpkg --add-architecture</code>를 이용한 multiarch(멀티아키텍처) 패키지 설치 절차: Debian 공식 위키(Multiarch/HOWTO) 및 Ubuntu 공식 문서 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

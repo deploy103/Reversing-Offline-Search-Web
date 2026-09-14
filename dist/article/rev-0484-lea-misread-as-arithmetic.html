@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>LEA를 산술 연산으로 착각해서 잘못 해석했을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>LEA를 산술 연산으로 착각해서 잘못 해석했을 때</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>LEA</code>(Load Effective Address)는 오퍼랜드에 <code>[...]</code> 형태의 대괄호가 있어도 <strong>실제로 메모리를 읽지 않고, 그 안의 주소 계산식(더하기·상수배)만 계산해서 레지스터에 저장</strong>하는 명령어이며, 이 성질을 이용해 컴파일러가 <code>LEA</code>를 순수한 정수 곱셈/덧셈 계산기로 즐겨 쓰기 때문에 "메모리를 다루는 명령어"라는 선입견으로 읽으면 잘못 해석하게 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>lea eax, [eax+eax*2]</code> 같은 코드를 보고 "이게 메모리에서 뭔가를 읽어오는 거 아닌가?"라고 헷갈릴 때</li><li>어떤 함수에서 곱셈(<code>imul</code>)이 하나도 안 보이는데 결과가 곱셈처럼 동작하는 걸 발견했을 때</li><li><code>LEA</code> 다음에 플래그를 검사하는 <code>Jcc</code>가 이어지길 기대했는데 플래그가 전혀 안 바뀐 걸 확인했을 때</li><li>구조체 필드 접근(<code>lea rax, [rbx+rcx*8+0x10]</code>)과 순수 산술 계산용 <code>LEA</code>를 구분하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>LEA가 실제로 하는 일: 주소 "계산"이지 "접근"이 아니다</h3>
+<p>다른 대부분의 <code>[...]</code> 오퍼랜드를 쓰는 명령어(<code>MOV</code>, <code>ADD</code>, <code>CMP</code> 등)는 그 대괄호 안의 주소가 가리키는 <strong>메모리 값을 실제로 읽거나 쓴다</strong>. 하지만 <code>LEA</code>는 다르다. <code>LEA dest, [expr]</code>는 대괄호 안의 <code>expr</code>(베이스 레지스터 + 인덱스 레지스터 × 배율 + 변위)을 <strong>주소 계산 유닛(AGU)으로 계산만 하고, 그 계산 결과값 자체를 dest에 저장</strong>한다. 메모리 버스에 접근하는 로드(load) 동작이 아예 일어나지 않는다.</p>
+<pre><code class="language-asm">mov  eax, [rbx+8]    ; RBX+8 주소에서 메모리를 실제로 읽어서 EAX에 저장
+lea  eax, [rbx+8]    ; RBX+8이라는 "숫자"를 계산해서 EAX에 저장 (메모리 접근 없음)</code></pre>
+<h3>이 성질을 이용한 곱셈/덧셈 트릭</h3>
+<p>x86의 주소 계산식은 <code>베이스 + 인덱스*배율(1,2,4,8) + 변위</code>형태를 하드웨어가 한 사이클에 계산해준다. 컴파일러는 이걸 이용해서 <strong>곱셈·덧셈 조합을 <code>IMUL</code>이나 <code>ADD</code> 여러 개 대신 <code>LEA</code> 한 줄로 압축</strong>한다.</p>
+<pre><code class="language-asm">lea  eax, [rax+rax*2]   ; EAX = RAX + RAX*2 = RAX*3
+lea  eax, [rax*4]        ; EAX = RAX*4
+lea  eax, [rax+rax*4]    ; EAX = RAX*5
+lea  eax, [rax*8+rax]    ; EAX = RAX*9
+lea  eax, [rbx+rcx+4]    ; EAX = RBX + RCX + 4  (두 레지스터를 더하고 상수까지 더함)</code></pre>
+<p>이 배율은 인덱스 레지스터에만 적용 가능하고 1, 2, 4, 8만 지원되므로, 3, 5, 9배는 "자기 자신 + 자기 자신*배율" 형태로 표현하는 게 이 트릭의 핵심이다. <code>RAX*3</code>을 직접 표현하는 배율은 없지만 <code>RAX + RAX*2</code>로 우회하는 식이다.</p>
+<h3>플래그가 전혀 바뀌지 않는다</h3>
+<p><code>ADD</code>, <code>IMUL</code> 등 진짜 산술 명령어는 플래그(CF, ZF, SF, OF 등)를 세팅하지만, <strong><code>LEA</code>는 산술처럼 보여도 플래그를 전혀 건드리지 않는다.</strong> 이는 매우 중요한 구분점이다 — <code>LEA</code> 바로 다음에 오는 <code>Jcc</code>는 절대로 그 <code>LEA</code>의 결과를 보고 분기하는 게 아니다(플래그가 안 바뀌었으므로 더 이전의 <code>CMP</code>/<code>TEST</code> 결과를 그대로 참조하는 것). 초보자가 흔히 "LEA 다음에 조건 분기가 왜 이렇게 오지?"라고 헷갈리는 이유가 이것이다.</p>
+<h3>진짜 메모리 접근용 LEA와 산술용 LEA 구분</h3>
+<p><code>LEA</code>는 원래 목적대로 <strong>진짜 포인터/주소를 만드는 데에도</strong> 똑같이 쓰인다.</p>
+<pre><code class="language-asm">lea  rax, [rbp-0x20]     ; 스택의 지역 변수 버퍼 주소를 구함 (포인터로 쓸 목적)
+lea  rdi, [rbx+rcx*8]    ; 배열 rbx의 rcx번째 8바이트 원소 주소 (배열 인덱싱)</code></pre>
+<p>이런 경우는 다음 줄에서 그 결과가 <code>mov</code>나 함수 인자(REV-0071)로 쓰이며 "주소"로 취급된다. 반면 산술 트릭용 <code>LEA</code>는 그 결과가 바로 산술 계산에 이어지거나(<code>imul</code>, <code>add</code> 등 없이 곧장 다른 값과 연산) 정수 변수에 저장된다. <strong>결과가 이후 코드에서 포인터로 역참조되는지(<code>[reg]</code> 형태로 다시 쓰이는지) 아니면 순수 숫자로 쓰이는지</strong>를 보면 구분할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>lea eax, [eax+eax*2]</code>, <code>lea eax, [eax*4+eax]</code> 처럼 같은 레지스터가 베이스와 인덱스에 동시에 등장 — 곱셈 트릭일 확률이 매우 높음</li><li><code>lea</code> 결과가 바로 뒤에서 <code>[결과레지스터]</code> 형태로 다시 참조됨 — 진짜 주소(포인터)로 쓰이는 경우</li><li><code>lea</code> 다음에 플래그를 검사하지 않는 코드가 이어짐 — LEA는 플래그를 안 바꾸므로 당연한 것</li><li>함수 프롤로그 직후 <code>lea rax, [rbp-0x30]</code> — 지역 변수 버퍼의 시작 주소를 구하는 전형적 패턴</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>LEA</code> 대괄호 안의 표현식을 그대로 수식으로 옮겨 적어본다(<code>[rax+rax*2]</code> → <code>rax + rax*2</code>).</li><li>그 결과가 이후 코드에서 <code>[결과]</code>처럼 다시 역참조되는지, 아니면 순수 숫자로 쓰이는지 확인한다.</li><li>값으로 쓰인다면 배율(1,2,4,8)을 실제 정수로 환산해서 몇 곱하기 몇인지 계산해본다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 대괄호 안 표현식을 산술식으로 변환</strong></p>
+<p><code>[base + index*scale + disp]</code> 형태를 그대로 <code>base + index*scale + disp</code>라는 정수 수식으로 옮긴다.</p>
+<p><strong>2) base와 index가 같은 레지스터인지 확인</strong></p>
+<p>같다면(<code>[rax+rax*2]</code>처럼) 이는 <code>rax * (1+2) = rax * 3</code> 형태의 곱셈 트릭이다. 서로 다른 레지스터면 두 값을 더하는 덧셈이거나 배열 인덱싱(진짜 주소 계산)이다.</p>
+<p><strong>3) 결과 레지스터의 다음 쓰임새 추적</strong></p>
+<p>결과가 담긴 레지스터가 이후 <code>mov [result], ...</code>나 <code>[result]</code> 형태로 역참조되면 주소(포인터)다. <code>add</code>, <code>cmp</code>, <code>imul</code> 등 순수 연산에 바로 쓰이거나 지역 변수에 정수로 저장되면 산술 계산이다.</p>
+<p><strong>4) IDA 디컴파일과 대조</strong></p>
+<p>IDA F5는 곱셈 트릭용 LEA를 대개 <code>v1 = v2 * 3;</code> 처럼 깔끔한 곱셈식으로 자동 복원해준다. 반대로 주소 계산용 LEA는 <code>&amp;buffer[i]</code>나 포인터 연산 형태로 나타난다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: F5 디컴파일 결과에서 LEA가 곱셈/덧셈 수식으로 정리되는지, 포인터 연산으로 정리되는지 확인</li><li>x64dbg/GDB: <code>LEA</code> 실행 전후 플래그 레지스터 값을 비교해서 정말 안 바뀌는지 직접 확인(<code>p $eflags</code> 전후 비교)</li><li>계산기: 손으로 곱셈 트릭을 검증할 때는 파이썬으로 <code>base*(1+scale)</code> 형태를 바로 계산해보는 것이 빠르다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>LEA</code> 실행 전후 EFLAGS 값이 완전히 동일하면 정상이다(어떤 산술 명령어처럼 보여도 플래그 불변).</li><li>계산한 배수(3, 5, 9배 등)가 코드 전체 문맥(예: 구조체 크기, 배열 원소 크기)과 맞아떨어지면 그게 곱셈 트릭이 맞다는 강력한 근거다.</li><li>결과 레지스터를 역참조하는 코드가 뒤따르면 그건 산술이 아니라 주소 계산이었다는 뜻이니 앞선 판단을 정정한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>대괄호 <code>[...]</code>가 보이면 무조건 "메모리를 읽는다"고 반사적으로 판단하는 것 — LEA는 예외다.</li><li><code>LEA</code> 다음에 오는 <code>Jcc</code>가 그 LEA의 결과를 보고 분기한다고 착각하는 것 — LEA는 플래그를 바꾸지 않으므로 그 앞의 <code>CMP</code>/<code>TEST</code> 결과를 계속 참조하는 것이다.</li><li><code>lea eax, [eax+eax*2]</code>를 보고 실제로 무슨 곱셈인지 계산해보지 않고 그냥 "복잡한 주소 계산이겠거니" 하고 넘어가는 것 — 구조체 크기(예: 12바이트 원소 크기 = ×3)를 알아내는 중요한 단서를 놓치게 된다.</li><li>LEA로 계산된 값이 항상 "포인터"라고 단정하는 것 — 정수 산술 결과일 수도 있다는 걸 항상 열어두고 다음 코드를 봐야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>LEA의 기본 문법/오퍼랜드 형식을 더 자세히 보고 싶으면 → REV-0042(LEA: 주소 계산인데 왜 산술 연산처럼 보이는가)</li><li>RIP 상대 주소를 계산하는 LEA(<code>lea rax, [rip+disp]</code>)가 헷갈리면 → REV-0479(상대 주소(RIP-relative)가 계산이 안 맞을 때)</li><li>곱셈이 시프트/덧셈으로 최적화되는 다른 패턴이 궁금하면 → REV-0454(나눗셈이 곱셈과 시프트로 최적화되는 패턴)를 참고</li><li>구조체 필드/배열 인덱싱 주소 계산 패턴을 더 보고 싶으면 → REV-0456(배열 경계 체크가 어셈블리에 나타나는 패턴)</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 3배 곱셈 트릭</strong></p>
+<pre><code class="language-c">int x3 = x * 3;</code></pre>
+<pre><code class="language-asm">lea   eax, [rax+rax*2]   ; eax = rax + rax*2 = rax*3</code></pre>
+<p><strong>예제 2 — 구조체 배열 인덱싱 (진짜 주소 계산)</strong></p>
+<pre><code class="language-c">struct Item items[10];   // sizeof(Item) == 12
+Item *p = &amp;items[i];</code></pre>
+<pre><code class="language-asm">lea   eax, [rax+rax*2]     ; i*3  (i를 3배로 만드는 중간 계산, sizeof=12=4*3이라 4바이트 단위로 3배)
+lea   rax, [rbx+rax*4]     ; items 배열 시작(rbx) + i*12 바이트 위치 -&gt; 진짜 포인터
+mov   [rbp-8], rax          ; p = &amp;items[i]</code></pre>
+<p><strong>예제 3 — 스택 지역 변수 버퍼 주소 (진짜 포인터, 산술 아님)</strong></p>
+<pre><code class="language-asm">lea   rdi, [rbp-0x40]     ; 지역 배열 버퍼의 시작 주소를 구함
+call  memset               ; memset(buf, ...) 처럼 포인터로 바로 사용됨</code></pre>
+<p>이 경우는 곱셈 트릭이 아니라 순수하게 "이 지역 변수의 주소가 필요해서" 쓰인 LEA다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0042-lea.html">REV-0042 — LEA: 주소 계산인데 왜 산술 연산처럼 보이는가</a></li><li><a href="rev-0479-rip-relative-mismatch.html">REV-0479 — 상대 주소(RIP-relative)가 계산이 안 맞을 때</a></li><li><a href="rev-0047-add.html">REV-0047 — ADD: 덧셈과 플래그</a></li><li><a href="rev-0480-operand-size-confusion.html">REV-0480 — 같은 니모닉인데 오퍼랜드 크기가 헷갈릴 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>LEA가 메모리 접근 없이 유효 주소만 계산하고 플래그를 변경하지 않는다는 점: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "LEA—Load Effective Address" 섹션 기준.</li><li>SIB(Scale-Index-Base) 인코딩의 배율(1,2,4,8) 제한: 동일 매뉴얼 Volume 2A, "2.1.5 Addressing-Mode Encoding of ModRM and SIB Bytes" 기준.</li><li>컴파일러가 곱셈을 LEA로 강도 감소(strength reduction)하는 관행: GCC/LLVM 최적화 관련 일반 문서 기준(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

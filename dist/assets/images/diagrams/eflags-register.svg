@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 900 260" font-family="Consolas, 'Courier New', monospace" font-size="13">
+  <rect x="0" y="0" width="900" height="260" fill="#ffffff" stroke="#d0d0d0"/>
+  <text x="20" y="26" font-size="16" font-weight="bold" fill="#111">EFLAGS 레지스터의 주요 비트 (x86 32비트 기준, 하위 16비트)</text>
+
+  <!-- bit boxes bit 15 -> bit 0 -->
+  <!-- columns: 16 boxes, width 50 each starting x=20 -->
+  <g font-size="12">
+    <!-- header row: bit numbers -->
+    <text x="45"  y="55" text-anchor="middle" fill="#666">15</text>
+    <text x="95"  y="55" text-anchor="middle" fill="#666">14</text>
+    <text x="145" y="55" text-anchor="middle" fill="#666">13</text>
+    <text x="195" y="55" text-anchor="middle" fill="#666">12</text>
+    <text x="245" y="55" text-anchor="middle" fill="#666">11</text>
+    <text x="295" y="55" text-anchor="middle" fill="#666">10</text>
+    <text x="345" y="55" text-anchor="middle" fill="#666">9</text>
+    <text x="395" y="55" text-anchor="middle" fill="#666">8</text>
+    <text x="445" y="55" text-anchor="middle" fill="#666">7</text>
+    <text x="495" y="55" text-anchor="middle" fill="#666">6</text>
+    <text x="545" y="55" text-anchor="middle" fill="#666">5</text>
+    <text x="595" y="55" text-anchor="middle" fill="#666">4</text>
+    <text x="645" y="55" text-anchor="middle" fill="#666">3</text>
+    <text x="695" y="55" text-anchor="middle" fill="#666">2</text>
+    <text x="745" y="55" text-anchor="middle" fill="#666">1</text>
+    <text x="795" y="55" text-anchor="middle" fill="#666">0</text>
+  </g>
+
+  <!-- boxes: highlight ZF(6), SF(7), OF(11), CF(0), PF(2), AF(4), TF(8), IF(9), DF(10) -->
+  <g stroke="#888" stroke-width="1">
+    <rect x="20"  y="62" width="50" height="36" fill="#f2f2f2"/>
+    <rect x="70"  y="62" width="50" height="36" fill="#f2f2f2"/>
+    <rect x="120" y="62" width="50" height="36" fill="#f2f2f2"/>
+    <rect x="170" y="62" width="50" height="36" fill="#f2f2f2"/>
+    <rect x="220" y="62" width="50" height="36" fill="#f2f2f2"/>
+    <rect x="270" y="62" width="50" height="36" fill="#e8f5e0"/>
+    <rect x="320" y="62" width="50" height="36" fill="#e8f5e0"/>
+    <rect x="370" y="62" width="50" height="36" fill="#e8f5e0"/>
+    <rect x="420" y="62" width="50" height="36" fill="#ffe9e6"/>
+    <rect x="470" y="62" width="50" height="36" fill="#eef3ff"/>
+    <rect x="520" y="62" width="50" height="36" fill="#f2f2f2"/>
+    <rect x="570" y="62" width="50" height="36" fill="#fff6d9"/>
+    <rect x="620" y="62" width="50" height="36" fill="#f2f2f2"/>
+    <rect x="670" y="62" width="50" height="36" fill="#fff6d9"/>
+    <rect x="720" y="62" width="50" height="36" fill="#f2f2f2"/>
+    <rect x="770" y="62" width="50" height="36" fill="#ffe9e6"/>
+  </g>
+  <g font-size="12" font-weight="bold" text-anchor="middle" fill="#222">
+    <text x="245" y="85">OF</text>
+    <text x="295" y="85">DF</text>
+    <text x="345" y="85">IF</text>
+    <text x="395" y="85">TF</text>
+    <text x="445" y="85">SF</text>
+    <text x="495" y="85">ZF</text>
+    <text x="595" y="85">AF</text>
+    <text x="695" y="85">PF</text>
+    <text x="795" y="85">CF</text>
+  </g>
+
+  <text x="20" y="130" font-size="13" fill="#222" font-weight="bold">비교/산술 명령이 주로 바꾸는 플래그(리버싱에서 가장 중요)</text>
+  <text x="20" y="152" font-size="13" fill="#222">CF (bit 0)  Carry Flag    — 부호 없는(unsigned) 연산에서 자리올림/빌림 발생</text>
+  <text x="20" y="174" font-size="13" fill="#222">PF (bit 2)  Parity Flag   — 결과 하위 바이트의 1비트 개수가 짝수면 1</text>
+  <text x="20" y="196" font-size="13" fill="#222">ZF (bit 6)  Zero Flag     — 결과가 0이면 1  (JE/JZ, JNE/JNZ가 검사)</text>
+  <text x="20" y="218" font-size="13" fill="#222">SF (bit 7)  Sign Flag     — 결과의 최상위 비트(부호 비트)와 동일</text>
+  <text x="470" y="152" font-size="13" fill="#222">OF (bit 11) Overflow Flag — 부호 있는(signed) 연산에서 오버플로 발생</text>
+  <text x="470" y="174" font-size="13" fill="#222">AF (bit 4)  Auxiliary Carry — BCD 연산용 자리올림(리버싱에서는 잘 안 씀)</text>
+  <text x="470" y="196" font-size="13" fill="#222">DF (bit 10) Direction Flag — MOVS/STOS 등 문자열 명령의 진행 방향</text>
+  <text x="470" y="218" font-size="13" fill="#222">TF/IF (bit 8/9) — 싱글스텝/인터럽트 허용 (일반 산술 명령은 안 건드림)</text>
+  <text x="20" y="245" font-size="12" fill="#666">CMP/TEST는 값은 그대로 두고 이 플래그들만 갱신한다 (REV-0060, REV-0059 참고)</text>
+</svg>

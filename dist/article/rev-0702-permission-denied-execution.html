@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Permission denied로 바이너리 실행이 안 될 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>Permission denied로 바이너리 실행이 안 될 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">chmod</span><span class="tag">mount</span><span class="tag">dmesg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>./chall</code>을 실행했을 때 나오는 <code>bash: ./chall: Permission denied</code>는 대부분 실행 비트(<code>x</code>)가 없거나, 파일 시스템이 <code>noexec</code> 옵션으로 마운트되어 있거나, 디렉터리 자체에 실행 권한이 없어서 발생하며, 아키텍처 문제로 나는 <code>Exec format error</code>와는 원인과 해결책이 다르다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>CTF에서 받은 바이너리를 <code>chmod +x</code> 없이 바로 실행해서 <code>Permission denied</code>가 뜰 때</li><li><code>chmod +x ./chall</code>을 분명히 했는데도 여전히 같은 오류가 날 때</li><li>압축을 풀거나 다운로드한 위치(<code>/mnt/c/...</code>, Windows 공유 드라이브 등)에서 실행이 안 될 때</li><li>Docker/WSL 환경에서 특정 디렉터리(<code>/tmp</code>, 마운트된 볼륨)에서만 실행이 안 될 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>실행 비트가 없는 가장 흔한 경우</h3>
+<p>리눅스에서 파일을 실행하려면 그 파일에 실행 권한(<code>x</code>) 비트가 있어야 한다. <code>wget</code>, <code>scp</code>, 압축 해제(<code>unzip</code>, <code>tar</code>) 등으로 받은 파일은 기본적으로 실행 비트가 빠진 채로 저장되는 경우가 많다. <code>ls -l ./chall</code> 결과 앞자리가 <code>-rw-r--r--</code>처럼 <code>x</code>가 하나도 없으면 이 경우다.</p>
+<h3>chmod +x를 했는데도 안 되는 경우 — noexec 마운트</h3>
+<p><code>chmod +x</code>를 했는데도 여전히 <code>Permission denied</code>가 난다면, 파일 자체 권한이 아니라 <strong>그 파일이 놓인 파일 시스템이 <code>noexec</code> 옵션으로 마운트되어 있는 경우</strong>를 의심해야 한다. 예를 들어 일부 시스템에서 <code>/tmp</code>나 <code>/dev/shm</code>, USB/네트워크 마운트 지점이 보안상 <code>noexec</code>로 마운트되어 있으면, 그 안의 파일은 실행 비트가 있어도 커널이 실행 자체를 거부한다. WSL 환경에서 Windows 쪽 드라이브(<code>/mnt/c/...</code>)가 <code>noexec</code> 옵션으로 마운트된 경우도 흔하다.</p>
+<h3>디렉터리 자체의 실행(x) 권한 부족</h3>
+<p>파일이 아니라 그 파일이 들어있는 <strong>디렉터리</strong>에 실행 권한이 없어도 <code>Permission denied</code>가 난다. 디렉터리의 <code>x</code> 비트는 "그 디렉터리 안의 파일에 접근(경로 통과)할 수 있는가"를 의미하므로, 상위 디렉터리 중 하나라도 <code>x</code>가 빠져 있으면 파일 자체 권한과 무관하게 실행이 막힌다.</p>
+<h3>착각하기 쉬운 다른 오류와 구분</h3>
+<p><code>Permission denied</code>와 <code>cannot execute binary file: Exec format error</code>는 완전히 다른 문제다. 후자는 아키텍처 불일치(32비트 바이너리를 32비트 지원 없는 시스템에서 실행 등)나 손상된 헤더 때문이며, 권한과는 무관하다. 또한 SELinux/AppArmor 같은 강제 접근 제어(MAC)가 걸린 배포판에서는 권한 비트가 다 맞아도 정책에 의해 거부될 수 있는데, 이 경우 <code>dmesg</code>에 <code>avc: denied</code> 같은 로그가 남는다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code>$ ./chall
+bash: ./chall: Permission denied
+
+$ chmod +x ./chall
+$ ./chall
+bash: ./chall: Permission denied</code></pre>
+<p><code>chmod +x</code> 이후에도 동일 오류가 반복되면 파일 권한이 아니라 마운트 옵션/디렉터리 권한/MAC 정책 쪽 문제다.</p>
+<h2>가장 먼저 할 것</h2>
+<p><code>ls -l ./chall</code>로 실행 비트 유무를 확인하고, 없으면 <code>chmod +x ./chall</code>부터 시도한다. 그래도 안 되면 <code>mount | grep "$(df --output=target . | tail -1)"</code>로 현재 위치의 마운트 옵션에 <code>noexec</code>가 있는지 확인한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>ls -l ./chall</code>로 <code>x</code> 비트 확인</li><li>없으면 <code>chmod +x ./chall</code> 실행 후 재시도</li><li>그래도 <code>Permission denied</code>면 <code>mount | grep noexec</code>로 현재 파일 시스템이 noexec인지 확인</li><li>noexec이면 실행 가능한 위치(<code>~/</code> 홈 디렉터리 등)로 파일을 복사해서 그쪽에서 실행</li><li>여전히 안 되면 <code>namei -l ./chall</code>로 경로상의 모든 디렉터리 권한을 한 줄씩 점검(상위 디렉터리 <code>x</code> 비트 누락 확인)</li><li>그래도 이상하면 <code>dmesg | tail -20</code>으로 SELinux/AppArmor 거부 로그(<code>avc: denied</code>, <code>apparmor="DENIED"</code>) 확인</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">ls -l ./chall
+chmod +x ./chall
+mount | grep noexec
+df --output=target .
+namei -l ./chall
+dmesg | tail -20</code></pre>
+<h2>출력 해석</h2>
+<p><code>mount</code> 결과에서 현재 경로가 속한 줄에 <code>noexec</code>가 보이면 원인이 확정된 것이다. <code>namei -l</code> 출력에서 어느 한 줄의 권한이 <code>d---------</code> 등으로 <code>x</code>가 빠져 있으면 그 디렉터리가 원인이다. <code>dmesg</code>에 <code>avc: denied { execute }</code> 같은 줄이 있으면 SELinux 정책이 원인이다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>chmod +x</code>만 하고 그래도 안 되면 "권한을 더 풀어야 하나"라며 <code>chmod 777</code>을 반복 시도하는 것 — noexec 마운트는 파일 권한을 아무리 바꿔도 소용없다.</li><li><code>Permission denied</code>와 <code>Exec format error</code>를 같은 문제로 보고 아키텍처 문제 해결법을 시도하는 것.</li><li>root로 실행하면 되겠지 하고 <code>sudo ./chall</code>을 시도하는 것 — noexec 마운트는 root 권한과 무관하게 커널이 막는다. 실행 가능한 위치로 옮기는 것이 정답이다.</li><li>상위 디렉터리 권한은 확인하지 않고 파일 권한만 계속 들여다보는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>권한 문제는 해결됐는데 이번엔 <code>Exec format error</code>가 뜬다면 → REV-0089 ELF 헤더 읽는 법으로 아키텍처/클래스 필드 확인.</li><li>Docker 컨테이너 안에서만 실행/디버깅 권한 문제가 난다면 → REV-0715 Docker 컨테이너 안에서 gdb가 ptrace 권한 오류를 낼 때 (예정).</li><li>공유 라이브러리 자체를 못 찾는 오류라면 → REV-0706 공유 라이브러리를 못 찾아서 error while loading shared libraries가 뜰 때.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ ls -l chall
+-rw-r--r-- 1 user user 16800 Sep  9 10:00 chall
+$ ./chall
+bash: ./chall: Permission denied
+$ chmod +x chall
+$ ls -l chall
+-rwxr-xr-x 1 user user 16800 Sep  9 10:00 chall
+$ ./chall
+Hello, reversing!</code></pre>
+<p>실행 비트가 없던 첫 번째 시도는 실패했고, <code>chmod +x</code>로 <code>-rwxr-xr-x</code>가 된 뒤에는 정상 실행됐다. 이 예제처럼 <code>chmod +x</code> 한 번으로 해결되지 않는다면 마운트 옵션이나 디렉터리 권한 쪽을 봐야 한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0089-elf-header.html">REV-0089 — ELF 헤더 읽는 법</a></li><li><a href="rev-0706-shared-library-not-found.html">REV-0706 — 공유 라이브러리를 못 찾아서 error while loading shared libraries가 뜰 때</a></li><li><a href="rev-0715-docker-gdb-ptrace-permission-denied.html">REV-0715 — Docker 컨테이너 안에서 gdb가 ptrace 권한 오류를 낼 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>실행 비트(<code>x</code>)와 디렉터리 통과 권한(<code>x</code>)의 의미: POSIX 파일 권한 모델 및 Linux <code>chmod(1)</code>/<code>namei(1)</code> 공식 매뉴얼 기준.</li><li><code>noexec</code> 마운트 옵션이 실행 비트와 무관하게 실행을 차단하는 동작: Linux <code>mount(8)</code> 공식 매뉴얼 기준.</li><li>SELinux/AppArmor 거부 로그가 <code>dmesg</code>에 <code>avc: denied</code>/<code>apparmor="DENIED"</code> 형식으로 남는 점: 각 배포판(Ubuntu, RHEL 계열) 공식 문서 및 커널 audit 로그 형식 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

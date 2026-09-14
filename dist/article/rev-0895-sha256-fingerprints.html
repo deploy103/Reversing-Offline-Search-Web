@@ -1,0 +1,150 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SHA-256 흔적을 상수로 알아보는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>SHA-256 흔적을 상수로 알아보는 법</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>초기화 상수 <code>0x6A09E667</code>(및 그 뒤를 잇는 <code>0xBB67AE85</code>, <code>0x3C6EF372</code>...) 여덟 개, 또는 라운드 상수 테이블의 첫 값 <code>0x428A2F98</code>이 코드에서 발견되고 그 값을 기준으로 64회 반복되는 압축 루프가 있다면, 이건 확정적으로 <strong>SHA-256</strong>이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>32바이트(256비트) 길이의 해시 결과를 만들어내는 함수를 발견했을 때 — 16바이트(MD5), 20바이트(SHA-1)와 구분되는 SHA-256 특유의 출력 크기</li><li>초기화 단계에서 8개의 32비트 상수를 배열에 채우는 코드나, 64개의 32비트 상수로 이루어진 큰 테이블을 발견했을 때</li><li>Import 목록에 <code>SHA256_Init</code>, <code>SHA256_Update</code>, <code>SHA256_Final</code>(OpenSSL 저수준 API), <code>EVP_sha256</code>(OpenSSL 고수준 EVP API), <code>CC_SHA256</code>(Apple CommonCrypto), <code>BCryptHashData</code>와 함께 <code>L"SHA256"</code> 문자열이 있을 때</li><li>루프가 정확히 64번(또는 메시지 블록 수에 비례해 64의 배수) 반복되며, 그 안에서 우측 순환 시프트(rotate right)와 XOR을 조합한 특유의 함수(<code>Ch</code>, <code>Maj</code>, <code>Σ0</code>, <code>Σ1</code>)가 반복 등장할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>SHA-256이 CTF에 나오는 맥락</h3>
+<p>SHA-256은 SHA-2 계열의 대표 암호학적 해시 함수로, 비트코인 블록 해시, TLS 인증서, 각종 무결성 검증에 널리 쓰인다. CTF에서는 "해시값을 통해 원문을 복원하라"는 식의 순수 역산 문제로는 거의 나오지 않는다(암호학적 해시 함수는 설계상 역산이 사실상 불가능하기 때문, REV-0221 참고). 대신 흔히 다음과 같은 형태로 등장한다.</p>
+<ul><li><strong>검증 로직 식별</strong>: 사용자 입력을 SHA-256으로 해시한 뒤 하드코딩된 값과 비교하는 구조를 알아채고, 그 해시가 SHA-256임을 확정해 "이 경로는 브루트포스/사전 공격 외에는 뚫을 수 없다"는 걸 빠르게 판단하는 용도</li><li><strong>HMAC이나 다른 프로토콜의 구성요소</strong>로 SHA-256이 내부에 쓰이는 경우, 그 구성요소를 알아채는 것이 전체 로직 이해의 출발점</li><li><strong>약한 입력 공간</strong>(짧은 PIN, 사전에 있는 흔한 비밀번호)에 대한 해시라면 레인보우 테이블이나 사전 대입이 가능하므로, 우선 "이게 SHA-256이 맞는지" 확정하는 게 첫 단계</li></ul>
+<h3>초기 해시값(H0~H7) — 소수의 제곱근에서 유래</h3>
+<p>SHA-256은 계산을 시작하기 전에 8개의 32비트 초기값을 준비한다. 이 값들은 처음 8개 소수(<code>2, 3, 5, 7, 11, 13, 17, 19</code>)의 <strong>제곱근의 소수 부분</strong> 앞 32비트를 취한 것이다.</p>
+<pre><code>H0 = 0x6a09e667   H1 = 0xbb67ae85   H2 = 0x3c6ef372   H3 = 0xa54ff53a
+H4 = 0x510e527f   H5 = 0x9b05688c   H6 = 0x1f83d9ab   H7 = 0x5be0cd19</code></pre>
+<p>이 8개 값이 배열이나 전역 변수 초기화 코드에 그대로 리터럴로 등장하면, 그 함수는 SHA-256의 초기화(<code>SHA256_Init</code> 상당) 루틴으로 100% 확정된다. 첫 번째 값 <code>0x6A09E667</code> 하나만 봐도 강하게 의심할 수 있다(SHA-512도 같은 유도 방식을 쓰지만 64비트 값이라 자릿수부터 다르다).</p>
+<h3>라운드 상수(K) — 소수의 세제곱근에서 유래</h3>
+<p>압축 함수의 각 라운드(총 64라운드)마다 쓰이는 상수 <code>K[0..63]</code>도 비슷한 방식으로 유도된다 — 이번엔 처음 64개 소수의 <strong>세제곱근의 소수 부분</strong>이다. 앞의 몇 개는 다음과 같다.</p>
+<pre><code>K[0]=0x428a2f98  K[1]=0x71374491  K[2]=0xb5c0fbcf  K[3]=0xe9b5dba5
+K[4]=0x3956c25b  K[5]=0x59f111f1  K[6]=0x923f82a4  K[7]=0xab1c5ed5
+K[8]=0xd807aa98  ...</code></pre>
+<p>64개 항목(총 256바이트)의 이 테이블이 <code>.rodata</code>/<code>.rdata</code>에 통째로 있으면, 별도의 계산 로직을 분석할 필요 없이 이 테이블의 존재만으로 SHA-256 구현임을 즉시 확정할 수 있다. 이 테이블은 SHA-256을 처음부터 구현한 코드(라이브러리를 안 쓰고 직접 짠 경우)에서만 눈에 보이며, <code>SHA256_Update</code> 같은 라이브러리 함수를 그대로 호출하는 경우는 이 테이블이 링크된 라이브러리 안에 들어있어 애플리케이션 코드 자체에는 안 보일 수 있다.</p>
+<h3>압축 함수의 특징적 연산 — Ch, Maj, Σ, 그리고 64회 루프</h3>
+<p>SHA-256 압축 함수 내부에는 순환 우측 시프트(<code>ROTR</code>)를 조합한 네 개의 특수 함수가 반복적으로 등장한다.</p>
+<pre><code class="language-c">#define ROTR(x, n) (((x) &gt;&gt; (n)) | ((x) &lt;&lt; (32 - (n))))
+
+// 메시지 스케줄 확장에 쓰이는 두 함수
+#define sigma0(x) (ROTR(x, 7)  ^ ROTR(x, 18) ^ ((x) &gt;&gt; 3))
+#define sigma1(x) (ROTR(x, 17) ^ ROTR(x, 19) ^ ((x) &gt;&gt; 10))
+
+// 압축 라운드에 쓰이는 두 함수
+#define Sigma0(x) (ROTR(x, 2)  ^ ROTR(x, 13) ^ ROTR(x, 22))
+#define Sigma1(x) (ROTR(x, 6)  ^ ROTR(x, 11) ^ ROTR(x, 25))
+#define Ch(x, y, z)  (((x) &amp; (y)) ^ (~(x) &amp; (z)))
+#define Maj(x, y, z) (((x) &amp; (y)) ^ ((x) &amp; (z)) ^ ((y) &amp; (z)))
+
+// 64라운드 압축 루프
+for (int t = 0; t &lt; 64; t++) {
+    uint32_t T1 = h + Sigma1(e) + Ch(e, f, g) + K[t] + W[t];
+    uint32_t T2 = Sigma0(a) + Maj(a, b, c);
+    h = g; g = f; f = e; e = d + T1;
+    d = c; c = b; b = a; a = T1 + T2;
+}</code></pre>
+<p>디스어셈블리에서 이 구조는 <strong>여덟 개의 32비트 변수(a~h)가 매 라운드 서로 자리를 밀어가며 갱신되고, 특정 시프트량(2, 6, 7, 11, 13, 17, 18, 19, 22, 25)의 우측 순환 시프트와 XOR이 반복적으로 조합되는 형태</strong>로 나타난다. TEA/XTEA(REV-0210)의 두 변수 교차 갱신과 비슷한 "변수들이 자리를 바꾼다"는 느낌이 있지만, SHA-256은 변수가 8개나 되고 시프트량이 훨씬 다양하다는 점에서 규모가 다르다.</p>
+<h3>다른 해시와 헷갈리지 않는 법</h3>
+<ul><li><strong>출력 크기로 1차 구분</strong>: MD5는 16바이트, SHA-1은 20바이트, SHA-256은 32바이트, SHA-512는 64바이트. 함수가 반환하거나 채우는 버퍼 크기만 확인해도 큰 방향을 잡을 수 있다.</li><li><strong>초기값 개수와 크기로 확정</strong>: SHA-1은 초기값이 5개(32비트), SHA-256은 8개(32비트), SHA-512는 8개(64비트)다. SHA-256과 SHA-512는 유도 방식(소수의 제곱근/세제곱근)은 같지만 워드 크기가 다르므로 상수 자체가 다르다.</li><li><strong>CRC(REV-0209)나 FNV(REV-0207, REV-0208)와의 구분</strong>: CRC/FNV는 암호학적 해시가 아니라 체크섬/비암호 해시라서 라운드 수가 훨씬 적거나(FNV는 라운드 없이 바이트마다 한 번), 다항식 나눗셈 기반(CRC)이라 상수의 성격 자체가 다르다. SHA-256처럼 64라운드짜리 복잡한 비트 연산 압축 함수가 있다면 암호학적 해시로 확정할 수 있다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>8개의 32비트 상수(<code>0x6A09E667</code> 등)가 배열 초기화 또는 전역 변수 대입으로 등장</li><li>64개 항목, 256바이트 크기의 상수 테이블(<code>0x428A2F98</code>로 시작)이 <code>.rodata</code>/<code>.rdata</code>에 있음</li><li>함수 출력이 정확히 32바이트</li><li>루프가 정확히 64회(또는 그 배수) 반복되며, 그 안에서 8개의 지역변수가 순환하며 갱신됨</li><li>Import 목록에 <code>SHA256_*</code>, <code>EVP_sha256</code>, <code>CC_SHA256</code>, <code>BCryptHashData</code> + <code>L"SHA256"</code> 문자열</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>Import 목록에서 <code>SHA256</code>, <code>sha256</code> 키워드부터 검색한다. 라이브러리 호출이면 바로 확정. 자체 구현이 의심되면 초기값 8개(<code>0x6A09E667</code>로 시작) 또는 라운드 상수 테이블(<code>0x428A2F98</code>로 시작)을 바이너리 검색으로 찾아 확정한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>Import/문자열에서 <code>SHA256</code>/<code>sha256</code> 키워드 검색</li><li>없으면 <code>.rodata</code>/<code>.rdata</code>에서 <code>0x6A09E667</code>(초기값) 또는 <code>0x428A2F98</code>(라운드 상수)를 바이너리 검색</li><li>발견한 상수 개수(8개 vs 64개)로 초기값 배열인지 라운드 상수 테이블인지 구분</li><li>두 상수 집합을 참조하는 함수를 xref로 추적해 실제 압축 함수 위치 특정</li><li>루프 반복 횟수가 64인지, 8개의 지역변수가 순환 갱신되는지 확인해 최종 확정</li><li>해시 함수의 입력(메시지)과 출력(비교 대상 32바이트) 위치를 특정</li><li>Python <code>hashlib.sha256()</code>으로 후보 입력들을 직접 해시해 결과를 비교(사전 대입/브루트포스 시도)</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python">import hashlib
+hashlib.sha256(b"test").hexdigest()</code></pre>
+<pre><code class="language-bash"># 바이너리에서 SHA-256 상수 흔적 검색
+objdump -s -j .rodata ./chall | grep -i "6a09e667\|428a2f98"</code></pre>
+<p>IDA: <code>Alt+B</code>로 <code>67 E6 09 6A</code>(리틀엔디안 바이트 순서) 검색. Ghidra: <code>Search &gt; Memory</code>에서 동일 바이트열을 Hex로 검색.</p>
+<h2>출력 해석</h2>
+<ul><li>초기값 8개와 라운드 상수 64개를 모두 찾았다면 완전한 자체 구현으로 확정 — 메시지 스케줄 확장 로직까지 있는지 확인해 표준 구현과 일치하는지 검증한다.</li><li>초기값만 있고 라운드 상수가 안 보이면, 코드가 상수를 런타임에 계산하거나(드묾) 다른 파일/라이브러리에 나뉘어 있을 수 있으니 다른 섹션도 검색한다.</li><li>해시 결과가 하드코딩된 32바이트와 <code>memcmp</code>로 비교되는 구조라면, 원문을 몰라도 사전 공격/브루트포스 외에는 직접 역산할 수 없다는 점을 먼저 인지하고 다른 취약점(입력 길이 제한, 알려진 패턴)을 찾는 방향으로 전환한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>SHA-1(초기값 5개)이나 SHA-512(64비트 초기값)와 혼동해서 잘못된 상수로 검색하는 것 — 반드시 정확한 32비트 값과 개수를 확인해야 한다.</li><li>암호학적 해시를 "역산 가능한 변환"으로 착각해서 원문 복원을 시도하는 것 — SHA-256은 설계상 사전 이미지 저항성(preimage resistance)을 가지므로, 원문을 몰라도 결과가 같은 입력을 찾는 유일한 실전 방법은 사전 대입/브루트포스뿐이다(REV-0221 참고).</li><li>라운드 상수 테이블 일부만 보고(예: 앞의 4~5개만 확인) 성급하게 확정하는 것 — 우연히 앞부분이 비슷한 값일 수 있으니 최소 8개 이상 대조하는 것이 안전하다.</li><li>HMAC-SHA256처럼 SHA-256이 다른 구조 안에 감싸여 있는 경우, 내부의 SHA-256만 찾고 바깥의 HMAC 이중 해시 구조를 놓치는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>이 해시 결과로부터 원문을 복원하는 게 원천적으로 왜 불가능한지 이론적으로 확인하려면 → REV-0221 역연산 가능한 알고리즘 판단법</li><li>SHA-256이 이중으로 감싸진 HMAC 구조인지 의심되면 → REV-0898 HMAC 패턴 알아보기(이중 해시 구조)</li><li>대신 라운드 없는 단순 해시(FNV)와 헷갈린다면 → REV-0208 16777619 상수가 보일 때 FNV 의심하기</li><li>암호학적 해시가 아니라 체크섬(CRC)인지 헷갈린다면 → REV-0209 CRC 계열 알고리즘 흔적 찾기</li><li>다른 SHA-2 계열(SHA-1) 상수와 구분이 안 되면 → REV-0896 SHA-1 흔적을 상수로 알아보는 법</li></ul>
+<h2>미니 예제</h2>
+<p>어떤 바이너리를 IDA로 열었더니 <code>.rodata</code>에서 다음과 같은 배열을 발견했다고 하자.</p>
+<pre><code>.rodata:00403000 dword_403000 dd 6A09E667h, 0BB67AE85h, 3C6EF372h, 0A54FF53Ah
+.rodata:00403010              dd 510E527Fh, 9B05688Ch, 1F83D9ABh, 5BE0CD19h</code></pre>
+<p>정확히 8개의 32비트 값이 SHA-256 초기값과 일치한다. 이 배열을 참조하는 함수를 Xref(<code>X</code> 단축키)로 추적하면 SHA-256 초기화 루틴을 바로 찾을 수 있고, 근처에서 64개짜리 라운드 상수 테이블도 함께 발견되면 완전히 확정된다. 이후 이 함수가 실제로 어떤 데이터를 해시하는지 인자를 추적한다.</p>
+<pre><code class="language-c">// 디컴파일에서 확인한 검증 로직
+unsigned char digest[32];
+sha256(user_input, strlen(user_input), digest);
+if (memcmp(digest, expected_hash, 32) == 0) {
+    puts("Correct!");
+}</code></pre>
+<p><code>expected_hash</code>(하드코딩된 32바이트)를 덤프하고, 입력 공간이 충분히 좁다면(짧은 숫자 PIN 등) 파이썬으로 사전 대입한다.</p>
+<pre><code class="language-python">import hashlib
+
+expected = bytes.fromhex("...")   # 바이너리에서 뽑은 32바이트
+
+for pin in range(1000000):
+    candidate = str(pin).zfill(6).encode()
+    if hashlib.sha256(candidate).digest() == expected:
+        print("found:", candidate)
+        break</code></pre>
+<p>입력 공간이 이 정도로 좁혀지지 않는다면(예: 임의 길이 문자열), SHA-256 자체를 역산하는 건 불가능하므로 다른 접근(입력 형식 힌트, 알려진 사전 단어 등)을 찾아야 한다.</p>
+<h3>실행 가능한 전체 스크립트 — 6자리 PIN을 SHA-256 사전 대입으로 실제로 뚫기</h3>
+<p>이번에는 "6자리 숫자 PIN을 SHA-256으로 해시한 값만 바이너리에 하드코딩되어 있다"는 상황을 그대로 재현해서, 사전 대입(브루트포스)이 실제로 정답을 찾아내는 전체 과정을 실행해본다.</p>
+<pre><code class="language-python"># -*- coding: utf-8 -*-
+import hashlib   # 파이썬 표준 라이브러리 — SHA-256 등 다양한 해시 알고리즘을 제공
+
+# --- 1) 바이너리 안에 "정답 PIN의 해시값"만 하드코딩되어 있다고 가정하고 그 값을 만든다 ---
+# 실전에서는 이 32바이트 값을 IDA/Ghidra의 .rodata에서 그대로 덤프하면 된다.
+secret_pin = "042195"                                    # 우리만 아는 "정답" (실전에서는 모른다)
+expected_hash = hashlib.sha256(secret_pin.encode()).digest()   # bytes 형태의 32바이트 해시값
+print("바이너리에서 뽑았다고 가정한 목표 해시(16진수):", expected_hash.hex())
+
+# --- 2) 여기서부터는 secret_pin을 전혀 모른다고 가정하고, 000000부터 999999까지 전부 시도 ---
+found_pin = None
+for pin in range(1_000_000):                # 6자리 숫자니까 0부터 999999까지 백만 가지
+    candidate = str(pin).zfill(6).encode()    # 예: 42 -&gt; "000042" -&gt; b"000042" (앞을 0으로 채움)
+    if hashlib.sha256(candidate).digest() == expected_hash:   # 해시가 목표값과 같은지 비교
+        found_pin = candidate
+        break                                  # 찾았으니 더 시도할 필요 없음
+
+print("사전 대입으로 찾은 PIN:", found_pin)
+print("원래 정답과 같은가?", found_pin == secret_pin.encode())</code></pre>
+<p>이 스크립트를 그대로 실행하면 다음과 같은 결과가 나온다.</p>
+<pre><code class="language-text">바이너리에서 뽑았다고 가정한 목표 해시(16진수): a46de02d66cce6833fbdd2de238958c1d91433365c45e17bc99451452bef952d
+사전 대입으로 찾은 PIN: b'042195'
+원래 정답과 같은가? True</code></pre>
+<p>여기서 핵심은 <strong>SHA-256 자체를 거꾸로 계산한 것이 아니라는</strong> 점이다. <code>hashlib.sha256(candidate).digest()</code>는 항상 정방향으로만 계산했고, 백만 가지 후보를 하나씩 만들어서 그 정방향 결과가 목표값과 우연히 같아지는 것을 찾은 것뿐이다. 이 방법이 통하는 이유는 오직 "입력 공간이 백만 가지뿐"이라는 조건 때문이다 — PIN이 6자리 숫자가 아니라 8자 이상의 임의 문자열이었다면 이 방식은 현실적인 시간 안에 끝나지 않는다(REV-0219 참고). SHA-256이 걸려 있는 걸 확인했다면, 가장 먼저 할 일은 "역산이 아니라 입력 공간이 좁은지"를 확인하는 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0221-is-it-invertible.html">REV-0221 — 역연산 가능한 알고리즘 판단법</a></li><li><a href="rev-0208-fnv-16777619.html">REV-0208 — 16777619 상수가 보일 때 FNV 의심하기</a></li><li><a href="rev-0209-crc-fingerprints.html">REV-0209 — CRC 계열 알고리즘 흔적 찾기</a></li><li><a href="rev-0210-tea-xtea.html">REV-0210 — TEA와 XTEA 상수 패턴</a></li><li><a href="rev-0219-bruteforce-feasibility.html">REV-0219 — Brute Force가 가능한 입력 공간 계산</a></li><li><a href="rev-0898-hmac-double-hash-pattern.html">REV-0898 — HMAC 패턴 알아보기(이중 해시 구조)</a></li><li><a href="rev-0896-sha1-constant-fingerprint.html">REV-0896 — SHA-1 흔적을 상수로 알아보는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>SHA-256 초기 해시값(H0~H7)과 64개 라운드 상수(K)가 각각 처음 8개/64개 소수의 제곱근/세제곱근의 소수 부분에서 유도된다는 정의, 그리고 <code>Ch</code>, <code>Maj</code>, <code>Σ0</code>, <code>Σ1</code>, <code>σ0</code>, <code>σ1</code> 함수와 시프트량(2, 6, 7, 11, 13, 17, 18, 19, 22, 25): NIST FIPS 180-4, "Secure Hash Standard (SHS)" 공식 표준 문서 기준 (2026-09-09 검증).</li><li>SHA-256/SHA-1/MD5/SHA-512의 출력 크기(32/20/16/64바이트) 및 초기값 개수 차이: FIPS 180-4(SHA-2 계열) 및 RFC 1321(MD5) 공식 명세 기준 (2026-09-09 검증).</li><li>OpenSSL <code>SHA256_Init</code>/<code>SHA256_Update</code>/<code>SHA256_Final</code> 및 <code>EVP_sha256</code> API 시그니처: OpenSSL 공식 <code>man SHA256</code>, <code>man EVP_DigestInit</code> 문서 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

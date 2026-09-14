@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>패킹/난독화 여부를 실전에서 5분 안에 판단하는 절차 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / packing</div>
+<article class="article-body">
+<h1>패킹/난독화 여부를 실전에서 5분 안에 판단하는 절차</h1>
+<div class="article-meta"><span class="tag">packing</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">x64dbg</span><span class="tag">DIE</span><span class="tag">PE-bear</span></div>
+<h2>한 줄 요약</h2>
+<p>CTF나 실무 초반에 파일 하나를 받았을 때, "패킹/난독화가 있는가, 있다면 어느 수준인가, 그래서 지금 무슨 전략을 써야 하는가"를 5분 안에 판단하는 절차를 DIE 스캔 → 엔트로피/import 확인 → entry point 코드 훑기 → 전략 분기의 4단계로 정리한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>CTF 문제 파일을 처음 받았거나 malware 샘플을 처음 열어보는 시점, REV-0001(첫 30초 트리아지) 다음 단계로 "패킹인가?"를 판단해야 할 때</li><li>이 저장소의 packing 카테고리 다른 글(REV-0939~0952)들을 이미 훑어봤는데 "그래서 지금 이 샘플에는 어떤 순서로 뭘 적용해야 하는지" 감이 안 잡힐 때</li><li>이미 많은 시간을 패킹 분석에 썼는데 방향이 맞는지 재점검하고 싶을 때</li><li>팀원에게 "이 파일 패킹된 것 같은데 뭐부터 봐야 해?"라는 질문을 받았을 때 짧게 답해줘야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 "5분 판단"이 중요한가</h3>
+<p>패킹/난독화 대응은 REV-0939(ASPack, 몇 분)부터 REV-0942(상용 프로텍터, 며칠)까지 난이도 스펙트럼이 매우 넓다. 이 스펙트럼의 어느 지점에 있는지 초반에 빠르게 가늠하지 못하면, 쉬운 패커인데 어렵게 접근하거나(비효율), 반대로 상용 프로텍터를 ASPack처럼 대하다 시간을 낭비하는(오판) 문제가 생긴다. 목표는 "완벽한 확신"이 아니라 "다음에 뭘 시도할지 결정할 수 있는 수준의 판단"이다.</p>
+<h3>4단계 판단 절차</h3>
+<p><strong>1단계 — DIE 스캔(1분)</strong> 파일을 DIE에 로드하고 상단 패널을 확인한다.</p>
+<ul><li>알려진 패커 이름(<code>UPX</code>, <code>ASPack</code>, <code>PECompact</code>, <code>MPRESS</code>)이 명시적으로 나온다 → <strong>쉬운 패커 경로</strong>(REV-0939~0941, REV-0226)</li><li><code>VMProtect</code>, <code>Themida</code>, <code>WinLicense</code>, <code>Enigma</code> 같은 상용 프로텍터 이름이 나온다 → <strong>어려운 경로</strong>(REV-0942)로 바로 분기, 이후 단계는 참고용으로만 진행</li><li><code>.NET</code> 표시가 함께 있다 → <strong>.NET 전용 경로</strong>(REV-0136, REV-0242, REV-0951)로 분기</li><li>아무 것도 안 나오고 <code>Unknown</code> → 2단계로 계속</li></ul>
+<p><strong>2단계 — 엔트로피/import 확인(1분)</strong></p>
+<ul><li>DIE 엔트로피 탭 또는 PE-bear로 섹션별 엔트로피 확인 — 7.0 이상인 섹션이 있으면 압축/암호화 데이터 존재 가능성 높음(REV-0228)</li><li>Import 목록 확인 — <code>LoadLibraryA</code>/<code>GetProcAddress</code> 몇 개뿐이면 강한 패킹 신호(REV-0229)</li><li>둘 다 정상 범위(엔트로피 낮음, import 다양함)라면 → 패킹이 아닐 가능성이 높음, 일반 정적 분석으로 전환</li><li>엔트로피/import 신호가 있는데 알려진 패커 시그니처는 없다면 → <strong>커스텀 패커 경로</strong>(REV-0943)로 계속</li></ul>
+<p><strong>3단계 — entry point 코드 훑기(2분)</strong> x64dbg로 열어 entry point 코드를 눈으로 본다.</p>
+<ul><li>코드가 10~30줄 내외로 짧고 단순한 루프(<code>xor</code>, <code>rol</code> 반복) → 커스텀 패커, 손으로 읽을 만함(REV-0943)</li><li><code>pushad</code>로 시작하고 그 아래로 수백 줄 스텁 → 알려진 상용 압축 패커 계열, ESP 트릭 적용 가능(REV-0944)</li><li>반복적인 "디스패치 루프 + 거대한 switch" 구조 → 코드 가상화 의심(REV-0947), 사실상 REV-0942 경로로 재분기</li><li>예외가 반복적으로 발생하며 진행이 막힘 → SEH 기반 안티 디버깅 결합 의심(REV-0940, REV-0239)</li></ul>
+<p><strong>4단계 — 전략 확정(1분)</strong> 지금까지의 판단을 바탕으로 다음 중 하나를 선택한다.</p>
+<ul><li><strong>자동 언패킹 시도</strong>: UPX 확정 시 <code>upx -d</code>(REV-0226)</li><li><strong>수동 OEP 추적</strong>: 알려진 압축 패커(ASPack/PECompact/MPRESS) 확정 시 REV-0944 절차</li><li><strong>완전 언패킹 포기, 동적 분석 우선</strong>: 상용 프로텍터 확정 시 REV-0942의 우선순위 전략</li><li><strong>.NET 전용 절차로 전환</strong>: .NET 확정 시 REV-0951, dnSpyEx 활용</li><li><strong>커스텀 로더 직접 분석</strong>: 시그니처 없는 짧은 스텁 확정 시 REV-0943</li></ul>
+<h3>시간 예산을 넘기면 재평가</h3>
+<p>이 4단계 판단 후에도 실제 작업이 예상보다 오래 걸린다면(예: "쉬운 패커"로 판단했는데 30분이 지나도 OEP를 못 찾음), 판단 자체가 틀렸을 가능성(이중 패킹, 변형된 스텁, 숨겨진 안티 디버깅)을 의심하고 REV-0224 체크리스트부터 재점검한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>(요약 표로 대체) 아래 "출력 해석" 절 참고</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>DIE부터 연다. 대부분의 판단 갈림길이 DIE 한 번의 스캔 결과로 상당 부분 정리된다. DIE 없이 바로 디버거부터 여는 것은 이 5분 절차의 효율을 크게 떨어뜨린다.</p>
+<h2>단계별 절차</h2>
+<ol><li>DIE 스캔 — 패커/컴파일러/.NET 여부 확인(1분)</li><li>엔트로피 + import 목록 확인(1분)</li><li>x64dbg entry point 코드 훑기(2분)</li><li>위 4가지 경로(자동 언패킹/수동 OEP 추적/동적 분석 우선/.NET 전용/커스텀 분석) 중 하나로 확정(1분)</li><li>확정된 경로의 상세 절차 문서로 이동해 본격 작업 시작</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>DIE: <code>File → Open</code>, 엔트로피 탭</li><li>PE-bear: 섹션 헤더 탭, 엔트로피 열</li><li>x64dbg: entry point 자동 이동(파일 열면 기본 정지 위치), <code>F8</code>로 몇 줄 훑어보기</li></ul>
+<h2>출력 해석</h2>
+<table><thead><tr><th>관찰 결과</th><th>판단</th><th>다음 문서</th></tr></thead><tbody><tr><td>DIE가 UPX 표시</td><td>자동 언패킹 가능</td><td>REV-0226</td></tr><tr><td>DIE가 ASPack/PECompact/MPRESS 표시</td><td>수동 OEP 추적 필요, 난이도 낮음~중간</td><td>REV-0939, REV-0940, REV-0941, REV-0944</td></tr><tr><td>DIE가 VMProtect/Themida 등 표시</td><td>상용 프로텍터, 고난도</td><td>REV-0942</td></tr><tr><td>DIE가 .NET + 패커 표시</td><td>.NET 전용 접근 필요</td><td>REV-0136, REV-0951</td></tr><tr><td>DIE Unknown, 엔트로피 높음, import 적음</td><td>커스텀 패커 의심</td><td>REV-0943</td></tr><tr><td>DIE Unknown, 엔트로피/import 정상</td><td>패킹 아님</td><td>일반 정적 분석으로 전환</td></tr></tbody></table>
+<h2>흔한 실수</h2>
+<ul><li>DIE 결과를 확인하지도 않고 바로 디버거부터 열어 시간을 낭비하는 것.</li><li>첫 판단(예: "이건 쉬운 패커다")을 과신해서, 실제로 시간이 오래 걸리는데도 전략을 재점검하지 않고 같은 방법만 반복하는 것.</li><li>엔트로피가 높다고 무조건 "강력한 프로텍터"라고 오판하는 것 — 단순 XOR 커스텀 로더도 엔트로피는 높게 나온다(REV-0943).</li><li>5분 판단에 너무 많은 것을 넣으려다(모든 세부 사항을 다 확인하려다) 오히려 시간을 초과하는 것 — 이 절차의 목적은 "확신"이 아니라 "다음 행동 결정"이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>어느 경로로도 명확히 안 떨어진다면 → REV-0224 패킹된 바이너리인지 의심하는 기준으로 돌아가 처음부터 재점검</li><li>언어/컴파일러 추정이 먼저 필요하다면 → REV-0952 Obfuscator 흔적으로 원본 언어/컴파일러 추정하기</li><li>판단은 끝났는데 실제 절차 진행이 막힌다면 → 각 경로별 문서(REV-0944~0951)의 "막혔을 때 다음 체크" 절 참고</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">[샘플] challenge.exe
+
+1분: DIE 스캔 -&gt; Packer: Unknown, .NET: No
+1분: 엔트로피 -&gt; .text 섹션 7.8, Import -&gt; LoadLibraryA, GetProcAddress 뿐
+2분: x64dbg entry point -&gt; 15줄짜리 짧은 xor 루프, 마지막에 jmp
+
+판단: 시그니처 없음 + 높은 엔트로피 + 적은 import + 짧은 스텁
+=&gt; 커스텀 패커(REV-0943)로 확정, 손으로 루프 읽어서 key/범위 특정 후 진행</code></pre>
+<p>이 예시처럼 5분 안에 얻은 정보만으로도 "이건 상용 프로텍터가 아니라 짧게 끝날 커스텀 로더"라는 확신을 갖고 다음 단계로 넘어갈 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0224-packing-indicators.html">REV-0224 — 패킹된 바이너리인지 의심하는 기준</a></li><li><a href="rev-0942-commercial-protector-realistic-approach.html">REV-0942 — 상용 프로텍터(VMProtect/Themida)를 만났을 때 현실적인 대응</a></li><li><a href="rev-0943-custom-packer-clues.html">REV-0943 — 커스텀 패커(자체 제작 패커) 알아보는 단서</a></li><li><a href="rev-0944-manual-oep-tracing-advanced.html">REV-0944 — 패킹된 바이너리에서 OEP를 수동으로 추적하는 절차 심화</a></li><li><a href="rev-0951-packed-dotnet-confuserex-basics.html">REV-0951 — 패킹된 .NET 바이너리(ConfuserEx 등) 기초 알아보기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>이 절차는 UPX/ASPack/PECompact/MPRESS/상용 프로텍터/커스텀 패커 각각의 특성(REV-0224~REV-0952에서 정리한 내용)을 실전 판단 순서로 재구성한 것이며, 별도의 외부 출처보다는 이 저장소 내 기존 문서들의 종합을 근거로 한다(2026-09-09 작성).</li><li>DIE 및 PE-bear의 엔트로피/섹션 분석 기능은 각 도구의 공식 저장소(horsicq/Detect-It-Easy, hasherezade/pe-bear) 문서를 기준으로 확인했다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,81 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghidra Comments와 IDA Comments 비교 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>Ghidra Comments와 IDA Comments 비교</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>Ghidra와 IDA 모두 "한 줄 메모"부터 "함수 전체 요약", "여러 곳에 동시에 나타나는 반복 주석"까지 여러 종류의 주석을 구분해 제공하며, Ghidra의 EOL/Pre/Post/Plate/Repeatable Comment와 IDA의 Comment/Repeatable Comment/Anterior·Posterior Lines/함수 주석을 서로 대응시켜 외워두면 도구를 오가도 헷갈리지 않는다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>다른 사람(또는 과거의 자신)이 분석해 둔 파일을 열었는데 주석 종류가 헷갈릴 때</li><li>IDA 경험자가 Ghidra에서 반복 주석(Repeatable Comment)을 어디서 찾는지 모를 때</li><li>함수 전체 요약과 한 줄 메모를 구분해서 남기고 싶을 때</li><li>주석 단축키가 도구마다 달라서 계속 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>공통적으로 필요한 이유</h3>
+<p>분석 중 알아낸 사실(이 함수는 flag 검증, 이 상수는 XOR key 등)을 코드에 직접 남겨두지 않으면 나중에 같은 함수를 다시 열었을 때 처음부터 다시 분석해야 한다. 두 도구 모두 "어디에", "얼마나 넓은 범위에" 주석을 붙일지에 따라 여러 종류의 주석 타입을 제공한다.</p>
+<h3>Ghidra의 주석 종류</h3>
+<ul><li>EOL(End of Line) Comment: 명령어 한 줄 끝에 붙는 가장 흔한 주석. 단축키 <code>;</code>.</li><li>Pre Comment: 명령어 앞(위)에 붙는 주석. 단축키 <code>Ctrl+;</code>. 함수 안 특정 블록 시작 전에 설명을 붙일 때 쓴다.</li><li>Post Comment: 명령어 뒤(아래)에 붙는 주석. 단축키 <code>Ctrl+Shift+;</code>.</li><li>Plate Comment: 함수 맨 위에 박스 형태로 크게 표시되는 주석. 함수 전체 요약 설명에 적합하며, Decompile 창에도 함수 시그니처 위에 그대로 나타난다.</li><li>Repeatable Comment: 같은 주소를 참조하는 다른 위치에도 동일하게 나타나는 주석(예: 전역 변수 하나에 붙이면 그 변수를 쓰는 모든 곳에 같이 보인다).</li></ul>
+<p>(정확한 단축키는 Ghidra 버전/키 설정에 따라 다를 수 있으니 Edit → Tool Options → Key Bindings 또는 메뉴 위에서 <code>F4</code>로 재확인 권장)</p>
+<h3>IDA의 주석 종류</h3>
+<ul><li>일반 주석(Comment): 명령어 줄 끝에 붙는 기본 주석. 단축키 <code>:</code>(콜론).</li><li>반복 주석(Repeatable Comment): 같은 주소/피연산자를 참조하는 다른 위치에도 자동으로 나타나는 주석. 단축키 <code>;</code>(세미콜론). Ghidra의 Repeatable Comment와 개념이 유사하다.</li><li>Anterior/Posterior Lines: 명령어 위/아래에 여러 줄로 붙이는 주석(Ghidra의 Pre/Post Comment와 유사). 버전에 따라 메뉴 경로가 다를 수 있다.</li><li>함수 주석: 함수 시작 부분에 붙이는 주석으로 Ghidra의 Plate Comment와 유사한 역할을 한다.</li></ul>
+<h3>대응 관계로 외우기</h3>
+<table><thead><tr><th>목적</th><th>Ghidra</th><th>IDA</th></tr></thead><tbody><tr><td>한 줄 끝 간단 메모</td><td>EOL Comment(<code>;</code>)</td><td>Comment(<code>:</code>)</td></tr><tr><td>여러 곳에 같이 뜨는 주석</td><td>Repeatable Comment</td><td>Repeatable Comment(<code>;</code>)</td></tr><tr><td>명령어 앞/뒤 여러 줄</td><td>Pre/Post Comment</td><td>Anterior/Posterior Lines</td></tr><tr><td>함수 전체 요약</td><td>Plate Comment</td><td>함수 주석</td></tr></tbody></table>
+<p>이렇게 표로 대응시켜 외워두면 한 도구에 익숙한 사람이 다른 도구로 옮겨갈 때 헷갈림을 크게 줄일 수 있다.</p>
+<h3>Decompile/Pseudocode 창에서의 표시</h3>
+<p>Ghidra Plate Comment는 Decompile 창의 함수 선언부 바로 위에 박스로 나타나고, EOL Comment는 해당 줄 끝에 회색으로 나타난다. IDA F5 디컴파일 창에서도 붙인 주석이 유사한 형태로 pseudocode에 반영된다(정확한 표시 여부는 주석 타입과 IDA 버전에 따라 다를 수 있다).</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>이미 분석해 둔 파일에서 어떤 주석이 "함수 전체 요약"이고 어떤 것이 "한 줄 메모"인지 구분이 안 되거나, IDA 경험자가 Ghidra에서 반복 주석이 어디 있는지 못 찾을 때.</p>
+<h2>가장 먼저 할 것</h2>
+<p>함수 전체에 대한 결론은 Plate Comment(Ghidra)/함수 주석(IDA)에, 특정 줄에 대한 메모는 EOL Comment/Comment에 구분해서 남기는 습관부터 들인다.</p>
+<h2>단계별 절차</h2>
+<ol><li>함수를 다 분석했으면 함수 맨 위에서 Plate Comment(Ghidra: 함수 이름 줄 우클릭 → Comments → Set Plate Comment / IDA: 함수 시작에서 주석 추가)로 한 줄 요약을 남긴다</li><li>핵심 로직 줄에는 EOL Comment(<code>;</code>)/Comment(<code>:</code>)로 짧은 메모</li><li>같은 상수/전역변수가 여러 곳에서 쓰이면 Repeatable Comment로 한 번만 달아도 모든 참조 위치에 반영되게 한다</li><li>블록 단위 설명이 필요하면 Pre/Post Comment(Ghidra) 또는 Anterior/Posterior Lines(IDA)를 사용한다</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>Ghidra: <code>;</code>(EOL) / <code>Ctrl+;</code>(Pre) / <code>Ctrl+Shift+;</code>(Post) / 함수 우클릭 → Comments → Set Plate Comment</li><li>IDA: <code>:</code>(일반 주석) / <code>;</code>(반복 주석) / Anterior/Posterior 관련 메뉴(버전에 따라 다름)</li></ul>
+<h2>출력 해석</h2>
+<p>Ghidra Bookmarks 창(REV-0747)의 Note와 실제 코드에 남긴 Comment는 다른 개념이다 — Bookmark는 "표시", Comment는 "설명 텍스트"이며 둘을 함께 쓰면(중요 지점 Bookmark + 그 위치에 EOL Comment로 이유 설명) 가장 효과적이다.</p>
+<h2>흔한 실수</h2>
+<ul><li>Plate Comment와 EOL Comment를 구분 없이 아무 데나 길게 써서 나중에 요약과 세부 메모를 구분 못 하게 되는 것.</li><li>IDA의 반복 주석(<code>;</code>)과 일반 주석(<code>:</code>)을 헷갈려 의도치 않게 여러 곳에 같은 텍스트가 나타나 당황하는 것.</li><li>도구를 바꿀 때(IDA→Ghidra) 단축키가 그대로일 거라 착각하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>주석 대신 위치 표시만 하고 싶으면 → REV-0747 Ghidra Bookmarks로 분석 진행상황 표시하기</li><li>이름 자체를 바꾸는 것과 주석을 헷갈린다면 → REV-0161 Ghidra Rename과 Data Type 수정, REV-0147 IDA 함수 변수 이름 N으로 바꾸기</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">Ghidra:
+  함수 check_password 시작 줄 우클릭 -&gt; Comments -&gt; Set Plate Comment
+  입력: "사용자 입력을 s_correct_password와 strcmp로 비교, 0이면 통과"
+  strcmp 호출 줄에서 ; 입력 -&gt; "여기서 실제 비교 발생"
+
+IDA:
+  함수 시작에서 함수 주석 추가: "패스워드 검증 함수"
+  strcmp 호출 줄에서 : 입력 -&gt; "비교 결과가 성공 여부"</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0747-ghidra-bookmarks-progress-tracking.html">REV-0747 — Ghidra Bookmarks로 분석 진행상황 표시하기</a></li><li><a href="rev-0161-ghidra-rename-retype.html">REV-0161 — Ghidra Rename과 Data Type 수정</a></li><li><a href="rev-0147-ida-rename.html">REV-0147 — IDA 함수 변수 이름 N으로 바꾸기</a></li><li><a href="rev-0278-ghidra-shortcuts-cheatsheet.html">REV-0278 — Ghidra 핵심 단축키 치트시트</a></li></ul>
+<h2>출처/검증</h2>
+<p>Ghidra 공식 Help 문서(Comments) 및 Hex-Rays IDA 공식 문서(Comments) 기준. 실제 실행 화면을 캡처해 재검증하지는 않았으며, 공식 문서 기준 키바인딩으로 작성했다. 로컬 환경에서 키바인딩이 커스터마이즈되어 있다면 다를 수 있다(2026-09-09).</p>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

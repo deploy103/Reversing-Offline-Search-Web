@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>POP: 스택에서 값 꺼내기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>POP: 스택에서 값 꺼내기</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>POP dst</code>는 스택 맨 위(<code>[RSP]</code>)의 값을 <code>dst</code>에 읽어온 뒤, 스택 포인터(<code>RSP</code>/<code>ESP</code>)를 증가시키는 명령어다. <a href="rev-0044-push.html">PUSH</a>와 정확히 반대 동작이며, x64에서는 항상 8바이트 단위로 스택이 줄어든다(정확히는 "늘어난다", 사용 영역 관점에서는 줄어드는 것).</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>pop rbp</code> 같은 코드가 함수 끝에 반복돼서 왜 있는지 궁금할 때</li><li>POP이 스택의 데이터를 실제로 "지우는" 것인지 궁금할 때</li><li>PUSH와 POP의 순서/짝이 맞는지 확인하고 싶을 때(LIFO 구조 이해)</li><li>함수 에필로그에서 여러 개의 POP이 나오는 순서가 프롤로그의 PUSH 순서와 왜 반대인지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>POP의 정확한 동작 순서 (PUSH와 반대)</h3>
+<pre><code>POP dst:
+  1. dst = [RSP]                     ; 먼저 현재 스택 최상단 값을 읽는다
+  2. RSP = RSP + (오퍼랜드 크기)    ; 그 다음 스택 포인터를 늘린다</code></pre>
+<p><a href="rev-0044-push.html">PUSH</a>가 "감소 먼저, 쓰기 나중"이었다면, POP은 "읽기 먼저, 증가 나중"이다. 순서가 정확히 대칭이다.</p>
+<pre><code class="language-asm">; 실행 전: RSP = 0x7ffedff8, [0x7ffedff8] = 0x1234
+pop rax
+; 실행 후: RAX = 0x1234, RSP = 0x7ffee000 (8만큼 증가)</code></pre>
+<h3>POP은 메모리를 "지우지" 않는다</h3>
+<p>아주 흔한 오해: POP을 실행해도 스택에 있던 원래 값은 <strong>메모리에서 지워지지 않는다.</strong> 그저 RSP가 그 값을 "더 이상 유효한 스택 영역이 아니다"라고 가리키게 될 뿐이다. 그 주소를 디버거에서 직접 들여다보면 POP 이후에도 예전 값이 그대로 남아있는 걸 볼 수 있다(다음 PUSH가 그 자리를 덮어쓰기 전까지). 이건 보안적으로도 의미가 있다 — 스택에 남은 이전 값(스택 잔여 데이터)이 정보 유출로 이어질 수 있는 이유가 바로 이것이다.</p>
+<h3>오퍼랜드</h3>
+<ul><li>레지스터: <code>pop rax</code>, <code>pop rbp</code></li><li>메모리: <code>pop qword ptr [rbx]</code> (스택 값을 메모리 위치에 직접 저장)</li><li>세그먼트 레지스터(x86 레거시): 이 사전에서는 다루지 않음</li><li>즉시값은 POP의 목적지가 될 수 없다(당연히 상수에는 값을 쓸 수 없다).</li></ul>
+<h3>플래그</h3>
+<p><code>POP</code>은 <strong>플래그를 전혀 바꾸지 않는다.</strong> (예외: <code>POPF</code>는 플래그 레지스터 자체를 스택에서 복원하는 별개의 명령어이며, <a href="rev-0046-pushf-popf.html">PUSHF/POPF</a>에서 다룬다.)</p>
+<h3>LIFO(후입선출) 구조와 PUSH/POP 순서의 대칭</h3>
+<p>스택은 Last-In-First-Out 구조다 — <strong>가장 나중에 PUSH한 값이 가장 먼저 POP된다.</strong> 그래서 함수 프롤로그에서 여러 레지스터를 PUSH했다면, 에필로그의 POP은 <strong>정확히 역순</strong>이어야 한다:</p>
+<pre><code class="language-asm">; 프롤로그
+push rbp     ; ① 첫 번째로 push
+push rbx     ; ② 두 번째로 push
+push r12     ; ③ 세 번째로 push
+...
+; 에필로그 (반드시 역순!)
+pop  r12     ; ③을 먼저 pop
+pop  rbx     ; ②를 그 다음 pop
+pop  rbp     ; ①을 마지막에 pop
+ret</code></pre>
+<p>이 순서가 뒤바뀌면 레지스터에 엉뚱한 값이 복원되어 프로그램이 오작동한다. 리버싱할 때 프롤로그의 PUSH 순서와 에필로그의 POP 순서가 정확히 대칭인지 확인하는 습관을 들이면 스택 프레임을 훨씬 빠르게 읽을 수 있다.</p>
+<h3>함수 에필로그에서의 POP — 레지스터 복원</h3>
+<pre><code class="language-asm">pop r12          ; 프롤로그에서 저장해둔 콜리-세이브 레지스터 복원
+pop rbx
+pop rbp           ; 마지막으로 이전 RBP 복원
+ret                ; 반환 주소 pop -&gt; RIP</code></pre>
+<p>이 패턴은 <a href="rev-0071-call.html">CALL</a>/<a href="rev-0072-ret.html">RET</a> 문서에서 다루는 함수 호출 규약과 짝을 이루는, 함수가 자신이 건드린 콜리-세이브 레지스터를 원상복구해서 호출자에게 "나는 이 레지스터들을 안 건드린 것처럼 보이게" 만드는 표준 패턴이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>pop rbp</code> — 함수 에필로그, 프롤로그의 <code>push rbp</code>와 짝</li><li><code>pop rbx</code>, <code>pop r12</code>~<code>r15</code> — 콜리-세이브 레지스터 복원</li><li><code>pop rcx</code> (사용하지 않는 목적지) — 스택 정리 트릭. 예를 들어 <code>call</code>+<code>add rsp, 8</code> 대신 <code>pop rcx</code>(아무 레지스터나 희생시켜서) 스택만 정리하는 최적화/난독화 패턴</li><li><code>pop qword ptr [rbp-0x8]</code> — 스택 값을 바로 지역 변수에 저장</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>이 POP이 어떤 PUSH와 짝을 이루는지(프롤로그-에필로그 대응) 찾는다.</li><li>목적지 레지스터가 실제 사용할 값을 받는 건지, 아니면 그냥 스택 정리용(희생 레지스터)인지 구분한다.</li><li>함수 전체에서 PUSH 횟수와 POP 횟수(및 CALL/RET)가 맞는지 센다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 에필로그의 POP 인식</strong></p>
+<pre><code class="language-asm">pop rbx
+pop rbp
+ret</code></pre>
+<p>→ 함수가 곧 끝난다는 신호. 프롤로그에서 <code>push rbp</code> / <code>push rbx</code>가 있었는지 거슬러 올라가 확인.</p>
+<p><strong>2) 순서 대칭 검증</strong></p>
+<pre><code>프롤로그: push rbp -&gt; push rsi -&gt; push rdi
+에필로그: pop rdi -&gt; pop rsi -&gt; pop rbp   (정확히 역순, 정상)</code></pre>
+<p>만약 순서가 안 맞으면(예: <code>pop rsi -&gt; pop rdi -&gt; pop rbp</code>) 레지스터 값이 뒤바뀌어 복원되는 버그이거나, 애초에 그 POP들이 서로 다른 PUSH와 짝이 아닐 수 있다 — 다시 확인해야 한다.</p>
+<p><strong>3) "희생 레지스터" POP 인식</strong></p>
+<pre><code class="language-asm">call some_func
+pop rcx           ; 반환값(rax)은 안 쓰고, 그냥 스택에 남은 8바이트를 정리하는 용도</code></pre>
+<p>→ 이는 <code>add rsp, 8</code>과 동일한 효과를 내지만 코드 크기가 더 작아서(1바이트) 컴파일러/셸코드 작성자가 선호하는 트릭이다. <code>rcx</code>에 들어간 값 자체는 이후 코드에서 안 쓰인다면 무시해도 된다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: 스택 뷰에서 POP마다 스택 프레임이 줄어드는(정확히는 사용 영역이 위로 줄어드는) 것을 시각적으로 확인, <code>F5</code> 디컴파일에서는 대개 지역변수 복원으로 자연스럽게 흡수되어 안 보임</li><li>x64dbg: 하단 스택 창에서 POP 실행마다 RSP가 아래에서 위로(주소가 커지는 방향으로) 이동하는 것을 확인</li><li>GDB/Pwndbg: <code>x/4gx $rsp</code>로 스택 최상단 확인 후 <code>stepi</code>로 POP 실행, 다시 <code>info registers rsp</code>와 목적지 레지스터 값 비교</li></ul>
+<h2>출력 해석</h2>
+<ul><li>POP 실행 직후 목적지 레지스터 값이 POP 직전 <code>[RSP]</code> 값과 정확히 같으면 정상.</li><li>POP 실행 후 RSP가 정확히 8만큼 늘어나 있으면 정상(x64 기준).</li><li>함수 끝에서 POP들을 모두 실행하고 <code>ret</code>를 실행했을 때 RSP가 이 함수의 CALL 실행 직전 값과 정확히 같아야 한다 — 그렇지 않으면 스택 불균형이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><strong>POP이 메모리 값을 지운다고 착각</strong>하는 것 — 지우지 않는다. RSP만 이동할 뿐, 이전 스택 데이터는 메모리에 그대로 남는다(다음에 그 자리가 덮어써지기 전까지).</li><li><strong>PUSH 순서와 POP 순서가 같아야 한다고 착각</strong>하는 것 — 실제로는 정반대(역순)여야 정상이다. LIFO 구조이기 때문이다.</li><li><strong>POP의 목적지 레지스터가 항상 "쓸모 있는 값"을 받는다고 가정</strong>하는 것 — <code>pop rcx</code>처럼 스택 정리 목적의 "버림용" POP도 흔하다.</li><li>POP이 플래그를 바꾼다고 착각하는 것 — 바꾸지 않는다.</li><li>함수 안에서 PUSH보다 POP을 더 많이(또는 반대로) 실행해서 스택이 불균형해지는 코드를 정상이라고 넘기는 것 — RET이 엉뚱한 주소로 튀는 원인이 된다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>POP한 값이 이상하면 → 그 직전에 정말 원하는 값이 PUSH되어 있었는지, 혹은 그 사이에 다른 PUSH/CALL이 끼어들어서 스택 최상단이 바뀐 건 아닌지 확인한다.</li><li>함수 에필로그의 POP 개수와 프롤로그의 PUSH 개수가 안 맞으면 → 중간에 <code>add rsp, N</code>으로 스택을 직접 조정하는 코드가 있는지, 혹은 <a href="rev-0073-leave.html">LEAVE</a>가 대신 쓰였는지 확인한다.</li><li>RET 이후 실행이 이상한 곳으로 튀면 → PUSH/POP 균형이 깨졌을 가능성을 의심하고 함수 전체를 처음부터 다시 센다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 함수 에필로그의 레지스터 복원</strong></p>
+<pre><code class="language-c">void func(void) {
+    // 함수 본문에서 rbx, r12 사용
+}</code></pre>
+<pre><code class="language-asm">func:
+    push rbp
+    mov  rbp, rsp
+    push rbx
+    push r12
+    ...                  ; 함수 본문
+    pop  r12              ; 역순 복원 시작
+    pop  rbx
+    pop  rbp
+    ret</code></pre>
+<p><strong>예제 2 — 스택에서 지역 변수로 직접 복원</strong></p>
+<pre><code class="language-asm">call get_value          ; 반환값이 스택에 쌓여있다고 가정하는 특수 상황(호출 규약에 따라 다름)
+pop  qword ptr [rbp-0x8]  ; 스택 값을 바로 지역 변수에 저장</code></pre>
+<p><strong>예제 3 — "희생 레지스터"를 이용한 스택 정리</strong></p>
+<pre><code class="language-c">some_func();   // 반환값을 쓰지 않는 호출</code></pre>
+<pre><code class="language-asm">call some_func
+pop  rcx            ; add rsp, 8 대신 사용 (반환값도, rcx 이전 값도 신경 안 씀)</code></pre>
+<p><strong>예제 4 — PUSH/POP으로 값 두 개를 임시로 뒤집기</strong></p>
+<pre><code class="language-asm">push rax     ; 스택: [rax]
+push rbx     ; 스택: [rbx, rax]
+pop  rax      ; rax = 원래 rbx 값
+pop  rbx      ; rbx = 원래 rax 값  -&gt; 결과적으로 rax, rbx가 스왑됨 (XCHG와 같은 효과)</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0044-push.html">PUSH: 스택에 값 넣기</a></li><li><a href="rev-0046-pushf-popf.html">PUSHF와 POPF: 플래그 저장과 복원</a></li><li><a href="rev-0043-xchg.html">XCHG: 두 값 교환</a></li><li><a href="rev-0071-call.html">CALL: 함수 호출, 반환 주소, 인자 추적</a></li><li><a href="rev-0072-ret.html">RET: 함수 반환과 스택 변화</a></li><li><a href="rev-0073-leave.html">LEAVE: 함수 에필로그와 스택 프레임</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>POP 명령어 동작(RSP 증가 순서, x64에서 8바이트 고정): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "POP—Pop a Value from the Stack" 섹션 기준 (2026-09-08 검증).</li><li>콜리-세이브 레지스터 복원 규약: Microsoft Learn "x64 calling convention" 및 System V AMD64 ABI 공식 스펙 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

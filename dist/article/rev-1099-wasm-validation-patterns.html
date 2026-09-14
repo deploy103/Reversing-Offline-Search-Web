@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WASM에서 흔한 검증 로직 패턴 알아보기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / other-targets</div>
+<article class="article-body">
+<h1>WASM에서 흔한 검증 로직 패턴 알아보기</h1>
+<div class="article-meta"><span class="tag">other-targets</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">WASM</span><span class="tag">wabt</span></div>
+<h2>한 줄 요약</h2>
+<p>WASM crackme는 대부분 스택 기반 산술/논리 연산(<code>i32.add</code>, <code>i32.xor</code>, <code>i32.eq</code> 등)을 반복해 입력을 변형한 뒤 <code>i32.eq</code>/<code>i32.eqz</code>로 최종 비교하는 짧은 함수 하나에 로직이 몰려 있으므로, <code>wasm2wat</code>으로 뽑은 텍스트에서 이 비교 연산자와 루프 구조부터 찾는 것이 가장 빠르다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>REV-1098로 <code>.wasm</code>을 <code>.wat</code>/의사코드로 변환했지만 함수가 여러 개이거나 이름이 <code>$func12</code>처럼 익명이라 어디서 시작해야 할지 모를 때</li><li>JS 코드에서 <code>instance.exports.check(input)</code>처럼 결과값(boolean/i32)을 비교해 "Correct!"/"Wrong!"을 출력하는 지점은 찾았는데 <code>check</code> 내부 로직이 안 읽힐 때</li><li>WASM 함수 안에 <code>loop</code>, <code>br_if</code>가 반복되는데 이게 for문인지 while문인지 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>스택 기반 실행 모델부터 이해하기</h3>
+<p>WASM은 레지스터가 아니라 스택 기반 가상 머신이다. <code>local.get 0</code>은 지역변수(대개 함수 인자) 0번을 스택에 push하고, <code>i32.add</code>는 스택 맨 위 두 값을 pop해서 더한 뒤 다시 push한다. x86의 <code>ADD EAX, EBX</code>처럼 레지스터를 직접 다루는 것과 달리, WASM 코드를 읽을 때는 "지금 스택에 뭐가 쌓여 있는가"를 순서대로 추적해야 한다.</p>
+<h3>패턴 1 — 문자별 XOR/덧셈 후 비교(간단한 인코딩 크랙미)</h3>
+<p>가장 흔한 패턴은 입력 문자열을 한 바이트씩 순회하며 고정 키와 XOR하거나 더한 뒤, 그 결과를 하드코딩된 배열과 비교하는 것이다. <code>.wat</code>에서는 <code>loop</code> 블록 안에 <code>i32.load8_u</code>(메모리에서 1바이트 읽기), <code>i32.xor</code> 또는 <code>i32.add</code>, 그리고 <code>i32.ne</code>(다르면 분기)가 반복되는 형태로 나타난다.</p>
+<pre><code class="language-wat">(loop $L
+  local.get $i
+  i32.load8_u        ;; 입력 문자열의 i번째 바이트
+  i32.const 0x13
+  i32.xor            ;; 0x13과 XOR
+  local.get $i
+  i32.const 1000      ;; 정답 배열 오프셋
+  i32.add
+  i32.load8_u
+  i32.ne
+  br_if $fail        ;; 다르면 실패 분기
+  ...
+)</code></pre>
+<h3>패턴 2 — 단일 산술식 검증(체크섬/수식형)</h3>
+<p>입력을 정수로 파싱한 뒤 몇 개의 산술 연산(곱셈, 시프트, 모듈러)을 적용하고 특정 상수와 <code>i32.eq</code>로 비교하는 패턴. 코드 자체는 매우 짧지만 역연산(모듈러 역원 등)을 손으로 풀어야 할 수도 있다.</p>
+<h3>패턴 3 — 상태 머신/각 자리마다 다른 조건</h3>
+<p><code>br_table</code>(WASM의 switch-case에 해당)을 이용해 입력 위치나 상태값에 따라 다른 분기로 점프하는 패턴. <code>br_table</code>이 보이면 여러 상태를 오가는 상태 머신형 검증일 가능성이 높다.</p>
+<h3>최종 판정 지점 찾기</h3>
+<p>어떤 패턴이든 결국 함수의 반환값은 <code>i32</code>(0/1로 boolean 취급) 하나로 수렴하는 경우가 많다. <code>.wat</code> 텍스트에서 함수 맨 끝의 마지막 연산자가 <code>i32.eq</code>, <code>i32.eqz</code>, <code>i32.and</code>(여러 조건을 AND로 합산) 중 하나인지 먼저 확인하면, 그 직전 스택에 쌓인 두 값이 "계산된 결과"와 "기대값"임을 알 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>.wat</code>에 <code>loop</code>, <code>br_if</code>, <code>block</code>이 중첩되어 있고 함수 하나가 유난히 길다</li><li>함수 결과 타입이 <code>(result i32)</code>이고 반환 직전 마지막 명령이 <code>i32.eq</code> 계열</li><li><code>data</code> 섹션에 정답과 비교할 것으로 보이는 고정 바이트 배열이 있음</li><li>JS 코드에서 <code>if (instance.exports.check(...) === 1) { alert("Correct") }</code> 같은 대조 로직이 보임</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>.wat</code>에서 <code>(export ...)</code>된 함수들의 시그니처(<code>param</code>/<code>result</code>)부터 훑어, 문자열이나 배열을 받고 <code>i32</code>(참/거짓) 하나를 돌려주는 함수를 최우선 후보로 지목한다. 그 함수 안에서 <code>loop</code>와 마지막 비교 연산자를 먼저 표시해두고 위에서 아래로 스택 값을 손으로 따라간다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>wasm2wat</code>으로 변환한 <code>.wat</code>에서 export 함수 시그니처 확인</li><li>후보 함수 안의 <code>loop</code>/<code>block</code>/<code>br_if</code>/<code>br_table</code> 개수와 중첩 구조 파악 — 몇 겹인지 스케치</li><li>함수 안에서 사용되는 상수(<code>i32.const</code>)를 전부 나열 — 키값, 배열 오프셋, 목표값 후보</li><li><code>data</code> 섹션에서 해당 오프셋에 있는 실제 바이트를 확인(정답 또는 룩업 테이블일 가능성)</li><li>마지막 비교 연산자 직전까지 스택에 쌓이는 값을 손으로(혹은 파이썬으로) 재현</li><li>정적으로 막히면 REV-1100의 브라우저 디버거로 실제 실행 중 스택/로컬 변수 값을 찍어 검증</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash"># loop/br_if 개수만 빠르게 세기
+grep -c "loop" chall.wat
+grep -c "br_if" chall.wat
+
+# data 섹션(정답 배열 후보) 확인
+wasm-objdump -s chall.wasm   # -s: 각 섹션의 raw 데이터 hex dump
+
+# 특정 함수만 골라서 보고 싶으면 wasm-decompile 결과에서 함수명으로 검색
+grep -n "function check" chall.dcmp</code></pre>
+<h2>출력 해석</h2>
+<p><code>wasm-objdump -s chall.wasm</code>의 <code>Data</code> 섹션 출력 예:</p>
+<pre><code>Data start=0x1000 (memory 0)
+000010e0 4374 4621 7b73 3059 5f77 3170 5f6d 3374   CtF!{s0Y_w1p_m3t</code></pre>
+<p>이렇게 사람이 읽을 수 있는 문자열이 바로 보이면, WASM 코드의 XOR/비교 로직을 굳이 다 풀지 않아도 이 데이터가 정답 자체이거나 XOR 전 원문일 가능성이 크다. 반대로 랜덤해 보이는 바이트라면 인코딩된 정답이므로 코드의 변형 연산을 정확히 역산해야 한다.</p>
+<h2>흔한 실수</h2>
+<ul><li><code>loop</code> 안의 <code>br_if</code> 조건을 반대로 읽는 것 — <code>br_if</code>는 "조건이 참이면 분기"이므로, 실패 분기인지 계속 진행 분기인지 라벨(<code>$fail</code>, <code>$continue</code> 등, 있다면)과 함께 확인해야 한다.</li><li>스택 순서를 착각해 <code>i32.sub</code>의 피연산자 순서(먼저 push된 값이 피감수인지 감수인지)를 반대로 계산하는 것.</li><li>익명 함수(<code>$func12</code>)라고 지레 포기하는 것 — export 시그니처와 상수만 봐도 역할을 상당 부분 추정할 수 있다.</li><li>짧은 함수라고 안일하게 보고 <code>br_table</code> 기반 상태 머신을 놓쳐 일부 분기 케이스를 빠뜨리는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>.wat</code>/의사코드 자체를 만드는 방법이 기억 안 나면 → REV-1098 wasm2wat/wasm-decompile로 WASM을 텍스트로 바꾸기</li><li>정적으로 손으로 계산하기엔 로직이 너무 복잡하면 → REV-1100 브라우저 개발자도구로 WASM 디버깅하기(실제 실행하며 값 관찰)</li><li>부호/오버플로우 판단이 헷갈리면 x86 쪽이지만 원리는 동일한 → REV-0088 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</li><li>WASM 모듈 구조(섹션 종류) 자체가 헷갈리면 → REV-1097 WASM 바이너리 구조 기초(모듈/섹션)</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-wat">(func $check (export "check") (param $ptr i32) (param $len i32) (result i32)
+  (local $i i32)
+  (local.set $i (i32.const 0))
+  (block $done
+    (loop $L
+      (br_if $done (i32.ge_u (local.get $i) (local.get $len)))
+      (i32.ne
+        (i32.xor
+          (i32.load8_u (i32.add (local.get $ptr) (local.get $i)))
+          (i32.const 0x2a))
+        (i32.load8_u (i32.add (i32.const 4096) (local.get $i))))
+      (br_if $done)          ;; 하나라도 다르면 즉시 실패 분기로
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br $L)))
+  ...)</code></pre>
+<p>이 예제는 입력 문자열 각 바이트를 <code>0x2a</code>와 XOR한 값이 메모리 오프셋 <code>4096</code>부터 있는 정답 배열과 같은지 한 글자씩 비교하는 전형적인 패턴 1이다. 파이썬으로 <code>bytes(b ^ 0x2a for b in answer)</code>를 계산하면 바로 입력값을 복원할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-1098-wasm2wat-decompile.html">REV-1098 — wasm2wat/wasm-decompile로 WASM을 텍스트로 바꾸기</a></li><li><a href="rev-1100-browser-devtools-wasm-debugging.html">REV-1100 — 브라우저 개발자도구로 WASM 디버깅하기</a></li><li><a href="rev-1097-wasm-module-section-basics.html">REV-1097 — WASM 바이너리 구조 기초(모듈/섹션)</a></li><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>WASM 스택 기반 명령어 의미(<code>local.get</code>, <code>i32.add</code>, <code>i32.xor</code>, <code>br_if</code>, <code>br_table</code> 등)는 WebAssembly 공식 사양 및 WABT 문서의 명령어 목록 기준으로 확인(2026-09-10, WABT README (https://github.com/WebAssembly/wabt/blob/main/README.md) 및 wasm-decompile 관련 설명 참고).</li><li>실제 CTF WASM 문제에서 XOR+비교, 산술식 체크섬, 상태 머신형 검증이 자주 나타나는 경향은 공개된 다수의 WASM reversing CTF writeup(예: HackPack CTF 2023 WASM 문제 writeup 등)에서 반복 관찰됨.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

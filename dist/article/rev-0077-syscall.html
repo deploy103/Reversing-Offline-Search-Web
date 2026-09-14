@@ -1,0 +1,144 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SYSCALL: x86-64 시스템 콜 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>SYSCALL: x86-64 시스템 콜</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>SYSCALL</code>은 x86-64에서 유저 모드(Ring 3)에서 커널 모드(Ring 0)로 전환해 커널이 정해둔 고정 주소로 즉시 점프하는 "빠른 시스템 콜 진입" 명령어다. 예전 방식인 소프트웨어 인터럽트(<code>INT 0x80</code>)보다 오버헤드가 훨씬 적다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>어셈블리에 <code>syscall</code> 한 줄만 덜렁 있는데 무슨 함수를 부르는 건지 감이 안 잡힐 때</li><li>CTF pwn 문제에서 셸코드를 분석하는데 <code>mov rax, 59</code> 같은 코드 다음에 <code>syscall</code>이 나올 때</li><li><code>syscall</code> 실행 직후 RCX나 R11 값이 갑자기 바뀌어서 당황스러울 때</li><li>심볼이 하나도 없는 정적 바이너리인데 <code>call printf</code> 같은 게 안 보이고 <code>syscall</code>만 여기저기 있을 때</li><li><code>syscall</code>의 인자 레지스터 순서가 일반 함수 호출과 뭐가 다른지 모를 때 ("syscall 인자 어디", "rcx 왜 바뀜")</li></ul>
+<h2>핵심 개념</h2>
+<h3>SYSCALL이 실제로 하는 일</h3>
+<p><code>SYSCALL</code>은 <strong>오퍼랜드가 전혀 없는 명령어</strong>다. 지금까지 다룬 대부분의 명령어(<code>MOV</code>, <code>CMP</code>, <code>CALL</code> 등)와 달리, <code>syscall</code> 한 단어로 끝이다. 그런데도 "인자"가 있는 것처럼 동작하는 이유는, 모든 입력이 명령어 자체가 아니라 <strong>레지스터에 미리 채워둔 값</strong>을 통해 암묵적으로 전달되기 때문이다(자세한 규약은 아래 표 참고).</p>
+<p>CPU가 <code>syscall</code>을 실행하면 하드웨어 차원에서 다음 순서로 동작한다:</p>
+<ol><li><strong><code>syscall</code> 바로 다음 명령의 주소(반환 주소)를 RCX에 저장한다.</strong></li><li><strong>현재 RFLAGS 값을 R11에 저장한다.</strong></li><li>CS/SS 세그먼트 셀렉터와 커널 진입 RIP를 MSR(모델 지정 레지스터, 대표적으로 STAR/LSTAR)에서 읽어와 로드한다. 이 주소는 부팅 시 커널이 한 번 설정해두는 <strong>고정된 커널 주소</strong>이며, 유저 코드가 마음대로 바꿀 수 없다. MSR 이름 자체를 외울 필요는 없고, "유저 코드가 아니라 커널이 정한 고정 진입점으로 간다"는 사실만 기억하면 된다.</li><li>IA32_FMASK MSR에 따라 RFLAGS의 일부 비트를 마스킹한다(보통 IF 플래그를 꺼서, 커널 진입 초기 구간에서 인터럽트를 비활성화한다).</li><li>Ring 0로 전환하고, 그 고정 주소에서 커널 코드 실행을 시작한다.</li></ol>
+<p>짝이 되는 복귀 명령어는 <code>SYSRET</code>으로, RCX에서 RIP를 복원하고 R11에서 RFLAGS를 복원하며 다시 Ring 3로 전환하는 정반대 동작을 한다. 이 글에서는 <code>SYSCALL</code> 자체를 다루며, <code>SYSRET</code>은 별도 글(예정)에서 다룬다.</p>
+<h3>왜 하필 RCX와 R11인가 — 그리고 이것이 인자 레지스터에 미치는 영향</h3>
+<p><code>SYSCALL</code>이 RCX에 반환 주소를, R11에 플래그를 저장하는 것은 <strong>하드웨어가 강제로 하는 동작</strong>이다. 즉 <code>syscall</code> 명령이 실행되는 순간 RCX와 R11의 기존 값은 무조건 덮어써진다. 그래서 이 두 레지스터는 syscall 인자를 담는 용도로 쓸 수 없다.</p>
+<p>이게 바로 리눅스 x86-64 syscall 호출 규약이 일반 SysV AMD64 함수 호출 규약(REV-0071 CALL 참고: RDI, RSI, RDX, RCX, R8, R9)과 <strong>딱 한 자리만</strong> 다른 이유다. 일반 함수 호출의 4번째 인자 자리는 RCX인데, syscall에서는 RCX가 SYSCALL 명령 자체에 의해 반환 주소 저장용으로 소모되므로, 그 자리를 대신 <strong>R10</strong>이 차지한다.</p>
+<h3>리눅스 x86-64 syscall 호출 규약</h3>
+<table><thead><tr><th>슬롯</th><th>레지스터</th></tr></thead><tbody><tr><td>시스템 콜 번호</td><td>RAX</td></tr><tr><td>1번째 인자</td><td>RDI</td></tr><tr><td>2번째 인자</td><td>RSI</td></tr><tr><td>3번째 인자</td><td>RDX</td></tr><tr><td>4번째 인자</td><td><strong>R10</strong> (일반 함수 호출의 RCX 자리이지만, SYSCALL이 RCX를 자체적으로 반환주소 저장에 쓰므로 대신 R10을 사용)</td></tr><tr><td>5번째 인자</td><td>R8</td></tr><tr><td>6번째 인자</td><td>R9</td></tr><tr><td>반환값</td><td>RAX (음수면 <code>-errno</code>, 즉 실패 시 에러 코드를 음수로 인코딩)</td></tr></tbody></table>
+<p><strong>일반 함수 호출과 비교하면:</strong></p>
+<pre><code>일반 SysV 함수 호출 (REV-0071 참고):  RDI, RSI, RDX, RCX, R8, R9
+리눅스 syscall 호출:                  RDI, RSI, RDX, R10, R8, R9
+                                              차이는 4번째 자리, RCX -&gt; R10 뿐!</code></pre>
+<p>이 한 글자(RCX vs R10) 차이를 모르고 셸코드를 작성하거나 읽으면, 4개 이상 인자를 쓰는 syscall(<code>read</code>, <code>write</code>처럼 3개짜리는 문제없지만 <code>mmap</code> 같은 6개짜리는 바로 걸림)에서 인자가 엉뚱한 레지스터에 들어가는 실수를 한다. <strong>이것이 syscall을 처음 접하는 사람이 가장 많이 헷갈리는 지점이다.</strong></p>
+<h3>레지스터/메모리 효과와 플래그</h3>
+<p><code>SYSCALL</code> 명령 자체가 부작용으로 바꾸는 범용 레지스터는 <strong>RCX와 R11 두 개뿐</strong>이다. 디버거에서 <code>syscall</code> 한 줄을 지나가고 나서 RCX나 R11 값이 실행 전과 달라져 있다면, 그건 버그가 아니라 SYSCALL의 정상 동작이다. RFLAGS도 IA32_FMASK에 따라 일부 비트가 바뀔 수 있다.</p>
+<p>이 외의 범용 레지스터(RAX 제외)는 명령어 자체는 건드리지 않는다. 다만 실제로 실행되는 <strong>커널 핸들러</strong>가 RAX에 반환값을 넣고, 어떤 syscall이냐에 따라 메모리를 바꿀 수도 있다(예: <code>read()</code>는 버퍼로 넘긴 메모리 주소에 실제로 데이터를 써넣는다).</p>
+<h3>스택과 RIP 변화</h3>
+<p>RIP는 커널이 정해둔 고정 진입점으로 점프한다(커널 내부 실행은 일반적인 유저모드 디버거로는 보이지 않는다). 중요한 점은, <strong>SYSCALL은 유저 스택에 아무것도 push하지 않는다</strong>는 것이다. 반환 주소는 스택이 아니라 RCX 레지스터에 저장된다.</p>
+<p>이건 CALL(REV-0071)과 명확히 대비된다: "CALL은 반환 주소를 스택에 push하지만, SYSCALL은 반환 주소를 RCX 레지스터에 저장한다 — 스택을 건드리지 않는다는 점이 SYSCALL이 '빠른' 이유 중 하나다(메모리/스택 접근이 없음)."</p>
+<h3>레거시 방식과의 비교: INT 0x80</h3>
+<p>32비트 시절 리눅스는 <code>INT 0x80</code>이라는 소프트웨어 인터럽트로 시스템 콜을 진입했다. 64비트 코드에서도 호환을 위해 여전히 동작하지만 느리다 — 소프트웨어 인터럽트는 IDT(인터럽트 서술자 테이블) 조회 등 저장해야 할 상태가 더 많고 절차가 복잡한 반면, <code>SYSCALL</code>은 하드웨어가 전용으로 설계한 더 빠른 경로다. <code>INT 0x80</code>은 규약도 완전히 다르다(시스템 콜 번호는 EAX, 인자는 EBX/ECX/EDX/ESI/EDI/EBP — 32비트 ABI). 자세한 내용은 별도 글(예정, "INT와 INT 0x80: 인터럽트 기반 시스템 콜")에서 다룬다.</p>
+<h3>syscall 번호는 어디서 찾나</h3>
+<p>번호를 외울 필요는 없다. 실제 소스는 리눅스 커널의 <code>arch/x86/entry/syscalls/syscall_64.tbl</code>이고, 개발 환경에서는 <code>/usr/include/x86_64-linux-gnu/asm/unistd_64.h</code>에서도 확인할 수 있다. 온라인 syscall 번호 레퍼런스 표를 찾아봐도 된다. IDA/Ghidra는 <code>syscall</code> 직전의 <code>mov eax, N</code> 패턴을 인식하면 알려진 syscall 번호 옆에 자동으로 주석을 달아주기도 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>mov rax, N</code> ... <code>syscall</code> — 시스템 콜 직접 호출(번호 N)</li><li><code>syscall</code> 직후 RCX/R11 값이 실행 전과 달라져 있음 — 정상 동작</li><li>라이브러리 CALL 없이 <code>syscall</code>만 반복되는 정적/작은 바이너리 — 셸코드이거나 libc를 안 쓰는 최소 바이너리일 가능성</li><li>IDA 디컴파일 결과가 <code>syscall(...)</code>이라는 일반화된 형태로만 나오고 이름 있는 함수 호출로 안 바뀜</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>syscall</code>을 만나면:</p>
+<ol><li>바로 위에서 RAX에 어떤 값이 들어갔는지 확인 (시스템 콜 번호 확정)</li><li>RDI/RSI/RDX/R10/R8/R9 순서로 인자가 몇 개나 세팅됐는지 확인</li><li>번호를 syscall 테이블에서 찾아 실제 함수명 대응 (<code>read</code>, <code>write</code>, <code>open</code>, <code>execve</code> 등)</li><li><code>syscall</code> 직후 RAX(반환값) 활용 코드 확인</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 번호와 인자 읽기</strong></p>
+<pre><code class="language-asm">mov     rax, 1        ; syscall 번호 1 = write
+mov     rdi, 1        ; 1번째 인자: fd = 1 (stdout)
+lea     rsi, [rel msg]; 2번째 인자: 버퍼 주소
+mov     rdx, 3        ; 3번째 인자: 길이
+syscall</code></pre>
+<p>→ <code>write(1, msg, 3)</code>으로 해석.</p>
+<p><strong>2) 4개 이상 인자면 R10 자리 확인</strong></p>
+<pre><code class="language-asm">mov     rax, 9        ; mmap
+mov     rdi, 0
+mov     rsi, 0x1000
+mov     rdx, 7        ; PROT_READ|WRITE|EXEC
+mov     r10, 0x22     ; 4번째 인자: MAP_PRIVATE|MAP_ANONYMOUS (RCX 아님! R10)
+mov     r8,  -1
+mov     r9,  0
+syscall</code></pre>
+<p><strong>3) strace로 동적 확인 (정적 분석이 애매할 때)</strong> 바이너리를 실제로 실행하며 <code>strace ./binary</code>를 돌리면 모든 syscall이 이름과 실제 인자값까지 풀려서 나온다. 손으로 raw <code>syscall</code> 시퀀스를 하나하나 역추적하는 것보다 훨씬 빠르므로, <strong>먼저 <code>strace</code>로 전체 흐름을 파악하고, 그 다음 관심 있는 syscall 근처만 디스어셈블리에서 자세히 본다.</strong></p>
+<h2>명령어/단축키</h2>
+<ul><li>GDB/Pwndbg: <code>strace ./binary</code> (셸에서 별도 실행), <code>catch syscall</code> (GDB에서 syscall 진입/탈출 시 정지), <code>info registers</code> (RCX/R11 값 확인)</li><li>IDA/Ghidra: <code>syscall</code> 직전 <code>mov eax/rax, N</code> 라인에 자동 주석이 붙는지 확인, F5로 디컴파일해도 <code>syscall(...)</code>로만 보이면 그 위 어셈블리를 직접 읽어야 함</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>strace</code> 출력 예: <code>write(1, "hi\n", 3) = 3</code> — 함수명, 인자, 반환값이 모두 이미 해석되어 나온다.</li><li>디버거에서 <code>syscall</code> 실행 전후 RAX 값 비교 — 실행 전은 syscall 번호, 실행 후는 반환값(음수면 <code>-errno</code>)이라는 점에 주의. 같은 레지스터가 실행 전/후로 의미가 완전히 다르다.</li><li>IDA 디컴파일에서 <code>syscall(1, fd, buf, len)</code>처럼 나오면, IDA가 레지스터를 순서대로 나열만 해준 것이지 실제 함수 원형을 안다는 뜻은 아닐 수 있다 — 번호(첫 인자)로 직접 syscall 테이블을 찾아 확인해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><strong>syscall 인자 레지스터를 일반 함수 호출과 동일하다고 착각하는 것</strong> — 4번째 인자가 RCX가 아니라 R10이라는 점을 잊는 것이 가장 흔하고 치명적인 실수다. <code>mmap</code>, <code>mprotect</code>처럼 인자 4개 이상인 syscall을 분석/작성할 때 특히 주의.</li><li><code>syscall</code> 실행 후 RCX/R11 값이 "왜 마음대로 바뀌었지?" 하고 당황하는 것 — 이건 SYSCALL 명령의 정상적인 하드웨어 동작이다.</li><li><code>INT 0x80</code> 규약(EAX/EBX/ECX/EDX/ESI/EDI/EBP, 32비트)과 SYSCALL 규약(RAX/RDI/RSI/RDX/R10/R8/R9, 64비트)을 뒤섞어 외우는 것 — 자료가 32비트용인지 64비트용인지 항상 먼저 확인한다.</li><li>심볼 없는 바이너리에서 <code>syscall</code>을 보고 "분석 불가"라 포기하는 것 — 번호와 인자 레지스터만 읽어도 무슨 동작인지 상당 부분 알 수 있고, <code>strace</code>로 동적 확인도 가능하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>syscall 번호를 못 찾겠으면 → <code>syscall</code> 위로 계속 거슬러 올라가며 <code>rax</code>/<code>eax</code>에 마지막으로 쓰인 값을 찾는다. 조건 분기 때문에 여러 경로에서 다른 번호가 들어갈 수도 있으니 어느 경로로 왔는지 확인한다.</li><li>인자가 몇 개인지 헷갈리면 → syscall 번호를 먼저 특정한 뒤 <code>man 2 &lt;함수명&gt;</code> 또는 <code>syscall_64.tbl</code>에서 원형(prototype)을 찾아 인자 개수를 역산한다.</li><li><code>strace</code>가 설치되어 있지 않거나 정적 바이너리라 라이브러리 심볼이 하나도 없으면 → <code>RCX/R11</code>이 바뀌는 지점을 GDB에서 <code>catch syscall</code>로 잡아 실행 중 값을 직접 확인한다.</li><li>반환값(RAX)이 음수처럼 보이는 큰 값이면 → <code>-errno</code>로 해석해서 절댓값을 errno 목록과 대조한다(예: <code>0xFFFFFFFFFFFFFFF2</code> = <code>-14</code> = <code>EFAULT</code>).</li><li>그래도 무슨 syscall인지 특정이 안 되면 → 온라인 x86-64 syscall 번호표를 검색하거나, 로컬의 <code>/usr/include/x86_64-linux-gnu/asm/unistd_64.h</code>를 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — write(1, "hi\n", 3)</strong></p>
+<pre><code class="language-asm">section .data
+msg: db "hi", 0x0a
+
+section .text
+mov     rax, 1
+mov     rdi, 1
+lea     rsi, [rel msg]
+mov     rdx, 3
+syscall</code></pre>
+<p><strong>예제 2 — exit(0)</strong></p>
+<pre><code class="language-asm">mov     rax, 60
+xor     rdi, rdi
+syscall</code></pre>
+<p><strong>예제 3 — CTF에서 흔한 "flag 파일 읽어서 출력" 셸코드 패턴</strong></p>
+<pre><code class="language-asm">; open("flag.txt", O_RDONLY)
+mov     rax, 2
+lea     rdi, [rel filename]
+xor     rsi, rsi
+syscall
+mov     rbx, rax        ; fd 저장
+
+; read(fd, buf, 100)
+mov     rax, 0
+mov     rdi, rbx
+lea     rsi, [rel buf]
+mov     rdx, 100
+syscall
+
+; write(1, buf, 100)
+mov     rax, 1
+mov     rdi, 1
+lea     rsi, [rel buf]
+mov     rdx, 100
+syscall</code></pre>
+<p><code>open</code> → <code>read</code> → <code>write</code> 3연속 syscall은 "파일을 읽어 화면에 출력"하는 CTF pwn 셸코드의 대표 패턴이다.</p>
+<h2>관련 C 코드</h2>
+<p>C에서는 <code>syscall</code> 명령어를 직접 쓰지 않는다. 대신 <code>write()</code>, <code>read()</code>, <code>open()</code>, <code>exit()</code> 같은 libc 래퍼 함수를 호출하고, libc 내부가 알아서 <code>syscall</code> 명령을 실행한다.</p>
+<pre><code class="language-c">write(1, "hi\n", 3);   // 내부적으로 rax=1, syscall 실행
+exit(0);               // 내부적으로 rax=60(또는 exit_group=231), syscall 실행</code></pre>
+<p>libc가 전용 래퍼를 제공하지 않는 syscall을 직접 호출하고 싶을 때는 <code>&lt;unistd.h&gt;</code>의 <code>long syscall(long number, ...)</code> 함수를 명시적으로 쓴다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0078-sysenter-sysexit.html">SYSENTER와 SYSEXIT 기초</a></li><li><a href="rev-0071-call.html">CALL: 함수 호출, 반환 주소, 인자 추적</a></li><li><a href="rev-0088-flags-overview.html">FLAGS 레지스터 개요</a></li><li><a href="rev-0072-ret.html">REV-0072 — RET: 함수 반환과 스택 변화</a></li><li><a href="rev-0079-int-0x80.html">REV-0079 — INT와 INT 0x80: 인터럽트 기반 시스템 콜</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>SYSCALL 동작(RCX/R11 저장, MSR 기반 진입, FMASK): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "SYSCALL—Fast System Call" 섹션 기준 (2026-09-08 검증).</li><li>리눅스 x86-64 syscall 호출 규약(RAX/RDI/RSI/RDX/R10/R8/R9, 반환값 -errno): Linux 커널 소스 <code>arch/x86/entry/syscalls/syscall_64.tbl</code> 및 <code>man 2 syscall</code> 관례 기준.</li><li><code>strace</code> 사용법: strace 공식 매뉴얼과 이 지식베이스의 도구 안내 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

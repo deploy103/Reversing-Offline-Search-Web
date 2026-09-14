@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>삼항 연산자(?:)가 CMOVcc로 컴파일되는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>삼항 연산자(?:)가 CMOVcc로 컴파일되는 패턴</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>x = cond ? a : b;</code> 같은 삼항 연산자는 <code>a</code>와 <code>b</code>를 조건 분기 없이 <strong>둘 다 미리 계산</strong>해 둔 뒤, <code>CMOVcc</code>(조건부 이동, REV-0075)로 조건이 참일 때만 레지스터 값을 덮어쓰는 방식으로 컴파일되는 경우가 많으며, 이는 분기 예측 실패(branch misprediction) 비용을 없애기 위한 최적화다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>소스에 <code>? :</code>(삼항 연산자)나 짧은 <code>if-else</code> 대입문이 있는데, 대응하는 어셈블리에 <code>JMP</code>/<code>Jcc</code>로 분기하는 대신 <code>CMP</code> 직후 <code>CMOVcc</code>가 바로 나올 때</li><li><code>CMOVG</code>, <code>CMOVL</code>, <code>CMOVE</code>, <code>CMOVNE</code>, <code>CMOVA</code>, <code>CMOVB</code> 등 <code>CMOV</code> 계열 명령이 낯설어서 뭘 하는지 모를 때</li><li>두 값(<code>a</code>, <code>b</code>)을 모두 계산하는 코드가 먼저 나오고, 그 다음에야 조건 검사가 나와서 "왜 둘 다 계산하지? 하나는 버려질 텐데"라는 의문이 들 때</li><li><code>min</code>/<code>max</code> 매크로나 함수가 분기 없이 구현된 것처럼 보일 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 분기 대신 CMOV를 쓰는가</h3>
+<p><code>if (cond) x = a; else x = b;</code> 형태의 코드를 그대로 번역하면 <code>CMP</code>+<code>Jcc</code>+<code>MOV</code>+<code>JMP</code>+<code>MOV</code> 같은 분기 구조가 된다. 하지만 현대 CPU는 <strong>분기 예측(branch prediction)</strong> 을 통해 다음 명령을 미리 가져와 실행하는데, 예측이 틀리면 파이프라인을 통째로 비우고 다시 시작해야 하는 큰 페널티(수 사이클~수십 사이클)가 발생한다. 특히 <code>cond</code>가 실행할 때마다 무작위에 가깝게 참/거짓이 바뀌는 경우(정렬 안 된 데이터의 min/max 계산 등) 분기 예측은 계속 틀리기 쉽다.</p>
+<p><code>CMOVcc</code>는 이 문제를 피한다 — <strong>분기 자체를 아예 없애고</strong>, <code>a</code>와 <code>b</code>를 모두 미리 계산해 둔 뒤, 조건이 참이면 레지스터에 <code>a</code>를, 거짓이면 원래 값(<code>b</code>가 이미 들어있는 상태)을 그대로 유지한다. 분기가 없으니 예측 실패도 없다. 다만 그 대신 <strong>양쪽 값을 항상 다 계산</strong>해야 하므로, <code>a</code>와 <code>b</code>의 계산 비용이 크거나 부작용(side effect, 예: 함수 호출, 널 포인터 역참조)이 있으면 컴파일러는 CMOVcc 대신 원래의 분기 방식을 유지한다 — 그래서 삼항 연산자가 항상 CMOVcc로 바뀌는 것은 아니다.</p>
+<h3>전형적인 코드 형태</h3>
+<pre><code class="language-asm">; x = (a &gt; b) ? a : b;   (max(a, b))
+mov     eax, a
+mov     ecx, b
+cmp     eax, ecx
+cmovle  eax, ecx      ; a &lt;= b이면 eax(결과)를 ecx(b)로 덮어씀; a &gt; b면 그대로 a 유지</code></pre>
+<p>여기서 핵심은 <strong>두 값(a와 b)이 이미 각각 레지스터(EAX, ECX)에 준비되어 있고, CMOVcc는 조건에 따라 목적지 레지스터의 내용을 "그대로 둘지 소스로 덮어쓸지"만 결정한다</strong>는 점이다. <code>CMOVcc dst, src</code>는 조건이 참이면 <code>dst = src</code>를, 거짓이면 <code>dst</code>를 <strong>전혀 건드리지 않는다</strong>(변경 없음) — 이건 <code>MOV</code>와 근본적으로 다른 "선택적 대입"이다.</p>
+<h3>CMOVcc의 조건 코드는 CMP/TEST 뒤의 Jcc와 완전히 동일한 규칙</h3>
+<p><code>CMOVG</code>(signed greater), <code>CMOVL</code>(signed less), <code>CMOVE</code>(equal), <code>CMOVNE</code>(not equal), <code>CMOVA</code>(unsigned above), <code>CMOVB</code>(unsigned below) 등, 접미사 <code>cc</code>는 REV-0069/REV-0070/REV-0088에서 다룬 <code>Jcc</code>의 조건 코드와 완전히 같은 인코딩을 공유한다. 즉 <code>JG</code>가 참일 조건이면 <code>CMOVG</code>도 똑같은 플래그 조합에서 참이다 — <code>Jcc</code>를 이해했다면 <code>CMOVcc</code>는 "그 조건에서 MOV를 실행한다"는 것만 추가로 알면 된다.</p>
+<h3>레지스터/메모리 효과와 플래그</h3>
+<ul><li><code>CMOVcc</code>는 <strong>EFLAGS를 전혀 변경하지 않는다</strong> — 오직 읽기만 한다(REV-0075 참고). 그래서 <code>CMP</code>/<code>TEST</code> 직후 <code>CMOVcc</code>를 여러 개 연달아 써도 플래그가 계속 같은 상태로 유지되어 재사용 가능하다.</li><li>소스 오퍼랜드가 메모리일 수 있다(<code>cmovg eax, [rbx]</code>). <strong>중요한 함정</strong>: 조건이 거짓이라 실제로 <code>eax</code>에 반영되지 않더라도, x86 아키텍처 정의상 CMOVcc는 조건과 무관하게 <strong>메모리 읽기 자체는 항상 수행</strong>할 수 있다(구현에 따라 다를 수 있으나, 소스가 메모리면 접근이 이루어진다고 가정하는 것이 안전하다). 이는 분기 기반 코드라면 조건이 거짓일 때 아예 그 메모리를 읽지 않는 것과 다른 점이며, 널 포인터가 될 수 있는 포인터를 CMOVcc의 소스로 무심코 쓰면 조건과 무관하게 접근 위반이 날 수 있다는 뜻이다. 그래서 컴파일러는 이런 부작용 가능성이 있는 경우 CMOVcc 변환을 포기하고 분기를 유지한다.</li><li>signed/unsigned은 어떤 <code>CMOVcc</code> 변형을 쓰느냐로 결정된다 — <code>CMOVG/CMOVL/CMOVGE/CMOVLE</code>는 signed, <code>CMOVA/CMOVB/CMOVAE/CMOVBE</code>는 unsigned 비교 결과를 따른다.</li><li>스택/RIP에는 영향이 없다 — <code>CMOVcc</code>는 순수 레지스터/메모리 간 조건부 데이터 이동이다.</li></ul>
+<h3>IDA/Ghidra 디컴파일에서 보이는 형태</h3>
+<p>Hex-Rays와 Ghidra는 <code>CMOVcc</code> 패턴을 매우 잘 인식해서, 대부분 원본과 거의 동일한 <code>x = (a &gt; b) ? a : b;</code> 형태로 정확히 복원해준다. 드물게 복잡한 중첩 삼항식은 <code>if</code>문으로 풀어서 보여주기도 하는데, 의미는 동일하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">; max(a, b) 패턴
+mov     eax, [a]
+cmp     eax, [b]
+cmovl   eax, [b]        ; a &lt; b면 b로 교체</code></pre>
+<pre><code class="language-asm">; abs(x) 패턴 (분기 없는 절대값)
+mov     eax, x
+mov     ecx, eax
+neg     ecx               ; ecx = -x
+cmovs   eax, ecx           ; SF=1(x가 음수)이면 -x로 교체</code></pre>
+<pre><code class="language-asm">; 포인터 선택 (삼항으로 다른 버퍼를 고르는 경우)
+mov     rax, ptr_a
+mov     rcx, ptr_b
+test    edx, edx
+cmovz   rax, rcx           ; edx == 0이면 ptr_b 선택</code></pre>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>CMP</code>/<code>TEST</code> 바로 뒤에 <code>Jcc</code>가 아니라 <code>CMOVcc</code>가 오는지 확인한다 — 있으면 분기 없는 조건부 대입(삼항 연산자 또는 짧은 if-else 대입)이 거의 확실하다.</li><li><code>CMOVcc</code>의 목적지 레지스터가 그 이전에 어떤 값으로 미리 채워져 있었는지(참일 때/거짓일 때 각각 어떤 값인지) 추적한다.</li><li>조건 코드(<code>G</code>, <code>L</code>, <code>E</code>, <code>A</code>, <code>B</code> 등)를 REV-0069/REV-0070의 대응표에 대입해서 원래 비교 연산자를 복원한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 두 후보 값 찾기</strong></p>
+<p><code>CMOVcc dst, src</code>에서 <code>dst</code>(변경 안 될 수도 있는 값)와 <code>src</code>(조건 참일 때 덮어쓸 값)가 각각 무엇인지 확인한다. 보통 바로 위 몇 줄에서 두 값이 서로 다른 레지스터에 준비되어 있다.</p>
+<p><strong>2) 조건 복원</strong></p>
+<p><code>CMOVcc</code> 직전의 <code>CMP</code>/<code>TEST</code> 오퍼랜드와 <code>cc</code> 접미사를 REV-0069(signed)/REV-0070(unsigned) 표에 대입한다. 예: <code>cmp eax, ecx</code> 후 <code>cmovl eax, ecx</code>라면 "만약 eax &lt; ecx이면 eax를 ecx로 바꾼다" → 결과적으로 <code>eax = min(eax, ecx)</code>.</p>
+<p><strong>3) 원래 C 표현 재구성</strong></p>
+<p>"조건 참이면 src, 거짓이면 원래 dst 값"이라는 논리를 <code>dst = cond ? src : dst_원래값</code> 형태로 정리한다.</p>
+<p><strong>4) 왜 CMOVcc가 선택됐는지 문맥 확인</strong></p>
+<p>두 값 모두 계산 비용이 낮고(단순 레지스터 읽기, 산술 몇 개) 부작용이 없는(메모리 쓰기, 함수 호출 없음) 경우에 CMOVcc가 자주 선택된다 — 이는 이 코드가 성능에 민감한 핫패스(hot path)일 가능성을 시사한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>F5</code>(디컴파일, 삼항 연산자로 재구성되는지 확인), <code>CMOVcc</code> 명령 위에서 우클릭 → "Convert to..." 등으로 오퍼랜드 표현 변경 가능</li><li>Ghidra: Decompile 창에서 자동 삼항식 복원 확인, Listing에서 <code>cmov</code> 텍스트 검색으로 전체 사용처 나열</li><li>x64dbg/GDB: <code>CMOVcc</code> 명령에 브레이크포인트를 걸고, 실행 전후 목적지 레지스터 값이 실제로 바뀌었는지/안 바뀌었는지 스텝 실행으로 직접 확인(<code>p/x $eax</code> 전후 비교)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>IDA/Ghidra가 <code>x = a &gt; b ? a : b;</code>로 정확히 복원했다면, 원본은 CMOVcc 기반 분기 없는 코드였다는 뜻이다.</li><li>같은 로직인데 다른 함수에서는 <code>JMP</code>/<code>Jcc</code> 기반 분기로 컴파일되어 있다면, 컴파일러가 그 지점에서는 부작용이 있다고 판단했거나 최적화 레벨이 다르다는 뜻이니 문맥을 다시 살핀다.</li><li><code>CMOVcc</code>의 소스가 메모리 오퍼랜드라면, 그 메모리가 항상 유효한 주소인지(널 체크가 없는지) 확인할 가치가 있다 — 조건과 무관하게 읽기가 일어날 수 있기 때문이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>CMOVcc</code>를 보고 "이건 항상 실행되는 대입이니 조건이 의미 없다"고 착각하는 것 — <code>CMOVcc</code>는 여전히 조건부다. 다만 그 "조건부"가 <code>JMP</code>가 아니라 "레지스터를 덮어쓸지 말지"로 구현되어 있을 뿐이다.</li><li><code>CMOVcc</code>가 플래그를 바꾼다고 착각해서, 그 다음에 나오는 또 다른 <code>Jcc</code>/<code>CMOVcc</code>가 이전과 다른 조건을 검사한다고 오판하는 것 — <code>CMOVcc</code>는 플래그를 전혀 바꾸지 않으므로, 같은 <code>CMP</code> 결과를 여러 <code>CMOVcc</code>가 재사용하는 경우가 흔하다.</li><li>두 값(a, b) 중 하나만 계산되는 것으로 착각하고 코드를 반만 읽는 것 — CMOVcc 패턴에서는 <strong>항상 둘 다 계산된다.</strong> 이 때문에 계산 비용이 큰 함수 호출이 삼항 연산자 안에 있으면 컴파일러가 CMOVcc를 포기하고 분기로 되돌아간다는 사실과 연결지어 이해해야 한다.</li><li>min/max 패턴을 보고 매번 "이게 왜 abs나 min/max인지" 처음부터 다시 유도하는 것 — <code>CMOVL</code>/<code>CMOVG</code> + 두 값 스왑이면 min/max, <code>CMOVS</code> + <code>NEG</code>면 절대값(abs)이라는 전형적인 관용구를 외워두면 빠르게 알아볼 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>CMOVcc</code> 개별 명령의 정확한 의미(조건 코드 표)가 헷갈리면 → REV-0075(CMOVcc 원본 항목)를 먼저 읽는다.</li><li>조건 코드가 signed인지 unsigned인지 헷갈리면 → REV-0069(JG JGE JL JLE), REV-0070(JA JAE JB JBE)을 비교해서 읽는다.</li><li>비슷하지만 boolean 값(0/1)을 만드는 패턴이면 → 이건 CMOVcc가 아니라 REV-0453(SETcc 패턴)이니 그쪽으로 이동해서 구분한다.</li><li>CMOVcc의 소스가 메모리라서 부작용이 걱정되면 → 그 메모리 주소가 항상 유효한지(널 포인터 아닌지) 위쪽 코드에서 확인.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 삼항 연산자로 max 구현</strong></p>
+<pre><code class="language-c">int m = (a &gt; b) ? a : b;</code></pre>
+<pre><code class="language-asm">mov     eax, [a]
+mov     ecx, [b]
+cmp     eax, ecx
+cmovle  eax, ecx     ; a &lt;= b이면 b로 교체 → 결과적으로 max(a, b)</code></pre>
+<p><strong>예제 2 — 짧은 if-else 대입</strong></p>
+<pre><code class="language-c">int clamp = (x &lt; 0) ? 0 : x;</code></pre>
+<pre><code class="language-asm">mov     eax, x
+xor     ecx, ecx     ; 0 준비
+test    eax, eax
+cmovs   eax, ecx      ; SF=1(x &lt; 0)이면 0으로 교체</code></pre>
+<p><strong>예제 3 — 분기 없는 절대값(abs)</strong></p>
+<pre><code class="language-c">int a = abs(x);</code></pre>
+<pre><code class="language-asm">mov     eax, x
+mov     ecx, eax
+neg     ecx
+test    eax, eax
+cmovl   eax, ecx      ; x &lt; 0이면 -x로 교체</code></pre>
+<p><strong>예제 4 — 포인터를 조건에 따라 고르기</strong></p>
+<pre><code class="language-c">char *msg = ok ? "success" : "fail";</code></pre>
+<pre><code class="language-asm">lea     rax, [success_str]
+lea     rcx, [fail_str]
+test    edx, edx        ; ok
+cmovz   rax, rcx          ; ok == 0(거짓)이면 fail 문자열로 교체</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0075-cmovcc.html">REV-0075 — CMOVcc: 분기 없는 조건부 이동</a></li><li><a href="rev-0453-short-if-setcc-pattern.html">REV-0453 — 짧은 if문이 SETcc로 컴파일되는 패턴</a></li><li><a href="rev-0069-jg-jge-jl-jle.html">REV-0069 — JG JGE JL JLE: Signed 비교 분기</a></li><li><a href="rev-0070-ja-jae-jb-jbe.html">REV-0070 — JA JAE JB JBE: Unsigned 비교 분기</a></li><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>CMOVcc</code> 동작(조건부 이동, 플래그 미변경, 조건 코드가 Jcc와 동일)은 Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2, "CMOVcc—Conditional Move" 항목 기준.</li><li>분기 예측 실패 비용과 CMOVcc의 사용 동기는 Intel Optimization Reference Manual의 분기 예측(Branch Prediction) 및 조건부 이동 활용 권고 사항 기준.</li><li>CMOVcc의 소스 메모리 오퍼랜드에 대한 접근 여부(조건과 무관하게 로드가 일어날 수 있음)는 Intel SDM Volume 2 CMOVcc 항목의 Operation 설명 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

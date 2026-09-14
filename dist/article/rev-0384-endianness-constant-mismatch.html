@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>리틀 엔디안 값을 잘못 읽어서 상수 매칭이 안 될 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / binary-basics</div>
+<article class="article-body">
+<h1>리틀 엔디안 값을 잘못 읽어서 상수 매칭이 안 될 때</h1>
+<div class="article-meta"><span class="tag">binary-basics</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">HxD</span></div>
+<h2>한 줄 요약</h2>
+<p>x86/x64는 리틀 엔디안(little-endian)이라 다중 바이트 값을 메모리/파일에 저장할 때 <strong>낮은 자릿수 바이트가 먼저(더 낮은 주소에)</strong> 온다 — 이 순서를 반대로 읽고 "문서에 나온 상수랑 안 맞는다"고 착각하는 경우가 매우 흔하며, 특히 파일 포맷 시그니처나 네트워크 프로토콜(빅 엔디안인 경우가 많음)을 다룰 때 이 착각이 자주 발생한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>헥스 덤프에서 뽑은 4바이트/8바이트 값을 알려진 매직 넘버나 상수와 비교했는데 바이트 순서가 반대로 보일 때</li><li>파일 포맷 명세 문서(RFC, 스펙 문서)에 나온 상수를 코드에 그대로 복사했는데 실제 파일과 안 맞을 때</li><li>네트워크 패킷을 파싱하는데 필드 값이 예상보다 훨씬 크거나 이상한 값으로 보일 때(네트워크 바이트 순서는 보통 빅 엔디안)</li><li>CRC/체크섬 상수를 리버싱해서 코드에 옮겼는데 계산 결과가 문서와 다를 때</li></ul>
+<h2>핵심 개념</h2>
+<p>"리틀 엔디안"이란 다중 바이트 정수를 메모리에 저장할 때 <strong>최하위 바이트(LSB)가 가장 낮은 주소에 저장</strong>되는 방식이다. 반대로 "빅 엔디안"은 <strong>최상위 바이트(MSB)가 가장 낮은 주소</strong>에 저장된다. x86/x64는 리틀 엔디안을 쓰지만, 네트워크 프로토콜(TCP/IP 헤더 등)이나 일부 파일 포맷, 자바 가상머신 등은 빅 엔디안을 쓴다.</p>
+<p><strong>구체적 숫자 예시</strong>: 32비트 값 <code>0x12345678</code>을 메모리에 저장한다고 하자.</p>
+<ul><li><strong>리틀 엔디안(x86/x64)</strong>: 주소가 낮은 순서대로 <code>78 56 34 12</code></li><li><strong>빅 엔디안</strong>: 주소가 낮은 순서대로 <code>12 34 56 78</code></li></ul>
+<p>헥스 에디터로 파일을 열어서 <code>78 56 34 12</code>라는 4바이트를 봤다면, 이걸 "그대로 순서대로" <code>0x78563412</code>라고 읽으면 안 되고, <strong>바이트 순서를 뒤집어서</strong> <code>0x12345678</code>로 읽어야 리틀 엔디안 값의 실제 의미가 나온다.</p>
+<p><strong>매직 넘버가 안 맞는 전형적인 상황</strong>: PNG 파일의 시그니처는 문서에 <code>89 50 4E 47 0D 0A 1A 0A</code>로 정의돼 있다. 이건 <strong>바이트 시퀀스 자체를 순서대로 명시한 것</strong>이라 엔디안과 무관하게 그대로 매칭하면 된다. 하지만 만약 어떤 포맷 문서가 "매직 넘버는 <code>0x1A0A0D47</code>이다"처럼 <strong>하나의 정수 값</strong>으로 표기했다면, 이 정수를 리틀 엔디안 파일에서 찾으려면 실제 파일에는 <code>47 0D 0A 1A</code>(바이트 순서 반전) 형태로 저장돼 있다는 것을 알아야 한다. 이 둘(바이트 시퀀스로 정의된 시그니처 vs 정수 값으로 정의된 매직 넘버)을 혼동하면 "분명히 맞는 값인데 검색이 안 된다"는 상황이 생긴다.</p>
+<p><strong>네트워크 바이트 순서는 보통 빅 엔디안</strong>: 소켓 프로그래밍에서 <code>htons()</code>, <code>htonl()</code>, <code>ntohs()</code>, <code>ntohl()</code> 같은 함수가 존재하는 이유가 바로 이것이다. 호스트(x86/x64, 리틀 엔디안)와 네트워크(관례상 빅 엔디안, "network byte order")의 바이트 순서가 다르기 때문에 명시적으로 변환해줘야 한다. 이런 함수 호출이 코드에 보인다면 그 값은 십중팔구 포트 번호나 IP 주소처럼 네트워크로 전송되는 필드다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>파일 헥스 덤프의 특정 4/8바이트 구간이 알려진 상수의 "역순"으로 보이는 경우</li><li><code>htons</code>/<code>htonl</code>/<code>ntohs</code>/<code>ntohl</code> 호출이 코드에 있는 경우 — 엔디안 변환이 명시적으로 일어나는 지점</li><li>구조체를 통째로 파일에서 읽어들인 뒤(<code>fread</code> 등) 특정 필드만 값이 이상하게 크거나 이상해 보이는 경우</li><li>CRC-32, Adler-32 같은 체크섬 알고리즘의 상수/결과값을 리틀 엔디안으로 저장할지 빅 엔디안으로 저장할지에 대한 명세가 실제 구현과 안 맞는 경우</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문제의 값이 파일/네트워크에서 "바이트 시퀀스"로 정의된 것인지, 아니면 "정수 값"으로 정의된 것인지부터 구분한다. 바이트 시퀀스라면 순서 그대로 비교하면 되고, 정수 값이라면 그 정수를 대상 아키텍처의 엔디안에 맞게 바이트로 풀어서 비교해야 한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 문제의 헥스 바이트를 그대로 옮겨 적기</strong> 파일/메모리에서 본 순서 그대로(<code>78 56 34 12</code>처럼) 먼저 기록한다.</p>
+<p><strong>2) 리틀 엔디안으로 해석해서 정수값 도출</strong></p>
+<pre><code class="language-python">data = bytes.fromhex("78563412")
+import struct
+value = struct.unpack("&lt;I", data)[0]   # '&lt;' = 리틀 엔디안, I = 4바이트 unsigned
+print(hex(value))    # 0x12345678</code></pre>
+<p><strong>3) 반대로 빅 엔디안으로도 해석해서 비교</strong></p>
+<pre><code class="language-python">value_be = struct.unpack("&gt;I", data)[0]  # '&gt;' = 빅 엔디안
+print(hex(value_be))   # 0x78563412</code></pre>
+<p>두 결과 중 어느 쪽이 알려진 문서/상수와 일치하는지 비교해서 이 파일/프로토콜이 어떤 엔디안을 쓰는지 확정한다.</p>
+<p><strong>4) 소스에서 엔디안 변환 함수 호출 여부 확인</strong> <code>htonl</code>/<code>ntohl</code> 등이 보이면 그 값은 네트워크(빅 엔디안)와 호스트(리틀 엔디안) 사이를 오가는 값이라는 확실한 증거다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python">import struct
+struct.unpack("&lt;I", data)[0]   # 리틀 엔디안 4바이트 → 정수
+struct.unpack("&gt;I", data)[0]   # 빅 엔디안 4바이트 → 정수
+struct.pack("&lt;I", 0x12345678)  # 정수 → 리틀 엔디안 4바이트
+int.from_bytes(data, "little") # 파이썬 내장(struct 없이도 가능)
+int.from_bytes(data, "big")</code></pre>
+<pre><code class="language-asm">bswap   eax        ; 32비트 레지스터의 바이트 순서를 반전(엔디안 변환에 자주 쓰임)</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>struct.unpack("&lt;I", ...)</code>와 <code>struct.unpack("&gt;I", ...)</code>의 결과가 서로 바이트 순서만 반전된 관계라면(예: <code>0x12345678</code> vs <code>0x78563412</code>), 이는 계산 오류가 아니라 엔디안 해석 차이를 정확히 보여준 것이다.</li><li>알려진 매직 넘버/체크섬 상수와 둘 중 하나만 정확히 일치한다면, 그 값을 통해 이 파일/프로토콜의 엔디안을 확정할 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>헥스 덤프에 보이는 바이트를 항상 "왼쪽에서 오른쪽으로 그대로 읽으면 된다"고 가정하고 리틀 엔디안 반전을 빼먹는 것.</li><li>파일 포맷 시그니처처럼 애초에 "바이트 시퀀스"로 정의된 값에 불필요하게 엔디안 반전을 적용해서 오히려 안 맞게 만드는 것 — 매직 바이트(예: <code>4D 5A</code>, <code>PE</code>용 PE 헤더)는 대부분 시퀀스 자체로 정의되므로 반전하면 안 된다.</li><li>네트워크 프로토콜 코드에서 <code>htonl</code>/<code>ntohl</code> 호출을 못 보고 그냥 호스트 엔디안 그대로 값을 해석해서 IP나 포트 번호가 이상하게 큰 값으로 보이는 것.</li><li>파이썬 <code>struct</code> 포맷 문자에서 <code>&lt;</code>(리틀)와 <code>&gt;</code>(빅) 지정을 빠뜨려서 시스템 기본 엔디안(<code>@</code>, 보통 리틀)에 의존하다가 다른 환경에서 결과가 달라지는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>엔디안 개념 자체(어느 쪽이 리틀/빅인지, 왜 그런 방식을 쓰는지)가 헷갈리면 REV-0023 문서로 이동.</li><li>바이트 순서를 반전하는 <code>BSWAP</code> 명령어 자체가 궁금하면 assembly 카테고리의 BSWAP 문서로 이동.</li><li>문자열이 아니라 값 자체의 인코딩(문자 인코딩)이 헷갈린다면 REV-0374 문서로 이동.</li></ul>
+<h2>미니 예제</h2>
+<p>어떤 파일 포맷 문서에 "버전 필드는 오프셋 0x04에 있고, 값은 리틀 엔디안 32비트 정수로 <code>2</code>여야 정상 파일이다"라고 나와 있다고 하자. 실제 파일을 헥스 에디터로 열어 오프셋 0x04를 보니 다음과 같았다.</p>
+<pre><code>offset 0x04: 02 00 00 00</code></pre>
+<p>이 4바이트를 리틀 엔디안으로 해석하면 <code>struct.unpack("&lt;I", b'\x02\x00\x00\x00')</code> = <code>2</code>로 문서와 정확히 일치한다. 만약 여기서 실수로 빅 엔디안으로 해석했다면 <code>struct.unpack("&gt;I", b'\x02\x00\x00\x00')</code> = <code>0x02000000</code> = <code>33554432</code>라는 전혀 다른 값이 나와서 "버전이 이상하게 크다"거나 "이 파일은 손상됐다"고 잘못 결론 내릴 뻔했을 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0023-endianness.html">REV-0023 — Little Endian과 Big Endian</a></li><li><a href="rev-0374-garbled-string-encoding.html">REV-0374 — 문자열이 깨져 보일 때 인코딩부터 의심하기</a></li><li><a href="rev-0406-bswap.html">REV-0406 — BSWAP: 바이트 순서 반전</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>리틀 엔디안/빅 엔디안 정의와 x86 아키텍처가 리틀 엔디안을 사용한다는 규정: Intel 64 and IA-32 Architectures Software Developer's Manual, Vol.1, "Byte Order" 섹션 기준 (2026-09-09 검증).</li><li>네트워크 바이트 순서(빅 엔디안)와 <code>htonl</code>/<code>ntohl</code> 계열 함수: IETF RFC 1700 및 POSIX(<code>arpa/inet.h</code>) 공식 문서 기준.</li><li>PNG 파일 시그니처(<code>89 50 4E 47 0D 0A 1A 0A</code>) 정의: W3C PNG(Portable Network Graphics) Specification, "PNG file signature" 섹션 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

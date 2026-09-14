@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghidra로 분석하고 x64dbg로 크로스체크하는 워크플로 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>Ghidra로 분석하고 x64dbg로 크로스체크하는 워크플로</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>IDA 라이선스가 없는 환경에서 Windows PE를 분석할 때는 <strong>Ghidra의 무료 디컴파일러로 구조와 로직 가설을 세우고, x64dbg로 실제 실행값을 크로스체크</strong>하는 조합이 IDA+x64dbg 조합의 완전한 대체 워크플로가 되며, 두 도구 사이의 디컴파일 스타일 차이와 주소 표기 차이만 신경 쓰면 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA Free의 기능 제한(64비트 디컴파일 미지원 등) 때문에 Ghidra를 메인 정적 분석 도구로 쓰고 있을 때</li><li>Ghidra의 디컴파일 결과(의사코드)가 실제 실행에서도 맞는지 x64dbg로 확인하고 싶을 때</li><li>Ghidra와 x64dbg에서 같은 함수를 가리키는 주소 표기 방식이 달라 혼란스러울 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Ghidra와 x64dbg는 각각 무료로 배포되는 정적/동적 분석 도구로, IDA+x64dbg 조합과 목적은 동일하지만 세부 사용법에 차이가 있다.</p>
+<ul><li><strong>디컴파일 스타일 차이</strong>: Ghidra의 디컴파일러(Decompiler)는 IDA의 Hex-Rays와 다른 표기 관습을 쓴다. 예를 들어 부호 없는 비교에 <code>(uint)</code> 캐스팅을 자주 명시적으로 붙이고, 지역변수 이름이 <code>local_1c</code>, <code>uVar1</code>처럼 IDA의 <code>v1</code>, <code>a1</code>과 다른 패턴으로 자동 생성된다. 논리는 같지만 처음 보면 낯설 수 있다.</li><li><strong>주소 표기 방식</strong>: Ghidra는 함수 목록(Symbol Tree)에서 파일 기준 가상 주소(예: <code>0x140015a30</code>)를 그대로 보여준다. x64dbg는 모듈 기준 상대 주소(<code>chall.exe+15A30</code>)로 이동할 수 있으므로, Ghidra 주소에서 이미지 베이스(PE 옵션 헤더의 <code>ImageBase</code>, 기본 <code>0x140000000</code>)를 뺀 값을 x64dbg 주소창에 입력하면 된다 — 이 계산 방식은 REV-0306(IDA+x64dbg)과 완전히 동일하다.</li><li><strong>심볼 동기화가 안 되는 점은 동일</strong>: Ghidra에서 함수를 리네임해도 x64dbg는 그 이름을 모른다(디버그 심볼 파일 <code>.pdb</code>가 따로 있지 않은 한). 따라서 오프셋 기반 이동이 필수다.</li></ul>
+<p>이 조합을 선택하는 실전 이유는 대부분 "IDA Pro 라이선스가 없다"이다. Ghidra는 완전 무료이고 64비트 디컴파일도 제한 없이 지원하므로, 정적 분석 단계는 Ghidra만으로 충분히 진행 가능하다. x64dbg 역시 완전 무료이므로, 이 조합은 비용 없이 IDA+x64dbg와 동등한 정적+동적 워크플로를 구성할 수 있다는 것이 핵심 장점이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Ghidra Decompile 창에 <code>local_28</code>, <code>uVar2</code> 같은 변수명과 <code>(uint)</code>, <code>(undefined4)</code> 같은 캐스팅이 자주 보인다.</li><li>Ghidra의 Symbol Tree에서 확인한 주소가 x64dbg 주소창에 그대로 입력했을 때 엉뚱한 곳으로 이동하거나 "Invalid address"가 뜬다.</li><li>x64dbg의 디스어셈블리 창에 나오는 함수 이름이 전부 <code>sub_140015A30</code> 식으로 남아 있어 Ghidra에서 붙인 이름과 대조가 안 된다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>Ghidra에서 CodeBrowser를 열고 Window → Bytes 또는 프로그램 정보(Analysis → Program Information 또는 헤더 View)를 확인해서 이미지 베이스 값을 정확히 확인한다. 대부분 PE64는 <code>0x140000000</code>이지만, 반드시 실제 값을 확인하고 시작한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) Ghidra로 정적 분석 및 가설 수립</strong> Ghidra CodeBrowser에서 Window → Defined Strings로 결과 문자열을 찾고, 문자열을 더블클릭 후 References(우클릭 → Show References To)로 xref를 역추적한다. 해당 함수를 클릭해 Decompile 창에서 의사코드를 읽고 검증 로직 가설을 세운다.</p>
+<p><strong>2) 함수 주소를 오프셋으로 환산</strong> Ghidra Symbol Tree에서 함수 주소(예: <code>0x140015a30</code>)를 확인하고, 이미지 베이스(<code>0x140000000</code>)를 빼서 오프셋(<code>0x15a30</code>)을 계산한다.</p>
+<p><strong>3) x64dbg로 실행 후 동일 위치로 이동</strong></p>
+<pre><code>x64dbg 주소창: chall.exe+15A30</code></pre>
+<p><code>Ctrl+G</code>로 주소 이동 대화상자를 열고 위 형식으로 입력하면 ASLR과 무관하게 정확히 Ghidra에서 본 것과 같은 코드로 이동한다.</p>
+<p><strong>4) 명령어 일치 여부로 오프셋 계산 검증</strong> 이동한 위치의 어셈블리 명령어(니모닉과 오퍼랜드)가 Ghidra의 Listing 창(디스어셈블리 뷰, 디컴파일 창 옆에 있는 원본 어셈블리)과 정확히 같은지 확인한다. 다르면 이미지 베이스 값을 잘못 읽었을 가능성이 높으므로 1단계로 돌아가 헤더 정보를 재확인한다.</p>
+<p><strong>5) 브레이크포인트와 실행으로 값 검증</strong> x64dbg에서 F2로 브레이크포인트, F9로 실행, 도달하면 레지스터 창/Dump 창에서 실제 값을 확인해 Ghidra 가설과 대조한다.</p>
+<p><strong>6) 결과를 Ghidra에 다시 반영</strong> 확인된 값이나 함수 역할을 Ghidra에서 주석(단축키 <code>;</code>, Annotate 메뉴)으로 남기고, 변수/함수 이름을 우클릭 → Rename으로 정리한다. 이렇게 정리해두면 Ghidra 프로젝트 파일 하나만으로 나중에 다시 분석을 이어갈 수 있다.</p>
+<h2>명령어/단축키</h2>
+<p>Ghidra: Window → Defined Strings(문자열 목록), 우클릭 → Show References To(xref), Decompile 창 자동 표시, <code>;</code>(주석), Rename(우클릭 메뉴). x64dbg: Ctrl+G(<code>모듈명+오프셋</code> 주소 이동), F2(브레이크포인트), F9(실행), F7(스텝 인투), F8(스텝 오버), 레지스터 창/Dump 창.</p>
+<h2>출력 해석</h2>
+<ul><li>x64dbg에서 <code>모듈명+오프셋</code>으로 이동한 위치의 명령어가 Ghidra Listing과 완전히 일치하면 오프셋 계산이 정확하다는 뜻이다.</li><li>Ghidra 의사코드의 <code>(uint)</code> 캐스팅은 단순히 부호 없는 비교/연산임을 명시하는 표기이므로, 논리 자체가 바뀐 건 아니라는 점을 기억한다 — IDA였다면 같은 코드가 캐스팅 없이 표시됐을 수 있다.</li><li>x64dbg 레지스터 값이 Ghidra 가설과 일치하면 검증 성공, 다르면 해당 값이 어디서 오는지 스텝 인투(F7)로 더 위쪽까지 따라 올라가야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Ghidra 이미지 베이스를 확인하지 않고 그냥 <code>0x140000000</code>이라고 가정했다가, 실제로는 다른 베이스로 컴파일된 파일이라 오프셋 계산이 전부 틀리는 것.</li><li>Ghidra 디컴파일 결과의 <code>(uint)</code>, <code>(undefined4)</code> 같은 표기를 이상하게 여겨 로직을 잘못 해석하는 것 — 단순 타입 표기 관습 차이일 뿐이다.</li><li>x64dbg에서 값 확인 후 Ghidra에 기록하지 않아, 나중에 같은 함수를 다시 열었을 때 처음부터 재분석하는 것.</li><li>Ghidra Listing(원본 어셈블리) 창을 안 보고 Decompile 창만 보다가, 디컴파일러가 잘못 추론한 부분(드물지만 발생 가능)을 걸러내지 못하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>이미지 베이스/오프셋 계산 자체가 처음이라 헷갈린다 → REV-0306 IDA로 정적분석 후 x64dbg로 검증하는 워크플로(같은 계산 방식, IDA 기준 설명)</li><li>Linux ELF라 x64dbg 대신 GDB를 써야 한다 → REV-0307 Ghidra와 GDB를 같이 쓰는 워크플로</li><li>Ghidra 디컴파일 결과 자체가 이상해서 못 믿겠다 → REV-0011 디컴파일 코드가 이상할 때 어셈블리로 돌아가는 기준</li></ul>
+<h2>미니 예제</h2>
+<p><code>quiz.exe</code>(64비트 PE)를 Ghidra와 x64dbg로 분석한다.</p>
+<ol><li>Ghidra Defined Strings에서 <code>Correct Answer!</code> 발견 → References To 확인 → <code>FUN_140012a10</code>에서 참조.</li><li>Decompile 창에서 <code>if (uVar1 == 0x2A) { print_correct(); }</code> 확인. 함수 시작 주소는 Listing에서 <code>140012a10</code>.</li><li>프로그램 정보에서 이미지 베이스 <code>0x140000000</code> 확인 → 오프셋 <code>0x12a10</code> 계산.</li><li>x64dbg에서 <code>quiz.exe</code> 실행, <code>Ctrl+G</code> → <code>quiz.exe+12A10</code> 입력 → Ghidra Listing과 동일한 <code>cmp eax, 2Ah</code> 명령어 확인.</li><li>F2 브레이크포인트, F9 실행, 임의 답 입력 → 브레이크 도달 → <code>EAX</code> 값이 <code>0x1F</code> 확인 → 예상값 <code>0x2A</code>와 다름을 확인, 정답이 아니었음을 실행으로 재검증.</li><li>Ghidra로 돌아가 <code>FUN_140012a10</code>을 <code>check_answer</code>로 리네임하고 <code>; 0x2A와 비교, EAX가 사용자 응답 해시로 추정</code>이라는 주석을 남긴 뒤 다음 분석(해시 함수 역추적)으로 이동.</li></ol>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0306-ida-static-x64dbg-verify-workflow.html">REV-0306 — IDA로 정적분석 후 x64dbg로 검증하는 워크플로</a></li><li><a href="rev-0307-ghidra-gdb-combined-workflow.html">REV-0307 — Ghidra와 GDB를 같이 쓰는 워크플로</a></li><li><a href="rev-0011-when-to-trust-asm.html">REV-0011 — 디컴파일 코드가 이상할 때 어셈블리로 돌아가는 기준</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Ghidra Decompiler 표기 관습(<code>local_</code>, <code>uVar</code>, <code>(uint)</code> 캐스팅 등) 및 Defined Strings/References To 기능: Ghidra 공식 문서(Ghidra Help) 기준.</li><li>x64dbg <code>모듈명+오프셋</code> 주소 이동 및 단축키: x64dbg 공식 문서(help.x64dbg.com) 기준.</li><li>PE <code>ImageBase</code> 옵션 헤더 필드: Microsoft PE/COFF 공식 스펙 기준 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>REP Prefix와 반복 문자열 명령 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>REP Prefix와 반복 문자열 명령</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>REP</code>(그리고 <code>REPE</code>/<code>REPZ</code>, <code>REPNE</code>/<code>REPNZ</code>)는 뒤에 오는 문자열 명령(<code>MOVS</code>, <code>STOS</code>, <code>LODS</code>, <code>SCAS</code>, <code>CMPS</code>)을 <code>RCX</code>(또는 <code>ECX</code>)가 0이 될 때까지, 또는 비교 결과가 맞을 때까지 <strong>하드웨어 수준에서 반복 실행</strong>시키는 접두사다. 컴파일러가 <code>memcpy</code>/<code>memset</code>/<code>strlen</code>/<code>memcmp</code> 같은 함수를 인라인할 때 자주 등장하며, 사실상 "고속 루프 한 방"이므로 한 줄씩 따라 읽기보다 통째로 인식하는 게 핵심이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>rep movsb</code>, <code>rep stosd</code>, <code>rep scasb</code> 같은 코드를 만났는데 이게 반복문(loop)인지 단일 명령인지 헷갈릴 때</li><li>함수 앞부분에 <code>RCX</code>에 큰 수를 넣고 <code>rep ...</code>가 나와서 "이게 왜 for문처럼 보이지?"라는 의문이 들 때</li><li><code>cld</code>/<code>std</code> 명령이 문자열 명령 앞에 붙어 있는 걸 봤는데 무슨 뜻인지 모를 때</li><li>IDA/Ghidra가 이 블록을 통째로 <code>memcpy</code>/<code>memset</code> 호출로 보여주는 이유가 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>REP가 실제로 하는 일</h3>
+<p><code>REP</code> 계열 접두사는 반드시 문자열 명령(<code>MOVSx</code>, <code>STOSx</code>, <code>LODSx</code>, <code>SCASx</code>, <code>CMPSx</code>) 바로 앞에 붙어서 그 명령을 반복시킨다. CPU 마이크로코드 레벨에서 다음과 같이 동작한다(의사코드):</p>
+<pre><code>반복:
+    if RCX == 0: 종료
+    (문자열 명령 1회 실행 — 예: MOVSB면 1바이트 복사)
+    RCX = RCX - 1
+    if DF == 0: 관련 레지스터(RSI/RDI 등) 증가
+    else:       관련 레지스터(RSI/RDI 등) 감소
+    (REPE/REPNE 계열이면 ZF 검사해서 조건 안 맞으면 조기 종료)
+    반복으로</code></pre>
+<p><strong>핵심은 <code>RCX</code>가 카운터 역할을 한다는 것</strong>이다. <code>RCX</code>가 0이면 <code>REP</code> 접두사가 붙은 명령은 <strong>단 한 번도 실행되지 않고 그대로 다음 명령으로 넘어간다</strong> — 이 부분이 초보자들이 자주 놓치는 지점이다(0번 반복도 유효하다).</p>
+<h3>REP 계열 3가지</h3>
+<ul><li><strong><code>REP</code></strong>: 조건 없이 순수하게 <code>RCX</code>가 0이 될 때까지 반복. <code>MOVS</code>, <code>STOS</code>, <code>LODS</code>에 사용 (비교를 안 하는 명령들).</li><li><strong><code>REPE</code>/<code>REPZ</code></strong> (Repeat while Equal / while Zero — 같은 인코딩): <code>RCX != 0</code> <strong>그리고</strong> <code>ZF == 1</code>(직전 비교가 "같음")인 동안 반복. <code>RCX</code>가 0이 되거나 <code>ZF</code>가 0이 되면(다른 값을 만나면) 멈춘다. <code>CMPS</code>, <code>SCAS</code>에서 "끝까지 같은지" 검사할 때 사용.</li><li><strong><code>REPNE</code>/<code>REPNZ</code></strong> (Repeat while Not Equal / Not Zero — 같은 인코딩): <code>RCX != 0</code> <strong>그리고</strong> <code>ZF == 0</code>(직전 비교가 "다름")인 동안 반복. <code>RCX</code>가 0이 되거나 <code>ZF</code>가 1이 되면(같은 값을 찾으면) 멈춘다. <code>SCAS</code>로 특정 바이트를 찾을 때(예: <code>strlen</code>이 NUL 바이트를 찾는 것) 대표적으로 쓰인다.</li></ul>
+<p>정리하면:</p>
+<pre><code>rep    movsb   ; 그냥 RCX번 반복 (비교 없음)
+repe   cmpsb   ; RCX != 0 &amp;&amp; 같다(ZF=1) 인 동안 반복 → 다르면 즉시 멈춤 (memcmp류)
+repne  scasb   ; RCX != 0 &amp;&amp; 다르다(ZF=0) 인 동안 반복 → 같으면 즉시 멈춤 (strlen/문자 탐색류)</code></pre>
+<h3>방향 플래그(DF)와 CLD/STD — 여기서 초보자가 가장 많이 헤맨다</h3>
+<p>문자열 명령들은 매 반복마다 관련 포인터 레지스터(<code>RSI</code>, <code>RDI</code>, 때로는 둘 다)를 자동으로 증가시키거나 감소시킨다. <strong>어느 쪽으로 움직일지는 <code>EFLAGS</code>의 <code>DF</code>(Direction Flag) 비트 하나가 결정한다.</strong></p>
+<ul><li><strong><code>DF = 0</code></strong> → 매 반복마다 포인터가 <strong>+1/+2/+4/+8(오퍼랜드 크기만큼) 증가</strong>한다. 즉 메모리 낮은 주소 → 높은 주소로 순차 진행. <code>CLD</code>(Clear Direction Flag) 명령으로 이 상태를 만든다.</li><li><strong><code>DF = 1</code></strong> → 매 반복마다 포인터가 <strong>감소</strong>한다. 높은 주소 → 낮은 주소로 역순 진행. <code>STD</code>(Set Direction Flag) 명령으로 이 상태를 만든다.</li></ul>
+<p>거의 모든 컴파일러 생성 코드는 <strong><code>CLD</code>로 <code>DF</code>를 0으로 만들어놓고</strong> 정방향으로 복사/스캔한다 — 그래서 <code>rep movsb</code>가 나오면 십중팔구 "낮은 주소에서 높은 주소로 순서대로 복사한다"고 가정해도 무방하다. <code>STD</code>(역방향)는 <code>memmove</code>처럼 소스/대상 영역이 겹치는데 뒤에서부터 복사해야 안전한 특수한 경우, 또는 일부 레거시/난독화 코드에서나 등장한다.</p>
+<p><strong>같은 <code>rep movsb</code> 코드라도 직전에 <code>cld</code>가 있었는지 <code>std</code>가 있었는지에 따라 완전히 다르게 동작한다</strong> — 이걸 확인하지 않고 "그냥 앞에서 뒤로 복사하겠지"라고 넘겨짚는 것이 매우 흔한 실수다. 함수 진입 시 <code>DF</code>는 보통 0이라고 가정되지만(대부분의 ABI에서 함수 호출 시 <code>DF=0</code>이 보장되는 관례), 직접 <code>std</code>를 실행하는 코드가 섞여 있다면 반드시 확인해야 한다.</p>
+<h3>레지스터 역할 총정리</h3>
+<p><code>REP</code> 계열이 반복시키는 문자열 명령들이 공통으로 쓰는 레지스터:</p>
+<pre><code>RSI (ESI/SI) = 소스(source) 포인터  — MOVS, LODS, CMPS 에서 사용
+RDI (EDI/DI) = 목적지(destination) 포인터 — MOVS, STOS, SCAS, CMPS 에서 사용
+RCX (ECX/CX) = 반복 횟수 카운터 — REP 계열 접두사가 붙었을 때만 의미 있음
+RAX/AL/AX/EAX/RAX = STOS의 "채울 값" 소스, LODS의 "읽은 값" 목적지, SCAS의 "찾을 값"</code></pre>
+<p>x86 문자열 명령 이름 자체가 이 레지스터 이름에서 유래했다: <strong>S</strong>tring, 소스는 e<strong>SI</strong>, 목적지는 e<strong>DI</strong>. 이 규칙만 외워두면 <code>MOVS</code>/<code>STOS</code>/<code>LODS</code>/<code>SCAS</code>/<code>CMPS</code> 각각을 개별로 다시 안 외워도 된다.</p>
+<h3>플래그 변화</h3>
+<p><code>REP</code> 접두사 자체는 플래그를 바꾸지 않는다. 반복되는 내부 명령(<code>CMPS</code>, <code>SCAS</code>)이 매 반복마다 <code>CF/ZF/SF/OF/AF/PF</code>를 갱신하며, 루프가 끝난 시점에는 <strong>마지막으로 실행된 비교의 결과</strong>가 플래그에 남아 있다. <code>MOVS</code>, <code>STOS</code>, <code>LODS</code>는 플래그를 바꾸지 않는다(단순 데이터 이동이므로).</p>
+<h3>스택/RIP</h3>
+<p><code>REP</code> 계열은 스택이나 함수 호출 흐름에 직접 영향을 주지 않는다. <code>RIP</code>는 매 내부 반복마다 실질적으로 같은 명령 주소를 가리키는 것처럼 동작하다가(마이크로코드 반복이므로 명령어 포인터가 실제로 여러 번 움직이는 게 아니라 하나의 명령이 하드웨어적으로 반복됨) 반복이 끝나면 다음 명령으로 넘어간다. 디버거로 싱글스텝(<code>stepi</code>)하면 <code>rep movsb</code> 한 줄 전체가 <strong>한 번의 스텝</strong>으로 끝나는 것처럼 보일 수도 있고, 구현에 따라 매 반복마다 같은 주소에서 멈추는 것처럼 보일 수도 있다(인터럽트 가능하게 설계되어 있어 중간에 끊겼다가 재개 가능).</p>
+<h2>컴파일러 패턴 — "이건 그냥 빠른 memcpy/memset이다"라고 인식하기</h2>
+<p>현대 컴파일러(GCC, MSVC, Clang)는 크기가 크거나 컴파일 타임에 크기를 모르는 <code>memcpy</code>/<code>memset</code>/<code>strlen</code>/<code>memcmp</code> 호출을 최적화 옵션에 따라 <strong>함수 호출 대신 <code>rep movsb</code>/<code>rep stosb</code> 등을 직접 인라인</strong>해서 넣는 경우가 많다. 전형적인 모양:</p>
+<pre><code class="language-asm">mov     rdi, dest_ptr   ; 목적지 설정
+mov     rsi, src_ptr    ; 소스 설정
+mov     rcx, count       ; 반복 횟수(바이트 수 등) 설정
+cld                       ; 방향 = 정방향 확정
+rep movsb                 ; 이 세 줄 전부가 그냥 "memcpy(dest, src, count)" 한 줄이다</code></pre>
+<p><strong>이 블록을 읽을 때 명령어 하나하나를 좇지 말고, "RDI=목적지, RSI=소스, RCX=길이가 세팅된 뒤 <code>rep movsb</code>가 나오면 그냥 <code>memcpy</code> 호출 한 번"이라고 통으로 인식</strong>하는 게 리버싱 속도를 크게 좌우한다. 마찬가지로:</p>
+<ul><li><code>rep stosb</code>/<code>rep stosd</code> 블록 → <code>memset</code> 한 방으로 인식</li><li><code>repne scasb</code> 블록 → <code>strlen</code> 유사 스캔으로 인식 (REV-0084 참고)</li><li><code>repe cmpsb</code> 블록 → <code>memcmp</code> 유사 비교로 인식 (REV-0085 참고)</li></ul>
+<h2>IDA/Ghidra 디컴파일에서 보이는 방식</h2>
+<p>디컴파일러는 이런 반복 문자열 명령 블록을 크게 두 가지로 표현한다:</p>
+<ol><li><strong>함수 호출로 인식</strong>: <code>RCX/RSI/RDI</code> 세팅 패턴을 인식해서 <code>memcpy(dest, src, count);</code> 같은 라이브러리 함수 호출문으로 깔끔하게 바꿔준다. IDA의 최신 버전과 Ghidra 모두 이런 패턴 인식(idiom recognition)을 상당 부분 지원한다.</li><li><strong>원시 루프로 표현</strong>: 패턴을 인식하지 못하면 <code>do { *dst++ = *src++; } while(--count);</code> 형태의 raw 루프나, 심하면 <code>__asm { rep movsb }</code> 형태의 인라인 어셈블리 블록으로 그대로 남겨둔다.</li></ol>
+<p>어느 쪽이 나오든 실제 동작은 같다 — <strong>디컴파일 결과가 낯선 저수준 루프로 보인다면, 원본 어셈블리로 돌아가 <code>rep movsb</code>류가 있는지 먼저 확인</strong>하면 "복잡한 알고리즘"이 아니라 "그냥 빠른 복사/채우기"였다는 걸 빨리 알아챌 수 있다.</p>
+<h2>리버싱 관점에서의 의미</h2>
+<ul><li><code>rep movsb</code>/<code>rep stosb</code> 블록이 보이면 그 앞뒤 코드에서 <strong>버퍼 크기(RCX 값)</strong>를 확인하는 것이 우선이다 — 스택 버퍼에 대한 크기 미검증 복사라면 버퍼 오버플로우 취약점 후보다.</li><li><code>RCX</code>가 사용자 입력에서 직접 오는지, 상수인지 확인하면 취약점 분석에 바로 활용할 수 있다.</li><li><code>repne scasb</code>로 문자열 길이를 재는 패턴은 <code>strlen</code>이 인라인된 신호이며, 이후 코드에서 그 길이를 어떻게 쓰는지(버퍼 크기 비교, <code>malloc</code> 크기 계산 등) 추적하면 로직을 빠르게 이해할 수 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>rep</code>류 접두사가 붙은 문자열 명령을 봤다면 다른 무엇보다 먼저 세 가지 레지스터부터 확인한다.</p>
+<ol><li><strong><code>RCX</code>(카운터)</strong> — 바로 위에서 마지막으로 세팅된 값이 상수인지, 사용자 입력에서 온 값인지. 이게 반복 횟수(또는 최대 스캔 범위)다.</li><li><strong>방향 플래그(DF)</strong> — 직전에 <code>cld</code>가 있는지 <code>std</code>가 있는지. 없으면 함수 진입 시점부터 거슬러 올라가 확인한다(대부분 <code>cld</code>로 정방향이 이미 보장된 상태로 진입).</li><li><strong>뒤따르는 명령이 <code>movs</code>/<code>stos</code>/<code>lods</code>/<code>scas</code>/<code>cmps</code> 중 무엇인지</strong> — 이것에 따라 <code>RSI</code>/<code>RDI</code>/<code>RAX</code> 중 어느 레지스터가 소스/목적지/비교값 역할을 하는지가 완전히 달라진다.</li></ol>
+<h2>단계별 절차</h2>
+<ol><li><strong><code>rep</code>(또는 <code>repe</code>/<code>repne</code>) 접두사가 붙은 명령을 찾으면</strong>, 그 줄 전체를 "루프 하나"로 취급하고 IDA 그래프뷰에서 이 블록의 시작과 끝을 확인한다.</li><li><strong>위로 거슬러 올라가며 <code>RCX</code>, <code>RSI</code>/<code>RDI</code>, <code>AL</code>/<code>EAX</code>/<code>RAX</code>에 마지막으로 쓰인 값을 각각 찾는다.</strong> 보통 바로 위 3~5줄 안에 다 모여 있다.</li><li><strong><code>cld</code>/<code>std</code> 여부를 확인</strong>한다. 안 보이면 함수 최상단까지 더 거슬러 올라가거나, 함수 진입 시 <code>DF=0</code>이 보장된다는 일반 관례를 적용한다.</li><li><strong>F5로 디컴파일</strong>해서 이 블록이 <code>memcpy</code>/<code>memset</code>/<code>strlen</code>류로 인식되었는지 확인한다. 인식됐다면 그 함수 호출 한 줄로 이해하고 넘어가면 충분하다.</li><li>인식이 안 되고 raw 루프로 보이거나, 반복 횟수/조건이 런타임에 결정되는 값이라 정적으로 추적이 안 되면, <code>rep</code> 명령 주소에 브레이크포인트를 걸고(<code>F2</code>) 실행(<code>F9</code>)해서 그 시점의 <code>RCX</code>, <code>RSI</code>, <code>RDI</code> 실제 값을 레지스터 창에서 읽는다.</li><li>반복이 끝난 뒤 결과(길이, 비교 결과 등)를 어디에 쓰는지 다음 몇 줄을 따라가서 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>F5</code>(디컴파일 — memcpy/memset류 인식 확인), <code>F2</code>(브레이크포인트), <code>F9</code>(실행), 레지스터/스택 뷰에서 <code>RCX</code>/<code>RSI</code>/<code>RDI</code> 직접 확인</li><li>x64dbg: <code>F2</code>(브레이크포인트), <code>F9</code>(실행/계속), <code>F7</code>(Step Into) — <code>rep</code> 명령에서 Step Into를 반복하면 매 반복마다 멈추는 구현도 있으므로 대량 반복이면 대신 <code>F4</code>(커서까지 실행)나 조건부 브레이크포인트로 반복 종료 지점까지 건너뛰는 게 낫다, 우측 플래그 패널에서 <code>DF</code> 확인</li><li>GDB/Pwndbg: <code>info registers rcx rsi rdi</code>, <code>p $eflags</code>(DF 비트 확인), <code>x/1i $rip</code> 후 <code>stepi</code>로 진행하되 반복 횟수가 크면 대신 <code>tbreak</code> + <code>continue</code>로 반복이 끝나는 다음 명령 주소에 임시 브레이크포인트를 걸어 한 번에 건너뛴다</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>DF</code>가 항상 0이라고 무조건 가정하고 방향을 확인하지 않는 것 — <code>std</code>가 앞에 있으면 역방향으로 움직인다.</li><li><code>RCX</code>가 0인 채로 <code>rep ...</code>에 진입하면 "적어도 한 번은 실행되겠지"라고 착각하는 것 — 0이면 <strong>0번</strong> 실행된다(먼저 <code>RCX</code>를 검사하고 나서 실행하는 구조).</li><li><code>REP</code>, <code>REPE</code>, <code>REPNE</code>를 전부 같은 것으로 뭉뚱그려 읽는 것 — 뒤에 오는 명령이 비교 명령(<code>CMPS</code>/<code>SCAS</code>)인지에 따라 <code>ZF</code> 조건까지 함께 검사하는지가 완전히 달라진다.</li><li><code>rep movsb</code> 한 줄을 "그냥 명령 하나"로 보고 실행 시간이 짧을 거라 착각하는 것 — 실제로는 <code>RCX</code>번 반복되는 루프이므로 큰 값이면 상당한 시간이 걸릴 수 있다(디버거로 F8/Step Over 하지 않고 F7/Step Into로 들어가면 체감된다).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>rep</code> 뒤의 명령이 <code>movs</code>/<code>stos</code>/<code>lods</code>/<code>scas</code>/<code>cmps</code> 중 무엇인지 먼저 특정한다 → 각각 REV-0081~0085 개별 문서 참고.</li><li>방향이 헷갈리면 → 디버거로 <code>rep</code> 진입 직전 <code>EFLAGS</code>의 <code>DF</code> 비트를 확인하거나(x64dbg 플래그 창, GDB <code>info registers eflags</code>), 직전 명령이 <code>cld</code>인지 <code>std</code>인지 본다.</li><li>반복 횟수가 궁금하면 → <code>rep</code> 진입 직전 <code>RCX</code>에 마지막으로 쓰인 값을 역추적한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — REP (조건 없는 반복, memcpy형)</strong></p>
+<pre><code class="language-asm">lea     rsi, [src]
+lea     rdi, [dst]
+mov     rcx, 100
+cld
+rep movsb          ; 100바이트를 src부터 dst로 순서대로 복사</code></pre>
+<p><strong>예제 2 — REPE/REPZ (같은 동안 반복, memcmp형)</strong></p>
+<pre><code class="language-asm">lea     rsi, [bufA]
+lea     rdi, [bufB]
+mov     rcx, 16
+cld
+repe cmpsb          ; 16바이트를 비교하다가 다른 바이트가 나오면 즉시 중단
+jne     not_equal    ; 마지막 비교의 ZF로 분기</code></pre>
+<p><strong>예제 3 — REPNE/REPNZ (다른 동안 반복, strlen형 SCAS)</strong></p>
+<pre><code class="language-asm">lea     rdi, [str]
+mov     al, 0        ; 찾을 값 = NUL 바이트
+mov     rcx, -1        ; 사실상 "무한대" 카운터
+cld
+repne scasb          ; NUL 바이트를 만날 때까지(같아질 때까지) 스캔 후 정지
+; 이후 RDI - str_addr - 1 이 문자열 길이가 됨</code></pre>
+<p><strong>예제 4 — STD로 인한 역방향 복사 (겹치는 영역 대비, memmove형)</strong></p>
+<pre><code class="language-asm">lea     rsi, [src+99]   ; 마지막 바이트부터 시작
+lea     rdi, [dst+99]
+mov     rcx, 100
+std                       ; 방향 = 역방향
+rep movsb                 ; 뒤에서부터 앞으로 100바이트 복사
+cld                       ; 관례상 다시 정방향으로 복원해두는 경우가 많음</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0081-movs.html">rev-0081-movs.md</a> — MOVS/MOVSB/MOVSW/MOVSD/MOVSQ (메모리 복사, memcpy 대응)</li><li><a href="rev-0082-stos.html">rev-0082-stos.md</a> — STOS/STOSB/STOSD/STOSQ (메모리 채우기, memset 대응)</li><li><a href="rev-0083-lods.html">rev-0083-lods.md</a> — LODS 문자열 로드 명령</li><li><a href="rev-0084-scas.html">rev-0084-scas.md</a> — SCAS와 문자열 검색 패턴 (strlen 대응)</li><li><a href="rev-0085-cmps.html">rev-0085-cmps.md</a> — CMPS와 문자열 비교 패턴 (memcmp 대응)</li><li><a href="rev-0071-call.html">rev-0071-call.md</a> — CALL: 함수 호출, 반환 주소, 인자 추적</li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>REP</code>/<code>REPE</code>/<code>REPZ</code>/<code>REPNE</code>/<code>REPNZ</code> 접두사 동작과 의사코드: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2C, "REP/REPE/REPZ/REPNE/REPNZ—Repeat String Operation Prefix" 섹션 기준 (2026-09-08 검증).</li><li><code>DF</code>(Direction Flag), <code>CLD</code>/<code>STD</code>: 동 매뉴얼 Volume 1, "EFLAGS Register" 및 Volume 2A "CLD/STD" 섹션 기준.</li><li>컴파일러의 <code>rep movsb</code>/<code>rep stosb</code> 인라인 최적화 관행: GCC <code>-mstringop-strategy</code>/<code>-minline-all-stringops</code> 관련 공식 문서 및 MSVC <code>/O2</code> 최적화 동작 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

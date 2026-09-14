@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>strlen 스타일 문자열 순회 루프가 어셈블리에서 보이는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / c-analysis</div>
+<article class="article-body">
+<h1>strlen 스타일 문자열 순회 루프가 어셈블리에서 보이는 패턴</h1>
+<div class="article-meta"><span class="tag">c-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>strlen</code>을 손으로 구현한 코드(<code>while (*p) { p++; }</code> 또는 <code>for (i = 0; s[i]; i++)</code>)는 "포인터를 한 바이트씩 전진시키며 그 위치의 값이 0(널 문자)인지 검사"하는 루프로 컴파일되며, 이는 <code>CALL strlen</code>(REV-0071)처럼 라이브러리를 부르는 것과 달리 <strong>함수 호출 없이 인라인된 반복문</strong> 형태로 나타난다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>루프 안에서 <code>cmp byte [rax], 0</code> 또는 <code>test al, al</code> 뒤에 조건 분기가 있고, 그 루프가 포인터를 1씩 증가시키는 것만 반복할 때</li><li><code>CALL strlen</code>이 안 보이는데도 문자열 길이를 재는 것 같은 동작이 코드에 있을 때(직접 구현했거나 컴파일러가 <code>strlen</code> 호출을 인라인한 경우)</li><li>CTF 문제에서 비밀번호/플래그 길이를 검사하는 루프가 어디 있는지 찾아야 할 때</li><li>Ghidra pseudocode에 <code>while (*param_1 != '\0')</code> 같은 패턴이 나와서 이게 왜 그렇게 보이는지 원본 어셈블리와 대조하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>문자열은 C에서 "마지막에 널 바이트(<code>\0</code>, 값 0)가 붙은 문자 배열"이다. 따라서 "문자열이 어디서 끝나는지" 알아내려면 처음부터 한 바이트씩 읽으며 0을 만날 때까지 계속 전진하는 것 외에 방법이 없다. 이 루프는 항상 세 가지 요소로 구성된다.</p>
+<ol><li><strong>읽기</strong>: 현재 포인터가 가리키는 1바이트를 읽는다(<code>mov al, [rax]</code> 또는 <code>cmp byte [rax], 0</code>).</li><li><strong>검사</strong>: 그 값이 0인지 비교한다.</li><li><strong>전진</strong>: 0이 아니면 포인터를 1 증가시키고(<code>inc rax</code> 또는 <code>add rax, 1</code>) 반복한다.</li></ol>
+<pre><code class="language-c">int my_strlen(const char *s) {
+    int len = 0;
+    while (*s != '\0') {
+        s++;
+        len++;
+    }
+    return len;
+}</code></pre>
+<p>이 루프는 겉모습이 REV-1067/1068에서 본 일반적인 <code>for</code>/<code>while</code> 루프와 똑같지만, <strong>비교 대상이 항상 1바이트(<code>byte</code>) 크기이고 항상 상수 0과 비교</strong>한다는 점, 그리고 갱신이 항상 "포인터 +1"이라는 점이 특징이다. 이 세 가지 특징이 함께 있으면 문자열 길이 검사 루프로 강하게 의심할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>movzx eax, byte [rax]</code> 또는 <code>cmp byte [rax], 0</code> — 1바이트 단위 읽기/비교</li><li>루프 갱신이 <code>add rax, 1</code> 또는 <code>inc rax</code>처럼 항상 1만큼 포인터를 전진(REV-1063과 달리 스케일 곱셈이 없음 — <code>char</code>는 크기가 1이라 곱셈 자체가 생략됨)</li><li>비교 상수가 항상 <code>0</code>(널 문자) — 다른 상수와 비교하면 이 패턴이 아님</li><li>x86-64에서는 <code>REP</code> 계열 문자열 명령(<code>SCASB</code>, REV-0084)으로 컴파일되는 경우도 있음 — 이때는 루프 대신 <code>repne scasb</code> 한 줄로 보임</li><li>실제 <code>strlen</code> 라이브러리 호출은 대개 SIMD(SSE2/AVX) 최적화가 들어간 긴 코드로, 손으로 짠 위 패턴보다 훨씬 복잡하게 보인다 — 짧고 단순하면 인라인된 수동 구현일 가능성이 높음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>루프 안에서 "1바이트를 읽고, 0과 비교하고, 포인터를 1 증가시키는" 세 동작이 반복되는지 확인한다. 세 조건이 다 맞으면 이 루프의 목적은 "문자열 끝(널 바이트) 찾기"임을 바로 확정할 수 있다.</p>
+<h2>단계별 절차</h2>
+<ol><li>루프 조건 검사에서 비교 크기가 <code>byte</code>(1바이트)인지 확인한다 — <code>int</code>/<code>long</code> 비교라면 이 패턴이 아니다.</li><li>비교 상수가 0인지 확인한다.</li><li>루프 갱신부에서 포인터가 몇씩 증가하는지 본다 — 1이면 <code>char*</code> 순회다.</li><li>루프가 끝난 뒤 그 결과(포인터 차이 또는 카운터 값)를 어떻게 쓰는지 본다 — 길이를 반환하거나 다른 함수(예: <code>strcmp</code> 스타일 비교, REV-0196)에 넘기는지 확인한다.</li><li><code>REP</code>/<code>SCASB</code> 계열 명령이 대신 쓰였다면(REV-0084) 이 루프 대신 그 명령 한 줄이 통째로 같은 역할을 한다는 것을 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>GDB: <code>x/s $rdi</code>로 함수 시작 시 문자열 내용을 바로 확인, <code>p (char*)$rax - (char*)$rdi</code>로 루프 종료 시 길이 계산 검증</li><li>IDA/Ghidra: 루프에 우클릭 → 문자열 타입(<code>char *</code>)을 명확히 지정하면 pseudocode가 <code>while (*s)</code> 형태로 정리됨</li><li>x64dbg: 메모리 덤프 창에서 포인터가 가리키는 위치를 따라가며 널 바이트 위치를 시각적으로 확인</li></ul>
+<h2>출력 해석</h2>
+<pre><code class="language-c">int my_strlen(const char *s) {
+    int len = 0;
+    while (*s != '\0') {
+        s++;
+        len++;
+    }
+    return len;
+}</code></pre>
+<pre><code class="language-asm">; my_strlen, rdi = s
+my_strlen:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 24
+    mov     [rbp-24], rdi     ; s
+    mov     dword [rbp-4], 0  ; len = 0
+.L_cond:
+    mov     rax, [rbp-24]
+    movzx   eax, byte [rax]   ; eax = *s (1바이트 읽기, 0~255로 확장)
+    test    al, al            ; *s == 0 ?  (TEST로 al 자체를 검사)
+    je      .L_end            ; 0이면(널 문자) 루프 종료
+    add     qword [rbp-24], 1 ; s++  (char라서 스케일 없이 그냥 +1)
+    add     dword [rbp-4], 1  ; len++
+    jmp     .L_cond
+.L_end:
+    mov     eax, [rbp-4]
+    leave
+    ret</code></pre>
+<p><code>movzx eax, byte [rax]</code>가 "1바이트 읽기"이고, <code>test al, al</code> + <code>je .L_end</code>가 "0인지 검사"다. <code>add qword [rbp-24], 1</code>은 포인터를 정확히 1바이트 전진시키는데, <code>char</code>의 크기가 1이라서 REV-1063에서 본 스케일 곱셈이 아예 필요 없다. 이 세 요소(1바이트 읽기, 0 비교, +1 전진)가 한 세트로 반복되는 것이 이 패턴의 전형적인 모습이다.</p>
+<h2>흔한 실수</h2>
+<ul><li>1바이트 비교(<code>cmp byte [...], 0</code>)를 int 비교와 똑같이 취급해서 실제로는 문자열 끝 검사인 루프를 "그냥 어떤 값이 0인지 확인하는 루프"로 뭉뚱그려 넘기는 것.</li><li><code>SCASB</code>/<code>REPNE SCASB</code>(REV-0084)로 압축된 코드를 보고 루프가 없다고 오해하는 것 — 한 명령어가 루프 전체를 대신한다.</li><li>문자열 길이를 재는 루프와 문자열 두 개를 비교하는 루프(REV-0196 strcmp 패턴, REV-0197 memcmp 패턴)를 구분하지 않고 섞어서 읽는 것 — strlen 스타일은 포인터 <strong>하나</strong>만 전진하고, strcmp 스타일은 포인터 <strong>두 개</strong>가 동시에 전진한다.</li><li>SIMD 최적화가 들어간 실제 libc <code>strlen</code> 호출부(길고 복잡한 벡터 명령)를 보고 "이건 strlen이 아니다"라고 오판하는 것 — 최적화된 버전은 이 단순 패턴보다 훨씬 복잡하게 보일 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>포인터 전진(1씩 증가)의 기본 원리가 궁금하면 → REV-1063 포인터 산술이 어셈블리에서 보이는 패턴</li><li>문자열 두 개를 비교하는 패턴과 구분하려면 → REV-0196 strcmp 기반 Flag 검증 패턴, REV-0197 memcmp 기반 Flag 검증 패턴</li><li>SCAS 계열 명령으로 압축된 경우가 궁금하면 → REV-0084 SCAS와 문자열 검색 패턴</li><li>루프의 break/continue와 결합된 경우는 → REV-1067 break문이 있는 for 루프가 어셈블리에서 보이는 패턴</li></ul>
+<h2>미니 예제</h2>
+<p>같은 로직을 <code>SCASB</code>로 최적화하면 루프 전체가 명령 한 줄로 압축된다(개념 예시):</p>
+<pre><code class="language-asm">mov     rdi, s
+xor     al, al        ; al = 0 (찾을 값)
+mov     rcx, -1        ; 최대 반복 횟수(사실상 무제한)
+repne   scasb          ; rdi를 1씩 전진시키며 al(0)과 같은 바이트를 찾을 때까지 반복
+; 루프 종료 후 rdi는 널 바이트 "다음" 위치, rcx는 남은 카운트의 보수</code></pre>
+<p>이 코드는 위에서 손으로 짠 6줄짜리 루프와 논리적으로 완전히 동일한 일을 하지만, 반복문 구조 없이 명령어 하나(<code>REP</code> 접두사가 붙은 <code>SCASB</code>)로 표현된다. 짧은 어셈블리에서 반복 흔적 없이 갑자기 문자열 길이가 나온다면 이 가능성을 의심해야 한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-1063-pointer-arithmetic-asm-pattern.html">REV-1063 — 포인터 산술이 어셈블리에서 보이는 패턴</a></li><li><a href="rev-1068-for-loop-continue-asm-pattern.html">REV-1068 — continue문이 있는 for 루프가 어셈블리에서 보이는 패턴</a></li><li><a href="rev-0084-scas.html">REV-0084 — SCAS와 문자열 검색 패턴</a></li><li><a href="rev-0196-strcmp-check-pattern.html">REV-0196 — strcmp 기반 Flag 검증 패턴</a></li><li><a href="rev-0197-memcmp-check-pattern.html">REV-0197 — memcmp 기반 Flag 검증 패턴</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>C 문자열이 널 종료(<code>\0</code>) 규칙을 따른다는 것과 <code>strlen</code>의 표준 동작(첫 널 바이트까지의 길이 반환): ISO C 표준 라이브러리(<code>&lt;string.h&gt;</code>) 기준.</li><li>gcc/clang <code>-O0</code>에서 수동 문자열 순회 루프가 1바이트 단위 읽기+비교+포인터 증가로 컴파일되는 패턴, 최적화 시 <code>REP SCASB</code>나 SIMD 코드로 대체될 수 있다는 점은 x86-64 리눅스/윈도우 환경에서 반복 확인되는 표준 패턴이다(2026-09-10 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

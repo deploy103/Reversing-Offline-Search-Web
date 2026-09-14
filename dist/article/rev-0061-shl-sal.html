@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SHL과 SAL: 왼쪽 시프트 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>SHL과 SAL: 왼쪽 시프트</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>SHL</code>(Shift Left)은 오퍼랜드의 모든 비트를 왼쪽으로 지정한 횟수만큼 밀고 빈 오른쪽 자리는 0으로 채우는 명령어이며, <code>SAL</code>(Arithmetic Shift Left)은 니모닉만 다를 뿐 완전히 동일한 명령어(같은 오피코드)다 — 흔히 정수를 2의 거듭제곱으로 빠르게 곱하는 데 쓰인다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>shl eax, 2</code> 처럼 곱셈이 아닌데 곱셈처럼 동작하는 코드를 만났을 때</li><li><code>sal</code>이라는 니모닉을 처음 봐서 <code>shl</code>과 뭐가 다른지 궁금할 때</li><li>컴파일러가 <code>x * 4</code>를 <code>imul</code> 대신 <code>shl</code>로 바꾼 이유가 궁금할 때</li><li>시프트 후 오버플로/캐리 플래그가 어떻게 세팅되는지 정확히 알아야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>SHL dest, count
+SAL dest, count     ; SHL과 완전히 동일 (어셈블러가 같은 오피코드로 인코딩)</code></pre>
+<ul><li><code>dest</code>는 레지스터 또는 메모리, <code>count</code>는 즉시값(<code>1</code>) 또는 <code>CL</code> 레지스터.</li><li><code>dest = dest &lt;&lt; count</code> — 비트를 왼쪽으로 <code>count</code>번 이동, 오른쪽(하위) 빈 자리는 0으로 채움.</li><li>예: <code>shl eax, 1</code>, <code>shl eax, 4</code>, <code>shl eax, cl</code>.</li><li><strong><code>count</code>는 마스킹된다</strong>: 32비트 오퍼랜드는 count를 <code>&amp; 0x1F</code>(0~31)로, 64비트 오퍼랜드는 <code>&amp; 0x3F</code>(0~63)로 제한한다. 즉 <code>shl eax, 32</code>는 실제로 <code>shl eax, 0</code>과 같은 효과(값 변화 없음, 단 플래그는 count=0이므로 전혀 안 바뀜)를 낸다.</li></ul>
+<h3>SHL과 SAL은 왜 같은가</h3>
+<p>역사적으로 SAL은 "산술적 왼쪽 시프트"라는 이름으로 별도 정의됐지만, 왼쪽으로 시프트할 때는 부호 있는/없는 값이 똑같이 동작한다(부호 비트가 밀려 나가는 방향이라 signed/unsigned 구분이 시프트 자체에는 영향을 주지 않는다 — 오버플로 여부만 다를 뿐). 그래서 Intel은 SAL을 SHL의 별칭(alias)으로 정의했고, 어셈블러(NASM/MASM 등)는 <code>sal</code>을 써도 <code>shl</code>과 완전히 동일한 바이트 코드를 생성한다. 디스어셈블러는 대개 <code>shl</code>로만 표시하며, 소스 코드에 <code>sal</code>이라고 써도 디스어셈블한 결과는 <code>shl</code>로 보이는 경우가 많다.</p>
+<h3>레지스터/메모리에 미치는 효과</h3>
+<pre><code>eax = 0000 0000 0000 0101   (5)
+shl eax, 2
+eax = 0000 0000 0001 0100   (20 = 5 * 4)</code></pre>
+<p>왼쪽으로 <code>n</code>번 시프트하는 것은 정확히 <code>2^n</code>을 곱하는 것과 같다(오버플로가 없다면).</p>
+<h3>플래그 변화</h3>
+<ul><li><strong>CF</strong>: 마지막으로 밀려 나간 비트(최상위 쪽에서 빠져나간 비트) 값이 그대로 들어감</li><li><strong>OF</strong>: <code>count == 1</code>일 때만 정의됨 — 결과의 최상위 비트(부호 비트)와 CF가 다르면(즉 부호가 바뀌었으면) 1. <code>count &gt; 1</code>인 경우 OF는 정의되지 않음(undefined)</li><li><strong>SF/ZF/PF</strong>: 결과값을 기준으로 정상적으로 세팅됨</li><li><strong>AF</strong>: 정의되지 않음</li><li><strong>중요한 예외</strong>: <code>count == 0</code>이면 <strong>플래그가 전혀 바뀌지 않는다</strong>(어떤 플래그도 갱신되지 않음). <code>shl eax, 0</code>은 값도 플래그도 그대로다.</li></ul>
+<h3>신호 있음/없음(signed/unsigned) 관점</h3>
+<p><code>SHL</code>은 부호 있는 값과 없는 값 모두에 대해 "왼쪽으로 비트 밀기 = 2배 곱하기"로 동일하게 동작한다. 다만 <strong>부호 있는 값에서 시프트로 인해 부호 비트가 바뀌면(양수가 음수처럼 보이게 되면) 그건 오버플로</strong>이며, 이 경우 OF=1(count=1일 때만 신뢰 가능)이 된다. 예: <code>eax = 0x40000000</code>(양수, 1073741824)에 <code>shl eax, 1</code>을 하면 <code>eax = 0x80000000</code>이 되어 signed로는 음수(-2147483648)로 뒤집힌다 — 이는 <code>int</code>형에서 오버플로가 발생한 것과 동일한 상황이다.</p>
+<h3>스택/RSP/RIP 변화</h3>
+<p>없음.</p>
+<h3>컴파일러 패턴 — 2의 거듭제곱 곱셈 최적화</h3>
+<p>컴파일러는 상수를 곱하는 코드(<code>x * 4</code>, <code>x * 8</code> 등 2의 거듭제곱)를 만나면, 상대적으로 느린 <code>IMUL</code> 대신 더 빠른 <code>SHL</code>로 바꾼다. 예를 들어 배열 인덱싱(<code>arr[i]</code>, 요소 크기가 4바이트나 8바이트인 경우)에서 <code>i * 4</code>나 <code>i * 8</code> 계산이 <code>shl</code>로 컴파일되는 경우가 매우 흔하다. 다만 요소 크기가 3, 5, 12처럼 2의 거듭제곱이 아니면 컴파일러는 <code>LEA</code>(주소 계산 명령이지만 곱셈+덧셈에 자주 전용됨)나 <code>IMUL</code>을 대신 쓴다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>shl eax, 1</code> — <code>x * 2</code></li><li><code>shl eax, 2</code> — <code>x * 4</code> (흔히 4바이트 배열 인덱싱: <code>arr[i]</code>에서 <code>i*4</code>)</li><li><code>shl eax, 3</code> — <code>x * 8</code> (8바이트 배열/포인터 인덱싱)</li><li><code>shl eax, cl</code> — 시프트 양이 런타임에 결정되는 경우 (가변 비트 폭 연산, 커스텀 해시/체크섬)</li><li><code>lea eax, [eax*4+eax]</code> — 곱셈 5를 SHL 대신 LEA로 표현한 경우 (SHL만으로 표현 불가능한 계수)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>count</code>가 상수인지 <code>cl</code> 레지스터인지 확인</li><li>상수라면 <code>2^count</code>가 얼마인지 계산해서 "몇 배 곱셈"인지 파악</li><li>결과가 배열 인덱싱 주소 계산에 쓰이는지, 순수 산술 계산인지 확인</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 상수 시프트를 곱셈으로 환산</strong></p>
+<pre><code class="language-asm">shl eax, 3   ; eax = eax &lt;&lt; 3 = eax * 8</code></pre>
+<p><strong>2) 배열 인덱싱 패턴 인식</strong></p>
+<pre><code class="language-asm">mov  eax, [i]
+shl  eax, 2          ; eax = i * 4 (4바이트 요소 크기)
+mov  ecx, [arr_ptr]
+mov  edx, [ecx+eax]  ; arr[i]</code></pre>
+<p><strong>3) 가변 시프트(CL 사용) 인식</strong></p>
+<pre><code class="language-asm">mov  cl, [shift_amount]
+shl  eax, cl</code></pre>
+<p>시프트 양이 데이터에 따라 달라지는 경우로, 커스텀 인코딩/해시 알고리즘에서 자주 보인다.</p>
+<p><strong>4) 오버플로 여부 확인 (count=1인 경우만 OF 신뢰 가능)</strong></p>
+<pre><code class="language-asm">shl eax, 1
+jo  overflowed   ; count=1이므로 OF가 유효, 부호가 뒤집혔으면 분기</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>Python으로 검증: <code>x &lt;&lt; n</code> (파이썬 정수는 무한 정밀도이므로 32/64비트 오버플로를 재현하려면 <code>(x &lt;&lt; n) &amp; 0xFFFFFFFF</code> 형태로 마스킹 필요, <a href="rev-0026-bit-masks.html">REV-0026</a> 참고)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>IDA/Ghidra는 <code>shl eax, n</code>을 대부분 <code>x &lt;&lt; n</code> 또는 곧바로 <code>x * (1&lt;&lt;n)</code>으로 단순화하여 보여준다. 배열 인덱싱 문맥에서는 <code>arr[i]</code> 형태로 시프트 자체가 아예 사라지고 배열 접근 구문에 흡수되기도 한다.</li><li><code>count == 1</code>이고 그 결과를 <code>jo</code>로 검사하는 코드는 Ghidra에서 오버플로 검사 로직으로 별도 표시되지 않고 그냥 <code>if</code> 조건으로만 보일 수 있으니 디스어셈블리에서 직접 확인하는 게 정확하다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>shl</code>과 <code>sal</code>을 서로 다른 동작을 하는 명령어라고 착각하는 것 — 완전히 동일한 명령어의 두 가지 이름(별칭)일 뿐이다.</li><li><code>shl eax, n</code>(count &gt; 1)의 결과 OF 값을 신뢰하는 것 — Intel SDM에 따르면 count가 1이 아니면 OF는 정의되지 않는다(undefined). 오버플로 검사 로직이 있다면 count=1인 경우만 유효하다고 봐야 한다.</li><li><code>shl eax, 0</code>도 플래그를 세팅할 거라 착각하는 것 — count가 0이면 플래그는 아예 갱신되지 않는다.</li><li>큰 count 값(<code>shl eax, 40</code>처럼 32비트 레지스터에 32 이상)을 곧이곧대로 40번 시프트한다고 계산하는 것 — 실제로는 <code>40 &amp; 0x1F = 8</code>이므로 8번만 시프트된다(x64 64비트 레지스터라면 <code>&amp; 0x3F</code>).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>shl</code> 결과가 예상한 곱셈값과 다르면 → count가 31(또는 63)을 넘겨서 마스킹됐는지 확인.</li><li><code>shl</code> 뒤에 <code>jo</code>가 있는데 count가 1이 아니면 → 그 오버플로 검사는 신뢰할 수 없는 코드이거나(버그), 실제로는 다른 목적의 코드일 수 있음을 의심.</li><li>배열 인덱싱에서 시프트 계수가 이상하면(2도 3도 아닌 값) → 구조체 배열이거나 요소 크기가 2의 거듭제곱이 아니라서 컴파일러가 <code>LEA</code>/<code>IMUL</code>을 대신 썼을 가능성을 확인.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 단순 2배 곱셈</strong></p>
+<pre><code class="language-c">int y = x * 2;</code></pre>
+<pre><code class="language-asm">mov eax, [x]
+shl eax, 1</code></pre>
+<p><strong>예제 2 — 배열 인덱스 주소 계산</strong></p>
+<pre><code class="language-c">int val = arr[i];   // int arr[], 요소 크기 4바이트</code></pre>
+<pre><code class="language-asm">mov eax, [i]
+shl eax, 2            ; i * 4
+mov ecx, [arr]
+mov edx, [ecx+eax]</code></pre>
+<p><strong>예제 3 — 가변 시프트</strong></p>
+<pre><code class="language-c">unsigned int y = x &lt;&lt; shift_amount;</code></pre>
+<pre><code class="language-asm">mov cl, [shift_amount]
+mov eax, [x]
+shl eax, cl</code></pre>
+<p><strong>예제 4 — 오버플로 검사 포함 곱셈</strong></p>
+<pre><code class="language-c">int y = x * 2;
+if (__builtin_add_overflow_p(x, x, 0)) { handle_overflow(); }</code></pre>
+<pre><code class="language-asm">mov eax, [x]
+shl eax, 1
+jo  handle_overflow</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0062-shr.html">REV-0062 — SHR: 논리 오른쪽 시프트</a></li><li><a href="rev-0063-sar.html">REV-0063 — SAR: 산술 오른쪽 시프트</a></li><li><a href="rev-0064-rol.html">REV-0064 — ROL: 왼쪽 Rotate</a></li><li><a href="rev-0026-bit-masks.html">REV-0026 — 8비트 16비트 24비트 32비트 64비트 마스크</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>SHL/SAL 명령어의 오퍼랜드/플래그 동작(SHL과 SAL의 동일성, count=0 시 플래그 미변경, count≠1 시 OF undefined 포함): Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "SAL/SAR/SHL/SHR—Shift" 섹션 기준 (2026-09-08 검증).</li><li>2의 거듭제곱 곱셈에 대한 컴파일러의 SHL 치환 최적화: Agner Fog, "Optimizing subroutines in assembly language" 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

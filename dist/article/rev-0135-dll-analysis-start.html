@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DLL 문제 분석 시작하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>DLL 문제 분석 시작하기</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span><span class="tag">PE-bear</span></div>
+<h2>한 줄 요약</h2>
+<p>DLL은 더블클릭해서 실행되는 파일이 아니라 다른 프로그램이 불러써야 동작하는 "부품"이기 때문에, DLL 문제를 처음 받으면 우선 익스포트된 함수 목록과 <code>DllMain</code>부터 확인하고, <code>rundll32</code>나 로더 스텁을 이용해 강제로 코드를 실행시켜야 분석을 시작할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>CTF나 과제로 받은 파일 확장자가 <code>.exe</code>가 아니라 <code>.dll</code>일 때</li><li>더블클릭했더니 아무 창도 안 뜨고 아무 반응이 없어서 당황스러울 때</li><li>IDA/x64dbg에 DLL을 어떻게 불러와야 실행이 되는지 모를 때</li><li>"이 DLL이 익스포트하는 함수가 몇 개나 되는지, 이름이 뭔지" 확인해야 할 때</li><li>서비스나 다른 프로세스에 인젝션되는 DLL(악성코드 분석 맥락)을 분석해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>DLL(Dynamic Link Library)은 EXE와 같은 PE 포맷을 쓰지만, PE 헤더의 <code>Characteristics</code> 필드에 <code>IMAGE_FILE_DLL</code> 플래그가 켜져 있다는 점이 다르다. 이 플래그 때문에 Windows 로더는 이 파일을 "직접 실행할 프로그램"이 아니라 "다른 프로세스의 주소 공간에 매핑해서 함수 호출을 받는 라이브러리"로 취급한다.</p>
+<p>DLL에는 다음 두 가지 핵심 개념이 있다.</p>
+<p><strong>1) <code>DllMain</code></strong>: EXE의 진입점(<code>main</code>/<code>WinMain</code>)에 대응하는 것이 DLL의 <code>DllMain</code>이다. 시그니처는 다음과 같다.</p>
+<pre><code class="language-c">BOOL WINAPI DllMain(HINSTANCE hinstDLL, DWORD fdwReason, LPVOID lpvReserved);</code></pre>
+<p><code>fdwReason</code>(호출 이유)이 핵심인데, 다음 네 가지 값 중 하나로 호출된다.</p>
+<ul><li><code>DLL_PROCESS_ATTACH</code>(1): 이 DLL이 어떤 프로세스에 처음 로드될 때(가장 중요, 초기화 로직이 대부분 여기)</li><li><code>DLL_THREAD_ATTACH</code>(2): 프로세스 안에서 새 스레드가 생성될 때</li><li><code>DLL_THREAD_DETACH</code>(3): 스레드가 종료될 때</li><li><code>DLL_PROCESS_DETACH</code>(0): DLL이 언로드되거나 프로세스가 종료될 때(정리/해제 로직)</li></ul>
+<p>즉 DLL을 분석할 때 "이상한 동작이 프로세스 로드 시점에 자동으로 일어난다"면 대부분 <code>DllMain</code>의 <code>DLL_PROCESS_ATTACH</code> 분기를 봐야 한다.</p>
+<p><strong>2) 익스포트 함수(Export)</strong>: DLL이 외부(다른 EXE나 DLL)에서 호출할 수 있도록 공개한 함수들이다. PE의 익스포트 디렉터리(<code>IMAGE_EXPORT_DIRECTORY</code>)에 함수 이름과 RVA(상대 주소), 그리고 서수(ordinal, 이름 없이 번호로만 호출 가능한 경우도 있음)가 정리되어 있다. <code>.NET</code>이 아닌 네이티브 DLL 분석에서는 이 익스포트 함수 하나하나가 사실상 "이 DLL이 제공하는 API 목록"이므로, 함수 이름만 봐도 대략 무슨 기능인지 짐작할 수 있는 경우가 많다(이름 추측법은 REV-0138 참고).</p>
+<p>DLL은 또한 EXE와 마찬가지로 TLS 콜백(REV-0133 참고)을 가질 수 있으며, 이 경우 <code>DllMain</code>보다도 먼저 실행된다는 점을 함께 기억해야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>파일을 <code>file</code> 명령이나 PE-bear로 열었을 때 <code>Characteristics</code>에 <code>DLL</code> 플래그가 켜져 있음</li><li>IDA로 열면 자동으로 진입점이 <code>DllMain</code> 형태의 함수로 인식되고, <code>Exports</code> 탭(<code>Ctrl+E</code> 또는 화면 하단 탭)에 함수 목록이 나열됨</li><li>더블클릭하면 "이 앱을 실행할 수 없습니다" 또는 아무 반응 없이 종료됨(정상적인 현상, DLL은 단독 실행 대상이 아니기 때문)</li><li>파일명이 <code>mscoree.dll</code>, <code>bcrypt.dll</code> 등 익숙한 시스템 DLL 이름을 사칭한 경우(악성코드에서 흔함)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>PE-bear나 IDA로 열어 <strong>아키텍처(x86/x64)</strong>부터 확인한다. DLL은 이를 로드하는 프로세스와 반드시 같은 비트수여야 하므로, 32비트 DLL은 32비트 x64dbg(x32dbg)로, 64비트 DLL은 64비트 x64dbg로 열어야 한다.</li><li><strong>Exports 탭</strong>에서 익스포트된 함수 이름 목록을 확인한다. 이름이 있으면(<code>DllRegisterServer</code>, <code>Run</code>, <code>Init</code> 등) 그 자체가 강력한 힌트가 된다. 이름이 없고 서수만 있다면 좀 더 파고들 준비를 한다.</li><li>TLS 디렉터리가 있는지 확인한다(REV-0133). 있다면 <code>DllMain</code>보다 먼저 실행되는 코드가 있다는 뜻이다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 정적으로 구조 파악(PE-bear/IDA)</strong></p>
+<ul><li>PE-bear의 <code>Export Directory</code> 탭에서 함수 이름, RVA, ordinal을 한눈에 확인한다.</li><li>IDA로 파일을 직접 열면(IDA는 DLL도 EXE처럼 로드해서 분석 가능) 진입점이 <code>DllMain</code>으로 자동 인식되는지 확인하고, 안 되어 있으면 <code>Entry point</code> 위치로 이동(<code>Ctrl+E</code>에서 첫 항목 더블클릭)해서 직접 확인한다.</li></ul>
+<p><strong>2) 강제로 실행시키기</strong> DLL은 그 자체로 실행 파일이 아니므로, 코드를 실제로 돌려보려면 다음 방법 중 하나를 쓴다.</p>
+<ul><li><strong><code>rundll32.exe</code>로 특정 익스포트 함수 호출</strong>:</li></ul>
+<pre><code class="language-text">rundll32.exe 대상.dll,익스포트함수이름 [인자]</code></pre>
+<p>예: <code>rundll32.exe sample.dll,Run</code></p>
+<ul><li><strong>COM DLL이면 <code>regsvr32</code>로 등록</strong>: <code>DllRegisterServer</code>를 익스포트하는 DLL(주로 ActiveX/COM 컴포넌트)은 <code>regsvr32 대상.dll</code>로 등록하면서 <code>DllRegisterServer</code>가 실행된다. 다만 관리자 권한과 실제 레지스트리 변경이 동반되므로, 분석용 가상 환경(스냅샷 있는 VM)에서만 실행할 것.</li><li><strong>직접 로더 스텁 작성</strong>: Python(<code>ctypes.WinDLL("대상.dll")</code>)이나 간단한 C 프로그램으로 <code>LoadLibrary</code> + <code>GetProcAddress</code> + 함수 호출을 직접 작성해서 원하는 인자로 원하는 함수만 정확히 실행시킬 수 있다. CTF에서는 이 방법이 가장 유연하다.</li></ul>
+<p><strong>3) 디버거로 붙이기</strong></p>
+<ul><li>x64dbg에서 <code>File → Open</code>으로 DLL을 직접 열면, x64dbg가 내부적으로 로더 스텁(<code>x64dbg</code>가 제공하는 더미 호스트 프로세스)을 이용해 DLL을 로드하고 <code>DllMain</code>에서 멈춰준다.</li><li>이미 실행 중인 프로세스에 로드된 DLL을 분석하려면 <code>File → Attach</code>로 해당 프로세스에 붙은 뒤, <code>Symbols</code> 탭에서 대상 DLL의 모듈을 찾아 원하는 함수에 브레이크포인트를 건다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li><code>rundll32.exe 파일.dll,함수이름</code> — 특정 익스포트 함수 직접 실행</li><li><code>regsvr32 파일.dll</code> — COM DLL 등록(<code>DllRegisterServer</code> 실행), 등록 해제는 <code>regsvr32 /u 파일.dll</code></li><li>x64dbg: <code>File → Open</code>(DLL 직접 로드), <code>File → Attach</code>(실행 중 프로세스에 붙기), <code>Ctrl+E</code>(익스포트/진입점 확인, IDA 기준)</li><li>Python: <code>python -c "import ctypes; ctypes.WinDLL(r'대상.dll').함수이름()"</code> 형태로 간단히 테스트 가능</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>rundll32.exe</code>로 실행했는데 아무 일도 안 일어나면, 함수 시그니처가 <code>rundll32</code>가 기대하는 형태(<code>void CALLBACK 함수이름(HWND, HINSTANCE, LPSTR, int)</code>)와 다를 수 있다. 이 경우 직접 로더 스텁을 작성하는 편이 확실하다.</li><li>IDA Exports 탭에 함수 이름 대신 <code>Ordinal1</code>, <code>Ordinal2</code>처럼만 나온다면, 이름이 익스포트되지 않고 서수로만 공개된 것이다. <code>GetProcAddress</code>를 서수로 호출해야 하며(<code>MAKEINTRESOURCE(서수)</code>), 이름만으로 기능을 짐작할 단서가 사라지므로 코드를 더 깊이 봐야 한다.</li><li><code>DllMain</code>의 <code>fdwReason</code> 분기에서 <code>DLL_PROCESS_ATTACH</code>(값 1) 조건만 처리하고 나머지는 그냥 <code>return TRUE</code>라면, 이 DLL의 핵심 로직은 프로세스 로드 시점에 자동으로 실행된다는 뜻이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>32비트 DLL을 64비트 x64dbg로 열려고 시도하는 것. 반드시 x32dbg를 써야 한다.</li><li>TLS 콜백의 존재를 잊고 <code>DllMain</code>만 보고 "여기가 시작점"이라고 단정하는 것(REV-0133 참고).</li><li><code>rundll32</code>로 익스포트 함수를 호출했는데 시그니처가 안 맞아서 크래시가 나는 것을 "이 DLL이 이상하다"고 오해하는 것. <code>rundll32</code>가 기대하는 콜백 시그니처를 지키지 않으면 정상 DLL도 크래시가 날 수 있다.</li><li>익스포트 함수 이름이 없다고(서수만 있다고) 분석을 포기하는 것. 함수 크기, 호출되는 API, 문자열 참조 등 다른 단서로 여전히 기능을 유추할 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>이 DLL이 <code>.NET</code>으로 만들어진 것 같다면(익스포트가 거의 없고 <code>mscoree.dll</code> 관련 임포트만 보임) → REV-0136(.NET EXE인지 Native EXE인지 구분)을 먼저 확인한다.</li><li>임포트/익스포트 함수 이름이 낯설다면 → REV-0138(Windows API 이름으로 기능 추측하는 법)을 참고한다.</li><li>CRT 관련 함수가 너무 많아 실제 로직을 못 찾겠다면 → REV-0137(Visual C++ Runtime 함수가 많은 바이너리 정리법)을 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p><code>sample.dll</code>을 PE-bear로 열어 Export Directory를 확인했더니 다음과 같은 함수가 하나 있었다고 하자.</p>
+<pre><code class="language-text">Name: Decode
+RVA: 0x1050
+Ordinal: 1</code></pre>
+<p>이 경우 다음처럼 강제로 실행시켜 볼 수 있다.</p>
+<pre><code class="language-text">rundll32.exe sample.dll,Decode</code></pre>
+<p>만약 <code>Decode</code>가 <code>rundll32</code>가 기대하는 4개 인자 콜백 시그니처가 아니라 별도의 인자(예: 문자열 하나)를 받는 함수라면, 대신 Python으로 직접 호출한다.</p>
+<pre><code class="language-python">import ctypes
+dll = ctypes.WinDLL(r"C:\path\sample.dll")
+dll.Decode(b"test_input")</code></pre>
+<p>이렇게 강제로 함수를 실행시킨 뒤 x64dbg를 프로세스에 <code>Attach</code>해서 <code>Decode</code> 함수 시작 주소에 브레이크포인트를 걸면, 실제 동작을 동적으로 관찰할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0119-import-table.html">REV-0119 — Import Table에서 중요한 API 찾기</a></li><li><a href="rev-0133-tls-callback.html">REV-0133 — TLS Callback과 main 이전 코드</a></li><li><a href="rev-0136-dotnet-vs-native.html">REV-0136 — .NET EXE인지 Native EXE인지 구분</a></li><li><a href="rev-0137-vcruntime-noise.html">REV-0137 — Visual C++ Runtime 함수가 많은 바이너리 정리법</a></li><li><a href="rev-0138-guess-function-from-api-name.html">REV-0138 — Windows API 이름으로 기능 추측하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>DLL의 <code>IMAGE_FILE_DLL</code> 플래그, <code>DllMain</code> 시그니처와 <code>fdwReason</code> 값(<code>DLL_PROCESS_ATTACH</code> 등)은 Microsoft PE/COFF 및 Win32 DLL 공식 문서 기준이다.</li><li>익스포트 디렉터리(<code>IMAGE_EXPORT_DIRECTORY</code>) 구조는 Microsoft PE/COFF 형식 공식 문서 기준이다.</li><li><code>rundll32.exe</code>/<code>regsvr32.exe</code> 사용법은 Microsoft 공식 도구 문서 기준이며, 분석 시 격리된 VM 환경 사용을 권장한다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

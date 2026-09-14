@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>패킹 탐지 도구 비교표 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / packing</div>
+<article class="article-body">
+<h1>패킹 탐지 도구 비교표</h1>
+<div class="article-meta"><span class="tag">packing</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Detect It Easy</span><span class="tag">PE-bear</span><span class="tag">checksec</span></div>
+<h2>한 줄 요약</h2>
+<p>Windows PE 패킹 탐지는 Detect It Easy(패커 시그니처+엔트로피)와 PE-bear(섹션/헤더 세부 구조)를 조합하는 것이 표준이고, Linux ELF는 <code>checksec</code>(보호 기법 확인용, 패커 시그니처는 없음)과 <code>strings</code>/<code>readelf</code>(섹션 이름·엔트로피 대체 확인)를 함께 써야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>패킹 여부를 확인하고 싶은데 어떤 도구부터 열어야 할지 모를 때</li><li>Detect It Easy와 PE-bear를 둘 다 쓰는 이유가 뭔지, 하나만 쓰면 안 되는지 궁금할 때</li><li>Linux ELF 바이너리에서도 Windows처럼 "Packer: UPX" 같은 표시가 나오는 도구가 있는지 찾고 있을 때</li><li>CTF 환경에 GUI 도구 설치가 어려워서 커맨드라인만으로 패킹을 의심할 방법을 찾을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>패킹 탐지에 쓰는 도구들은 서로 역할이 다르며, 하나로 모든 것을 확인할 수 없다. Detect It Easy(DIE)는 알려진 패커 시그니처 데이터베이스를 갖고 있어 "이름표"를 즉시 붙여주는 데 강하고, PE-bear는 시그니처 데이터베이스는 없지만 섹션 헤더/임포트 테이블을 사람이 직접 뜯어볼 수 있게 해주는 데 강하다. 즉 DIE로 1차 스크리닝을 하고, DIE가 확신하지 못하거나(Unknown) 더 자세히 봐야 할 때 PE-bear로 넘어가는 흐름이 자연스럽다. Linux ELF 쪽은 애초에 UPX 외에는 GUI 패커 탐지 생태계가 Windows만큼 발달하지 않아서, <code>strings</code>/<code>readelf</code>/<code>file</code> 같은 표준 binutils 도구와 <code>checksec</code>(원래 목적은 RELRO/Canary/NX/PIE 같은 보호 기법 확인이지만 패킹 의심 시 함께 확인하는 것이 관행)을 조합해서 판단한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<table><thead><tr><th>도구</th><th>대상 포맷</th><th>주 용도</th><th>패커 시그니처 DB</th><th>엔트로피 표시</th><th>설치/실행 방식</th></tr></thead><tbody><tr><td>Detect It Easy(DIE)</td><td>PE, ELF, Mach-O</td><td>패커/컴파일러 자동 판별</td><td>있음(수천 종)</td><td>있음(섹션별 그래프)</td><td>GUI, Windows/Linux 모두 존재</td></tr><tr><td>PE-bear</td><td>PE 전용</td><td>헤더/섹션/임포트 수동 분석</td><td>없음(사람이 직접 판단)</td><td>있음(Section Headers 열)</td><td>GUI, Windows 전용(Wine으로 Linux 실행 가능)</td></tr><tr><td>checksec</td><td>ELF 전용</td><td>RELRO/Canary/NX/PIE 등 보호 기법 확인</td><td>없음</td><td>없음</td><td>CLI, Linux</td></tr><tr><td>strings</td><td>모든 포맷</td><td>문자열 기반 매직 바이트/안내문 확인</td><td>없음(사람이 판단)</td><td>없음</td><td>CLI, binutils 기본 포함</td></tr><tr><td>readelf / objdump</td><td>ELF 전용</td><td>섹션 이름/헤더 구조 확인</td><td>없음</td><td>없음(수동 계산 필요)</td><td>CLI, binutils 기본 포함</td></tr><tr><td>upx -l</td><td>UPX로 패킹된 파일만</td><td>UPX 여부/압축률 확정</td><td>UPX 전용</td><td>없음</td><td>CLI</td></tr></tbody></table>
+<h2>가장 먼저 할 것</h2>
+<p>Windows PE라면 DIE부터 드래그해서 상단 결과란을 본다. Linux ELF라면 먼저 <code>file sample</code>로 포맷을 확인한 뒤 <code>strings sample | grep -i upx</code>와 <code>readelf -S sample</code>(섹션 이름 목록)을 실행한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 포맷 확인</strong>: <code>file sample</code>로 PE인지 ELF인지 확인한다. <strong>2) 1차 스크리닝(PE)</strong>: DIE에 드래그해 패커/프로텍터/컴파일러 이름과 엔트로피를 확인한다. <strong>3) 세부 구조 확인(PE)</strong>: DIE 결과가 애매하면 PE-bear로 섹션 이름, raw size vs virtual size 차이, 임포트 개수를 직접 확인한다(REV-0229 참고). <strong>4) 1차 스크리닝(ELF)</strong>: <code>strings sample | grep -i upx</code>, <code>readelf -S sample</code>로 섹션 이름을 확인한다. <strong>5) 보호 기법 확인(ELF)</strong>: <code>checksec --file=sample</code>로 RELRO/Canary/NX/PIE를 확인한다. 이 정보 자체는 패킹 여부를 알려주지 않지만, "PIE인데 임포트가 극단적으로 적다"처럼 다른 패킹 징후(REV-0229)와 조합해서 판단하는 데 쓰인다. <strong>6) 확정</strong>: UPX로 의심되면 <code>upx -l sample</code>로 확정한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">file sample
+strings sample | grep -i upx
+readelf -S sample
+checksec --file=sample
+upx -l sample</code></pre>
+<ul><li>DIE/PE-bear는 GUI이므로 파일을 드래그하거나 <code>File → Open</code>으로 연다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>DIE 결과란이 <code>Packer: UPX(4.2.4)</code>처럼 구체적 버전까지 나오면 신뢰도가 높다. <code>Nothing found</code>가 뜨면 알려진 시그니처가 없다는 뜻이지 "패킹이 아니다"는 뜻은 아니다(REV-0224 참고).</li><li><code>checksec</code>이 <code>RELRO: No</code> 등 보호 기법 미적용을 다수 보여준다고 해서 그 자체가 패킹의 증거는 아니다. 다만 오래된 CTF 문제나 커스텀 로더 바이너리는 보호 기법과 패킹 여부가 함께 허술한 경우가 실무적으로 흔하다는 정도의 참고 신호일 뿐이다.</li><li><code>readelf -S</code>에서 섹션 이름이 표준(<code>.text</code>, <code>.data</code>, <code>.bss</code>)과 다르거나 섹션 개수가 비정상적으로 적으면 커스텀 로더/패커 가능성을 의심한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>DIE 결과 하나만 보고 "패킹 아님"으로 단정하는 것 — 시그니처 DB에 없는 커스텀 패커는 놓칠 수 있다.</li><li><code>checksec</code>을 패커 탐지 전용 도구로 오해하는 것 — <code>checksec</code>은 보호 기법(RELRO/Canary/NX/PIE) 확인 도구이며 패커 시그니처 DB가 없다(REV-0096, REV-0295 참고).</li><li>PE-bear로 ELF 파일을 열려고 시도하는 것 — PE-bear는 PE 포맷 전용이다.</li><li>Linux에도 DIE가 있다는 사실을 몰라서 매번 Windows로 파일을 옮겨 확인하는 것 — DIE는 Linux 빌드도 공식 배포된다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>어떤 패커 이름이 나왔는데 처음 본다면 → REV-0931 흔한 패커 시그니처 빠른 참조표.</li><li>DIE가 아무것도 못 찾았는데 여전히 의심된다면 → REV-0934 Entropy 값 해석 기준으로 섹션별 수치를 직접 확인한다.</li><li><code>checksec</code> 결과 자체를 더 깊이 읽는 법이 필요하면 → REV-0096 checksec 결과 읽는 법.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">$ file chall
+chall: ELF 64-bit LSB pie executable, x86-64, ...
+
+$ strings chall | grep -i upx
+UPX!
+
+$ readelf -S chall | grep UPX
+  [ 1] UPX0              NOBITS
+  [ 2] UPX1              PROGBITS
+
+$ upx -l chall
+     18432 &lt;-      9216   50.00%   linux/amd64   chall</code></pre>
+<p><code>strings</code>와 <code>readelf</code> 조합만으로 GUI 도구 없이도 Linux 환경에서 UPX 패킹을 확정할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0224-packing-indicators.html">REV-0224 — 패킹된 바이너리인지 의심하는 기준</a></li><li><a href="rev-0225-identifying-upx.html">REV-0225 — UPX인지 확인하는 법</a></li><li><a href="rev-0096-checksec.html">REV-0096 — checksec 결과 읽는 법</a></li><li><a href="rev-0931-packer-signature-quickref.html">REV-0931 — 흔한 패커 시그니처 빠른 참조표(UPX/ASPack/PECompact 등)</a></li><li><a href="rev-0934-entropy-value-quickref.html">REV-0934 — Entropy 값 해석 기준 빠른 참조</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Detect It Easy와 PE-bear의 기능 범위는 각 프로젝트 공식 저장소(github.com/horsicq/Detect-It-Easy, github.com/hasherezade/pe-bear) 설명을 기준으로 정리했다(2026-09-09 검증).</li><li><code>checksec</code>, <code>readelf</code>, <code>strings</code>의 옵션과 출력 형식은 GNU binutils 및 <code>checksec.sh</code>(slimm609/checksec.sh) 공식 문서를 기준으로 확인했다.</li><li>도구별 버전에 따라 옵션명과 출력 형식이 달라질 수 있으므로, 실제 설치된 버전에서 <code>--help</code>로 재확인하는 것을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

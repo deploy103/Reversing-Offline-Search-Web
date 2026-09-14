@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>시간이 부족할 때 부분점수를 노리는 전략 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>시간이 부족할 때 부분점수를 노리는 전략</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>대회 종료가 가까운데 완전히 풀 자신이 없다면, 문제 하나를 끝까지 붙잡기보다 <strong>이미 확보한 부분 정보로 점수가 되는 다른 서브 목표(다단계 문제의 앞 스테이지, 다른 문제의 쉬운 부분)로 옮겨가는 것</strong>이 기대 점수를 높이며, 이 판단은 남은 시간과 현재까지의 진행률을 곱해서 감으로 하지 말고 명시적으로 계산해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>대회 종료까지 남은 시간이 명확히 보이는데 지금 문제를 계속 풀지 다른 문제로 넘어갈지 판단이 필요할 때</li><li>다단계 문제에서 일부 스테이지만 풀었는데 나머지 스테이지가 끝날 것 같지 않을 때</li><li>여러 문제를 동시에 조금씩 진행 중인데 마감 전에 뭘 마무리할지 우선순위가 필요할 때</li><li>이미 몇 시간을 투자한 문제를 포기하기 아까워서 계속 붙잡고 있을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>CTF는 대부분 "전부 아니면 0점" 구조지만, 실제로는 부분점수를 얻을 수 있는 상황이 생각보다 많다. 이를 노리려면 대회 구조를 먼저 파악해야 한다.</p>
+<h3>부분점수가 실제로 존재하는 경우</h3>
+<ul><li><strong>다단계 플래그(Stage별 서브플래그)</strong>: 일부 대회는 각 스테이지를 통과할 때마다 별도의 서브플래그를 제출하게 만들어 부분 점수를 준다(REV-0314). 문제 설명에 "각 단계마다 플래그가 있습니다"라는 문구가 있는지 확인한다.</li><li><strong>동일 시리즈의 쉬운 변형 문제</strong>: "Baby 리버싱", "리버싱 1/2/3"처럼 난이도가 순차적으로 올라가는 시리즈에서, 뒤쪽 문제를 못 풀어도 앞쪽 쉬운 문제들을 확실히 잡는 것 자체가 부분점수 전략이다.</li><li><strong>First Blood/보너스 점수</strong>: 동적 배점 대회에서 이미 다른 팀이 다 푼 쉬운 문제라도 점수가 남아있다면 확실히 챙기는 게 낫다.</li></ul>
+<h3>부분점수가 없는 경우의 전략</h3>
+<p>서브플래그가 없는 단일 문제라면, "80% 분석했지만 최종 flag가 안 나온" 상태는 점수로 이어지지 않는다. 이 경우 부분점수 전략은 <strong>그 문제를 포기하고 다른 문제에서 확실한 점수를 챙기는 것</strong>으로 바뀐다. 즉 "부분점수"는 문제 자체의 부분 제출이 아니라 <strong>전체 대회에서의 점수 최적화</strong>를 의미한다.</p>
+<h3>포기 판단 기준 계산</h3>
+<p>남은 시간을 <code>T</code>, 지금 문제를 마저 풀 확률을 체감으로 <code>p</code>, 다른 문제(들)를 풀 수 있는 기대 점수를 <code>E_other</code>라고 하면, 대략 다음을 비교한다.</p>
+<ul><li>지금 문제를 계속했을 때 기대 점수 ≈ <code>p × (지금 문제 배점)</code></li><li>다른 문제로 옮겼을 때 기대 점수 ≈ <code>E_other</code></li></ul>
+<p><code>p</code>를 정확히 알 수는 없지만, 지금까지 진행 속도(예: 3시간 동안 검증 함수 하나를 겨우 찾음)를 보면 남은 시간 안에 끝낼 확률이 체감상 낮은지 높은지 판단할 근거는 된다. 특히 REV-0310에서 이미 "1시간 이상짜리"로 분류했던 문제를 3시간째 붙잡고 있다면, 애초 추정이 크게 틀렸다는 뜻이므로 재평가가 필요하다.</p>
+<h3>이미 투자한 시간에 대한 착각(매몰비용)</h3>
+<p>"이미 3시간 썼는데 여기서 그만두면 아깝다"는 생각은 앞으로 남은 시간의 기대 점수 계산과는 무관하다. 이미 쓴 시간은 되돌릴 수 없으므로 판단에서 제외하고, <strong>앞으로 쓸 시간 대비 기대 점수</strong>만으로 판단해야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>스코어보드에서 다른 팀들의 solve 현황을 보면 지금 붙잡은 문제는 solve가 거의 없고, 다른 문제는 다수가 풀었다.</li><li>다단계 문제인데 REV-0314 방식으로 스테이지 경계는 찾았지만 특정 스테이지에서 몇 시간째 진전이 없다.</li><li>대회 남은 시간이 문제 예상 소요 시간(REV-0310)보다 짧아졌다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>지금 시각과 대회 종료 시각을 확인하고, 남은 시간을 명확한 숫자로 적는다("2시간 30분 남음"). 그다음 지금 문제의 진행률과 나머지 안 푼 문제 목록을 나란히 놓고 비교한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>남은 시간을 정확히 확인하고 팀 채널/개인 노트에 기록</li><li>지금 문제에서 이미 확정된 것과 아직 안 풀린 부분을 REV-0014 노트 기준으로 정리</li><li>다단계 문제라면 서브플래그 제출이 가능한 대회인지 문제 설명/대회 규칙을 재확인</li><li>서브플래그가 가능하면 이미 푼 스테이지까지의 플래그를 우선 제출</li><li>서브플래그가 불가능하면, 남은 시간 안에 이 문제를 끝낼 수 있을지 지금까지의 진행 속도로 가늠(REV-0310 재평가)</li><li>다른 미해결 문제 중 REV-0310 기준으로 "쉬움"으로 분류됐던 것이 남아있는지 확인</li><li>남은 시간과 기대 점수를 비교해 문제를 계속할지, 다른 문제로 옮길지, 팀원에게 넘길지 결정</li><li>결정한 내용과 이유를 팀 채널에 짧게 공유해 팀 전체의 시간 배분에 반영</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>대회 스코어보드에서 문제별 solve 수/배점 변화 확인(대회 플랫폼 UI)</li><li>개인/팀 노트에 "진행률 %"와 "남은 예상 시간" 두 항목을 항상 갱신</li></ul>
+<h2>출력 해석</h2>
+<ul><li>서브플래그를 제출했는데도 점수가 안 오르면, 그 대회는 부분점수 시스템이 없다는 뜻이므로 이후에는 "포기 후 다른 문제로 이동" 전략만 유효하다.</li><li>다른 문제들의 solve 수가 이미 자기 팀 인원 이상으로 많다면, 그 문제들은 상대적으로 쉬운 것이니 우선적으로 시도할 가치가 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>매몰비용(이미 쓴 시간)이 아까워서 기대 점수 계산 없이 그냥 계속 붙잡는 것.</li><li>서브플래그 제출 가능 여부를 확인도 안 하고 "어차피 부분점수 없겠지"라고 단정해서 이미 푼 스테이지 결과를 제출하지 않는 것.</li><li>팀 전체가 하나의 어려운 문제에만 매달려 있으면서 쉬운 문제들을 방치하는 것.</li><li>포기 결정을 혼자 조용히 내리고 팀에 공유하지 않아서, 다른 팀원도 같은 문제에 계속 시간을 쓰는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>문제 난이도 재평가가 필요하다 → REV-0310 리버싱 문제 난이도를 빠르게 가늠하는 체크포인트</li><li>다단계 문제의 스테이지 구조 자체를 아직 못 찾았다 → REV-0314 다단계 검증(Stage 1/2/3)이 있는 문제 공략법</li><li>팀으로 참가 중이라 시간 배분을 재조정해야 한다 → REV-0311 팀 대회에서 리버싱 문제를 분업하는 법</li><li>지금까지 확인한 것과 안 한 것을 다시 정리해야 한다 → REV-0014 리버싱 노트 작성법: 함수 이름 바꾸기와 가설 기록</li></ul>
+<h2>미니 예제</h2>
+<p>대회 종료 2시간 전, 3단계짜리 리버싱 문제에서 Stage 1, 2는 풀었지만 Stage 3에서 커스텀 VM(REV-0315 유형)이 나와 막힌 상태다. 대회 규칙을 다시 확인하니 각 스테이지 통과 시 서브플래그를 주는 방식이었다. 지금까지 서브플래그를 제출하지 않고 있었다는 걸 깨닫고 즉시 Stage 1, 2 서브플래그를 제출해 부분 점수를 확보한 뒤, 남은 2시간은 스코어보드에서 solve 수가 많은 다른 쉬운 문제로 옮겨 추가 점수를 노렸다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0310-difficulty-triage-checkpoints.html">REV-0310 — 리버싱 문제 난이도를 빠르게 가늠하는 체크포인트</a></li><li><a href="rev-0314-multi-stage-validation-strategy.html">REV-0314 — 다단계 검증(Stage 1/2/3)이 있는 문제 공략법</a></li><li><a href="rev-0311-team-ctf-division-of-labor.html">REV-0311 — 팀 대회에서 리버싱 문제를 분업하는 법</a></li><li><a href="rev-0014-reversing-notes.html">REV-0014 — 리버싱 노트 작성법: 함수 이름 바꾸기와 가설 기록</a></li><li><a href="rev-0015-five-minute-checklist.html">REV-0015 — 막혔을 때 5분 체크리스트</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>CTF 부분점수/동적 배점 시스템 및 시간 배분 전략: CTF 대회 운영 관행 및 실전 경험칙 요약 (2026-09-09 검증).</li><li>매몰비용 오류(sunk cost fallacy) 개념: 일반 의사결정 이론 기준 요약.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

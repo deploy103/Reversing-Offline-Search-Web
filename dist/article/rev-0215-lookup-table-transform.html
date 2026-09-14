@@ -1,0 +1,159 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Lookup Table 기반 변환 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>Lookup Table 기반 변환</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>디스어셈블리에서 "입력값(또는 입력에서 파생된 값)을 인덱스로 삼아 고정 주소의 배열에서 값을 그대로 읽어오는" 코드가 보이면 <strong>Lookup Table(LUT) 기반 변환</strong>이며, 먼저 이 테이블이 CRC 같은 잘 알려진 알고리즘에서 자동 생성되는 것인지, 아니면 문제 제작자가 임의로 만든 것인지부터 구분해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>movzx eax, byte [rax+off_140003000]</code>처럼 레지스터 값을 인덱스로 써서 고정 주소를 참조하는 명령어를 만났을 때</li><li>Ghidra 디컴파일에서 <code>DAT_140003000[input[i]]</code> 같은 표현을 봤을 때</li><li><code>.rodata</code> 섹션에 256개(또는 그 배수) 크기의 정적 배열이 있고, 그 배열을 참조하는 함수가 검증/체크섬 루틴 근처에 있을 때</li><li>REV-0214(커스텀 알파벳 치환)나 REV-0211(AES 흔적)을 읽었는데 좀 더 일반적인 "테이블을 봤을 때 뭘 해야 하나"가 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Lookup Table 기반 변환은 "계산을 미리 해서 배열에 저장해두고, 실행 시점에는 계산 대신 배열 참조만 한다"는 아주 흔한 최적화/난독화 기법이다. 이 카테고리 안에는 성격이 매우 다른 두 종류가 섞여 있고, 이를 구분하는 것이 리버싱 시간을 크게 좌우한다.</p>
+<p><strong>1) 알고리즘적으로 재생성 가능한 테이블 (다시 계산할 필요 없음)</strong></p>
+<p>대표적인 예가 CRC32 테이블이다. CRC32는 다항식 나눗셈을 매 바이트마다 반복하면 느리기 때문에, 실무 구현체는 256개의 결과를 미리 계산해 테이블로 저장해두고 XOR과 시프트만으로 빠르게 처리한다. 이 테이블은 <strong>CRC 다항식 하나로 완전히 결정</strong>되므로, 바이너리에서 값을 일일이 뽑을 필요 없이 파이썬 표준 라이브러리로 대체할 수 있다.</p>
+<p>표준 CRC-32(reflected, 다항식 <code>0xEDB88320</code>) 테이블의 앞부분은 다음과 같은 값으로 시작한다:</p>
+<pre><code>table[0] = 0x00000000
+table[1] = 0x77073096
+table[2] = 0xEE0E612C
+table[3] = 0x990951BA</code></pre>
+<p>바이너리의 <code>.rodata</code>에서 리틀엔디언으로 <code>96 30 07 77 2C 61 0E EE ...</code> 같은 바이트열이 보인다면(이는 <code>0x77073096</code>, <code>0xEE0E612C</code>를 리틀엔디언으로 표기한 것) 이건 CRC32 테이블일 확률이 매우 높다. 이 경우 테이블을 뽑아 저장하는 대신 바로 <code>zlib.crc32()</code>를 쓰면 된다.</p>
+<p><strong>2) 임의/불투명 테이블 (반드시 바이트 그대로 추출해야 함)</strong></p>
+<p>문제 제작자가 직접 설계한 S-box나 셔플 키, 챌린지 전용 상수 테이블은 규칙이 없다. 이런 테이블은 지름길이 없고, <strong>바이너리에서 바이트 하나하나를 그대로 뽑아내는 것 외에는 방법이 없다</strong>. REV-0214(커스텀 알파벳 치환)가 바로 이 카테고리의 대표 사례이고, AES의 S-box(<a href="rev-0211-aes-fingerprints.html">REV-0211</a>)도 사실은 "잘 알려진 상수를 가진 불투명 테이블"이라는 점에서 이 카테고리에 속한다 — 다만 AES S-box는 워낙 유명해서 시작 바이트(<code>63 7C 77 7B ...</code>)만 보고도 바로 알아볼 수 있다는 차이가 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>어떤 값도 더하거나 곱하지 않고, 그냥 <code>base + index * element_size</code> 형태의 주소 계산만으로 메모리를 읽는 명령어</li><li>1바이트 원소: <code>movzx eax, byte [rcx+rax]</code></li><li>4바이트 원소(주로 CRC32 등): <code>mov eax, [rcx+rax*4]</code></li><li>IDA에서 그 주소로 이동하면 이름 없는 <code>unk_...</code>, <code>byte_...</code>, <code>dword_...</code> 레이블이 붙은 정적 배열이 있음</li><li>루프 안에서 테이블 참조 결과가 다시 다음 루프의 입력(누적 XOR 등)으로 쓰이는 경우 — CRC류 알고리즘의 전형적 패턴</li><li>테이블 참조가 두 번 연속 이어지는 경우(<code>output = TBL2[TBL1[input]]</code>) — 아래 "이중 LUT" 항목 참고</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>테이블 참조 명령어를 발견하면, 가장 먼저 <strong>테이블 크기와 원소 크기</strong>를 확인한다(1바이트 원소 256개인지, 4바이트 원소 256개=1024바이트인지). 그다음 테이블의 시작 몇 개 값을 16진수로 적어두고, 아래 절차대로 "이거 CRC 같은 유명 알고리즘 아닌가?"부터 확인한다. 유명 알고리즘이면 표준 라이브러리로 바로 끝나고, 아니면 REV-0214와 같은 방식으로 전체를 추출해야 한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 테이블 원소 크기 확인</strong></p>
+<p>인덱싱에 쓰인 곱셈 배수(<code>*1</code>, <code>*4</code>, <code>*8</code>)를 보고 원소가 1/4/8바이트인지 확정한다. IDA 디스어셈블리에서 <code>movzx</code>면 1바이트, 일반 <code>mov eax, [...]</code>면 4바이트일 가능성이 크다.</p>
+<p><strong>2) 잘 알려진 상수인지 대조</strong></p>
+<p>테이블 시작 4~8바이트를 16진수로 뽑아 알려진 알고리즘의 테이블과 비교한다. CRC32라면 위에 적은 <code>0x77073096, 0xEE0E612C, 0x990951BA</code> 순서와 대조한다. 일치하면 3번으로, 안 맞으면 5번(불투명 테이블 추출)으로 간다.</p>
+<p><strong>3) CRC로 확인되면 표준 라이브러리로 검증</strong></p>
+<pre><code class="language-python">import zlib
+print(hex(zlib.crc32(b"test")))</code></pre>
+<p>바이너리를 실제로 실행해서 같은 입력(<code>"test"</code>)에 대한 결과값을 뽑아보고, 위 파이썬 결과와 일치하는지 대조한다. 일치하면 테이블을 추출할 필요가 전혀 없이 <code>zlib.crc32()</code> 한 줄로 전체 알고리즘을 대체할 수 있다.</p>
+<p><strong>4) CRC가 아니지만 다른 유명 다항식일 수도 있음</strong></p>
+<p>CRC 계열은 다항식에 따라 여러 변형(CRC-16, CRC-32C 등)이 있다. 테이블 시작값이 표준 CRC32와 다르다면, <code>binascii.crc_hqx</code>(CRC-16-CCITT) 등 다른 표준 함수와도 대조해본다. 그래도 안 맞으면 5번으로.</p>
+<p><strong>5) 불투명 테이블 추출</strong></p>
+<ul><li><strong>IDA</strong>: 테이블 시작 주소로 이동 → <code>Edit → Export data...</code>로 필요한 범위를 내보내거나, IDAPython 콘솔(<code>View → Open subviews → Output window</code>)에 직접 입력:</li></ul>
+<pre><code class="language-python">  print([hex(Byte(0x140003000+i)) for i in range(256)])</code></pre>
+<ul><li><strong>Ghidra</strong>: Listing에서 바이트 범위 드래그 선택 → 우클릭 → <code>Copy Special → Python List</code></li><li>추출한 값을 파이썬 리스트나 <code>bytes.fromhex(...)</code>로 솔브 스크립트에 붙여넣는다.</li></ul>
+<h2>명령어/단축키</h2>
+<pre><code class="language-python">import zlib
+zlib.crc32(b"data")           # CRC32 표준 구현 (다항식 0xEDB88320 기준)</code></pre>
+<p>IDA: <code>Edit → Export data...</code>, <code>View → Open subviews → Output window</code>(IDAPython 콘솔) Ghidra: <code>Copy Special → Python List</code></p>
+<h2>출력 해석</h2>
+<ul><li><code>zlib.crc32()</code> 결과가 바이너리의 실행 결과와 정확히 일치하면 CRC32로 확정, 더 이상 테이블을 신경 쓸 필요 없음.</li><li>값이 반대(비트 반전, <code>~crc</code>)로 나온다면, 많은 CRC32 구현체가 최종 단계에서 <code>crc ^ 0xFFFFFFFF</code>를 적용한다는 점을 의심하고 XOR을 추가/제거해서 다시 비교.</li><li>불투명 테이블을 추출했는데 크기가 예상과 다르면(예: 256개를 기대했는데 128개만 의미 있는 값이고 나머지가 0이면), 실제 인덱스로 쓰이는 값의 범위가 0~127뿐일 수 있으니 인덱싱에 쓰인 마스크(<code>and eax, 7Fh</code> 등)를 다시 확인.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>테이블 앞부분 몇 바이트만 보고 성급하게 "이건 그냥 랜덤 상수"라고 판단해 전체를 억지로 손으로 옮겨 적다가 실수하는 경우 — 항상 CRC 등 표준 알고리즘과의 대조를 먼저 시도한다.</li><li>CRC32를 재현할 때 초기값(<code>0xFFFFFFFF</code>)이나 최종 XOR(<code>0xFFFFFFFF</code>)을 빼먹고 "표준과 다르다"고 오판하는 경우 — CRC 변형마다 초기값/최종XOR/반사(reflect) 여부가 다르므로, 값이 하나라도 안 맞으면 이 세 가지 파라미터부터 의심한다.</li><li>원소 크기(1바이트 vs 4바이트)를 착각해서 엉뚱한 범위를 덤프하는 경우 — 곱셈 배수(<code>*1</code>, <code>*4</code>)를 디스어셈블리에서 다시 확인.</li><li>이중 LUT 구조(<code>output[i] = SBOX[PERM[i]]</code>처럼 순서 재배열 테이블과 값 치환 테이블이 함께 쓰이는 경우)를 하나의 테이블로 착각하고 뒤섞어 처리하는 경우 — xref를 따라가면 서로 다른 두 개의 별도 배열 주소가 나오는지 반드시 확인한다. 순서 재배열 부분은 <a href="rev-0216-array-shuffle-check.html">REV-0216</a>, 값 치환 부분은 <a href="rev-0214-custom-alphabet-substitution.html">REV-0214</a>를 각각 참고해서 단계를 나눠 처리한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>테이블 값이 불규칙한데 커스텀 치환처럼 보인다면 → <a href="rev-0214-custom-alphabet-substitution.html">REV-0214 Custom alphabet 치환 패턴</a>.</li><li>테이블 시작값이 <code>0x63, 0x7C, 0x77, 0x7B</code>로 시작한다면 → <a href="rev-0211-aes-fingerprints.html">REV-0211 AES 테이블 또는 AES API 흔적 찾기</a>에서 AES S-box로 바로 확정.</li><li>테이블이 값이 아니라 "순서"를 바꾸는 용도(인덱스 배열)라면 → <a href="rev-0216-array-shuffle-check.html">REV-0216 배열 인덱스 재배열 Shuffle 검증</a>.</li><li>추출한 테이블로 전체 검증 로직을 완성된 파이썬 함수로 만들고 싶다면 → <a href="rev-0222-reimplement-in-python.html">REV-0222 검증 루틴을 Python으로 그대로 재현하기</a>.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — CRC 테이블 인식으로 작업을 생략한 경우</strong></p>
+<p>IDA에서 <code>.rodata</code>에 다음 바이트가 리틀엔디언 dword로 나열된 것을 발견했다:</p>
+<pre><code>77 07 30 96  EE 0E 61 2C  99 09 51 BA  ...</code></pre>
+<p>이걸 dword로 읽으면 <code>0x96300777</code>가 아니라(리틀엔디언이므로 바이트 순서를 뒤집어야 함) <code>0x77073096</code>, <code>0xEE0E612C</code>, <code>0x990951BA</code>가 된다. 이는 정확히 표준 CRC32 테이블의 앞 3개 값과 일치한다. 확인:</p>
+<pre><code class="language-python">import zlib
+data = b"test"
+print(hex(zlib.crc32(data)))   # 0xd87f7e0c</code></pre>
+<p>바이너리를 실행해 같은 입력 <code>"test"</code>를 넣었을 때 나오는 값과 <code>0xd87f7e0c</code>가 일치하면, 테이블을 단 한 바이트도 뽑을 필요 없이 이 알고리즘 전체를 <code>zlib.crc32()</code>로 대체할 수 있다.</p>
+<p><strong>예제 2 — 불투명 테이블을 그대로 추출한 경우</strong></p>
+<p>주소 <code>0x140005000</code>에 8개짜리 바이트 리맵 테이블이 있고, 인덱스로 쓰이는 값은 0~7 범위(즉 3비트 값)만 나온다고 하자. IDA Hex View에서 다음 8바이트를 확인했다:</p>
+<pre><code>A3 5C 91 0E F7 22 6B D8</code></pre>
+<pre><code class="language-python">TBL = bytes.fromhex("A35C910EF7226BD8")
+
+def transform(b):
+    return TBL[b]
+
+print(transform(0))  # 0xA3
+print(transform(7))  # 0xD8</code></pre>
+<p>테이블 크기가 8개뿐이라는 사실 자체가 "이 값은 바이트 전체가 아니라 0~7 범위의 작은 값(니블의 절반, enum, 3비트 필드 등)에 적용된다"는 중요한 단서다. 인덱스 범위를 테이블 크기와 대조하는 습관이 데이터의 성격을 파악하는 데 큰 도움이 된다.</p>
+<p><strong>심화 예제 — "재생성 가능한 테이블인가"부터 검증까지 이어지는 완결된 스크립트</strong></p>
+<p><code>.rodata</code>에서 테이블을 발견했을 때, 어떤 알고리즘인지 판단하고 나서 실제로 값을 검증하는 전체 흐름을 하나의 스크립트로 정리한다.</p>
+<pre><code class="language-python">import zlib
+# ↑ CRC32를 표준 라이브러리로 계산하기 위해 zlib 모듈을 불러온다.
+
+def looks_like_standard_crc32(table_first_four_dwords: list[int]) -&gt; bool:
+    # ↑ .rodata에서 읽은 테이블의 앞 4개 dword 값을 받아서,
+    #   표준 CRC-32(0xEDB88320 다항식) 테이블과 일치하는지 검사하는 함수.
+    known_crc32_prefix = [0x00000000, 0x77073096, 0xEE0E612C, 0x990951BA]
+    # ↑ 표준 CRC-32 테이블의 앞 4개 값(고정된, 잘 알려진 상수)이다.
+    return table_first_four_dwords == known_crc32_prefix
+    # ↑ 두 리스트가 완전히 같으면 True, 하나라도 다르면 False를 돌려준다.
+
+if __name__ == "__main__":
+    # ↑ 이 파일을 직접 실행할 때만 아래 블록을 수행한다.
+
+    # IDA Hex View에서 테이블 시작 주소부터 16바이트(=4개의 dword)를
+    # 리틀엔디안으로 읽어서 정리했다고 가정한 값들이다.
+    dumped_from_ida = [0x00000000, 0x77073096, 0xEE0E612C, 0x990951BA]
+
+    if looks_like_standard_crc32(dumped_from_ida):
+        # ↑ 앞서 만든 함수로 표준 CRC32인지 확인한다.
+        print("표준 CRC-32 테이블로 확정. zlib.crc32()로 대체 가능.")
+        # ↑ 일치한다면 테이블을 통째로 뽑아낼 필요 없이 표준 라이브러리로 넘어간다.
+
+        TARGET = 0x5a238679
+        # ↑ 바이너리를 실행해서 실제로 확인한, 검증 함수가 비교하는 목표 CRC 값.
+
+        candidate = b"lookup_table_demo"
+        # ↑ 검증해볼 후보 문자열(실전에서는 브루트포스 후보나 복원한 값이 들어간다).
+        computed = zlib.crc32(candidate) &amp; 0xFFFFFFFF
+        # ↑ 후보의 CRC-32 값을 계산한다.
+
+        print(f"{candidate!r} -&gt; {hex(computed)} (목표값: {hex(TARGET)})")
+        # ↑ 계산 결과와 목표값을 나란히 출력해서 눈으로 비교할 수 있게 한다.
+
+        if computed == TARGET:
+            # ↑ 계산값과 목표값이 정확히 같다면
+            print("일치! 이 후보가 정답이다.")
+            # ↑ 정답을 찾았다는 것을 알려준다.
+        else:
+            # ↑ 값이 다르다면
+            print("불일치. 다른 후보를 시도해야 한다.")
+            # ↑ 다음 후보를 시도해야 함을 알려준다.
+    else:
+        # ↑ 표준 CRC32와 일치하지 않는다면
+        print("표준 CRC32가 아님. 불투명 테이블일 가능성이 높음 -&gt; 전체 바이트 추출 필요.")
+        # ↑ REV-0214에서 다룬 방식대로 테이블 전체를 그대로 뽑아야 한다는 것을 알려준다.</code></pre>
+<p>이 스크립트를 그대로 실행하면 다음과 같이 출력된다(직접 계산해서 검증한 값):</p>
+<pre><code>표준 CRC-32 테이블로 확정. zlib.crc32()로 대체 가능.
+b'lookup_table_demo' -&gt; 0x5a238679 (목표값: 0x5a238679)
+일치! 이 후보가 정답이다.</code></pre>
+<p>즉 <code>.rodata</code>의 테이블이 표준 CRC-32 테이블임을 코드로 확정한 뒤에는, 256바이트를 손으로 옮겨 적는 작업을 완전히 생략하고 <code>zlib.crc32()</code> 한 줄로 전체 알고리즘을 대체할 수 있다. 이렇게 "이 테이블을 표준 라이브러리로 대체할 수 있는가"를 가장 먼저 코드로 확인하는 습관이, 불필요한 수작업 테이블 추출 시간을 크게 줄여준다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0208-fnv-16777619.html">REV-0208 — 16777619 상수가 보일 때 FNV 의심하기</a></li><li><a href="rev-0211-aes-fingerprints.html">REV-0211 — AES 테이블 또는 AES API 흔적 찾기</a></li><li><a href="rev-0214-custom-alphabet-substitution.html">REV-0214 — Custom alphabet 치환 패턴</a></li><li><a href="rev-0216-array-shuffle-check.html">REV-0216 — 배열 인덱스 재배열 Shuffle 검증</a></li><li><a href="rev-0222-reimplement-in-python.html">REV-0222 — 검증 루틴을 Python으로 그대로 재현하기</a></li><li><a href="rev-0209-crc-fingerprints.html">REV-0209 — CRC 계열 알고리즘 흔적 찾기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>표준 CRC-32(reflected, 다항식 0xEDB88320) 테이블 값 및 <code>zlib.crc32</code> 호환성: Python 공식 문서 <code>zlib</code> 모듈, ISO 3309 / ITU-T V.42 CRC-32 표준 정의 기준 (2026-09-08 검증).</li><li>IDA <code>Edit → Export data</code>, Ghidra <code>Copy Special</code> 사용법: 각 툴 공식 매뉴얼 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

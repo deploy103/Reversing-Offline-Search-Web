@@ -1,0 +1,49 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 380" font-family="Consolas, 'Courier New', monospace" font-size="14">
+  <rect x="0" y="0" width="820" height="380" fill="#ffffff" stroke="#d0d0d0"/>
+  <text x="20" y="28" font-size="17" font-weight="bold" fill="#111">x64 정수 인자 전달: SysV(Linux) vs Microsoft x64(Windows)</text>
+
+  <!-- SysV column -->
+  <text x="60" y="60" font-size="15" font-weight="bold" fill="#225577">SysV AMD64 (Linux/macOS)</text>
+  <g stroke="#5577cc" fill="#eef3ff">
+    <rect x="40" y="72" width="300" height="34"/>
+    <rect x="40" y="106" width="300" height="34"/>
+    <rect x="40" y="140" width="300" height="34"/>
+    <rect x="40" y="174" width="300" height="34"/>
+    <rect x="40" y="208" width="300" height="34"/>
+    <rect x="40" y="242" width="300" height="34"/>
+  </g>
+  <g font-size="14" fill="#111">
+    <text x="55" y="95">1번째 인자  →  RDI</text>
+    <text x="55" y="129">2번째 인자  →  RSI</text>
+    <text x="55" y="163">3번째 인자  →  RDX</text>
+    <text x="55" y="197">4번째 인자  →  RCX</text>
+    <text x="55" y="231">5번째 인자  →  R8</text>
+    <text x="55" y="265">6번째 인자  →  R9</text>
+  </g>
+  <text x="55" y="292" font-size="12" fill="#555">7번째 이상 → 스택 (오른쪽에서 왼쪽 순서로 push)</text>
+  <text x="55" y="312" font-size="12" fill="#555">반환값 → RAX (128비트 필요 시 RAX:RDX)</text>
+  <text x="55" y="332" font-size="12" fill="#555">Red Zone: 스택 아래 128바이트는 CALL 없이도 사용 가능</text>
+
+  <!-- Windows column -->
+  <text x="480" y="60" font-size="15" font-weight="bold" fill="#aa5522">Microsoft x64 (Windows)</text>
+  <g stroke="#cc8844" fill="#fff3e6">
+    <rect x="460" y="72" width="300" height="34"/>
+    <rect x="460" y="106" width="300" height="34"/>
+    <rect x="460" y="140" width="300" height="34"/>
+    <rect x="460" y="174" width="300" height="34"/>
+  </g>
+  <g font-size="14" fill="#111">
+    <text x="475" y="95">1번째 인자  →  RCX</text>
+    <text x="475" y="129">2번째 인자  →  RDX</text>
+    <text x="475" y="163">3번째 인자  →  R8</text>
+    <text x="475" y="197">4번째 인자  →  R9</text>
+  </g>
+  <text x="475" y="224" font-size="12" fill="#555">5번째 이상 → 스택 (오른쪽에서 왼쪽 순서로 push)</text>
+  <text x="475" y="244" font-size="12" fill="#555">반환값 → RAX</text>
+  <text x="475" y="264" font-size="12" fill="#555">호출자는 인자 4개 몫의 "Shadow Space"</text>
+  <text x="475" y="282" font-size="12" fill="#555">(32바이트)를 CALL 전에 항상 스택에 확보</text>
+  <text x="475" y="300" font-size="12" fill="#555">→ 콜리(callee)가 레지스터 인자를 여기에</text>
+  <text x="475" y="318" font-size="12" fill="#555">덤프해 디버거에서 관찰할 수 있게 함</text>
+
+  <text x="20" y="360" font-size="12" fill="#333">부동소수점 인자는 두 규약 모두 XMM0~XMM7(SysV) / XMM0~XMM3(Windows) 별도 레지스터를 사용한다.</text>
+</svg>

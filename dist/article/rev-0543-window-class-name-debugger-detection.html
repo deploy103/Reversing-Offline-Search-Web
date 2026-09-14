@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>윈도우 클래스명으로 디버거 탐지하는 기법(x64dbg 창 이름) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>윈도우 클래스명으로 디버거 탐지하는 기법(x64dbg 창 이름)</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>x64dbg, OllyDbg, IDA 같은 디버거들은 결국 화면에 자기 이름을 담은 GUI 창을 띄우고 있기 때문에, <code>FindWindow</code>/<code>EnumWindows</code> 같은 일반적인 GUI API로 현재 데스크톱에 떠 있는 창들의 클래스명이나 제목을 훑어서 알려진 디버거 창이 있는지 확인하는 것만으로도 디버거 존재를 탐지할 수 있다 — 코드 내부(PEB, API 반환값 등)를 보는 다른 기법들과 달리 이 기법은 순전히 "화면에 뭐가 떠 있는가"만 본다는 점이 특징이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>코드에서 <code>FindWindowA</code>/<code>FindWindowExA</code>/<code>EnumWindows</code>를 반복적으로 호출하며 여러 문자열(<code>"OLLYDBG"</code>, <code>"Qt5QWindowIcon"</code>, <code>"WinDbgFrameClass"</code> 등)과 비교하는 패턴을 발견했을 때</li><li>문자열 창에 알려진 디버거 이름이나 클래스명이 여러 개 나열되어 있는 배열/테이블을 발견했을 때</li><li>x64dbg 창을 최소화하거나 다른 이름으로 바꿔서 실행했을 때만 프로그램 동작이 달라지는 것을 관찰했을 때</li><li>"GUI 기반 안티디버깅"이라는 표현이 CTF 문제 설명에 등장할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 GUI 창으로 디버거를 알 수 있나</h3>
+<p>Windows에서 모든 창(윈도우)은 등록된 "윈도우 클래스"에 속하고, <code>GetClassName</code>으로 그 클래스 이름 문자열을 얻을 수 있다. 유명한 디버거들의 메인 창 클래스명은 공개적으로 잘 알려져 있다.</p>
+<ul><li>OllyDbg: 클래스명 <code>"OLLYDBG"</code></li><li>WinDbg: 클래스명 <code>"WinDbgFrameClass"</code></li><li>Immunity Debugger: 클래스명 <code>"ID"</code></li><li>x64dbg/x32dbg/IDA(모두 Qt 프레임워크 기반): 여러 Qt 기반 도구가 공유하는 제네릭 클래스명 <code>"Qt5QWindowIcon"</code>이 뜬다. Qt 프레임워크는 자체 렌더링 방식 때문에 세부 위젯들이 표준 Win32 창 클래스로 등록되지 않고, 최상위 창만 이 제네릭 클래스로 보이는 경우가 많다.</li></ul>
+<p>정적으로 알려진 이 클래스명들을 <code>FindWindowA(className, NULL)</code>로 하나씩 조회해서, 하나라도 <code>NULL</code>이 아닌 핸들이 리턴되면 "해당 디버거가 실행 중"이라고 판단한다.</p>
+<h3>대표 코드 패턴</h3>
+<pre><code class="language-c">const char* debuggerClasses[] = {
+    "OLLYDBG", "WinDbgFrameClass", "ID",
+    "Qt5QWindowIcon", "GBDYLLO", "pediy06"
+};
+for (int i = 0; i &lt; ARRAYSIZE(debuggerClasses); i++) {
+    if (FindWindowA(debuggerClasses[i], NULL) != NULL) {
+        // 디버거 창 발견
+    }
+}</code></pre>
+<h3>Qt 기반 클래스명의 모호함과 제목 병행 검사</h3>
+<p><code>"Qt5QWindowIcon"</code>은 x64dbg뿐 아니라 IDA, Detect It Easy 등 Qt로 만들어진 다른 여러 도구가 공유하는 클래스명이라, 이 클래스명 하나만으로는 "어떤 도구인지" 특정할 수 없다. 그래서 실전 구현은 클래스명 검사와 함께 <strong>창 제목(window title)</strong>을 <code>GetWindowText</code>로 읽어서 <code>"x64dbg"</code>, <code>"x32dbg"</code>, <code>".idb"</code>, <code>"_i64"</code> 같은 특정 문자열이 포함되는지 추가로 검사하는 경우가 많다. <code>EnumWindows</code>로 현재 떠 있는 모든 최상위 창을 순회하며 각 창의 제목/클래스를 검사하는 방식이 <code>FindWindow</code> 한 번보다 더 폭넓게(정확한 이름을 모르더라도) 탐지할 수 있어 함께 쓰인다.</p>
+<h3>이 기법의 한계</h3>
+<ul><li>디버거 창을 최소화해도 창 자체는 여전히 존재하므로(<code>FindWindow</code>는 보이지 않는 창도 찾을 수 있음, <code>IsWindowVisible</code>을 추가로 확인하지 않는 한) 탐지된다.</li><li>반대로 디버거의 창 클래스나 제목을 바꿔치기하면(예: 소스 코드를 고쳐 재빌드하거나, 실행 중 <code>SetWindowText</code>/클래스 재등록으로 위장) 이 검사를 쉽게 피할 수 있어, 다른 저수준 기법(PEB, API 기반)보다 근본적으로 약한 방어로 취급된다.</li><li>여러 창을 이름으로 하드코딩해야 하므로 새 버전의 디버거가 클래스명을 바꾸면 탐지가 실패할 수 있다.</li></ul>
+<h3>EnumWindows 기반 전수 조사와의 차이</h3>
+<p><code>FindWindowA</code>는 정확한 클래스명/제목을 알아야만 찾을 수 있는 반면, <code>EnumWindows</code>는 현재 데스크톱의 모든 최상위 창을 하나씩 콜백으로 넘겨주기 때문에 정확한 이름을 몰라도 "제목에 특정 부분 문자열이 포함되는가"(<code>strstr</code> 등)처럼 더 느슨한 매칭이 가능하다. 예를 들어 x64dbg의 창 제목은 로드된 파일 이름에 따라 매번 달라지지만(<code>파일명.exe - PID: 1234 - x64dbg</code>), 이 제목 안에 항상 <code>"x64dbg"</code>라는 부분 문자열이 포함된다는 점을 이용하면 <code>EnumWindows</code> + <code>strstr</code> 조합으로 훨씬 안정적으로 탐지할 수 있다. 이런 이유로 실전 구현에서는 <code>FindWindow</code>보다 <code>EnumWindows</code> 기반 전수 조사가 더 흔히 쓰인다.</p>
+<h3>프로세스 소유권까지 확인하는 심화 버전</h3>
+<p>단순히 클래스명/제목만 보는 데서 그치지 않고, <code>GetWindowThreadProcessId</code>로 그 창을 소유한 프로세스의 PID를 얻은 뒤, 그 PID의 실행 파일 이름을 다시 확인하는 이중 검사도 가능하다. 이렇게 하면 단순히 창 제목만 바꿔치기하는 우회로는 막을 수 없고, 실제로 그 창을 띄운 프로세스의 실행 파일 이름까지 위장해야 하므로 탐지 신뢰도가 한 단계 높아진다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Import Table에 <code>FindWindowA</code>/<code>FindWindowExA</code>/<code>EnumWindows</code>/<code>GetWindowTextA</code>/<code>GetClassNameA</code>가 함께 있음.</li><li>문자열 창에 <code>"OLLYDBG"</code>, <code>"WinDbgFrameClass"</code>, <code>"Qt5QWindowIcon"</code>, <code>"x64dbg"</code>, <code>"x32dbg"</code> 같은 값들이 배열 형태로 나열됨.</li><li>여러 클래스명을 순회하며 매번 같은 함수(<code>FindWindowA</code>)를 반복 호출하는 루프.</li><li><code>EnumWindows</code>에 전달되는 콜백 함수 안에서 <code>GetClassName</code>/<code>GetWindowText</code> 결과를 <code>strstr</code>/<code>lstrcmpi</code> 등으로 비교.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>비교 대상 문자열 목록부터 전부 나열한다. IDA의 Strings 창(<code>Shift+F12</code>)에서 <code>"OLLYDBG"</code>, <code>"Qt5"</code>, <code>"WinDbg"</code>, <code>"x64dbg"</code>, <code>"x32dbg"</code>, <code>"IDA"</code> 등을 검색해 이 프로그램이 정확히 어떤 도구들을 노리고 있는지 목록을 확보하면 분석과 우회 모두 훨씬 수월해진다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 비교 문자열 목록 확보</strong></p>
+<p>Strings 창과 IDA의 데이터 세그먼트에서 문자열 배열을 찾아 전체 목록을 정리한다.</p>
+<p><strong>2) 호출 패턴 확인</strong></p>
+<p><code>FindWindowA</code> 단독 호출인지, <code>EnumWindows</code> 콜백 기반인지 구분한다. 콜백 기반이면 콜백 함수 안의 비교 로직까지 따라가야 한다.</p>
+<p><strong>3) x64dbg에서 실제로 재현</strong></p>
+<p>x64dbg로 대상 프로그램을 실행하며 이 검사에 걸리는지 관찰한다. 창을 최소화해도 여전히 걸리는지 실험해본다.</p>
+<p><strong>4) 우회 방법 이해</strong></p>
+<p>가장 간단한 우회는 검사 결과 분기(<code>FindWindowA</code> 반환값이 <code>NULL</code>이 아닐 때의 조건 분기)를 패치하는 것이다. 더 일반적인 방법은 x64dbg의 창 제목을 변경하거나(설정에서 변경 가능한 빌드/포크도 있음), ScyllaHide 플러그인으로 <code>FindWindowA</code>/<code>EnumWindows</code> 자체를 후킹해 항상 "못 찾음" 결과를 반환하도록 만드는 것이다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>Shift+F12</code>(Strings 창)에서 디버거 이름 검색</li><li>x64dbg: <code>Alt+B</code>(브레이크포인트 창)에서 <code>FindWindowA</code>에 브레이크포인트를 걸고 어떤 인자로 호출되는지 확인</li><li>x64dbg: <code>bp FindWindowA</code> 후 <code>run</code>, 인자 레지스터(<code>RCX</code> x64에서 클래스명 포인터) 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>FindWindowA</code>가 <code>NULL</code>이 아닌 핸들을 반환하면 해당 클래스/제목을 가진 창이 실제로 열려 있다는 뜻이다. 이 핸들 값을 <code>GetWindowText</code>로 다시 조회하면 정확히 어떤 창이 걸렸는지 확인할 수 있다.</li><li><code>EnumWindows</code> 콜백이 특정 창에서 <code>TRUE</code>(또는 <code>FALSE</code>, 구현에 따라 다름)를 반환하고 순회를 멈춘다면, 그 시점의 창이 탐지된 대상이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>디버거 창을 최소화하면 이 검사를 피할 수 있다고 오해하는 것 — <code>FindWindow</code>는 기본적으로 숨겨진/최소화된 창도 찾아낸다.</li><li><code>Qt5QWindowIcon</code> 클래스명 하나만 보고 "이건 x64dbg 전용 탐지"라고 단정하는 것 — IDA, DIE 등 다른 Qt 기반 도구도 함께 걸릴 수 있다.</li><li>이 기법이 강력한 방어라고 과신하는 것 — 창 이름/클래스는 비교적 쉽게 위장 가능해서 실전에서는 보조적인 검사로만 쓰이는 경우가 많다.</li><li><code>FindWindow</code>의 두 인자(클래스명, 창 제목) 중 어느 쪽이 <code>NULL</code>이고 어느 쪽이 실제 비교 대상인지 헷갈리는 것 — 첫 인자가 클래스명, 두 번째가 창 제목이며 둘 다 지정하면 AND 조건으로 동작한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>부모 프로세스 이름 기반의 또 다른 "환경" 확인 기법이 궁금하다면 → REV-0542 부모 프로세스 확인 안티디버깅(explorer.exe 체크)</li><li>더 저수준의 API 기반 검사가 궁금하다면 → REV-0533 — NtQueryInformationProcess로 하는 안티디버깅</li><li>ScyllaHide 같은 플러그인으로 이런 검사들을 자동 우회하는 개념이 궁금하다면 → REV-0531 — IsDebuggerPresent 우회 실습 개념과 한계</li><li>여러 안티디버깅 기법을 한눈에 정리한 표가 필요하다면 → REV-0529 — Windows 안티디버깅 기법 종류 빠른 참조표</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">#include &lt;windows.h&gt;
+
+const char* debuggerClasses[] = {
+    "OLLYDBG", "WinDbgFrameClass", "ID", "Qt5QWindowIcon"
+};
+
+BOOL DetectDebuggerWindow(void) {
+    for (int i = 0; i &lt; 4; i++) {
+        if (FindWindowA(debuggerClasses[i], NULL) != NULL) {
+            return TRUE;
+        }
+    }
+    return FALSE;
+}
+
+int main(void) {
+    if (DetectDebuggerWindow()) {
+        ExitProcess(1);
+    }
+    printf("Enter flag: ");
+    return 0;
+}</code></pre>
+<p>x64dbg로 이 프로그램을 열어두면 <code>Qt5QWindowIcon</code> 클래스를 가진 창(x64dbg 자체)이 이미 떠 있으므로 <code>FindWindowA("Qt5QWindowIcon", NULL)</code>이 유효한 핸들을 반환해 곧바로 종료 분기를 탄다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0542-parent-process-check-anti-debugging.html">REV-0542 — 부모 프로세스 확인 안티디버깅(explorer.exe 체크)</a></li><li><a href="rev-0533-ntqueryinformationprocess-anti-debugging.html">REV-0533 — NtQueryInformationProcess로 하는 안티디버깅</a></li><li><a href="rev-0531-isdebuggerpresent-bypass-concept.html">REV-0531 — IsDebuggerPresent 우회 실습 개념과 한계</a></li><li><a href="rev-0529-windows-anti-debugging-techniques-quickref.html">REV-0529 — Windows 안티디버깅 기법 종류 빠른 참조표</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>FindWindowA</code>/<code>FindWindowExA</code>/<code>EnumWindows</code>/<code>GetClassNameA</code>/<code>GetWindowTextA</code> API 시그니처는 Microsoft 공식 문서(learn.microsoft.com, "Window Features") 기준.</li><li>OllyDbg 클래스명 <code>"OLLYDBG"</code>, WinDbg 클래스명 <code>"WinDbgFrameClass"</code>, x64dbg/IDA 등 Qt 기반 도구의 제네릭 클래스명 <code>"Qt5QWindowIcon"</code> 및 창 제목 병행 검사 관행은 Hexacorn 블로그("Anti- techniques refresh A.D. 2019")와 Check Point "Anti-Debug Tricks — Misc" 항목에서 확인되는 공개 리서치 내용을 기준으로 서술했다(2026-09-08 확인).</li><li>Qt 프레임워크 기반 앱의 창 클래스명이 여러 도구 간에 공유되어 단독으로는 특정 도구를 확정하기 어렵다는 한계도 같은 출처에서 함께 지적된 내용이다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,182 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Rotate ROL ROR 기반 변환 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>Rotate ROL ROR 기반 변환</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>루프 안에서 각 바이트/워드에 <code>rol</code>(왼쪽 회전) 또는 <code>ror</code>(오른쪽 회전)을 적용해서 비교하는 코드를 만나면, <strong>ROL n비트의 역연산은 정확히 ROR n비트(그 반대도 성립)</strong> 이므로 회전 방향만 뒤집어서 그대로 되돌리면 원래 값이 복원된다 — 비트가 유실되지 않는 회전 연산의 특성 덕분에 완벽하게 역산 가능하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리에 <code>rol al, N</code> / <code>ror al, N</code> / <code>rol eax, cl</code> 같은 명령이 루프 안에서 반복될 때</li><li>IDA/Ghidra 디컴파일 결과에 <code>__ROL1__</code>, <code>__ROL4__</code>, <code>__ROR1__</code>, <code>__ROR4__</code>, <code>_rotl</code>, <code>_rotr</code>, <code>__builtin_rotateleft8</code> 같은 헬퍼 함수 호출이 보일 때 (컴파일러/디컴파일러가 rotate를 이런 의사함수로 표현하는 경우가 많음)</li><li>shift(<code>shl</code>/<code>shr</code>) 두 개가 <code>or</code>로 합쳐진 코드가 보일 때 — 이것도 사실 rotate를 손으로 푼 것과 동일한 패턴(REV-0202와 겹치는 경계 케이스)</li><li>해시 알고리즘(SHA, RC5 등) 흔적을 찾다가 회전 상수가 나올 때</li></ul>
+<h2>핵심 개념</h2>
+<p>회전(rotate)은 시프트와 달리 <strong>비트가 밖으로 밀려나가는 대신 반대쪽 끝으로 다시 들어오는</strong> 연산이다. 그래서 정보 손실이 전혀 없고, 항상 완벽하게 역산 가능하다.</p>
+<ul><li><code>ROL(x, n)</code>: x를 왼쪽으로 n비트 회전. 왼쪽 끝에서 밀려나온 비트가 오른쪽 끝으로 들어옴.</li><li><code>ROR(x, n)</code>: x를 오른쪽으로 n비트 회전. 오른쪽 끝에서 밀려나온 비트가 왼쪽 끝으로 들어옴.</li></ul>
+<p>핵심 성질:</p>
+<pre><code>ROL(x, n)의 역연산 = ROR(x, n)
+ROR(x, n)의 역연산 = ROL(x, n)</code></pre>
+<p>즉 "왼쪽으로 3비트 돌렸다"면 "오른쪽으로 3비트 돌리면" 원래대로 돌아온다. 회전 크기(비트 폭, 8/16/32/64)를 정확히 맞추는 것만 주의하면 된다 — 8비트 레지스터(<code>al</code>)에서 회전한 걸 32비트로 착각해서 역산하면 값이 틀어진다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p><strong>x64 디스어셈블리 (8비트 rotate):</strong></p>
+<pre><code class="language-asm">loop1:
+movzx   eax, byte ptr [rdi+rcx]
+rol     al, 3
+cmp     al, byte ptr [rsi+rcx]
+jne     fail
+inc     ecx
+cmp     ecx, len
+jl      loop1</code></pre>
+<p><strong>IDA 디컴파일 (의사함수로 표현되는 경우):</strong></p>
+<pre><code class="language-c">for ( i = 0; i &lt; len; ++i )
+{
+    v = __ROL1__(input[i], 3);   // 8비트 rotate left by 3
+    if ( v != expected[i] )
+        return 0;
+}</code></pre>
+<p>IDA는 회전 연산을 <code>__ROL1__</code>(1바이트), <code>__ROL2__</code>(2바이트/워드), <code>__ROL4__</code>(4바이트/dword), <code>__ROL8__</code>(8바이트/qword) 형태로 표시하며, 오른쪽 회전은 <code>__ROR1__</code>~<code>__ROR8__</code>로 표시한다. 숫자는 피연산자 크기(바이트 단위)를 의미하므로 <code>__ROL4__(x, 5)</code>는 "32비트 값 x를 왼쪽으로 5비트 회전"이라는 뜻이다.</p>
+<p><strong>Ghidra 디컴파일:</strong></p>
+<pre><code class="language-c">uVar1 = input[i] &lt;&lt; 3 | input[i] &gt;&gt; 5;   // 8비트 rol 3의 shift 조합 표현
+if (uVar1 != expected[i]) return 0;</code></pre>
+<p>Ghidra는 종종 rotate를 <code>&lt;&lt;</code>와 <code>&gt;&gt;</code>를 <code>|</code>로 합친 형태로 그대로 풀어서 보여준다. <code>&lt;&lt;3</code>과 <code>&gt;&gt;5</code>(=8-3)처럼 두 시프트 양의 합이 정확히 전체 비트 폭과 같다면, 이는 rotate를 shift+or로 표현한 것이다.</p>
+<p><strong>레지스터/즉시값이 아니라 CL로 회전량을 지정하는 경우:</strong></p>
+<pre><code class="language-asm">mov     cl, [shift_amount]
+rol     al, cl</code></pre>
+<p>회전량이 상수가 아니라 변수/배열에서 오는 경우도 흔하다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>회전 방향(<code>rol</code>/<code>ror</code> 또는 <code>__ROL_N__</code>/<code>__ROR_N__</code>)과 <strong>회전량(비트 수)</strong>, 그리고 <strong>피연산자 크기(8/16/32/64비트)</strong> 세 가지를 정확히 적어둔다. 이 세 가지만 알면 역산은 기계적이다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 방향/크기/회전량 확정</strong></p>
+<p><code>rol al, 3</code> → 방향=left, 크기=8비트, 회전량=3. <code>__ROL4__(x, 5)</code> → 방향=left, 크기=32비트, 회전량=5.</p>
+<p><strong>2) 파이썬 rotate 함수 준비</strong></p>
+<pre><code class="language-python">def rol(val: int, n: int, bits: int = 8) -&gt; int:
+    n %= bits
+    mask = (1 &lt;&lt; bits) - 1
+    return ((val &lt;&lt; n) | (val &gt;&gt; (bits - n))) &amp; mask
+
+def ror(val: int, n: int, bits: int = 8) -&gt; int:
+    n %= bits
+    mask = (1 &lt;&lt; bits) - 1
+    return ((val &gt;&gt; n) | (val &lt;&lt; (bits - n))) &amp; mask</code></pre>
+<p><strong>3) 반대 방향으로 역산</strong></p>
+<p>원본이 <code>rol(x, n)</code>이었다면 역산은 <code>ror(cipher, n)</code>, 원본이 <code>ror(x, n)</code>이었다면 역산은 <code>rol(cipher, n)</code>.</p>
+<pre><code class="language-python">expected = bytes.fromhex("...")
+# 원본이 8비트 rol 3 이었다면
+flag = bytes(ror(b, 3, bits=8) for b in expected)</code></pre>
+<p><strong>4) 32비트 단위 회전이면 struct로 묶어서 처리</strong></p>
+<pre><code class="language-python">import struct
+
+expected = bytes.fromhex("...")  # 4의 배수 길이
+out = b""
+for i in range(0, len(expected), 4):
+    v = struct.unpack_from("&lt;I", expected, i)[0]
+    out += struct.pack("&lt;I", ror(v, 5, bits=32))
+print(out)</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>rol</code>/<code>ror</code> 명령 즉시값 위에서 <code>H</code>로 진법 확인, <code>__ROL4__</code>류 의사함수는 더블클릭하면 정의(내부 shift/or 조합)를 볼 수 있음</li><li>Ghidra: Decompile 창에서 <code>&lt;&lt;</code>/<code>&gt;&gt;</code>/<code>|</code> 조합이 나오면 두 시프트 양의 합이 데이터 폭과 같은지 암산으로 확인(같으면 rotate 확정)</li><li>Python: 위 <code>rol</code>/<code>ror</code> 헬퍼 함수를 항상 <code>bits</code> 인자와 함께 사용(기본값을 8로 두면 32비트 케이스에서 실수하기 쉬움)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>역산 결과가 아스키로 안 읽히면 방향(<code>rol</code>↔<code>ror</code>)이 뒤바뀌었을 가능성이 가장 크다 — 방향만 바꿔서 재시도.</li><li>그다음으로 흔한 원인은 회전량(비트 수)이 피연산자 크기를 기준으로 정규화(<code>% bits</code>)되지 않은 것 — 예를 들어 8비트 값에 <code>rol al, 11</code>을 적용한 것과 <code>rol al, 3</code>(11 mod 8 = 3)을 적용한 것은 결과가 같아야 한다.</li><li>32비트 회전인데 8비트로 착각해서 역산하면 상위 바이트가 뒤섞여 완전히 다른 값이 나온다 — 피연산자 크기(al/ax/eax/rax)를 다시 확인.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>ROL과 ROR을 반대로 적용해서 역산하는 것(가장 흔한 실수) — 원본이 왼쪽 회전이면 역산은 반드시 오른쪽 회전이어야 한다.</li><li>회전량을 비트 폭으로 나눈 나머지로 정규화하지 않아서 음수나 비트 폭을 넘는 값으로 잘못 계산하는 것.</li><li>IDA의 <code>__ROL4__</code>를 보고 "4비트 회전"으로 착각하는 것 — 이 숫자는 회전 비트 수가 아니라 <strong>피연산자의 바이트 크기</strong>(4바이트=32비트)를 의미한다. 실제 회전 비트 수는 함수의 두 번째 인자다.</li><li>x86의 <code>rol</code>/<code>ror</code>는 회전량이 레지스터 크기를 넘으면 자동으로 모듈로 처리된다는 걸 모르고, <code>rol eax, 40</code>처럼 32를 넘는 즉시값을 보고 당황하는 것 — 실제로는 <code>40 mod 32 = 8</code>비트 회전과 동일하게 동작한다(단, 이 자동 모듈로 처리는 CPU에 내장된 동작이며 8/16비트 오퍼랜드에서는 모듈로 기준이 다를 수 있으니 Intel SDM의 정확한 규칙을 다시 확인).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>shift(<code>shl</code>/<code>shr</code>)만 있고 <code>or</code>로 합쳐지지 않는다면 → REV-0202(진짜 shift, 정보 손실 있음)로 이동.</li><li>rotate와 XOR이 함께 나온다면(해시 함수 느낌) → REV-0207/REV-0208(FNV), REV-0209(CRC)와 비교.</li><li>회전 상수(<code>3</code>, <code>5</code>, <code>13</code> 등)가 유명 해시 알고리즘의 상수표와 일치하는지 궁금하면 → REV-0209(CRC 계열)의 다항식 상수 목록과 대조.</li><li><code>__ROL4__</code>/<code>__ROR4__</code> 의사함수 자체가 처음 본다면 → IDA 헬퍼 함수 목록에서 정의를 다시 확인(디컴파일러가 자동 생성하는 표준 매크로).</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 8비트 rol 3</strong></p>
+<pre><code class="language-asm">rol al, 3</code></pre>
+<pre><code class="language-python">def ror(val, n, bits=8):
+    n %= bits
+    mask = (1 &lt;&lt; bits) - 1
+    return ((val &gt;&gt; n) | (val &lt;&lt; (bits - n))) &amp; mask
+
+expected = bytes.fromhex("d8983868b8f8d838")
+flag = bytes(ror(b, 3) for b in expected)
+print(flag)</code></pre>
+<p><strong>예제 2 — 32비트 ror 7 (IDA <code>__ROR4__</code> 형태)</strong></p>
+<pre><code class="language-c">v = __ROR4__(input_dword, 7);
+if (v != expected_dword) return 0;</code></pre>
+<pre><code class="language-python">def rol(val, n, bits=32):
+    n %= bits
+    mask = (1 &lt;&lt; bits) - 1
+    return ((val &lt;&lt; n) | (val &gt;&gt; (bits - n))) &amp; mask
+
+expected_dword = 0xA1B2C3D4
+flag_dword = rol(expected_dword, 7, bits=32)
+print(hex(flag_dword))</code></pre>
+<p><strong>예제 3 — Ghidra의 shift+or 표현을 rotate로 재해석</strong></p>
+<pre><code class="language-c">uVar1 = (byte)input[i] &lt;&lt; 5 | (byte)input[i] &gt;&gt; 3;</code></pre>
+<p><code>5 + 3 = 8</code>이므로 이건 8비트 <code>rol 5</code>(또는 동치로 <code>ror 3</code>)이다. 역산:</p>
+<pre><code class="language-python">flag_byte = ror(expected_byte, 5, bits=8)</code></pre>
+<p><strong>예제 4 — 회전량이 인덱스에 따라 달라지는 경우</strong></p>
+<pre><code class="language-c">for (i = 0; i &lt; len; ++i)
+    if (rol8(input[i], i % 8) != expected[i]) return 0;</code></pre>
+<pre><code class="language-python">flag = bytes(ror(e, i % 8, bits=8) for i, e in enumerate(expected))</code></pre>
+<p><strong>예제 5 — 처음부터 끝까지 실행되는 전체 스크립트 (8비트 rol 역산 + 32비트 dword rol 역산)</strong></p>
+<p>아래 스크립트는 실제로 회전시켜서 값이 맞아떨어지는 것을 확인한 두 케이스를 담고 있다: (1) 바이트 배열에 8비트 <code>rol 3</code>이 적용된 경우, (2) 하나의 32비트 dword에 <code>__ROL4__(x, 7)</code>이 적용된 경우.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0201 실전 스크립트: 8비트 rol 3 바이트 배열 역산 + 32비트 __ROL4__ dword 역산을 함께 다룬다.
+
+def rol(val: int, n: int, bits: int = 8) -&gt; int:
+    # val을 왼쪽으로 n비트 회전시킨다. bits는 전체 비트 폭(8/16/32/64)이다.
+    n %= bits                       # 회전량을 비트 폭으로 정규화(11비트 회전 = 3비트 회전과 동일 등)
+    mask = (1 &lt;&lt; bits) - 1          # 결과를 bits폭 안으로 잘라내기 위한 마스크
+    return ((val &lt;&lt; n) | (val &gt;&gt; (bits - n))) &amp; mask
+
+def ror(val: int, n: int, bits: int = 8) -&gt; int:
+    # val을 오른쪽으로 n비트 회전시킨다. rol의 정반대 방향 연산이다.
+    n %= bits
+    mask = (1 &lt;&lt; bits) - 1
+    return ((val &gt;&gt; n) | (val &lt;&lt; (bits - n))) &amp; mask
+
+# ===== 케이스 1: 8비트 rol al, 3 (바이트 배열 전체에 반복 적용) =====
+expected1 = bytes.fromhex("1aa232db937b63fa937b93fa99eb")
+
+# 주의: 원본이 rol(왼쪽 회전)이었으므로 역산은 반대 방향인 ror(오른쪽 회전)을 적용해야 한다.
+flag1 = bytes(ror(b, 3, bits=8) for b in expected1)
+print("케이스1 복원 flag:", flag1.decode())
+# 실행 결과: 케이스1 복원 flag: CTF{rol_ror_3}
+
+# ===== 케이스 2: 32비트 __ROL4__(x, 7) 형태의 dword 회전 (IDA 디컴파일에서 발견) =====
+expected_dword = 0xD961EA50     # IDA에서 확인한 __ROL4__ 결과값(비교 대상 상수)
+
+# 원본이 32비트 rol 7 이었다면 역산은 32비트 ror 7 이다. bits=32를 반드시 명시해야 한다.
+flag_dword = ror(expected_dword, 7, bits=32)
+print("케이스2 복원 dword:", hex(flag_dword))
+# 실행 결과: 케이스2 복원 dword: 0xa1b2c3d4
+
+# 검증: 복원한 값을 다시 rol 7 시키면 원래의 expected_dword로 돌아와야 한다.
+assert rol(flag_dword, 7, bits=32) == expected_dword
+print("왕복 검증 통과 (rol 7 -&gt; ror 7 -&gt; rol 7 순서로 값이 그대로 유지됨)")</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0198-char-by-char-loop-pattern.html">REV-0198 — 문자별 for 루프 검증 패턴</a></li><li><a href="rev-0202-shift-transform.html">REV-0202 — Shift SHL SHR SAR 기반 변환</a></li><li><a href="rev-0209-crc-fingerprints.html">REV-0209 — CRC 계열 알고리즘 흔적 찾기</a></li><li>../assembly/rev-0064-rol.md — ROL 명령어</li><li>../assembly/rev-0065-ror.md — ROR 명령어</li></ul>
+<h2>출처/검증</h2>
+<ul><li>ROL/ROR의 정의와 회전량 모듈로 처리 규칙은 Intel 64 and IA-32 Architectures Software Developer's Manual의 ROL/ROR 명령 설명 기준.</li><li>IDA Hex-Rays 디컴파일러의 <code>__ROL_N__</code>/<code>__ROR_N__</code> 의사함수 표기는 Hex-Rays 공식 디컴파일러 출력 관례 기준(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

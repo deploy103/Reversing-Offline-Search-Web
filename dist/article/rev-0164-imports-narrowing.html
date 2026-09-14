@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Imports에서 검증 함수 후보 좁히기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>Imports에서 검증 함수 후보 좁히기</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Ghidra</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>프로그램이 사용하는 외부 라이브러리 함수 목록(Imports)은 <strong>"이 바이너리가 무엇을 할 수 있는가"에 대한 압축된 요약</strong>이며, <code>strcmp</code>/<code>memcmp</code>/<code>MessageBoxA</code>처럼 비교·검증과 직결된 함수를 골라 그 XREF를 모두 나열한 뒤 호출 지점 각각을 짧게 검토하는 것이 문자열 단서가 없거나 부족할 때 가장 효율적인 대안 경로다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>REV-0163(문자열에서 검증 함수로 이동하기)을 시도했는데 쓸 만한 결과 문자열이 없거나(예: 리소스 문자열 테이블, 암호화된 문자열) XREF가 간접적이어서 막혔을 때</li><li><code>strcmp</code>, <code>memcmp</code>, <code>strncmp</code> 같은 비교 함수의 XREF가 여러 개 나와서 어느 것이 실제 검증 로직인지 판단이 안 될 때</li><li>Import 목록 자체가 너무 길어서 어디부터 봐야 할지 모를 때</li><li>정적 링크(static linking)로 인해 <code>strcmp</code> 자체는 안 보이지만 비슷한 역할을 하는 함수를 찾아야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Import는 프로그램이 직접 구현하지 않고 운영체제/런타임 라이브러리에서 빌려 쓰는 함수 목록이다. Windows PE는 Import Address Table(IAT), Linux ELF는 PLT/동적 심볼 테이블을 통해 이 정보가 바이너리에 명시적으로 남는다. 이 목록은 코드 전체를 읽지 않고도 "이 프로그램이 파일을 여는지, 네트워크 통신을 하는지, 문자열을 비교하는지"를 짐작하게 해주는 강력한 요약 정보다.</p>
+<p>검증/비교 로직 탐색에 특히 유용한 함수군:</p>
+<ul><li><strong>문자열 비교</strong>: <code>strcmp</code>, <code>strncmp</code>, <code>_stricmp</code>(대소문자 무시), <code>wcscmp</code>(유니코드), <code>lstrcmpA/W</code></li><li><strong>메모리 비교</strong>: <code>memcmp</code></li><li><strong>해시/암호 관련</strong>: <code>CryptHashData</code>, <code>MD5_Update</code> 계열(정적 링크된 경우 이름이 안 보일 수 있음)</li><li><strong>UI 메시지 출력</strong>: <code>MessageBoxA/W</code>, <code>printf</code>, <code>puts</code>, <code>fprintf</code></li><li><strong>입력 처리</strong>: <code>scanf</code>, <code>gets</code>, <code>fgets</code>, <code>GetDlgItemTextA</code>, <code>ReadFile</code></li></ul>
+<p>전략은 REV-0163과 대칭적이다. REV-0163은 "출력 문자열"에서 거슬러 올라갔다면, 이 문서는 "라이브러리 함수 호출"에서 거슬러 올라간다. 두 방법을 병행하면 서로 교차검증이 되어, 같은 함수에 두 경로로 모두 도달했을 때 확신을 가질 수 있다.</p>
+<p><strong>주의할 함정 — "가짜" 호출 지점</strong>: 하나의 라이브러리 함수는 프로그램 전체에서 검증 목적이 아닌 곳에도 얼마든지 쓰인다. 예를 들어 <code>strcmp</code>가 명령줄 인자를 파싱하는 코드(<code>argv[1] == "-v"</code>인지 확인), 설정 파일 경로를 비교하는 코드, 다국어 문자열을 고르는 코드 등 <strong>검증과 무관한 곳에서도 호출</strong>될 수 있다. XREF 개수가 여러 개라면 이 함정을 염두에 두고 각 호출 지점을 실제로 열어봐야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA의 Imports 탭(또는 Ghidra Symbol Tree의 Imports 폴더)에 DLL/공유 라이브러리별로 함수 목록이 나열되어 있다.</li><li>비교 함수 하나를 골라 XREF를 열었더니 호출 지점이 5개, 10개씩 나와서 어디부터 봐야 할지 막막하다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>Imports 목록을 훑어서 비교/검증과 관련 있어 보이는 함수(<code>strcmp</code> 계열, <code>memcmp</code>)를 고른 뒤, 그 함수의 XREF 개수부터 확인한다. 개수가 적으면(1~3개) 전부 확인하고, 많으면 우선순위를 정해서(아래 절차 참고) 순서대로 좁혀나간다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) Imports 목록 열기</strong></p>
+<ul><li>IDA: <strong>View → Open subviews → Imports</strong>(또는 기본 탭에 이미 있음).</li><li>Ghidra: Symbol Tree(왼쪽 패널)의 <strong>Imports</strong> 폴더를 펼친다(REV-0159 참고).</li></ul>
+<p><strong>2) 비교/검증 관련 함수 선별</strong></p>
+<p>목록을 훑으며 <code>strcmp</code>, <code>strncmp</code>, <code>_stricmp</code>, <code>memcmp</code>, <code>wcscmp</code> 등을 찾는다. 없다면 <code>MessageBoxA/W</code>, <code>printf</code> 계열처럼 "결과를 알려주는" 함수로 눈을 돌린다.</p>
+<p><strong>3) 함수 하나를 선택해 XREF 확인</strong></p>
+<ul><li>IDA: Import 목록에서 함수를 더블클릭해 그 위치로 이동한 뒤 <strong>X</strong>(xrefs to)로 호출 지점 목록을 연다.</li><li>Ghidra: Imports 폴더에서 함수를 더블클릭해 이동한 뒤 우클릭 → <strong>References → Show References To</strong>(REV-0160 참고).</li></ul>
+<p><strong>4) XREF 개수에 따라 전략 분기</strong></p>
+<ul><li><strong>1~3개</strong>: 전부 하나씩 열어서 확인한다.</li><li><strong>4개 이상</strong>: 아래 5~6단계의 우선순위 규칙을 적용해 순서를 정한다.</li></ul>
+<p><strong>5) 우선순위 규칙 — 호출을 감싼 함수의 "무게" 보기</strong></p>
+<p>각 XREF가 속한 함수로 이동해서, 그 함수가 단순히 몇 줄짜리 얇은 래퍼인지, 아니면 반복문/여러 조건 분기가 있는 좀 더 "무거운" 함수인지 훑어본다(REV-0159의 Functions window에서 Function Size 정렬과 함께 쓰면 좋다). 검증 로직은 보통 입력값을 반복적으로 처리하거나 여러 단계를 거치는 함수 안에 있는 경우가 많다.</p>
+<p><strong>6) 우선순위 규칙 — 비교 대상이 상수/고정 데이터인지 보기</strong></p>
+<p>비교 함수의 두 번째 인자(비교 대상)가 <strong>프로그램 시작 시 사용자로부터 받은 값이 아니라 코드에 박혀 있는 상수 문자열/데이터</strong>를 가리키는 호출 지점을 우선한다. 예를 들어 <code>strcmp(argv[1], "-v")</code>는 명령줄 옵션 파싱이지 검증 로직이 아닐 가능성이 크고, <code>strcmp(user_input_buffer, "S3cr3t")</code>처럼 사용자 입력과 고정 문자열을 비교하는 형태가 검증 로직일 가능성이 크다.</p>
+<p><strong>7) 후보를 좁힌 뒤 디컴파일로 확정</strong></p>
+<p>후보 함수로 이동해 F5(IDA)/Decompile(Ghidra)로 실제 로직을 읽고, REV-0163에서 설명한 것처럼 그 비교 결과가 성공/실패 메시지 출력으로 이어지는지 확인해 최종 확정한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: Imports 탭, <code>X</code>(xrefs to), <code>F5</code>(디컴파일), <code>Ctrl+↓</code>/<code>Ctrl+↑</code>(함수 간 이동)</li><li>Ghidra: Symbol Tree → Imports, 우클릭 → References → Show References To, Window → Functions(Function Size 정렬)</li><li>공통: 후보 함수를 찾자마자 <code>L</code>(Ghidra)/<code>N</code>(IDA, Rename)로 즉시 이름을 정리해두면 나중에 헷갈리지 않는다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>XREF 목록에서 같은 함수(예: <code>strcmp</code>)를 호출하는 지점이 프로그램 초반(인자 파싱 부근)과 중반(입력 처리 이후)에 나뉘어 있다면, 전자는 옵션 파싱, 후자가 검증 로직일 가능성이 높다는 정황 증거가 된다.</li><li>Import 자체가 안 보이는 함수(예: 정적 링크된 바이너리)는 Function ID Analyzer(Ghidra)나 FLIRT 시그니처(IDA)가 라이브러리 함수임을 알아서 식별해 실제 이름을 붙여줄 수도 있다. 이 경우 Imports 폴더가 아니라 Functions 목록에서 같은 이름으로 검색해야 한다.</li><li>아무 비교 함수도 Import되어 있지 않다면, 검증 로직이 라이브러리 함수 없이 직접 반복문으로 바이트 단위 비교를 구현했을 가능성이 크다. 이 경우 REV-0165(상수 검색)로 전략을 바꾼다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Import된 함수 이름 하나만 보고 "이 함수가 곧 검증 로직"이라고 오해하는 것 — <code>strcmp</code>는 어디까지나 라이브러리 함수이고, 실제 검증 로직은 그 함수를 호출하는 이 바이너리의 코드에 있다.</li><li>XREF가 여러 개인데 첫 번째로 나온 것만 확인하고 결론짓는 것 — 위에서 설명한 "가짜 호출 지점" 함정에 그대로 걸리는 경우다. 최소한 각 호출 지점이 속한 함수 이름/주변 코드를 훑어보고 판단해야 한다.</li><li>대소문자 구분 없는 비교(<code>_stricmp</code>, <code>lstrcmpiA</code>)를 놓치고 <code>strcmp</code>만 검색하는 것 — 검증 로직이 대소문자를 구분하지 않도록 구현되어 있으면 다른 함수 이름을 쓴다.</li><li>정적 링크 바이너리에서 Imports 목록이 짧다고 "비교 함수를 아예 안 쓴다"고 단정하는 것 — 라이브러리 함수가 바이너리 내부에 통째로 포함(정적 링크)되어 있으면 Imports에는 안 뜨고 Functions 목록에 일반 함수처럼 섞여 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>문자열 단서로 접근하는 편이 나을 것 같다면 → REV-0163(문자열에서 검증 함수로 이동하는 정적 분석).</li><li>비교 함수 자체가 안 보이거나 정적 링크로 숨어 있다면 → REV-0165(상수 검색으로 알고리즘 찾기).</li><li>후보가 여러 개라 전체 호출 구조를 시각적으로 보고 싶다면 → REV-0166(함수 Call Graph로 핵심 로직 좁히기).</li><li>후보 함수를 찾았는데 그 안의 비교 대상 값을 직접 확인하고 싶다면 → REV-0162(Hex View로 디컴파일 결과 검증하기).</li></ul>
+<h2>미니 예제</h2>
+<p><code>login_check.exe</code>의 Imports 목록에 <code>strcmp</code>가 있고, XREF를 확인하니 호출 지점이 3곳(<code>0x00401050</code>, <code>0x004013A0</code>, <code>0x00401820</code>)이라고 하자.</p>
+<ol><li><code>0x00401050</code>이 속한 함수를 열어보니:</li></ol>
+<pre><code class="language-c">if (argc &gt;= 2 &amp;&amp; strcmp(argv[1], "--debug") == 0) {
+  debug_mode = 1;
+}</code></pre>
+<p>→ 명령줄 옵션 파싱용. 검증 로직과 무관한 "가짜" 후보.</p>
+<ol><li><code>0x004013A0</code>이 속한 함수를 열어보니:</li></ol>
+<pre><code class="language-c">if (strcmp(config_path, "config.ini") == 0) {
+  load_default_config();
+}</code></pre>
+<p>→ 설정 파일 경로 비교. 이것도 검증 로직이 아니다.</p>
+<ol><li><code>0x00401820</code>이 속한 함수를 열어보니:</li></ol>
+<pre><code class="language-c">char input[32];
+scanf("%31s", input);
+if (strcmp(input, "L3tM3In_2024") == 0) {
+  puts("Correct!");
+} else {
+  puts("Wrong password!");
+}</code></pre>
+<p>→ <code>scanf</code>로 사용자 입력을 받은 직후, 그 입력을 고정 문자열과 비교하고 결과 메시지를 출력한다. 이것이 진짜 검증 로직이다.</p>
+<p>이처럼 같은 <code>strcmp</code> import라도 XREF가 여러 개면 반드시 각각을 열어 "사용자 입력과 고정 값을 비교하는가"라는 기준으로 골라내야 한다. 이 예제는 REV-0163의 "Wrong password" 문자열 예제와 동일한 함수(<code>0x00401820</code>)에, 문자열 단서 없이 Import 단서만으로도 도달할 수 있음을 보여준다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0159-ghidra-function-list.html">REV-0159 — Ghidra Function 목록과 Symbol Tree</a></li><li><a href="rev-0160-ghidra-xref.html">REV-0160 — Ghidra XREF 따라가기</a></li><li><a href="rev-0163-strings-to-check-function.html">REV-0163 — 문자열에서 검증 함수로 이동하는 정적 분석</a></li><li><a href="rev-0165-constant-search.html">REV-0165 — 상수 검색으로 알고리즘 찾기</a></li><li><a href="rev-0166-call-graph-narrowing.html">REV-0166 — 함수 Call Graph로 핵심 로직 좁히기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>IDA Imports 탭과 xref 보기(<code>X</code>): Hex-Rays 공식 IDA User Guide 및 단축키 레퍼런스 기준.</li><li>Ghidra Symbol Tree의 Imports 폴더와 References → Show References To: Ghidra 공식 Help 문서 기준.</li><li>"Import 함수에서 거슬러 올라가는" 분석 전략과 가짜 호출 지점(디코이) 판별 기준은 도구 자체의 기능이 아니라 CTF/리버싱 실무에서 통용되는 분석 방법론에 근거해 정리했다.</li><li>이 문서는 라이브 IDA/Ghidra 화면을 직접 캡처해 재검증하지는 않았으며, 공식 문서와 일반적으로 통용되는 UI 동작을 기준으로 작성되었다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

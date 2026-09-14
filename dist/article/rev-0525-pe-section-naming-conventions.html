@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>PE Section 이름 관례 사전(.text .rdata .data .rsrc 등) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>PE Section 이름 관례 사전(.text .rdata .data .rsrc 등)</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">PE-bear</span></div>
+<h2>한 줄 요약</h2>
+<p><code>.text</code>, <code>.rdata</code>, <code>.data</code>, <code>.rsrc</code>, <code>.reloc</code> 등 PE 섹션 이름은 컴파일러/링커가 관례적으로 붙이는 이름일 뿐 PE 로더가 이름 자체를 강제로 해석하지는 않지만(실제 동작은 섹션 헤더의 <code>Characteristics</code> 플래그가 결정), 이 관례를 알아두면 섹션 이름만 보고도 "여기는 실행 코드, 여기는 읽기 전용 상수, 여기는 리소스"라고 즉시 감을 잡을 수 있어 분석 속도가 크게 빨라진다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA나 PE-bear에서 섹션 목록을 보다가 <code>.text</code>, <code>.rdata</code>, <code>.data</code> 외에 낯선 이름(<code>.pdata</code>, <code>.tls</code>, <code>.idata</code>)이 나와서 용도를 확인해야 할 때</li><li>패킹된 바이너리에서 섹션 이름이 <code>UPX0</code>, <code>UPX1</code>처럼 표준 관례를 벗어나 있어 패커 흔적을 판단해야 할 때</li><li>어떤 섹션이 쓰기 가능(W)한지, 실행 가능(X)한지 이름만으로 1차 추정하고 싶을 때</li><li>특정 데이터(문자열, 상수, 전역 변수)가 어느 섹션에 위치해야 정상인지 확인할 때</li></ul>
+<h2>핵심 개념</h2>
+<p>섹션 이름은 섹션 헤더(<code>IMAGE_SECTION_HEADER</code>)의 <code>Name</code> 필드(8바이트, NUL로 안 끝날 수도 있음)에 저장되며, Microsoft 링커(link.exe)와 다른 컴파일러 툴체인(MinGW/GCC 등)이 관례적으로 아래 이름을 사용한다.</p>
+<table><thead><tr><th>섹션 이름</th><th>일반적 내용</th><th>전형적 Characteristics</th></tr></thead><tbody><tr><td><code>.text</code></td><td>실행 코드(함수 본문)</td><td>읽기(R) + 실행(X), 쓰기 불가</td></tr><tr><td><code>.rdata</code></td><td>읽기 전용 데이터: 문자열 리터럴, <code>const</code> 전역 변수, 임포트 디렉터리 정보 일부, vtable</td><td>읽기(R)만</td></tr><tr><td><code>.data</code></td><td>초기화된 쓰기 가능 전역/정적 변수</td><td>읽기(R) + 쓰기(W)</td></tr><tr><td><code>.bss</code></td><td>초기화 안 된(0으로 채워질) 전역/정적 변수 — 파일에는 실제 데이터 없이 크기만 존재(VirtualSize &gt; SizeOfRawData)</td><td>읽기(R) + 쓰기(W)</td></tr><tr><td><code>.rsrc</code></td><td>리소스(아이콘, 문자열 테이블, 다이얼로그, 버전 정보 등), 트리 구조(<code>IMAGE_RESOURCE_DIRECTORY</code>)</td><td>읽기(R)만</td></tr><tr><td><code>.reloc</code></td><td>베이스 재배치(relocation) 테이블 — ASLR로 이미지가 선호 베이스가 아닌 곳에 로드될 때 주소를 고쳐주는 정보</td><td>읽기(R)만, 로드 후 종종 discardable</td></tr><tr><td><code>.idata</code></td><td>임포트 테이블(구버전 링커나 별도 옵션 사용 시 별도 섹션; 최신 링커는 보통 <code>.rdata</code>에 병합)</td><td>읽기(R) + 쓰기(W)(IAT 부분)</td></tr><tr><td><code>.edata</code></td><td>익스포트 테이블(주로 DLL)</td><td>읽기(R)만</td></tr><tr><td><code>.pdata</code></td><td>x64/ARM64 예외 처리용 함수 테이블(<code>RUNTIME_FUNCTION</code> 배열) — x86에는 보통 없음(SEH 방식이 다름)</td><td>읽기(R)만</td></tr><tr><td><code>.tls</code></td><td>스레드 지역 저장소(Thread Local Storage) 데이터 및 콜백 배열(REV-0133 참고)</td><td>읽기(R) + 쓰기(W)</td></tr><tr><td><code>.xdata</code></td><td>예외 처리 언와인드 정보(x64), <code>.pdata</code>가 가리키는 상세 데이터</td><td>읽기(R)만</td></tr><tr><td><code>.didat</code></td><td>지연 로드(Delay Load) 임포트 테이블</td><td>읽기(R) + 쓰기(W)</td></tr><tr><td><code>.rsrc$01</code> 등</td><td>리소스 하위 세그먼트(링크 단계 임시, 최종 바이너리에는 <code>.rsrc</code>로 병합됨)</td><td>-</td></tr></tbody></table>
+<p>섹션 이름이 표준 이름이 아니거나(예: <code>UPX0</code>, <code>UPX1</code>, <code>.aspack</code>, 임의의 5바이트 문자열), 표준 이름인데 <code>Characteristics</code>가 관례와 다르면(예: <code>.text</code>인데 쓰기 가능 플래그가 있음) 패킹/난독화/자가 수정 코드의 강력한 단서다. 실행 압축기(UPX 등)는 압축 해제 스텁이 원본 코드를 메모리에 풀어써야 하므로 실행 가능한 섹션에 쓰기 권한까지 부여하는 경우가 흔하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA의 세그먼트 목록(<code>Ctrl+S</code>)이나 PE-bear의 "Section Headers" 탭에 위 표의 이름들이 순서대로(<code>.text</code> → <code>.rdata</code> → <code>.data</code> → ... → <code>.rsrc</code> → <code>.reloc</code>) 나열됨(정확한 순서는 링커/버전마다 다를 수 있음)</li><li><code>.text</code> 섹션인데 <code>IMAGE_SCN_MEM_WRITE</code>(쓰기 가능) 플래그가 켜져 있으면 자가 수정 코드나 패킹 스텁 의심</li><li>섹션 이름이 <code>.text</code>가 아니라 임의 문자열(<code>.aaaa</code>, <code>UPX0</code>)이면 이름 자체를 링커가 아니라 패커/난독화 도구가 임의로 붙인 것</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>PE-bear나 IDA에서 섹션 목록을 열어 이름, 크기(VirtualSize/SizeOfRawData), Characteristics 플래그를 한눈에 확인한다.</li><li><code>.text</code>의 실행/쓰기 플래그, <code>.rsrc</code>/<code>.reloc</code>의 존재 여부부터 확인해 표준 컴파일 결과물인지 패킹된 것인지 1차 판단한다.</li><li>분석하려는 데이터(문자열, 상수, 전역 변수)가 어느 섹션에 있는지 주소로 역산해서(REV-0118 RVA/VA 변환) 정상적인 위치인지 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) PE-bear로 확인</strong></p>
+<ul><li>"Section Headers" 탭에서 각 섹션의 <code>Name</code>, <code>VirtualSize</code>, <code>VirtualAddress</code>, <code>SizeOfRawData</code>, <code>PointerToRawData</code>, <code>Characteristics</code>를 한 화면에서 비교한다.</li><li>Characteristics 열의 R/W/X 표시로 권한 조합을 바로 확인한다.</li></ul>
+<p><strong>2) IDA로 확인</strong></p>
+<ul><li><code>Ctrl+S</code>(세그먼트 목록)에서 각 섹션이 코드(<code>CODE</code>)인지 데이터(<code>DATA</code>)인지 IDA가 자동 분류한 타입도 함께 본다.</li><li>낯선 섹션 이름이 있으면 그 섹션의 시작 주소로 이동(<code>G</code>)해서 실제 데이터 패턴(코드처럼 보이는지, 압축된 것처럼 엔트로피가 높은지)을 직접 눈으로 확인한다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>PE-bear: "Section Headers" 탭</li><li>IDA: <code>Ctrl+S</code>(세그먼트 목록), <code>G</code>(주소 이동)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>VirtualSize</code>가 <code>SizeOfRawData</code>보다 훨씬 크면 <code>.bss</code>처럼 파일에는 없고 메모리에서만 0으로 채워지는 영역이 있다는 뜻이다.</li><li>Characteristics에 <code>IMAGE_SCN_MEM_EXECUTE</code>(0x20000000)와 <code>IMAGE_SCN_MEM_WRITE</code>(0x80000000)가 동시에 켜진 섹션이 있으면 패킹/자가 수정 코드 가능성이 높은 강한 신호다.</li><li><code>.reloc</code> 섹션이 통째로 없으면 이 바이너리는 ASLR을 지원하지 않을 가능성이 있다(단, <code>/DYNAMICBASE:NO</code>로 링크했거나 고정 베이스를 강제한 경우).</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>섹션 이름이 PE 로더의 동작을 직접 결정한다고 착각하는 것 — 실제로 로더가 참조하는 것은 이름이 아니라 <code>Characteristics</code> 플래그와 <code>DataDirectory</code>의 RVA다. 이름은 순전히 사람이 읽기 위한 관례다.</li><li><code>.rdata</code>와 <code>.data</code>를 혼동해서 상수(<code>const</code>)와 일반 전역 변수를 같은 곳에서 찾으려는 것.</li><li>UPX 등으로 패킹된 파일에서 <code>.text</code>가 비어 보이는(엔트로피가 낮거나 코드가 거의 없는) 것을 보고 "코드가 없다"고 결론짓는 것 — 실제 코드는 언패킹 스텁이 실행될 때 다른 섹션에서 풀려 나온다.</li><li><code>.pdata</code>가 x86 바이너리에도 항상 있다고 가정하는 것 — 이는 x64/ARM64의 테이블 기반 예외 처리에 필요한 섹션이며 x86은 다른 SEH 메커니즘(REV-0134)을 쓴다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>섹션 헤더 구조체 자체의 필드(VirtualAddress, PointerToRawData 등)가 궁금하면 → REV-0117(PE Section Table 읽기)을 먼저 본다.</li><li>옵셔널 헤더의 DataDirectory가 각 섹션과 어떻게 연결되는지 궁금하면 → REV-0524(PE Optional Header 필드 전체 사전)를 본다.</li><li>RVA와 파일 오프셋 변환 계산이 필요하면 → REV-0118(RVA VA Raw Offset)을 본다.</li></ul>
+<h2>미니 예제</h2>
+<p>PE-bear로 일반적인 Release 빌드 x64 EXE를 열면 대략 다음과 같은 섹션 목록이 나온다.</p>
+<pre><code class="language-text">Name     VirtualSize   Characteristics
+.text    0x00015000    CODE, EXECUTE, READ
+.rdata   0x0000A200    INITIALIZED_DATA, READ
+.data    0x00001800    INITIALIZED_DATA, READ, WRITE
+.pdata   0x00000C00    INITIALIZED_DATA, READ
+.rsrc    0x00002000    INITIALIZED_DATA, READ
+.reloc   0x00000600    INITIALIZED_DATA, READ, DISCARDABLE</code></pre>
+<p>이 목록만 보고도 "실행 코드는 <code>.text</code>에 있고, 상수 문자열은 <code>.rdata</code>, 전역 변수는 <code>.data</code>, 아이콘/버전 정보는 <code>.rsrc</code>에 있으며, ASLR 재배치 정보(<code>.reloc</code>)도 정상적으로 존재하는 표준적인 컴파일 결과물"이라는 것을 바로 알 수 있다. 만약 여기서 섹션 이름이 <code>UPX0</code>/<code>UPX1</code>로 바뀌어 있었다면 UPX로 패킹된 파일임을 즉시 의심할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0117-pe-section-table.html">REV-0117 — PE Section Table 읽기</a></li><li><a href="rev-0524-pe-optional-header-fields.html">REV-0524 — PE Optional Header 필드 전체 사전</a></li><li><a href="rev-0118-rva-va-raw-offset.html">REV-0118 — RVA VA Raw Offset 계산</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>각 섹션 이름의 관례적 용도(<code>.text</code>/<code>.rdata</code>/<code>.data</code>/<code>.bss</code>/<code>.rsrc</code>/<code>.reloc</code>/<code>.pdata</code>/<code>.tls</code>/<code>.idata</code>/<code>.edata</code>)와 <code>IMAGE_SCN_MEM_EXECUTE</code>/<code>IMAGE_SCN_MEM_WRITE</code> 등 Characteristics 플래그는 Microsoft PE/COFF 파일 형식 공식 사양 및 Microsoft 링커 문서 기준이다.</li><li>UPX 등 실행 압축기가 실행+쓰기 권한을 가진 섹션을 만드는 경향은 일반적인 리버싱/패커 분석 레퍼런스 기준이며, 모든 패커에 동일하게 해당하지는 않는다.</li><li>위 미니 예제의 수치는 설명을 위해 구성한 근사값이며 특정 실제 바이너리를 덤프한 값이 아니다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

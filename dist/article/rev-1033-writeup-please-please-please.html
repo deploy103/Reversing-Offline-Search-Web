@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Write-up] please, please, please · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / writeup</div>
+<article class="article-body">
+<h1>[Write-up] please, please, please</h1>
+<div class="article-meta"><span class="tag">writeup</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>드림핵 워게임 Bronze 4 문제 "please, please, please"는 실제 write-up이 공개적으로 검색되지 않는 문제로, 제목이 세 번 반복된 "please"라는 단어에서 추정할 수 있듯 같은 요청(입력 검증)이 여러 번 반복되거나 여러 조건을 동시에 통과해야 하는 형태의 초급 검증 로직일 가능성이 높다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>드림핵 워게임에서 "please, please, please"를 열어봤는데 바이너리를 실행해도 힌트가 거의 없고 어디서부터 손대야 할지 감이 안 잡힐 때</li><li>Bronze 4(최저 난이도권)인데도 함수가 여러 개로 나뉘어 있어서 "이 정도로 쉬운 문제가 왜 함수가 여러 개지?"라는 의문이 들 때</li><li>이름 자체에 힌트가 있을 것 같은데 실제로 어떤 의미인지 감이 안 잡혀서 다른 사람의 풀이를 찾고 있을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>이 문서를 작성하는 시점 기준으로 "please, please, please" 문제에 대한 공개된 블로그/velog/tistory write-up을 한국어와 영어 키워드로 모두 검색했으나 찾지 못했다. 드림핵 플랫폼 자체에는 문제를 풀거나 코인을 지불하면 열리는 "Official Writeup"이 존재할 가능성이 높지만, 로그인 없이 접근 가능한 공개 인터넷 자료로는 확인되지 않았다.</p>
+<p>따라서 아래 내용은 문제명에서 유추한 <strong>추정</strong>이며, 실제 정답 로직이나 플래그 값을 알고 쓴 것이 아니라는 점을 분명히 밝힌다. Bronze 4는 드림핵 워게임 티어 중 가장 쉬운 축에 속하고, 이 등급의 리버싱 문제는 대체로 다음 두 유형 중 하나다.</p>
+<ol><li>사용자 입력을 받아 <code>strcmp</code>/<code>memcmp</code> 한 번으로 비교하는 극히 단순한 형태(REV-0196, REV-0197 참고)</li><li>제목처럼 "please"가 반복되는 것에서 착안해, 하나의 정답을 얻기 위해 조건을 여러 번 통과해야 하는 형태 — 예를 들어 같은 입력창에 세 번 답을 입력해야 하거나, 하나의 문자열 안에서 세 부분(앞/중간/뒤)을 각각 다른 방식으로 검증하는 구조</li></ol>
+<p>제목이 사람이 애원하듯 "please"를 세 번 반복한 것으로 보아, 프로그램이 사용자에게 반복적으로 같은 요청을 하거나(예: 틀리면 다시 입력을 요구), 혹은 검증 함수가 세 단계로 나뉘어 있어서 각 단계를 통과할 때마다 다음 조건으로 넘어가는 구조를 개발자가 장난스럽게 표현했을 가능성이 있다고 추정한다. 이 추정은 검증되지 않았으므로 실제 분석 시에는 반드시 바이너리를 직접 열어 확인해야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>실행 시 콘솔에 답을 입력하라는 문구가 나오고, 틀리면 비슷한 문구가 다시 나오거나 프로그램이 즉시 종료됨</li><li><code>main</code> 함수 안에 <code>scanf</code>/<code>gets</code>/<code>fgets</code> 계열 함수가 한 번 또는 여러 번 호출됨</li><li>함수 이름이나 지역 변수가 strip되지 않았다면 검증 로직이 <code>check</code>, <code>verify</code> 등의 이름을 가진 서브함수로 분리되어 있을 수 있음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>바이너리를 받으면 <code>file</code>(리눅스라면) 또는 PE 헤더 정보(윈도우라면 Detect It Easy)로 아키텍처와 링킹 방식을 먼저 확인하고, 곧바로 실행해서 입력을 요구하는지, 인자를 요구하는지, 표준입력을 기다리는지 관찰한다. 그다음 IDA/Ghidra로 <code>main</code>을 찾아 어떤 비교 함수가 몇 번 호출되는지부터 센다.</p>
+<h2>단계별 절차</h2>
+<ol><li>바이너리 실행 → 입출력 동작 관찰(입력을 몇 번 요구하는지, 틀렸을 때 메시지가 다른지)</li><li>IDA/Ghidra에서 <code>main</code> 진입 → 호출되는 서브루틴 목록 확인</li><li>비교/검증 함수가 몇 개인지, 각각 어떤 조건(길이, 특정 바이트, XOR 등)을 검사하는지 확인</li><li>조건이 여러 개라면 각각을 분리해서 순서대로 만족시키는 입력을 구성</li><li>x64dbg/GDB로 실제 비교 시점에 브레이크포인트를 걸어 기대값을 직접 레지스터/메모리에서 읽어 검증</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">IDA: main 더블클릭 → Ctrl+X(xref 확인) → 서브함수 진입은 Enter
+x64dbg: 비교 함수 진입점에 F2(브레이크포인트) → F9(Run) → 레지스터 창에서 비교 대상 확인</code></pre>
+<h2>출력 해석</h2>
+<p>검증 실패 시 프로그램이 어떤 메시지를 내는지, 성공 시 플래그 형식(<code>DH{...}</code>)이 어디서 조립되는지를 보면 몇 단계 검증인지 역으로 알 수 있다. 조립된 문자열이 <code>printf</code> 직전에 완성된다면 그 시점에 메모리를 덤프해 전체 로직이 맞았는지 검증할 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li>이름이 재미있다고 해서 실제 로직과 무관한 상상을 정답이라고 확신하는 것 — 이 글의 추정도 마찬가지로 검증 전까지는 가설일 뿐이다</li><li>Bronze 4라고 방심하고 함수를 하나만 보고 끝냈다고 판단하는 것 — 반복형 검증이면 마지막 함수까지 봐야 플래그가 완성됨</li><li>정적 분석만으로 끝내려다 실제 실행 시 나오는 프롬프트 문구를 놓쳐 입력 형식(줄바꿈 포함 여부 등)을 잘못 맞추는 것</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>비교 로직 자체가 어떤 패턴인지 감이 안 잡히면 → REV-0196 strcmp 기반 Flag 검증 패턴, REV-0197 memcmp 기반 Flag 검증 패턴</li><li>여러 알고리즘이 순서대로 이어져 있다면 → REV-0911 여러 알고리즘이 순차적으로 합성된 문제 풀어내기</li><li>정적으로 안 풀리면 동적 전환 기준을 다시 점검 → REV-0005 문제를 정적 분석부터 할지 동적 분석부터 할지 결정하는 법</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">// 추정 기반 예시 코드 (실제 바이너리 검증 안 됨)
+char buf[32];
+printf("please, ");
+scanf("%31s", buf);
+if (strcmp(buf, secret1) != 0) return 1;
+printf("please, ");
+// 두 번째 조건...</code></pre>
+<p>이 예제는 문제명의 반복 구조를 참고해 만든 가상의 코드이며, 실제 "please, please, please" 바이너리의 코드가 아니다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0196-strcmp-check-pattern.html">REV-0196 — strcmp 기반 Flag 검증 패턴</a></li><li><a href="rev-0197-memcmp-check-pattern.html">REV-0197 — memcmp 기반 Flag 검증 패턴</a></li><li><a href="rev-0911-chained-algorithm-composition.html">REV-0911 — 여러 알고리즘이 순차적으로 합성된 문제 풀어내기</a></li><li><a href="rev-0005-static-vs-dynamic.html">REV-0005 — 문제를 정적 분석부터 할지 동적 분석부터 할지 결정하는 법</a></li><li>[REV-1041 — [Write-up] Simple and Swap](rev-1041-writeup-simple-and-swap.html)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>WebSearch로 "dreamhack please please please 리버싱 writeup", "dreamhack please please please reversing writeup" 등을 검색했으나 이 문제를 직접 다루는 공개 write-up을 찾지 못했다(2026-09-10 검증).</li><li>드림핵 워게임 목록 자체(문제명, Bronze 4 티어, 풀이자 447명)는 작업 지시에 포함된 배경 조사 결과를 그대로 인용했다.</li><li>본문의 로직 추정은 문제명에서 착안한 가설이며 실제 바이너리 분석 결과가 아님을 명시한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Import 함수가 하나도 안 보일 때 원인 좁히기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>Import 함수가 하나도 안 보일 때 원인 좁히기</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">readelf</span><span class="tag">PE-bear</span><span class="tag">Detect It Easy</span></div>
+<h2>한 줄 요약</h2>
+<p>Import 목록이 텅 비어 보이는 이유는 크게 네 가지 — 정적 링킹이라 애초에 import 개념이 없거나, 패킹으로 원래 IAT가 지워졌거나, PE에서 이름 대신 ordinal 번호로만 임포트되어 있거나, 프로그램이 <code>GetProcAddress</code>/<code>dlsym</code>으로 런타임에 함수를 직접 찾는 API 해싱/동적 로딩 패턴을 쓰고 있는 것 — 이므로 이 순서대로 하나씩 소거하며 원인을 좁혀야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA/Ghidra의 Imports 탭 또는 PE-bear의 Import Table 뷰가 텅 비어 있을 때</li><li>Linux ELF에서 <code>readelf --dyn-syms ./chall</code>을 실행했는데 아무것도 안 나오거나 매우 적을 때</li><li>분명 <code>printf</code>, <code>CreateFileA</code> 같은 표준 함수를 쓰는 것 같은데 Import 목록에서는 찾을 수 없을 때</li><li>Import 목록에 이름 대신 숫자만 나열되어 있을 때(PE ordinal import)</li></ul>
+<h2>핵심 개념</h2>
+<p>가능성이 높은 순서대로 원인을 점검한다.</p>
+<ol><li><strong>정적 링킹(static linking)</strong>: 가장 흔한 원인이다. 정적 링킹된 바이너리는 필요한 라이브러리 코드를 실행 파일 안에 전부 박아 넣으므로 PLT/GOT나 IAT 자체가 존재하지 않는다. <code>file</code>/<code>checksec</code>/<code>readelf -d</code>로 먼저 확인해야 한다(REV-0646).</li><li><strong>패킹으로 IAT가 사라짐</strong>: UPX 등으로 패킹된 PE는 원래의 Import Table이 압축 스텁 뒤로 숨겨지고, 파일 상태에서 보이는 Import는 언패킹 스텁이 필요로 하는 최소한(<code>LoadLibraryA</code>, <code>GetProcAddress</code> 정도)뿐인 경우가 많다(REV-0229).</li><li><strong>Ordinal-only import</strong>: 함수 이름이 아니라 번호(ordinal)로만 임포트되어 있어서 "임포트가 없다"가 아니라 "이름이 안 보인다"로 착각하는 경우다(REV-0587). Imports 탭 자체는 비어있지 않고 항목은 있는데 이름이 <code>Ordinal#42</code>처럼 표시된다.</li><li><strong>API 해싱/수동 임포트(런타임 동적 로딩)</strong>: 안티 분석 기법 중 하나로, 컴파일 시점에 IAT에 함수를 등록하지 않고 런타임에 <code>GetProcAddress</code>/<code>dlsym</code>으로 필요한 함수 포인터를 직접 계산해서 쓰는 패턴이다. 이 경우 정적 Import 목록에는 <code>kernel32.dll</code>의 <code>LoadLibraryA</code>, <code>GetProcAddress</code> 딱 두 개 정도만 보이고 나머지는 전혀 안 보인다.</li><li><strong>static-PIE</strong>: <code>-static-pie</code>로 빌드된 ELF는 재배치를 위한 최소한의 <code>.dynamic</code> 섹션은 있지만 외부 라이브러리(<code>NEEDED</code>)는 없다 — 사실상 정적 링킹과 같은 원인이다(REV-0646).</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<p>IDA/Ghidra를 열어 Imports 탭을 확인했는데 항목이 하나도 없거나 극히 일부만 보인다. Linux라면 <code>readelf -d ./chall</code>에 <code>NEEDED</code> 항목이 없거나 <code>readelf --dyn-syms</code>가 텅 비어있다. Windows PE라면 PE-bear의 Import Table에 DLL 목록 자체가 없거나, DLL은 있는데 함수 이름 대신 숫자(ordinal)만 나열된다. 그런데 프로그램을 실행하면 파일 입출력, 문자열 출력 등 표준 라이브러리 기능이 정상적으로 동작한다.</p>
+<h2>가장 먼저 할 것</h2>
+<p><code>file ./chall</code>, <code>checksec</code>, <code>readelf -d ./chall</code>(PE는 PE-bear)로 정적/동적 링킹 여부부터 확인한다. 정적 링킹으로 확인되면 이 문서의 나머지 원인을 더 따질 필요 없이 바로 REV-0646(정적 링킹 ELF 분석) 절차로 전환한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>file ./chall</code>, <code>checksec</code>, <code>readelf -d ./chall</code>(또는 PE는 PE-bear)로 정적/동적 링킹 여부 확인 — <code>readelf -d</code>가 <code>There is no dynamic section in this file</code>을 출력하면 정적 링킹 확정</li><li>정적 링킹이면 REV-0646(정적 링킹 분석)으로 전환, strip 안 됐다면 <code>nm ./chall</code>(REV-0666)로 함수 이름을 직접 나열하고 이 문서의 나머지 단계는 건너뜀</li><li>동적 링킹인데도 Import가 비었으면 Detect It Easy로 패킹 여부 확인</li><li>패킹이면 언패킹(REV-0225, REV-0226)을 먼저 하고 그 결과물의 Import Table로 1번부터 재확인</li><li>패킹이 아닌데 일부만 보이면 이름이 아니라 ordinal로 표시되는지 확인(REV-0587) — 이 경우 해당 DLL의 알려진 export ordinal 표와 대조해 실제 함수명을 찾는다</li><li>그래도 설명이 안 되면 <code>LoadLibraryA</code>/<code>GetProcAddress</code>/<code>dlopen</code>/<code>dlsym</code>만 홀로 임포트되어 있는지 확인 — 있다면 API 해싱/수동 임포트를 의심하고, 코드 안에서 DLL 이름 문자열/해시 상수를 찾거나 x64dbg/GDB로 <code>GetProcAddress</code> 호출 시점에 브레이크포인트를 걸어 두 번째 인자(함수 이름 또는 해시)를 직접 관찰하는 동적 분석으로 전환</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">file ./chall
+checksec --file=./chall
+readelf -d ./chall
+readelf --dyn-syms ./chall
+nm ./chall | grep ' T '</code></pre>
+<p>IDA/Ghidra: Imports 탭에서 항목 수와 이름 표시 여부 확인. PE-bear: Import Table 뷰에서 DLL별 함수 목록 확인.</p>
+<h2>출력 해석</h2>
+<ul><li><code>readelf -d</code>가 <code>There is no dynamic section in this file</code>을 출력하면 정적 링킹이 확정이다 — 더 이상 Import를 찾을 필요가 없다.</li><li>Import 개수가 <code>LoadLibraryA</code>, <code>GetProcAddress</code> 단 2개뿐이면 거의 확실히 런타임 수동 임포트/API 해싱 패턴이다.</li><li>Import 항목에 이름 대신 숫자만 있으면 그 DLL의 export 순서표를 별도로 구해야 실제 함수명을 알 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>정적 링킹 여부를 확인하지 않고 "Import가 없다 = 이상한 안티 분석 기법이다"라고 성급히 결론짓는 것 — 실제로는 훨씬 흔한 정적 링킹인 경우가 많다.</li><li>Ordinal import 상태를 "임포트가 아예 없다"고 오해하는 것 — 항목 개수와 이름 표시 여부를 구분해서 봐야 한다.</li><li>패킹된 상태 그대로 Import Table을 분석하며 "이 프로그램은 API를 거의 안 쓴다"고 잘못 결론 내리는 것 — 언패킹 전 스텁의 최소 Import만 보고 있는 것이다.</li><li>API 해싱이 의심되는데 정적 분석만으로 끝까지 해시값을 원본 함수명으로 되돌리려 애쓰는 것 — 동적으로 <code>GetProcAddress</code> 호출 시점을 직접 관찰하는 것이 훨씬 빠르다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>정적 링킹 분석 절차 자체가 궁금하다 → REV-0646 정적 링킹된(Statically Linked) ELF 분석 접근법, REV-0666 nm으로 정적 바이너리에서 원하는 심볼 찾기</li><li>패킹 여부 판단이 헷갈린다 → REV-0224 패킹된 바이너리인지 의심하는 기준, REV-0229 Import가 거의 없는 PE를 봤을 때</li><li>Ordinal import를 이름으로 바꾸는 법이 궁금하다 → REV-0587 Ordinal 번호로 Import가 표시되어 함수명을 모를 때</li><li>checksec 결과 자체 해석이 헷갈린다 → REV-0096 checksec 결과 읽는 법</li><li>문자열도 같이 안 보인다 → REV-0326 어느 도구도 문자열을 못 찾을 때 확인할 것</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-text">$ file ./chall
+chall: ELF 64-bit LSB executable, x86-64, ... statically linked, not stripped
+
+$ readelf -d ./chall
+readelf: Warning: no .dynamic section in this file
+There is no dynamic section in this file.
+
+$ nm ./chall | grep -E ' T (printf|malloc|main)$'
+0000000000403c50 T printf
+0000000000403ae0 T malloc
+0000000000401a1d T main</code></pre>
+<p><code>readelf -d</code>가 동적 섹션이 없다고 알려주는 순간 "Import가 없는 것이 당연하다"는 결론이 나온다. 이어서 <code>nm</code>으로 <code>printf</code>, <code>malloc</code> 같은 익숙한 함수 이름이 그대로 보이므로, 이 바이너리는 안티 분석 기법이 아니라 단순한 정적 링킹이었다는 것이 확정된다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0646-statically-linked-elf-analysis.html">REV-0646 — 정적 링킹된(Statically Linked) ELF 분석 접근법</a></li><li><a href="rev-0666-nm-static-binary-symbol-search.html">REV-0666 — nm으로 정적 바이너리에서 원하는 심볼 찾기</a></li><li><a href="rev-0229-few-imports.html">REV-0229 — Import가 거의 없는 PE를 봤을 때</a></li><li><a href="rev-0587-ordinal-import-unknown.html">REV-0587 — Ordinal 번호로 Import가 표시되어 함수명을 모를 때</a></li><li><a href="rev-0096-checksec.html">REV-0096 — checksec 결과 읽는 법</a></li><li><a href="rev-0326-strings-not-found-anywhere.html">REV-0326 — 어느 도구도 문자열을 못 찾을 때 확인할 것</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>ELF <code>.dynamic</code> 섹션 부재와 정적 링킹의 관계: System V ABI 및 ELF Specification 기준, 본 위키 REV-0646과 동일 출처.</li><li>PE Import Address Table(IAT) 구조와 ordinal import: Microsoft 공식 PE/COFF Specification 기준.</li><li><code>GetProcAddress</code>/<code>dlsym</code>을 이용한 런타임 수동 임포트(API 해싱)는 일반적으로 알려진 안티 분석/언패킹 스텁 기법으로, 다수의 리버싱 교육 자료에서 공통적으로 다뤄지는 패턴 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

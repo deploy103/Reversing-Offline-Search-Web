@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>libc 함수 사전: strchr strstr strtok · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>libc 함수 사전: strchr strstr strtok</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">ltrace</span><span class="tag">objdump</span></div>
+<h2>한 줄 요약</h2>
+<p><code>strchr</code>은 문자열에서 특정 <strong>문자</strong> 하나를 찾고, <code>strstr</code>은 문자열 안에서 다른 <strong>부분 문자열</strong>을 찾으며, <code>strtok</code>은 구분자(delimiter)를 기준으로 문자열을 조각내는데 <strong>원본 문자열을 직접 변형</strong>하고 호출 사이에 내부 정적 상태를 공유한다는 점이 리버싱에서 자주 헷갈리는 포인트다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>call strchr@plt</code> 반환값이 <code>NULL</code>인지 아닌지에 따라 분기하는 코드를 만나 어떤 문자를 찾는지 확인하고 싶을 때</li><li><code>strstr</code>로 특정 부분 문자열(플래그 접두사, 명령어 등)을 찾는 검증 로직을 분석할 때</li><li><code>strtok</code>을 여러 번 연속 호출하는데 첫 번째 인자가 <code>NULL</code>인 이유를 모를 때</li><li>입력을 여러 토큰으로 나누는 파서 코드를 분석할 때</li></ul>
+<h2>핵심 개념</h2>
+<pre><code class="language-c">char *strchr(const char *s, int c);
+char *strstr(const char *haystack, const char *needle);
+char *strtok(char *str, const char *delim);</code></pre>
+<p><strong>strchr</strong>: <code>s</code>에서 문자 <code>c</code>(1바이트로 취급, <code>int</code>로 전달되지만 실제로는 <code>unsigned char</code>로 비교)가 처음 나오는 위치의 포인터를 반환한다. 못 찾으면 <code>NULL</code>. <code>c</code>로 <code>'\0'</code>(0)을 넘기면 문자열의 널 종료 위치 자체를 찾아준다(항상 성공). SysV x64에서는 <code>rdi=s</code>, <code>esi=c</code>.</p>
+<p><strong>strstr</strong>: <code>haystack</code> 안에서 <code>needle</code> 전체가 연속으로 나타나는 첫 위치를 반환한다. <code>needle</code>이 빈 문자열("")이면 <code>haystack</code> 자체(시작 위치)를 반환한다. 못 찾으면 <code>NULL</code>. <code>rdi=haystack</code>, <code>rsi=needle</code>.</p>
+<p><strong>strtok</strong>: 가장 주의가 필요한 함수다.</p>
+<ul><li>첫 호출에서는 <code>str</code>에 실제 대상 문자열을 넘긴다. 함수는 <code>str</code> 내부의 첫 번째 delimiter 문자를 <strong>직접 <code>'\0'</code>으로 덮어써서</strong> 그 자리에서 문자열을 끊고, 토큰의 시작 포인터를 반환한다. 즉 <strong>원본 버퍼가 변형된다</strong>(읽기 전용 문자열 리터럴을 넘기면 세그폴트).</li><li>두 번째 호출부터는 <code>str</code> 자리에 <strong><code>NULL</code></strong>을 넘긴다. <code>strtok</code>은 함수 내부에 <code>static</code> 포인터(스레드 로컬이 아님)로 "마지막으로 끊은 위치"를 기억하고 있다가 그 다음부터 이어서 파싱한다.</li><li><code>delim</code>은 "구분자로 취급할 문자들의 집합"이며 하나의 문자열이 아니라 문자 하나하나가 개별 구분자다(예: <code>strtok(s, " ,")</code>는 공백과 콤마 둘 다 구분자).</li><li>내부 상태가 전역(정적) 변수이므로 <strong>멀티스레드 환경이나 재귀/중첩 호출에서 안전하지 않다.</strong> 재진입이 필요하면 <code>char *strtok_r(char *str, const char *delim, char **saveptr)</code>를 쓴다 — 상태를 호출자가 직접 관리하는 <code>saveptr</code> 인자로 넘기므로 스레드마다 독립적으로 쓸 수 있다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>mov esi, 0x2f</code> (문자 리터럴, 예: <code>/</code>) 후 <code>call strchr@plt</code> — 특정 문자(경로 구분자 등)를 찾는 패턴</li><li><code>call strstr@plt</code> 이후 반환값을 <code>NULL</code> 비교로 분기 — "특정 부분 문자열 포함 여부" 검증 로직</li><li>반복문 안에서 <code>mov rdi, 0</code> (또는 <code>xor edi, edi</code>) 후 <code>call strtok@plt</code> — 두 번째 호출부터 첫 인자가 0이 되는 전형적인 strtok 루프</li><li><code>strtok_r@plt</code> 호출 시 세 번째 인자로 스택 변수 주소(<code>lea rdx, [rbp-0x8]</code>)가 매번 전달됨</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>strtok</code>이 보이면 루프 안에서 첫 호출과 이후 호출의 첫 인자가 다른지(원본 → <code>NULL</code>)부터 확인해 "이게 토큰화 루프구나"라고 파악한다. <code>strchr</code>/<code>strstr</code>은 반환값이 <code>NULL</code>이냐 아니냐로 분기하는 지점을 먼저 찾는다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>objdump -d ./chall | grep 'strchr@plt\|strstr@plt\|strtok@plt\|strtok_r@plt'</code>로 어떤 함수가 쓰였는지 목록화.</li><li>GDB에서 <code>break strchr</code> 후 <code>x/s $rdi</code>(대상 문자열), <code>print (char)$esi</code>(찾는 문자)로 확인.</li><li><code>break strstr</code> 후 <code>x/s $rdi</code>, <code>x/s $rsi</code>로 haystack/needle 둘 다 확인.</li><li><code>break strtok</code>을 반복 히트할 때마다 <code>print $rdi</code>가 0인지 아닌지, <code>x/s $rsi</code>(delim)를 매번 확인해 루프 구조 파악.</li><li><code>finish</code> 후 <code>x/s $rax</code>로 매 호출이 반환하는 토큰 문자열을 순서대로 기록.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">objdump -d ./chall | grep 'strchr@plt\|strstr@plt\|strtok@plt'
+ltrace -s 200 ./chall</code></pre>
+<p>GDB/Pwndbg: <code>break strchr</code>, <code>break strstr</code>, <code>break strtok</code>, <code>x/s $rdi</code>, <code>x/s $rsi</code>, <code>print (char)$esi</code>, <code>x/s $rax</code></p>
+<h2>출력 해석</h2>
+<ul><li><code>strchr</code> 반환값이 <code>NULL</code>(0)이면 그 문자가 문자열에 없다는 뜻이므로, 반환값을 실패 처리로 쓰는 분기(<code>je</code>)가 뒤따르는 게 정상이다.</li><li><code>strstr</code> 반환값이 <code>haystack</code>의 시작 주소와 같다면 needle이 문자열 맨 앞에서 매치된 것이다(오프셋 0).</li><li><code>strtok</code> 호출을 계속 반복하다 반환값이 <code>NULL</code>이 되면 더 이상 남은 토큰이 없다는 뜻 — 대부분 파싱 루프의 종료 조건이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>strtok</code>이 원본 문자열을 바꾸지 않는다고 착각하는 것 — 원본 버퍼에 <code>'\0'</code>을 직접 써넣으므로, 이후 원본 전체 문자열을 다시 쓰려는 코드가 있으면 이미 조각나 있어 예상과 다른 결과가 나온다.</li><li>문자열 리터럴(<code>"a,b,c"</code>처럼 <code>.rodata</code>에 있는 읽기 전용 문자열)을 <code>strtok</code>의 첫 인자로 바로 넘겼다고 가정하는 것 — 실제로 그렇게 하면 쓰기 시도 시 세그폴트가 나므로, 반드시 스택/힙에 복사된 버퍼여야 한다.</li><li><code>strchr(s, c)</code>에서 <code>c</code>를 문자열로 착각하는 것 — <code>c</code>는 단일 문자(정수)이지 문자열 포인터가 아니다. <code>strstr</code>과 헷갈리기 쉽다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>비교 함수(strcmp/strncmp/memcmp)로 확장해서 보고 싶으면 → REV-0110.</li><li>복사/연결 함수(strcpy/strcat 계열)가 궁금하면 → REV-0629.</li><li>메모리 단위 탐색(memchr)이 궁금하면 → REV-0631.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">char buf[] = "flag=CTF{example}";
+char *p = strtok(buf, "=");   // "flag" 반환, buf는 "flag\0CTF{example}"로 변형됨
+char *q = strtok(NULL, "=");  // 이어서 "CTF{example}" 반환</code></pre>
+<pre><code class="language-gdb">(gdb) break strtok
+(gdb) run
+(gdb) x/s $rdi
+0x7fffffffe400: "flag=CTF{example}"
+(gdb) x/s $rsi
+0x402004: "="
+(gdb) finish
+Value returned is $1 = (char *) 0x7fffffffe400 "flag"
+(gdb) x/24xb 0x7fffffffe400
+0x7fffffffe400: 0x66 0x6c 0x61 0x67 0x00 0x43 0x54 0x46 ...</code></pre>
+<p>5번째 바이트(원래 <code>=</code>가 있던 자리)가 <code>0x00</code>으로 바뀐 것이 <code>strtok</code>이 원본을 변형했다는 직접적인 증거다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0629-libc-strcpy-strncpy-strcat-strncat.html">REV-0629 — libc 함수 사전: strcpy strncpy strcat strncat</a></li><li><a href="rev-0631-libc-memmove-memset-memchr.html">REV-0631 — libc 함수 사전: memmove memset memchr</a></li><li><a href="rev-0110-comparison-functions.html">REV-0110 — strcmp strncmp memcmp 비교 추적</a></li><li><a href="rev-0109-input-functions.html">REV-0109 — scanf fgets read 입력 추적</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>strchr</code>/<code>strstr</code>/<code>strtok</code>/<code>strtok_r</code> 시그니처와 내부 정적 상태 규칙: ISO C 표준(C11 7.24.5) 및 Linux man-pages <code>strchr(3)</code>, <code>strstr(3)</code>, <code>strtok(3)</code> 기준.</li><li><code>strtok</code>이 스레드 안전하지 않다는 점과 <code>strtok_r</code>의 재진입 설계는 POSIX.1 <code>strtok_r(3)</code> 명세 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

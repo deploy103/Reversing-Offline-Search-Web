@@ -1,0 +1,99 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>정적 링킹된(Statically Linked) ELF 분석 접근법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>정적 링킹된(Statically Linked) ELF 분석 접근법</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">readelf</span><span class="tag">objdump</span><span class="tag">nm</span></div>
+<h2>한 줄 요약</h2>
+<p>정적 링킹(static linking)된 ELF는 <code>libc</code> 코드 전체(또는 사용하는 부분)를 실행 파일 안에 통째로 복사해 넣기 때문에 import 목록이 거의 비어 있고 함수 수가 수천 개로 폭증하는데, 이때는 PLT/GOT를 볼 게 아니라 시그니처 매칭과 진입점 추적으로 <code>libc</code> 함수를 골라내는 전략이 필요하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>file ./chall</code> 결과에 <code>statically linked</code>가 나오고 <code>ldd ./chall</code>은 <code>not a dynamic executable</code>이라고 할 때</li><li>IDA/Ghidra의 함수 목록(Functions window)에 이름 모를 함수가 수천 개 나열되어 어디서부터 봐야 할지 막막할 때</li><li>Import 창이 텅 비어 있어서 REV-0101에서 배운 "import 목록으로 감 잡기" 전략을 쓸 수 없을 때</li><li>CTF pwn 문제인데 <code>checksec</code> 결과에 <code>Dynamically linked: No</code>가 나와서 파일 크기가 유난히 크고(수백 KB~수 MB) 분석 방법이 다를 것 같을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>정적 링킹이 만드는 차이</h3>
+<p>동적 링킹 바이너리는 <code>printf</code>, <code>malloc</code> 같은 함수의 실제 코드를 갖고 있지 않고 런타임에 <code>ld.so</code>가 <code>libc.so.6</code>을 매핑해준다(REV-0101). 정적 링킹 바이너리는 컴파일 시점에 링커(<code>ld</code>)가 필요한 <code>libc</code> 오브젝트 코드를 <code>.a</code> 아카이브에서 뽑아 실행 파일 <code>.text</code>에 직접 박아 넣는다. 그 결과:</p>
+<ul><li><code>readelf -l ./chall</code>에 <code>INTERP</code> 세그먼트가 없다 — 커널이 로더를 거치지 않고 바로 실행한다.</li><li><code>readelf -d ./chall</code>은 <code>There is no dynamic section in this file</code>을 출력한다 — <code>.dynamic</code>, <code>.dynsym</code>, <code>.got.plt</code> 자체가 없다(PLT/GOT 개념 자체가 적용 안 됨).</li><li>파일 크기가 수백 KB에서 수 MB로 커진다. <code>printf</code> 하나를 호출해도 <code>vfprintf</code>, 포맷 파서, 로케일 코드까지 전부 딸려 들어오기 때문이다.</li><li>strip되지 않았다면 <code>nm ./chall</code> 또는 IDA Functions 창에 <code>malloc</code>, <code>free</code>, <code>__vfprintf_internal</code> 같은 함수 이름 수천 개가 그대로 보인다. strip됐다면 이름이 전부 사라지고 <code>sub_401234</code> 같은 이름만 남는다.</li></ul>
+<h3>왜 정적 바이너리를 CTF에서 만드는가</h3>
+<p>배포 편의성 때문이다. 특정 <code>libc</code> 버전이 시스템에 설치되어 있지 않아도 실행되므로, Alpine/musl 환경이나 배포판 버전 차이로 인한 "채점 서버에서만 안 돌아가는" 문제를 피할 수 있다. 또한 일부러 분석을 어렵게 만들려고 정적 링킹 + strip 조합을 쓰는 문제도 흔하다.</p>
+<h3>함수가 수천 개일 때의 전략 — 시그니처 매칭</h3>
+<p>strip되지 않았다면 <code>nm ./chall | grep ' T '</code>로 전역 함수 이름을 그대로 볼 수 있으니 어렵지 않다. 문제는 <strong>strip된 정적 바이너리</strong>다. 이 경우 IDA/Ghidra가 제공하는 시그니처 데이터베이스를 활용한다.</p>
+<ul><li><strong>IDA FLIRT(Fast Library Identification and Recognition Technology)</strong>: IDA는 알려진 컴파일러/라이브러리의 바이트 패턴을 담은 <code>.sig</code> 파일(예: <code>glibc_64_ubuntu.sig</code> 등 커뮤니티 제작 시그니처 포함)을 갖고 있다. 파일을 열면 자동 적용되기도 하고, 수동으로 File → Load file → FLIRT signature file로 적용할 수 있다. 매칭되면 <code>sub_401234</code> 같은 이름이 <code>malloc</code>, <code>_IO_printf</code> 등으로 자동 치환된다.</li><li><strong>Ghidra Function ID</strong>: Ghidra는 <code>.fidb</code>(Function ID Database) 파일로 같은 역할을 한다. Tools에서 Function ID 관련 옵션을 켜고, 알려진 라이브러리 FID 데이터베이스를 로드하면 분석 시 자동으로 매칭을 시도한다.</li><li><strong>radare2/rizin zignatures</strong>: <code>zg</code>로 시그니처를 생성하고 <code>z</code>, <code>zia</code>(zignature apply all) 명령으로 알려진 라이브러리 함수와 비교 매칭한다.</li></ul>
+<p>시그니처 매칭은 완벽하지 않다 — 컴파일러 버전, 최적화 옵션(<code>-O2</code> vs <code>-O0</code>), 정적 링크된 <code>libc</code> 버전이 시그니처 데이터베이스와 정확히 일치해야 잘 맞는다. 안 맞으면 일부만 매칭되거나 전혀 안 맞을 수 있다.</p>
+<h3>시그니처 없이 수동으로 찾는 법 — 문자열 배너</h3>
+<p>정적 링크된 <code>glibc</code>는 보통 버전 배너 문자열을 <code>.rodata</code>에 남긴다.</p>
+<pre><code class="language-bash">strings ./chall | grep -i "GNU C Library"</code></pre>
+<p><code>GNU C Library (Ubuntu GLIBC 2.31-0ubuntu9.9) stable release version 2.31.</code> 같은 줄이 나오면 정확한 <code>libc</code> 버전을 알 수 있다. 이 버전 정보로 같은 버전의 <code>libc-2.31.so</code>를 로컬에 구해서(예: <code>libc-database</code> 프로젝트나 배포판 패키지) IDA/Ghidra에 별도로 로드하고, 함수별 바이트 시퀀스를 정적 바이너리와 눈으로 비교(BinDiff, 또는 단순 objdump 출력 diff)하는 것도 가능한 최후의 수단이다.</p>
+<h3>진입점 체인은 그대로 활용 가능</h3>
+<p>정적 바이너리도 <code>_start</code> → <code>__libc_start_main</code> → <code>main</code> 흐름(REV-0097, REV-0098, REV-0099)은 동일하게 존재한다. 다만 <code>__libc_start_main</code> 자체도 바이너리 안에 정적으로 포함되어 있으므로, <code>objdump -d ./chall</code>로 <code>_start</code>를 찾고 거기서 호출되는 함수를 하나씩 따라가면 결국 <code>main</code>에 도달한다. 이 방법은 시그니처 매칭이 실패해도 항상 통하는 수동 경로다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>file ./chall</code> 출력에 <code>statically linked</code></li><li><code>ldd ./chall</code> → <code>not a dynamic executable</code></li><li><code>checksec --file=./chall</code> (pwntools) 출력에 <code>Dynamically linked: No</code> 또는 <code>Static:  Yes</code> 계열 표시</li><li>IDA/Ghidra Functions 창에 수천 개 함수, strip 전이면 <code>malloc</code>, <code>free</code>, <code>vfprintf</code>, <code>__stack_chk_fail</code> 등 낯익은 이름이 섞여 있음</li><li><code>readelf -d ./chall</code> → <code>There is no dynamic section in this file</code></li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>file ./chall</code>과 <code>checksec</code>으로 정적 링킹임을 확인한 뒤, <code>strings ./chall | grep "GNU C Library"</code>로 내장된 libc 버전 배너부터 찾는다. strip 여부는 <code>file</code> 출력의 <code>not stripped</code>/<code>stripped</code> 문구로 바로 알 수 있다. strip 안 됐으면 <code>nm ./chall</code>로 끝, strip 됐으면 FLIRT/Function ID 시그니처 적용을 다음 순서로 진행한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>file ./chall</code>로 static/strip 여부 확인</li><li><code>readelf -h ./chall</code>로 <code>Type: EXEC</code>(비-PIE 정적) 또는 <code>Type: DYN</code>(static-PIE, <code>-static-pie</code>로 빌드된 경우)인지 확인 — static-PIE는 재배치가 있어 실제로는 <code>.dynamic</code>에 흔적이 남을 수 있으므로 <code>readelf -d</code>도 같이 확인</li><li><code>strings ./chall | grep -i "GNU C Library"</code>로 내장 libc 버전 확인</li><li>strip 안 됐으면 <code>nm ./chall | grep ' T '</code>로 전역 함수 이름 전체 나열</li><li>strip 됐으면 IDA FLIRT 또는 Ghidra Function ID 시그니처 적용, 매칭률 확인</li><li>시그니처가 안 맞으면 <code>objdump -d ./chall</code>에서 <code>_start</code>부터 수동으로 콜체인을 따라가며 <code>main</code> 위치 특정(REV-0097~0099)</li><li><code>main</code> 근처에서 반복적으로 호출되는 짧은 함수(가변 인자 없이 포인터 하나 받고 끝나는 형태 등)를 <code>malloc</code>/<code>free</code>/<code>strlen</code> 후보로 지목하고, GDB로 실제 실행시켜 인자·반환값을 관찰해 검증</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">file ./chall
+checksec --file=./chall
+readelf -h ./chall
+readelf -d ./chall
+readelf -l ./chall
+strings ./chall | grep -i "GNU C Library"
+nm ./chall | grep ' T '
+objdump -d ./chall &gt; chall.asm</code></pre>
+<p>IDA: File → Load file → FLIRT signature file. Ghidra: Function ID 분석 옵션(Analysis → Auto Analyze → Function ID Analyzer).</p>
+<h2>출력 해석</h2>
+<ul><li><code>readelf -d</code>에서 <code>There is no dynamic section in this file</code>이 나오면 완전 정적 링킹 — GOT/PLT 관련 REV-0100, REV-0678 개념이 적용되지 않는다는 뜻이다.</li><li><code>strings</code> 결과에서 나온 libc 버전은 힙 관련 리버싱(tcache/fastbin, REV-0654)을 할 때도 정확히 그 버전 기준으로 구조체 오프셋을 맞춰야 한다.</li><li>FLIRT/Function ID로 이름이 붙은 함수라도 100% 신뢰하지 말고, 인자 개수·호출 패턴이 실제 라이브러리 함수와 맞는지 GDB로 한 번은 검증하는 습관이 안전하다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>정적 바이너리에서 REV-0101처럼 Import 창을 찾으며 시간을 낭비하는 것 — 애초에 import가 없다.</li><li>FLIRT 매칭 결과를 검증 없이 그대로 믿고 잘못된 함수 이름으로 로직을 오해하는 것.</li><li>strip된 정적 바이너리를 보고 "분석 불가능"이라 포기하는 것 — <code>_start</code>부터 수동 추적은 항상 가능한 경로다.</li><li>static-PIE(<code>-static-pie</code>)인데 <code>readelf -d</code>에 <code>.dynamic</code>이 보인다고 "동적 링킹이네"라고 착각하는 것. static-PIE는 재배치를 위한 최소한의 동적 섹션만 갖고 있을 뿐 외부 라이브러리는 로드하지 않는다(<code>readelf -d</code> 결과에 <code>NEEDED</code> 항목이 없으면 static-PIE로 의심).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>musl로 정적 링크된 바이너리라 glibc 시그니처가 전혀 안 맞는다면 → REV-0647 musl libc와 glibc 차이가 리버싱에 미치는 영향</li><li><code>_start</code>부터 <code>main</code>까지 추적하는 구체적 방법이 기억 안 나면 → REV-0097 ELF Entry Point에서 main까지, REV-0099 __libc_start_main이 무엇이고 main을 찾는 법</li><li>찾아낸 malloc/free 호출로 힙 구조를 더 깊이 분석하려면 → REV-0654 tcache와 fastbin 등 glibc 힙 구조 개요, REV-0655 glibc malloc 내부 흐름 개요</li><li>동적 링킹 바이너리의 기본 분석법이 헷갈리면 → REV-0101 Dynamic Linking과 Import 함수 추적</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ file ./chall
+chall: ELF 64-bit LSB executable, x86-64, ... statically linked, not stripped, ...
+
+$ readelf -d ./chall
+readelf: Warning: no .dynamic section in this file
+There is no dynamic section in this file.
+
+$ strings ./chall | grep "GNU C Library"
+GNU C Library (Ubuntu GLIBC 2.31-0ubuntu9.9) stable release version 2.31.
+
+$ nm ./chall | grep -E ' T (malloc|free|main)$'
+0000000000403c50 T free
+0000000000403ae0 T malloc
+0000000000401a1d T main</code></pre>
+<p>strip 안 된 이 예시는 <code>nm</code> 한 줄로 <code>main</code>, <code>malloc</code>, <code>free</code>의 정확한 주소를 바로 얻을 수 있다. strip됐다면 이 이름들이 사라지고 같은 주소에 <code>sub_403c50</code> 식으로만 보이므로, FLIRT 적용 또는 <code>_start</code> 수동 추적이 필요해진다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0101-dynamic-linking.html">REV-0101 — Dynamic Linking과 Import 함수 추적</a></li><li><a href="rev-0097-entry-to-main.html">REV-0097 — ELF Entry Point에서 main까지</a></li><li><a href="rev-0099-libc-start-main.html">REV-0099 — __libc_start_main이 무엇이고 main을 찾는 법</a></li><li><a href="rev-0647-musl-vs-glibc-reversing.html">REV-0647 — musl libc와 glibc 차이가 리버싱에 미치는 영향</a></li><li><a href="rev-0648-glibc-version-function-signature-diff.html">REV-0648 — glibc 버전별 함수 시그니처 차이 확인법</a></li><li><a href="rev-0654-tcache-fastbin-heap-overview.html">REV-0654 — tcache와 fastbin 등 glibc 힙 구조 개요(리버싱 관점)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>ELF <code>INTERP</code>/<code>.dynamic</code> 세그먼트 존재 여부와 정적/동적 링킹 구분: System V ABI 및 ELF Specification 기준.</li><li>IDA FLIRT, Ghidra Function ID 시그니처 매칭 방식: Hex-Rays IDA 공식 문서 및 Ghidra 공식 문서(Function ID Analyzer) 기준.</li><li>glibc 버전 배너 문자열(<code>GNU C Library ... stable release version</code>)은 실제 Ubuntu 22.04/20.04 배포 바이너리에서 반복 확인되는 패턴 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

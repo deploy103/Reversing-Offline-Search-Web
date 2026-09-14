@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>statically linked 바이너리라 GDB가 함수 이름을 안 보여줄 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>statically linked 바이너리라 GDB가 함수 이름을 안 보여줄 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>file</code> 결과에 "statically linked"가 떴다고 해서 GDB가 자동으로 함수 이름을 못 보여주는 것이 아니라, 진짜 원인은 대부분 바이너리가 <strong>동시에 strip까지 되어 있어서</strong> <code>.symtab</code>(심볼 테이블) 자체가 사라졌기 때문이며, <code>readelf -S</code>로 <code>.symtab</code> 유무를 확인하고 없으면 GDB 자체 기능이 아니라 IDA/Ghidra의 FLIRT류 시그니처 매칭이나 libc 소스 대조로 함수를 식별해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>file ./chall</code> 결과에 "statically linked"라고 나왔는데, GDB에서 <code>disassemble main</code>을 해도 <code>call 0x404e10</code> 처럼 이름 없이 주소만 나올 때</li><li><code>break printf</code> 같은 흔한 라이브러리 함수 이름으로 브레이크포인트를 걸었더니 <code>Function "printf" not defined</code>라고 나올 때</li><li>"정적 링킹이라 원래 심볼이 없는 거다"라고 생각하고 포기하려는 상황</li></ul>
+<h2>핵심 개념</h2>
+<h3>정적 링킹과 심볼 유무는 별개다</h3>
+<p>정적 링킹(REV-0101)은 <code>printf</code>, <code>malloc</code>, <code>strcmp</code> 같은 libc 코드 전체를 컴파일 시점에 실행 파일 안에 복사해 넣는 것을 말한다. 이 자체는 심볼 테이블과 아무 상관이 없다. 실제로 <code>gcc -static</code>으로만 빌드하고 <code>strip</code>을 따로 하지 않으면, <code>nm ./chall</code>에 <code>printf</code>, <code>main</code>, <code>check</code> 같은 이름이 T(전역, 텍스트 섹션) 심볼로 그대로 남아 있고, GDB <code>disassemble main</code>에서도 <code>call 0x404e10 &lt;printf&gt;</code>처럼 이름이 정상적으로 붙는다. CTF 문제 바이너리에서 이름이 안 보이는 진짜 이유는 거의 항상 빌드 스크립트가 <code>-static</code>과 <code>strip</code>(또는 <code>-s</code> 링커 옵션)을 같이 적용했기 때문이다.</p>
+<h3>strip이 지우는 것: .symtab, .strtab</h3>
+<p><code>strip</code>은 ELF의 <code>.symtab</code>(심볼 이름-주소 매핑 테이블)과 <code>.strtab</code>(이름 문자열)을 제거한다. 동적 링킹 바이너리라면 <code>.dynsym</code>/<code>.dynstr</code>(REV-0100 PLT/GOT과 함께 쓰이는 동적 심볼)은 프로그램이 런타임에 라이브러리를 찾기 위해 반드시 필요하므로 보통 strip해도 남아있지만, 정적 링킹 바이너리는 애초에 동적 심볼 자체가 없다(외부 라이브러리를 안 부르니까). 그래서 "정적 + strip" 조합은 <strong>이름 정보가 통째로 사라지는 최악의 조합</strong>이 된다. GDB는 <code>.symtab</code>을 읽어서 이름을 붙이는 것뿐이라, 그 섹션이 아예 없으면 GDB 입장에서는 처음부터 이름을 알 방법이 없다 — GDB의 버그나 설정 문제가 아니다.</p>
+<h3>왜 정적 바이너리에서 유독 체감이 심한가</h3>
+<p>동적 링킹 바이너리는 strip 되어도 PLT(REV-0100)를 통해 호출하는 외부 함수 이름(<code>printf@plt</code> 등)이 <code>.dynsym</code>을 통해 남아 있는 경우가 많아 "그나마 라이브러리 호출 지점은 이름이 보이는" 경우가 흔하다. 반면 정적 바이너리는 <code>printf</code>부터 그 내부에서 쓰는 <code>vfprintf</code>, <code>_IO_*</code> 계열 헬퍼 함수까지 수백~수천 개의 libc 내부 함수가 전부 바이너리 안에 박혀 있는데, strip되면 이 전부가 이름 없이 <code>sub_XXXXXX</code>급 무명 코드 덩어리로 보인다. <code>file</code> 결과에 "statically linked, stripped"가 같이 뜨는 순간, 코드 크기는 커지고 정보는 사라지는 셈이라 초보자가 유독 막막함을 느끼는 지점이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code>$ file chall
+chall: ELF 64-bit LSB executable, x86-64, version 1 (GNU/Linux), statically linked, BuildID[sha1]=..., stripped</code></pre>
+<pre><code>gdb-peda$ disassemble main
+No symbol "main" in current context.
+gdb-peda$ break main
+Function "main" not defined.</code></pre>
+<pre><code>gdb-peda$ info functions ^check$
+All functions matching regular expression "^check$":
+(아무것도 안 나옴)</code></pre>
+<h2>가장 먼저 할 것</h2>
+<p>strip 여부를 직접 확인한다. <code>file</code> 출력 맨 끝에 <code>stripped</code>라고 명시되어 있거나, 다음 명령으로 <code>.symtab</code> 섹션이 있는지 본다:</p>
+<pre><code class="language-bash">readelf -S ./chall | grep symtab</code></pre>
+<p>아무것도 안 나오면 stripped가 맞고, <code>[NN] .symtab  SYMTAB  ...</code> 한 줄이 보이면 심볼이 남아 있는 것이므로 GDB 설정(예: <code>strip-debug</code> 없이 그냥 못 찾는 것)이나 오타 문제일 가능성을 먼저 의심한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) strip 여부와 심볼 존재 재확인</strong></p>
+<pre><code class="language-bash">file ./chall
+readelf -S ./chall | grep -E "symtab|dynsym"
+nm ./chall 2&gt;&amp;1 | head</code></pre>
+<p><code>nm: ./chall: no symbols</code>가 뜨면 확정적으로 strip된 것이다.</p>
+<p><strong>2) entry point에서 시작해 __libc_start_main 패턴으로 main 위치 추정</strong> strip된 정적 바이너리라도 <code>_start</code>(REV-0098)는 항상 존재하는 진입점이라 <code>info file</code> 또는 <code>readelf -h</code>로 Entry point 주소를 알 수 있다.</p>
+<pre><code class="language-bash">readelf -h ./chall | grep Entry
+gdb -q -batch -ex "break *&lt;entry_point&gt;" -ex run ./chall</code></pre>
+<p><code>_start</code>에서 <code>__libc_start_main</code>(정적 바이너리에서는 흔히 <code>__libc_start_main</code> 호출부가 레지스터에 <code>main</code> 함수 포인터를 실어 넘기는 형태로 인라인되어 있다)에 진입하는 흐름을 몇 스텝 따라가면, RDI 레지스터에 실린 첫 번째 함수 포인터가 곧 <code>main</code>인 경우가 많다(SysV x64 관례상 첫 인자, REV-0106 calling convention 참고).</p>
+<p><strong>3) IDA/Ghidra로 넘어가서 FLIRT/함수 ID 매칭 시도</strong> GDB 자체에는 라이브러리 함수 시그니처 매칭 기능이 없다. IDA의 FLIRT 시그니처나 Ghidra의 Function ID 데이터베이스는 컴파일된 libc/musl 함수의 바이트 패턴을 미리 학습해두고, strip된 정적 바이너리에서도 <code>printf</code>, <code>malloc</code>, <code>free</code> 같은 이름을 자동으로 복원해준다. CTF 정적 바이너리를 여러 개 다뤄야 한다면 GDB만으로 계속 씨름하지 말고 이 단계로 넘어가는 것이 훨씬 빠르다.</p>
+<p><strong>4) glibc/musl 버전을 특정해서 소스와 대조</strong></p>
+<pre><code class="language-bash">strings ./chall | grep -iE "glibc|gnu c library|musl"</code></pre>
+<p>버전 문자열이 남아 있으면 해당 버전의 libc 소스를 받아 함수 프롤로그 패턴(스택 정렬, 레지스터 저장 순서)을 비교하며 수작업으로 매칭할 수 있다. musl로 빌드된 경우(REV-0712 참고 대상, musl은 함수가 더 단순하고 짧아 패턴 추정이 상대적으로 쉽다)도 있으니 <code>file</code>에 "musl" 문자열이 있는지도 같이 확인한다.</p>
+<p><strong>5) 동작 기반으로 함수 역할만 추정</strong> 이름 복원이 당장 어렵다면, <code>strace</code>(REV-0112)로 어떤 시스템 콜이 호출되는지, 어느 함수가 <code>write</code> 직전에 호출되는지 등 동작 패턴으로 "이 함수는 출력 담당이다"처럼 역할만 먼저 추정하고 임시 이름(GDB에서는 붙일 수 없지만 IDA/Ghidra에서는 REV-0147 rename)을 붙여 분석을 이어간다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">file ./chall
+readelf -S ./chall | grep symtab
+readelf -h ./chall | grep Entry
+nm ./chall | head
+strings ./chall | grep -iE "glibc|musl"</code></pre>
+<pre><code>(gdb) info functions ^main$
+(gdb) break *0x401905
+(gdb) x/20i 0x401905</code></pre>
+<h2>출력 해석</h2>
+<pre><code>$ readelf -S chall | grep symtab</code></pre>
+<p>이 명령이 아무 줄도 출력하지 않으면 <code>.symtab</code> 섹션 헤더 자체가 파일에 없다는 뜻이고, GDB가 이름을 못 붙이는 것이 100% 정상 동작이라는 뜻이다. 반대로</p>
+<pre><code>[30] .symtab           SYMTAB           0000000000000000  000ac090</code></pre>
+<p>같은 줄이 보이는데도 GDB에서 이름이 안 보인다면, 심볼 자체는 있는데 GDB가 그 파일을 제대로 로드하지 못했거나(<code>file ./chall</code>을 GDB 안에서 다시 실행), 함수 이름 철자가 실제와 다른 것이니 <code>nm ./chall | grep -i &lt;추정이름&gt;</code>으로 정확한 이름을 다시 확인한다.</p>
+<h2>흔한 실수</h2>
+<ul><li>"정적 링킹이라서 원래 이름이 안 보이는 거다"라고 단정하고 strip 여부를 확인 안 하는 것 — 정적 링킹과 strip은 별개 개념이다.</li><li>GDB에게 이름을 알려달라고 계속 옵션을 바꿔가며 시도하는 것 — <code>.symtab</code>이 없는 파일에서는 GDB 자체 설정으로 해결 불가능하며, IDA/Ghidra의 시그니처 매칭 기능으로 넘어가야 한다.</li><li>수백 개의 무명 함수를 하나하나 다 분석하려는 것 — <code>main</code>에서 시작해 실제로 호출되는 함수만 따라가고, <code>strace</code>/<code>ltrace</code>(단, ltrace는 정적 바이너리에서는 PLT가 없어 거의 못 씀, REV-0111 참고)로 범위를 먼저 좁힌다.</li><li>musl 기반 정적 바이너리를 glibc 패턴으로 착각해서 함수 경계를 잘못 추정하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>정적 링킹 자체의 원리와 분석 전략을 더 보고 싶다면 → REV-0101 Dynamic Linking과 Import 함수 추적</li><li>PLT/GOT이 왜 정적 바이너리에는 없는지 원리가 궁금하다면 → REV-0100 PLT와 GOT 기초</li><li><code>checksec</code>로 이 바이너리의 다른 보호 기법도 같이 확인하고 싶다면 → REV-0096 checksec 결과 읽는 법</li><li>GDB 심볼 관련 다른 오류 메시지를 만났다면 → REV-0284 GDB 명령어 치트시트</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ gcc -static -O0 -o chall chall.c &amp;&amp; strip -s chall
+$ file chall
+chall: ELF 64-bit LSB executable, x86-64, version 1 (GNU/Linux), statically linked, stripped
+$ readelf -S chall | grep symtab
+$ echo $?
+1</code></pre>
+<p><code>readelf -S</code>가 아무것도 못 찾고 종료 코드 1을 반환하는 순간, "GDB가 왜 이름을 안 보여주지?"라는 질문의 답은 이미 나온 것이다 — 파일에 이름 정보 자체가 없기 때문이다. 이후 분석은 GDB 옵션 조정이 아니라 IDA/Ghidra FLIRT 매칭이나 <code>_start</code> → <code>main</code> 진입점 추적으로 넘어가야 한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0101-dynamic-linking.html">REV-0101 — Dynamic Linking과 Import 함수 추적</a></li><li><a href="rev-0100-plt-got.html">REV-0100 — PLT와 GOT 기초</a></li><li><a href="rev-0096-checksec.html">REV-0096 — checksec 결과 읽는 법</a></li><li><a href="rev-0111-ltrace-basics.html">REV-0111 — ltrace로 라이브러리 호출 빠르게 보기</a></li><li><a href="rev-0717-gdb-disassemble-att-syntax-confusion.html">REV-0717 — GDB에서 disassemble 결과가 AT&amp;T 문법이라 헷갈릴 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>strip</code>이 제거하는 섹션(<code>.symtab</code>, <code>.strtab</code>)과 <code>.dynsym</code>이 남는 이유: <code>strip(1)</code>, <code>readelf(1)</code> man page 및 ELF 스펙(섹션 종류) 기준.</li><li>정적/strip 조합에서 실제 GDB 동작(이름 표시 여부, <code>No symbol table is loaded</code> 등 메시지): 본 환경에서 <code>gcc -static</code>으로 직접 빌드 후 strip 전/후 <code>nm</code>, <code>readelf -S</code>, <code>gdb disassemble</code>로 실측 검증 (2026-09-08).</li><li>FLIRT/Function ID를 통한 strip된 정적 바이너리 함수 식별 관행: IDA/Ghidra 공식 문서 및 일반적인 리버싱 실무 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

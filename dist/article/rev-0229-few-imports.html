@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Import가 거의 없는 PE를 봤을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / packing</div>
+<article class="article-body">
+<h1>Import가 거의 없는 PE를 봤을 때</h1>
+<div class="article-meta"><span class="tag">packing</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">Detect It Easy</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>Windows PE의 Imports 창에 <code>LoadLibraryA</code>/<code>GetProcAddress</code>/<code>VirtualAlloc</code>/<code>VirtualProtect</code> 정도만 몇 개 보이고 원래 있어야 할 API들이 안 보인다면, 원인은 크게 세 가지(패킹, 정적 링크, 수동 API resolving)로 좁혀지며 각각 확인 방법이 다르다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA Imports 창(View → Open Subviews → Imports)을 열었는데 함수가 5개 미만으로 너무 적을 때</li><li>프로그램이 분명 파일 입출력이나 문자열 처리를 하는데 그와 관련된 API가 import 목록에 하나도 안 보일 때</li><li><code>LoadLibraryA</code>, <code>GetProcAddress</code>만 눈에 띄게 반복적으로 보일 때</li><li>REV-0224 패킹 체크리스트를 보다가 "import가 적은 이유"를 더 구체적으로 알고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>정상적인 Windows 실행 파일은 <strong>IAT(Import Address Table)</strong>라는 구조를 갖는다. 프로그램이 <code>MessageBoxA</code>, <code>CreateFileA</code>, <code>printf</code> 같은 외부 함수를 호출하려면, 링커가 컴파일 시점에 "이 프로그램은 <code>user32.dll</code>의 <code>MessageBoxA</code>, <code>kernel32.dll</code>의 <code>CreateFileA</code>를 쓴다"는 목록을 PE 헤더에 정리해두고, 실제 호출 코드는 <code>CALL [IAT의 특정 슬롯]</code> 형태로 그 목록의 주소를 통해 간접 호출한다. Windows 로더는 프로그램을 실행할 때 이 목록을 보고 각 DLL을 메모리에 로드한 뒤, 실제 함수 주소를 IAT 슬롯에 채워 넣는다. 그래서 IDA의 Imports 창은 이 정적으로 기록된 목록을 그대로 보여준다.</p>
+<p>그런데 Imports 창이 거의 비어 있다면, 그 프로그램이 <strong>API를 아예 안 쓴다는 뜻이 아니라 "정적으로 기록된 방식으로는" 안 쓴다는 뜻</strong>일 가능성이 높다. 원인은 크게 세 가지다.</p>
+<h3>원인 1: 패킹 (가장 흔함)</h3>
+<p>패커는 원본 프로그램의 진짜 IAT를 감춘다. 대신 패킹된 파일의 IAT에는 압축 해제 스텁이 스스로 필요로 하는 최소한의 API, 즉 <code>LoadLibraryA</code>(DLL을 메모리에 로드)와 <code>GetProcAddress</code>(로드된 DLL에서 함수 주소를 이름으로 찾기), 그리고 종종 <code>VirtualAlloc</code>/<code>VirtualProtect</code>(압축 해제할 메모리 공간을 할당하고 실행 권한을 부여)만 남는다. 압축 해제가 끝난 뒤, 스텁은 원본이 실제로 필요로 하는 모든 API를 <strong>런타임에 직접</strong> <code>LoadLibraryA</code> + <code>GetProcAddress</code> 조합으로 찾아서 자기만의 IAT를 만들어 채워 넣는다. 이 과정은 파일에 정적으로 기록되지 않으므로 IDA가 볼 수 없다. 이것이 REV-0224/REV-0227에서 다루는 패킹의 핵심 특징 중 하나다.</p>
+<h3>원인 2: 정적 링크(static linking)</h3>
+<p>프로그램이 필요한 라이브러리 코드를 DLL 형태로 외부에서 가져오는 대신, 컴파일 시점에 실행 파일 안에 통째로 포함시키는 경우다(예: <code>/MT</code> 옵션으로 빌드된 Visual C++ 프로그램, Go나 Rust로 만든 정적 바이너리). 이 경우 <code>printf</code>, <code>malloc</code> 같은 함수들은 이미 실행 파일 내부에 기계어로 그대로 들어있어서 "import"할 필요가 없다. Imports 창에는 정말로 운영체제가 반드시 제공해야 하는 최소한의 커널 API(<code>kernel32.dll</code>의 몇 개 함수)만 남는다. 이 경우는 패킹과 달리 <strong>함수 개수 자체는 매우 많다</strong>(정적으로 포함된 라이브러리 코드가 그대로 디스어셈블되어 보이므로)는 점에서 구분할 수 있다.</p>
+<h3>원인 3: 수동 API resolving (난독화 목적)</h3>
+<p>악성코드나 안티 리버싱을 신경 쓴 프로그램은 패킹되지 않았더라도, import table을 아예 비워두고 코드 안에서 직접 <code>GetProcAddress</code> 계열 함수를 호출해 필요한 API 주소를 그때그때 찾아 쓰도록 작성되기도 한다. API 이름 문자열조차 코드에 직접 노출하지 않고 해시값으로 비교하는 경우도 흔하다(API 해싱). 이 경우는 패킹처럼 섹션이 이상하거나 엔트로피가 특별히 높지는 않지만, import가 이상하게 적다는 점은 동일하다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA Imports 창에 <code>KERNEL32.dll</code>의 <code>LoadLibraryA</code>, <code>GetProcAddress</code>, <code>VirtualAlloc</code>, <code>VirtualProtect</code>, <code>ExitProcess</code> 정도만 보이고 5~10개를 넘지 않음</li><li>프로그램의 문자열(Strings 창)에는 분명 파일 경로, 에러 메시지, 네트워크 관련 문구가 있는데도 그와 관련된 API(<code>CreateFileA</code>, <code>WSAStartup</code> 등)가 import에 없음</li><li>디스어셈블리를 보면 <code>CALL GetProcAddress</code> 직후 그 반환값(레지스터)을 <code>CALL</code> 명령의 대상 레지스터로 바로 쓰는 패턴이 반복됨(런타임에 API 주소를 찾아 바로 호출하는 전형적인 코드)</li><li>함수 개수 자체는 매우 많은데(수백~수천 개) import는 적은 경우 → 정적 링크일 가능성</li><li>함수 개수도 적고(수 개) import도 적은 경우 → 패킹일 가능성이 훨씬 높음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>Imports 창과 Functions 창(Ctrl+P)을 함께 본다. <strong>함수 개수가 몇 개 안 되면서 import도 적다면 패킹(REV-0224)을 먼저 의심</strong>하고, <strong>함수 개수는 매우 많은데 import만 적다면 정적 링크</strong>를 먼저 의심한다. 이 두 가지를 구분하는 것이 다음에 할 일을 결정하는 핵심 분기점이다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) Functions 창과 Imports 창을 나란히 확인</strong></p>
+<p>Ctrl+P로 Functions 창을 열어 함수 개수를 확인하고, Imports 창의 함수 개수와 비교한다.</p>
+<p><strong>2) 함수가 적고 import도 적다면 → 패킹 의심</strong></p>
+<p>REV-0224 체크리스트(섹션 이름, 엔트로피, entry point 코드)로 넘어가 패킹 여부를 확정한다.</p>
+<p><strong>3) 함수는 많고 import만 적다면 → 정적 링크 의심</strong></p>
+<p>Strings 창에서 컴파일러/런타임 관련 문구를 찾아본다. 예를 들어 <code>msvcrt</code>, <code>GCC:</code>, Go 바이너리 특유의 <code>runtime.</code> 접두사 함수 이름, Rust 바이너리의 <code>core::</code>, <code>std::</code> 심볼 등이 보이면 정적 링크된 실행 파일임을 뒷받침한다. 이 경우 패킹이 아니므로 바로 일반적인 정적 분석을 진행하면 된다.</p>
+<p><strong>4) 코드에서 GetProcAddress 호출 패턴을 찾아본다</strong></p>
+<p>IDA에서 <code>GetProcAddress</code>의 xref(교차 참조, Ctrl+X)를 확인해서 이 함수가 코드 여러 곳에서 반복 호출되는지 본다. 반복 호출되고 그 직후 함수 포인터를 호출하는 패턴이 많이 보이면, 수동 API resolving을 쓰는 코드임을 알 수 있다. 이 경우 동적 분석(디버거로 <code>GetProcAddress</code> 호출 시점에 브레이크포인트를 걸어 어떤 문자열이 인자로 들어가는지 확인)이 정적 분석보다 효율적이다.</p>
+<p><strong>5) 결론에 따라 다음 문서로 이동</strong></p>
+<p>패킹으로 확인되면 REV-0225(UPX 확인) 또는 REV-0227(수동 언패킹 개념)로, 정적 링크로 확인되면 일반 정적 분석 절차로, 수동 resolving으로 확인되면 동적 분석 절차로 넘어간다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA <code>Ctrl+P</code> : Functions window (함수 개수 확인)</li><li>IDA <code>View → Open Subviews → Imports</code> : Import 목록 확인</li><li>IDA <code>Ctrl+X</code> (함수 이름 위에서) : 해당 함수의 xref(누가 이 함수를 호출하는지) 확인</li><li>IDA <code>Shift+F12</code> : Strings window (컴파일러/런타임 힌트 문자열 확인)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Imports 창에 <code>KERNEL32.dll</code>만 있고 함수 5개 미만, Functions 창도 5개 미만 → 패킹 가능성 매우 높음.</li><li>Imports 창은 적지만 Functions 창에 수백 개 이상 → 정적 링크 가능성 높음. 특히 함수 이름이 <code>sub_</code>가 아니라 <code>.text:00401000 _main</code>처럼 라이브러리 함수 이름이 FLIRT로 인식되어 있다면 정적 링크가 거의 확실하다.</li><li><code>GetProcAddress</code>의 xref가 코드 곳곳에 20개 이상 흩어져 있다 → 수동 resolving을 적극적으로 쓰는 코드. 패킹 스텁 한 곳에서만 몇 번 호출되는 것과는 패턴이 다르다(패킹은 스텁 안에서 한 번에 몰아서 처리, 수동 resolving은 코드 전반에 흩어져 필요할 때마다 호출).</li><li>import된 함수 이름 문자열 자체가 안 보이고 숫자 해시만 코드에 있다면 → API 해싱 기법이 쓰인 것이다. 이 경우 문자열 검색으로는 어떤 API인지 알 수 없고, 해시 알고리즘을 역으로 분석하거나 동적 분석으로 확인해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>import가 적다고 무조건 패킹으로 단정하는 것. Functions 창의 함수 개수를 함께 보지 않으면 정적 링크된 정상 프로그램을 패킹으로 오판할 수 있다.</li><li><code>LoadLibraryA</code>/<code>GetProcAddress</code>가 보이는 것 자체를 이상하게 여기는 것. 이 두 API는 정상적인 프로그램(플러그인을 동적으로 로드하는 프로그램 등)도 흔히 쓰므로, 이 두 개만 보인다고 무조건 패킹은 아니다 — 다른 API가 완전히 없는지, 함수 개수가 비정상적으로 적은지를 함께 봐야 한다.</li><li>API 해싱을 쓴 코드를 보고 "import가 하나도 없으니 분석 불가능"이라 포기하는 것. 동적 분석으로 <code>GetProcAddress</code> 호출 시점의 인자(문자열 또는 해시값)를 확인하면 결국 어떤 API인지 알아낼 수 있다.</li><li>정적 링크된 대형 바이너리(예: Go/Rust로 만든 실행 파일)를 함수가 너무 많다는 이유로 패킹으로 착각하는 것. 오히려 함수가 지나치게 많은 것은 패킹의 반대 신호에 가깝다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>Functions/Imports 모두 적다면 → REV-0224로 이동해 섹션 이름/엔트로피까지 종합 판단한다.</li><li>정적 링크로 확인됐다면 → 패킹 카테고리를 벗어나 일반 정적 분석(REV-0142 등)으로 넘어간다.</li><li><code>GetProcAddress</code> xref가 많고 문자열도 인코딩되어 안 보인다면 → 동적 분석 카테고리에서 API 호출 추적/브레이크포인트 관련 문서를 참고한다.</li><li>그래도 판단이 안 서면 → Detect It Easy로 컴파일러/링커 시그니처를 확인해 "Microsoft Visual C/C++", "Go compiler", "Rust" 같은 결과가 뜨는지 본다.</li></ul>
+<h2>미니 예제</h2>
+<p><code>tool.exe</code>의 IDA Imports 창에 다음 4개만 보인다고 하자.</p>
+<pre><code class="language-text">KERNEL32.dll!LoadLibraryA
+KERNEL32.dll!GetProcAddress
+KERNEL32.dll!VirtualAlloc
+KERNEL32.dll!VirtualProtect</code></pre>
+<p>동시에 Functions 창(Ctrl+P)에는 함수가 딱 2개(<code>start</code>, <code>sub_401000</code>)뿐이다. 이 조합 — <strong>import 4개 + 함수 2개</strong> — 은 정적 링크로는 설명이 안 되고(정적 링크라면 함수가 훨씬 많아야 함), 전형적인 패킹 스텁의 모습과 정확히 일치한다. 다음 단계는 REV-0224 체크리스트로 섹션 이름과 엔트로피를 확인하고, REV-0225로 넘어가 UPX 여부를 검사하는 것이다.</p>
+<p>반대로 <code>game.exe</code>의 Imports 창에도 비슷하게 몇 개 API만 보이지만, Functions 창에는 함수가 3,000개 이상 있고 그중 다수가 FLIRT로 <code>std::</code>, <code>boost::</code> 같은 이름이 붙어 있다면, 이는 패킹이 아니라 C++ 표준 라이브러리가 정적으로 링크된 정상 프로그램일 가능성이 훨씬 높다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0224-packing-indicators.html">REV-0224 — 패킹된 바이너리인지 의심하는 기준</a></li><li><a href="rev-0228-high-entropy-sections.html">REV-0228 — Entropy가 높은 Section의 의미</a></li><li><a href="rev-0227-manual-unpacking-oep.html">REV-0227 — 수동 언패킹 개념 OEP와 Dump</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>IAT(Import Address Table)의 구조와 Windows 로더가 이를 채우는 방식, <code>LoadLibraryA</code>/<code>GetProcAddress</code>를 이용한 런타임 동적 함수 resolving 기법은 Microsoft PE 포맷 공식 문서(learn.microsoft.com/windows/win32/debug/pe-format) 설명을 기준으로 정리했다(2026-09-08 검증).</li><li>정적 링크와 패킹의 구분 기준(함수 개수 대 import 개수의 조합)은 다수의 공개 리버싱 교육 자료 및 실무 트리아지 관행을 정리한 일반적인 경험칙이며, 실제 판단은 항상 여러 지표를 종합해야 한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

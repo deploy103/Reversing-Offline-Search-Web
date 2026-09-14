@@ -1,0 +1,117 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>nm으로 정적 바이너리에서 원하는 심볼 찾기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>nm으로 정적 바이너리에서 원하는 심볼 찾기</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">nm</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">readelf</span><span class="tag">objdump</span></div>
+<h2>한 줄 요약</h2>
+<p>정적 링킹된 ELF는 <code>printf</code>, <code>malloc</code>, <code>strcpy</code> 같은 glibc 내부 함수 수천 개가 바이너리 안에 통째로 박혀 있는데, <code>strip</code>이 안 된 상태라면 <code>nm ./chall</code>과 <code>grep</code>만으로 그중 원하는 함수의 정확한 주소를 몇 초 만에 찾아낼 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>file ./chall</code> 결과에 <code>statically linked</code>가 보이고, IDA/Ghidra에서 함수가 수천 개 나와서 어디가 진짜 <code>main</code>이고 어디가 glibc 내부 함수인지 헷갈릴 때</li><li>GDB에서 <code>break malloc</code>을 걸었는데 <code>Function "malloc" not defined</code>라고 나올 때 — 정적 바이너리라 심볼 이름으로 바로 안 걸릴 수 있어 주소를 직접 찾아야 할 때</li><li><code>nm -D ./chall</code>을 돌렸는데 결과가 텅 비어서 당황스러울 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>정적 바이너리에는 "동적 심볼 테이블"이 없다</h3>
+<p>공유 라이브러리를 쓰는 일반 바이너리는 <code>.dynsym</code>(동적 심볼 테이블)에 실제로 링크 시점에 해석해야 할 외부 함수 이름들이 들어있고, <code>nm -D</code>는 이 <code>.dynsym</code>만 읽는다. 그런데 정적 링킹(REV-0101 Dynamic Linking과 Import 함수 추적 참고)된 바이너리는 <code>malloc</code>, <code>printf</code> 같은 함수의 실제 코드가 이미 바이너리 안에 다 복사되어 있어서 런타임에 더 이상 해석할 게 없고, 그래서 <code>.dynsym</code> 자체가 없거나 텅 비어 있다. 이럴 때 <code>nm -D</code>는 아무것도 출력하지 않거나 <code>nm: no symbols</code>라고 나온다.</p>
+<h3>필요한 건 <code>.symtab</code>이다</h3>
+<p>심볼 이름과 주소 정보는 대신 <code>.symtab</code>(전체 심볼 테이블)에 들어있다. <code>nm</code>을 옵션 없이 그냥 실행하면 기본적으로 <code>.symtab</code>을 읽는다. <code>.symtab</code>은 디버깅/링킹 편의를 위한 정보라 <code>strip</code> 명령으로 통째로 제거될 수 있는데, strip이 안 된 정적 바이너리라면 glibc가 컴파일될 때 만들어진 함수 이름 수천 개가 그대로 남아있다.</p>
+<h3>nm 심볼 타입 문자</h3>
+<p><code>nm</code> 출력의 두 번째 컬럼 한 글자가 심볼 종류를 나타낸다.</p>
+<ul><li><code>T</code> / <code>t</code>: <code>.text</code> 섹션의 전역/지역(대문자/소문자) 함수 — 실제 실행 코드</li><li><code>D</code> / <code>d</code>: 초기화된 전역/지역 데이터</li><li><code>B</code> / <code>b</code>: <code>.bss</code>(초기화 안 된 데이터)의 전역/지역 심볼</li><li><code>U</code>: undefined — 이 파일 안에서 정의되지 않고 외부에서 와야 하는 심볼(정적 바이너리에서는 거의 안 보임)</li><li><code>W</code>: weak 심볼(다른 곳에 같은 이름이 있으면 그쪽이 우선)</li><li><code>R</code> / <code>r</code>: 읽기 전용 데이터(<code>.rodata</code>)</li></ul>
+<p>대문자는 전역(global/외부에서 링크 가능), 소문자는 그 파일(정확히는 그 컴파일 단위) 안에서만 보이는 지역 심볼이라는 규칙을 기억해두면 <code>T malloc</code>처럼 대문자로 나온 함수 심볼을 우선적으로 신뢰할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA/Ghidra Functions 창에 <code>sub_4xxxxx</code> 같은 무명 함수가 아니라 이미 <code>malloc</code>, <code>free</code>, <code>__libc_csu_init</code> 같은 이름이 붙어있다면 심볼 테이블이 살아있는 정적 바이너리라는 뜻이다.</li><li><code>checksec ./chall</code>(REV-0096) 결과에 <code>Statically linked</code> 또는 <code>No PIE</code> + 매우 큰 파일 크기(수백 KB~수 MB)가 같이 보이면 정적 링킹 가능성이 높다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<pre><code class="language-bash">file ./chall</code></pre>
+<p>결과에 <code>statically linked</code>가 보이면, 바로 이어서 다음을 실행해 심볼이 살아있는지부터 확인한다.</p>
+<pre><code class="language-bash">nm ./chall | wc -l</code></pre>
+<p>수백~수천 줄이 나오면 심볼 테이블이 살아있는 것이고, <code>nm: ./chall: no symbols</code>가 나오면 strip된 정적 바이너리(REV-0668 참고)라 다른 접근이 필요하다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 전체 심볼 개수와 대략적인 형태 확인</strong></p>
+<pre><code class="language-bash">nm ./chall | wc -l
+nm ./chall | head -20</code></pre>
+<p><strong>2) 원하는 이름으로 grep</strong></p>
+<pre><code class="language-bash">nm ./chall | grep -w malloc
+nm ./chall | grep -iE "scanf|printf"</code></pre>
+<p><code>-w</code>로 단어 경계를 맞추면 <code>malloc</code>을 찾을 때 <code>malloc_consolidate</code>, <code>malloc_trim</code> 같은 관련 함수까지 같이 딸려 나오는 걸 막을 수 있다.</p>
+<p><strong>3) 함수(T/t 타입)만 골라서 보기</strong></p>
+<pre><code class="language-bash">nm ./chall | awk '$2 == "T" || $2 == "t" {print}'</code></pre>
+<p><strong>4) 주소 순으로 정렬해서 흐름 파악</strong></p>
+<pre><code class="language-bash">nm -n ./chall | less</code></pre>
+<p><code>-n</code>은 주소 오름차순 정렬이라, <code>main</code> 근처에 실제로 어떤 순서로 함수들이 배치되어 있는지 훑어보기 좋다.</p>
+<p><strong>5) C++ 바이너리라면 이름 복원(demangle)</strong></p>
+<pre><code class="language-bash">nm -C ./chall | grep -i "MyClass"</code></pre>
+<p><code>-C</code>는 <code>_ZN7MyClass...</code> 같은 맹글링된 이름을 <code>MyClass::method(...)</code> 형태로 사람이 읽을 수 있게 바꿔준다.</p>
+<p><strong>6) 찾은 주소를 GDB에서 바로 사용</strong></p>
+<pre><code class="language-bash">nm ./chall | grep -w malloc
+# 0000000000401ce0 T malloc
+gdb ./chall
+(gdb) break *0x401ce0</code></pre>
+<p>정적 바이너리에서 <code>break malloc</code>이 바로 안 먹는 경우, 이렇게 <code>nm</code>으로 찾은 주소에 직접 브레이크포인트를 걸면 확실하다. Pwndbg를 쓰고 있다면 심볼이 살아있는 경우 <code>break malloc</code>도 대개 정상 작동하니, 안 될 때만 이 방식으로 우회한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">nm ./chall                        # .symtab 전체 출력
+nm -D ./chall                     # .dynsym만 출력 (정적 바이너리는 보통 비어있음)
+nm -n ./chall                     # 주소 오름차순 정렬
+nm -C ./chall                     # C++ 이름 복원(demangle)
+nm --defined-only ./chall         # 정의된 심볼만
+nm ./chall | grep -w malloc       # 이름으로 필터링
+nm ./chall | awk '$2=="T"'        # 전역 함수만</code></pre>
+<h2>출력 해석</h2>
+<p>실전 예시:</p>
+<pre><code>$ nm ./chall | grep -w malloc
+0000000000401ce0 T malloc
+$ nm ./chall | grep -w free
+0000000000401d90 T free
+$ nm ./chall | grep -w __libc_start_main
+0000000000401160 T __libc_start_main</code></pre>
+<ul><li>첫 컬럼은 16자리 16진수 주소(파일 내 정적 주소, PIE가 아니면 이 값이 곧 실행 시 가상주소와 같다 — REV-0103 PIE와 주소 계산 참고).</li><li>둘째 컬럼 <code>T</code>는 이 심볼이 <code>.text</code>의 전역 함수라는 뜻.</li><li>셋째 컬럼이 함수 이름. 이 주소를 그대로 GDB <code>break *0x401ce0</code>나 IDA <code>Jump to address(G)</code>에 넣으면 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>nm -D</code>만 돌려보고 "심볼이 없다"고 결론 내리는 것 — 정적 바이너리에서는 옵션 없는 <code>nm</code>(즉 <code>.symtab</code>)을 먼저 시도해야 한다.</li><li>grep 없이 <code>nm ./chall</code>을 그냥 스크롤로 훑는 것 — glibc 정적 링킹 바이너리는 심볼이 수천 개라 반드시 <code>grep</code>/<code>awk</code>로 좁혀야 한다.</li><li>주소를 찾고 나서 PIE 바이너리인데 ASLR 오프셋을 더하지 않고 그대로 GDB에 넣는 것 — <code>nm</code>이 보여주는 주소는 파일 기준 정적 주소이므로, PIE라면 실행 중 실제 로드 베이스(REV-0104 ASLR)를 더해야 한다.</li><li><code>strip</code>된 바이너리에 대고 계속 <code>nm</code>만 붙잡고 있는 것 — strip되면 <code>.symtab</code>도 사라지므로 이때는 시그니처 매칭(REV-0668) 같은 다른 접근이 필요하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>nm</code>이 아무것도 안 보여준다면 → REV-0668 strip된 정적 바이너리에서 libc 함수 식별 개념으로 이동</li><li>심볼은 있는데 소스 라인 정보까지 필요하다면 → REV-0667 ELF에서 디버그 심볼(.debug_info)이 남아있는 경우 활용하기</li><li>정적 링킹 자체의 특징과 분석 전략이 더 궁금하다면 → REV-0646 정적 링킹된(Statically Linked) ELF 분석 접근법</li><li><code>nm</code> 대신 섹션 구조 전체를 보고 싶다면 → REV-0091 readelf 기본 사용법</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ file ./chall
+./chall: ELF 64-bit LSB executable, x86-64, ... statically linked, not stripped
+
+$ nm ./chall | wc -l
+2143
+
+$ nm ./chall | grep -w scanf
+0000000000403a20 T scanf
+
+$ nm ./chall | grep -w main
+0000000000401bd6 T main</code></pre>
+<p><code>main</code>의 주소를 바로 확인했으니 <code>gdb ./chall</code> → <code>break *0x401bd6</code> → <code>run</code>으로 바로 진입할 수 있고, <code>scanf</code> 주소에도 브레이크포인트를 걸어 입력 처리 지점을 잡을 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0668-stripped-static-libc-signature-matching.html">REV-0668 — strip된 정적 바이너리에서 libc 함수 식별 개념(시그니처 매칭)</a></li><li><a href="rev-0667-debug-info-symbols-utilization.html">REV-0667 — ELF에서 디버그 심볼(.debug_info)이 남아있는 경우 활용하기</a></li><li><a href="rev-0646-statically-linked-elf-analysis.html">REV-0646 — 정적 링킹된(Statically Linked) ELF 분석 접근법</a></li><li><a href="rev-0093-nm-basics.html">REV-0093 — nm으로 심볼 찾기</a></li><li><a href="rev-0038-symbols-vs-stripped.html">REV-0038 — 심볼이 있는 바이너리와 Stripped 바이너리 차이</a></li><li><a href="rev-0101-dynamic-linking.html">REV-0101 — Dynamic Linking과 Import 함수 추적</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>nm</code> 옵션(<code>-D</code>, <code>-n</code>, <code>-C</code>, <code>--defined-only</code>) 및 심볼 타입 문자(T/t/D/d/B/b/U/W): GNU Binutils <code>nm(1)</code> man page 기준.</li><li>정적 링킹 시 <code>.dynsym</code>이 비고 <code>.symtab</code>에 심볼이 남는 동작: ELF 스펙 및 GNU ld 동작 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>로컬에서는 성공하는데 서버에서는 실패할 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / triage</div>
+<article class="article-body">
+<h1>로컬에서는 성공하는데 서버에서는 실패할 때</h1>
+<div class="article-meta"><span class="tag">triage</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">pwntools</span><span class="tag">GDB</span><span class="tag">patchelf</span></div>
+<h2>한 줄 요약</h2>
+<p>로컬(<code>process()</code>, 직접 실행)에서는 성공하는데 원격 서버(<code>remote()</code>, <code>nc</code>)에서만 실패한다면, 원인은 거의 항상 <strong>로컬과 서버 사이의 환경 차이</strong>(glibc 버전, ASLR, 작업 디렉터리/파일, 환경변수, 스택 레이아웃, 리소스 제한, 네트워크 타이밍) 중 하나이며, "익스플로잇 로직 자체가 틀렸다"보다 "가정한 환경이 서버와 다르다"를 먼저 의심해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>pwntools 스크립트에서 <code>p = process(['./chall'])</code>로는 원하는 동작(쉘 획득, 특정 값 leak 등)이 성공하는데 <code>p = remote('host', port)</code>로 바꾸면 크래시하거나 응답이 없을 때</li><li>로컬에서 GDB로 디버깅하며 확인한 주소/오프셋을 그대로 썼는데 서버에서는 다른 결과가 나올 때</li><li>로컬 우분투/데비안 개발 환경과 문제 서버가 서로 다른 Docker 이미지/배포판일 가능성이 있을 때</li><li>여러 번 재시도해도 서버에서만 재현이 안 되는 미묘한 차이가 있을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>"로컬 성공, 서버 실패"는 하나의 원인이 아니라 여러 후보의 묶음이다. 아래 순서대로 하나씩 배제해나가는 것이 가장 효율적이다.</p>
+<h3>1) glibc/libc 버전 차이</h3>
+<p>문제 서버가 특정 Docker 이미지(예: Ubuntu 20.04, glibc 2.31)로 배포되는데 로컬 시스템은 더 최신이거나 다른 배포판(glibc 2.38+)일 수 있다. <code>system</code>, <code>execve</code>, <code>/bin/sh</code> 문자열, <code>one_gadget</code> 후보 주소가 버전마다 다르고, malloc 내부 구조(tcache 등)도 버전마다 다르다. 문제 zip에 <code>libc.so.6</code>이 첨부되어 있다면 그게 정답 환경이므로 로컬 재현도 반드시 그 libc로 강제해야 한다. → 자세한 절차는 REV-0711 참고.</p>
+<h3>2) ASLR과 하드코딩된 주소</h3>
+<p>로컬 GDB 디버깅 중에는 <code>set disable-aslr on</code>(GDB 기본값이기도 함)이나 습관적으로 ASLR을 꺼두고 테스트하는 경우가 많다. 이 상태에서 확인한 절대 주소를 그대로 익스플로잇에 박아넣으면, ASLR이 켜진 서버 환경에서는 매번 다른 주소가 나오므로 실패한다. leak 없이 하드코딩된 주소를 쓰고 있다면 이게 원인일 가능성이 매우 높다.</p>
+<h3>3) 파일 시스템/작업 디렉터리 차이</h3>
+<p>바이너리가 특정 경로의 파일(<code>flag.txt</code>, 설정 파일, 추가 라이브러리)을 상대 경로로 읽는다면, 로컬 테스트 디렉터리 구조와 서버의 작업 디렉터리 구조가 다를 수 있다. 로컬에서는 우연히 그 파일이 존재해서 성공한 것처럼 보이지만, 서버에서는 파일이 없거나 다른 위치에 있어서 다른 분기를 타는 경우가 있다.</p>
+<h3>4) 환경변수 차이</h3>
+<p><code>process()</code>는 기본적으로 현재 셸의 전체 환경변수를 그대로 물려주지만, 서버는 서비스 실행 스크립트(<code>xinetd</code>, <code>systemd</code>, Docker <code>ENTRYPOINT</code>)가 설정한 최소한의 환경변수만 가진 채로 실행되는 경우가 많다. 환경변수의 <strong>개수와 내용 자체가 초기 스택 레이아웃(스택에 먼저 올라가는 <code>envp</code> 배열과 각 문자열)에 영향을 준다</strong> — 즉 스택 기반 버프오버플로우에서 정확한 오프셋을 로컬 환경 기준으로 계산했다면, 서버의 환경변수 개수가 달라 스택 주소/오프셋이 몇 바이트 밀려서 실패할 수 있다. pwntools에서는 <code>process(['./chall'], env={})</code>처럼 환경변수를 명시적으로 제한/고정해서 서버와 최대한 비슷한 조건을 만들 수 있다.</p>
+<h3>5) 리소스 제한(ulimit) 차이</h3>
+<p>로컬 셸의 <code>ulimit -s</code>(스택 크기), <code>ulimit -c</code>(core dump), 파일 디스크립터 제한 등이 서버 서비스 실행 환경과 다를 수 있다. 특히 스택 크기 제한이 다르면 큰 지역 배열/재귀 관련 동작이나 특정 오버플로우 성공 여부가 달라질 수 있다.</p>
+<h3>6) 여러 접속을 동시에 처리하는 서버 구조</h3>
+<p>로컬에서는 항상 새 프로세스를 하나씩 깨끗하게 실행하지만, 서버는 <code>fork()</code>한 자식 프로세스로 여러 접속을 동시에 처리하거나, 요청마다 컨테이너를 새로 띄우는 구조일 수 있다. 이 과정에서 표준입출력 버퍼링 방식(REV-0337), 소켓 지연(REV-0338), 또는 동시 접속으로 인한 자원 경쟁이 로컬 단일 실행과 다른 타이밍을 만들 수 있다.</p>
+<h3>7) 커널/시스템 레벨 차이</h3>
+<p>로컬 개발 머신과 서버가 다른 리눅스 커널 버전, 다른 CPU 아키텍처 세부사항(예: mitigation 패치), 또는 컨테이너 격리 방식을 쓰면 일부 시스템콜 동작이나 타이밍 관련 익스플로잇(레이스 컨디션 등)이 미묘하게 다르게 동작할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>process()</code>로는 쉘을 획득하는데 <code>remote()</code>로는 세그폴트(비정상 종료)만 발생.</li><li>leak한 주소를 빼서 계산한 libc base의 하위 12비트가 로컬에서는 항상 0이었는데 서버에서는 다른 패턴을 보임(라이브러리 자체가 다를 가능성).</li><li>로컬에서 계산한 스택 오버플로우 페이로드 길이가 서버에서는 정확히 몇 바이트씩 어긋나서 크래시.</li><li>로컬 GDB 세션에서 확인한 주소가 실행할 때마다 동일(ASLR 꺼짐)한데, 서버는 접속마다 다른 주소를 사용하는 것으로 추정됨.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>문제 zip/tar에 <code>libc.so.6</code>, <code>ld-*.so</code> 같은 파일이 포함되어 있는지 가장 먼저 확인한다. 포함되어 있다면 그 파일이 서버의 "정답 환경"이므로, 로컬 재현을 그 libc로 강제(<code>patchelf</code>/<code>pwninit</code>)하는 것이 가장 흔하고 중요한 첫 조치다. 포함되어 있지 않다면 ASLR/leak 여부, 환경변수, 파일 경로 순서로 점검한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) libc 버전 강제 일치</strong></p>
+<pre><code class="language-bash">strings libc.so.6 | grep "GNU C Library"
+pwninit</code></pre>
+<p>자세한 절차는 REV-0711 참고.</p>
+<p><strong>2) ASLR 켠 상태로 로컬 재현</strong></p>
+<pre><code class="language-bash">echo 2 | sudo tee /proc/sys/kernel/randomize_va_space   # ASLR 켬(임시)
+python3 exploit.py LOCAL</code></pre>
+<p>ASLR을 켠 상태에서도 로컬 익스플로잇이 안정적으로 성공하는지 먼저 확인한다. 이 단계에서 실패한다면 leak 로직 자체가 부족한 것이지 서버만의 문제가 아니다.</p>
+<p><strong>3) 환경변수를 서버와 비슷하게 제한</strong></p>
+<pre><code class="language-python">p = process(['./chall'], env={})   # 환경변수 전부 비움 (또는 서버가 설정할 법한 최소값만 지정)</code></pre>
+<p>로컬 전체 환경변수를 물려받는 기본 동작과 비교해서, 최소 환경으로도 페이로드/오프셋이 그대로 동작하는지 확인한다.</p>
+<p><strong>4) 상대 경로 의존성 확인</strong></p>
+<pre><code class="language-bash">strace -f -e trace=open,openat ./chall 2&gt;&amp;1 | grep -v ENOENT</code></pre>
+<p>바이너리가 실제로 어떤 파일을 여는지 확인해서, 서버 환경에 그 파일이 없을 가능성이 있는지 점검한다.</p>
+<p><strong>5) 리소스 제한 비교</strong></p>
+<pre><code class="language-bash">ulimit -a</code></pre>
+<p>로컬 셸의 제한값들을 확인하고, 문제에 <code>Dockerfile</code>이 첨부되어 있다면 그 안에 설정된 <code>ulimit</code>/<code>--ulimit</code> 값과 비교한다.</p>
+<p><strong>6) 로컬에서 소켓 서비스처럼 재현해 최종 확인</strong></p>
+<pre><code class="language-bash">socat tcp-listen:4444,reuseaddr,fork exec:./chall &amp;
+python3 exploit.py REMOTE   # host를 127.0.0.1:4444로</code></pre>
+<p><code>process()</code> 직접 실행이 아니라 실제 소켓을 통한 접속으로 로컬 재현을 해봐서, 순수 프로세스 실행과 다른 점(버퍼링, 타이밍)이 있는지 최종 확인한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">strings libc.so.6 | grep "GNU C Library"
+pwninit
+echo 2 | sudo tee /proc/sys/kernel/randomize_va_space
+strace -f -e trace=open,openat ./chall
+ulimit -a
+socat tcp-listen:4444,reuseaddr,fork exec:./chall &amp;</code></pre>
+<pre><code class="language-python">p = process(['./chall'], env={})
+libc = ELF('./libc.so.6')  # 배포된 파일 그대로</code></pre>
+<h2>출력 해석</h2>
+<ul><li>ASLR을 켠 로컬 테스트에서 실패율이 올라간다면(0/10 성공 등) leak 로직 자체가 불완전하다는 뜻 — 서버 문제가 아니라 익스플로잇 자체를 더 다듬어야 한다.</li><li><code>env={}</code>로 실행했을 때 오프셋이 달라져서 크래시한다면, 원래 오프셋 계산이 로컬 환경변수 개수에 암묵적으로 의존하고 있었다는 강한 신호다.</li><li><code>strace</code>에서 <code>openat(..., "flag.txt", ...) = -1 ENOENT</code>처럼 뜬다면 그 파일이 로컬에는 있어서 성공했지만 서버에는 없어서 다른 분기를 탈 수 있다는 뜻이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>glibc 버전 차이(REV-0711)를 확인하지 않고 로컬 시스템 기본 libc로 오프셋을 계산해 그대로 서버에 쏘는 것.</li><li>ASLR을 끈 상태로만 로컬 검증하고 "잘 되니까 서버에서도 되겠지"라고 넘어가는 것.</li><li>환경변수/작업 디렉터리 차이 같은 미묘한 원인은 생각하지 않고 익스플로잇 로직 자체를 계속 고쳐 쓰는 것 — 로직은 이미 맞을 수 있다.</li><li>REV-0338(타임아웃)이나 REV-0337(버퍼링)로 인한 증상을 "익스플로잇이 실패했다"고 오판하는 것 — 실제로는 정상 동작 중인데 응답을 못 받아서 실패로 보이는 경우가 섞여 있을 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>glibc 버전 차이가 원인으로 확정되면 → REV-0711(서버 환경 glibc와 로컬 glibc가 달라 분석이 안 맞을 때)</li><li>애초에 서버 응답 자체를 못 받고 있는 것 같다면 → REV-0338(서버 문제에서 타임아웃이 계속 발생할 때), REV-0337(nc로 접속은 되는데 프롬프트가 안 보일 때)</li><li>결과값(flag)은 나왔는데 서버가 계속 오답 처리한다면 → REV-0339(Flag 형식은 맞는데 서버가 계속 오답 처리할 때)</li><li>공유 라이브러리 자체를 못 찾는 에러가 뜬다면 → REV-0706(공유 라이브러리를 못 찾아서 error가 뜰 때)</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ ls
+chall  libc.so.6  ld-2.31.so
+$ file /lib/x86_64-linux-gnu/libc.so.6
+/lib/x86_64-linux-gnu/libc.so.6: ... for GNU/Linux 3.2.0, ... stripped   # 로컬 시스템 libc, 버전 표기 없음
+$ strings libc.so.6 | grep "GNU C Library"
+GNU C Library (Ubuntu GLIBC 2.31-0ubuntu9.16) stable release version 2.31.   # 배포된 libc는 2.31</code></pre>
+<p>로컬 시스템은 이미 더 최신 glibc를 쓰고 있어서, 배포된 <code>libc.so.6</code>(2.31) 기준으로 계산한 <code>system</code> 오프셋이 로컬 기본 실행 시 완전히 다른 위치를 가리켰던 것이 원인이었다. <code>pwninit</code>으로 인터프리터/rpath를 패치한 뒤 로컬 재현과 서버 결과가 일치했다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0711-server-vs-local-glibc-mismatch.html">REV-0711 — 서버 환경 glibc와 로컬 glibc가 달라 분석이 안 맞을 때</a></li><li><a href="rev-0337-nc-connected-no-prompt.html">REV-0337 — nc로 접속은 되는데 프롬프트가 안 보일 때</a></li><li><a href="rev-0338-server-timeout-repeated.html">REV-0338 — 서버 문제에서 타임아웃이 계속 발생할 때</a></li><li><a href="rev-0339-flag-format-correct-but-wrong.html">REV-0339 — Flag 형식은 맞는데 서버가 계속 오답 처리할 때</a></li><li><a href="rev-0706-shared-library-not-found.html">REV-0706 — 공유 라이브러리를 못 찾아서 error while loading shared libraries가 뜰 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>glibc 버전별 심볼 오프셋/malloc 구조 차이 및 <code>patchelf</code>/<code>pwninit</code> 사용: glibc 공식 NEWS, patchelf(NixOS/patchelf) 및 pwninit(io12/pwninit) 공식 저장소 기준.</li><li>ASLR(<code>/proc/sys/kernel/randomize_va_space</code>) 및 프로세스 초기 스택에 <code>envp</code>가 실리는 방식: Linux 커널 문서(<code>Documentation/admin-guide/sysctl/kernel.rst</code>) 및 System V AMD64 ABI의 "Initial Stack and Register State" 섹션 기준.</li><li>pwntools <code>process(env=...)</code> 옵션 동작: pwntools 공식 문서(docs.pwntools.com) 기준 (2026-09-09 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

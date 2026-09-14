@@ -40,7 +40,7 @@ CTF 문제 바이너리는 흔히 `strip` 처리되어 `.symtab`이 제거된다
 ```text
 (gdb) break malloc
 Function "malloc" not defined.
-Make breakpoint pending on future shared library load? (y or [n]) 
+Make breakpoint pending on future shared library load? (y or [n])
 ```
 또는 pending 질문 없이 바로:
 ```text
@@ -127,7 +127,7 @@ $ gdb -q ./chall
 (gdb) break malloc
 Breakpoint 1 (malloc) pending.
 (gdb) run
-Starting program: /home/user/chall 
+Starting program: /home/user/chall
 
 Breakpoint 1, 0x00007ffff7e1c150 in malloc () from /lib/x86_64-linux-gnu/libc.so.6
 (gdb) bt

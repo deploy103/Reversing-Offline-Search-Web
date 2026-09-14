@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JE와 JZ: ZF가 1일 때 분기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>JE와 JZ: ZF가 1일 때 분기</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>JE</code>와 <code>JZ</code>는 <strong>완전히 같은 명령어(같은 opcode)</strong>다. "ZF(Zero Flag)가 1이면 분기하라"는 단 하나의 조건을 두 가지 이름으로 부를 뿐이며, <code>CMP</code> 뒤에서는 관례적으로 <code>JE</code>("같으면 점프"), 산술 연산 뒤에서는 관례적으로 <code>JZ</code>("0이면 점프")라고 부른다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리에 <code>je</code>가 나오는데 무슨 뜻인지 모를 때</li><li>어떤 곳은 <code>je</code>, 어떤 곳은 <code>jz</code>라고 나와서 둘이 다른 명령인지 헷갈릴 때 ("je jz 차이")</li><li><code>cmp eax, 10</code> 다음에 <code>je loc_401050</code>가 나왔을 때 이게 정확히 무슨 조건에서 점프하는지 알고 싶을 때</li><li><code>test eax, eax</code> 다음에 <code>jz</code>가 나왔는데 왜 <code>test</code>를 쓰는지, 무슨 값을 검사하는지 모를 때</li><li>IDA 디컴파일 결과의 <code>if (a == b)</code>가 실제로 어셈블리에서 어떻게 생겼는지 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>JE와 JZ는 같은 명령어다</h3>
+<p>x86/x64에는 <strong>조건부 점프(Jcc, Jump if condition is met)</strong>라는 명령어 계열이 있다. Jcc는 CPU 내부의 <strong>플래그 레지스터(EFLAGS/RFLAGS)</strong>에 저장된 비트들을 읽어서 조건이 참이면 점프하고, 거짓이면 다음 줄로 그냥 넘어간다.</p>
+<p><code>JE</code>(Jump if Equal)와 <code>JZ</code>(Jump if Zero)는 <strong>opcode가 완전히 동일</strong>하다(단거리 분기 0x74, 장거리 분기 0x0F 84). 어셈블러 입장에서는 두 이름이 그냥 같은 기계어를 만드는 동의어(alias)다. 왜 이름이 두 개일까?</p>
+<ul><li><code>CMP a, b</code> 바로 뒤에서는 "a와 b가 같으면 점프"라는 뜻이 더 자연스러우므로 <code>JE</code>라고 쓴다.</li><li><code>SUB</code>, <code>AND</code>, <code>DEC</code>, <code>TEST</code> 같은 산술/논리 연산 바로 뒤에서는 "결과가 0이면 점프"라는 뜻이 더 자연스러우므로 <code>JZ</code>라고 쓴다.</li></ul>
+<p><strong>둘 다 테스트하는 조건은 정확히 하나, <code>ZF = 1</code>이다.</strong> IDA나 다른 디스어셈블러가 어느 이름을 골라 보여주는지는 순전히 관례/구현 선택의 문제이며, 동작에는 티끌만큼의 차이도 없다.</p>
+<h3>조건 코드(Jcc) 전체 표</h3>
+<p>이 표는 이후 <code>JNE</code>/<code>JNZ</code>(<a href="rev-0068-jne-jnz.html">JNE/JNZ</a>), <code>JG</code>/<code>JL</code>(<a href="rev-0069-jg-jge-jl-jle.html">JG/JGE/JL/JLE</a>), <code>JA</code>/<code>JB</code>(<a href="rev-0070-ja-jae-jb-jbe.html">JA/JAE/JB/JBE</a>) 등 모든 Jcc 글에서 공통으로 참조되는 기준 표다. <code>Jcc</code>의 <code>cc</code>(condition code) 접미사가 실제로 어떤 플래그 조합을 검사하는지 정리하면 다음과 같다.</p>
+<table><thead><tr><th>접미사</th><th>다른 표기</th><th>테스트하는 플래그 조건</th><th>의미</th></tr></thead><tbody><tr><td>E / Z</td><td>—</td><td>ZF = 1</td><td>equal / zero</td></tr><tr><td>NE / NZ</td><td>—</td><td>ZF = 0</td><td>not equal / not zero</td></tr><tr><td>G / NLE</td><td>—</td><td>ZF = 0 AND SF = OF</td><td>signed greater</td></tr><tr><td>GE / NL</td><td>—</td><td>SF = OF</td><td>signed greater or equal</td></tr><tr><td>L / NGE</td><td>—</td><td>SF ≠ OF</td><td>signed less</td></tr><tr><td>LE / NG</td><td>—</td><td>ZF = 1 OR SF ≠ OF</td><td>signed less or equal</td></tr><tr><td>A / NBE</td><td>—</td><td>CF = 0 AND ZF = 0</td><td>unsigned above</td></tr><tr><td>AE / NB / NC</td><td>—</td><td>CF = 0</td><td>unsigned above or equal</td></tr><tr><td>B / NAE / C</td><td>—</td><td>CF = 1</td><td>unsigned below</td></tr><tr><td>BE / NA</td><td>—</td><td>CF = 1 OR ZF = 1</td><td>unsigned below or equal</td></tr><tr><td>S</td><td>—</td><td>SF = 1</td><td>sign(negative)</td></tr><tr><td>NS</td><td>—</td><td>SF = 0</td><td>not sign</td></tr><tr><td>O</td><td>—</td><td>OF = 1</td><td>overflow</td></tr><tr><td>NO</td><td>—</td><td>OF = 0</td><td>no overflow</td></tr><tr><td>P / PE</td><td>—</td><td>PF = 1</td><td>parity even</td></tr><tr><td>NP / PO</td><td>—</td><td>PF = 0</td><td>parity odd</td></tr></tbody></table>
+<p><code>JE</code>/<code>JZ</code>는 이 표에서 가장 위, 가장 단순한 줄이다 — 플래그 하나(<code>ZF</code>)만 보면 끝난다.</p>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>JE  rel8    ; 짧은 상대 분기 (opcode 0x74), 대상이 현재 위치에서 -128~+127 바이트 이내
+JE  rel32   ; 긴 상대 분기 (opcode 0x0F 84), 대상이 더 멀리 있을 때
+JZ  rel8    ; JE와 완전히 동일한 opcode
+JZ  rel32   ; JE와 완전히 동일한 opcode</code></pre>
+<p>오퍼랜드는 하나, 점프할 목표 주소를 가리키는 <strong>상대 오프셋</strong>이다. 어셈블리 소스에서는 <code>je loc_401050</code>처럼 레이블로 쓰지만, 실제 기계어에는 "현재 명령 다음 주소 기준으로 몇 바이트 이동"이라는 상대값이 인코딩되어 있다. 어셈블러가 rel8로 충분한지 rel32가 필요한지 자동으로 골라준다.</p>
+<h3>플래그: 읽기만 하고 쓰지 않는다</h3>
+<p>초보자가 가장 헷갈려하는 지점이다. <strong><code>Jcc</code>는 플래그를 "읽기"만 하지, 절대로 "쓰지" 않는다.</strong></p>
+<ul><li><code>JE</code>/<code>JZ</code>가 <strong>읽는</strong> 플래그: <code>ZF</code> 하나뿐이다. <code>CF</code>, <code>SF</code>, <code>OF</code>, <code>PF</code>, <code>AF</code>는 전혀 보지 않는다.</li><li><code>JE</code>/<code>JZ</code>가 <strong>바꾸는</strong> 플래그: 없다. 실행 후에도 <code>ZF</code>를 포함한 모든 플래그는 실행 전과 똑같이 유지된다.</li></ul>
+<p>플래그를 실제로 <strong>쓰는(설정하는)</strong> 명령은 <code>CMP</code>, <code>TEST</code>, <code>SUB</code>, <code>ADD</code>, <code>AND</code> 같은 산술/논리 명령이다. 즉 <code>cmp eax, ebx</code> / <code>je label</code> 두 줄에서, <code>ZF</code>를 계산해서 저장하는 일은 <code>cmp</code>가 다 하고, <code>je</code>는 그 결과를 그냥 읽어서 분기 여부만 결정한다. <code>Jcc</code>는 "플래그 소비자"이고 <code>CMP</code>/산술 명령은 "플래그 생산자"라고 구분해서 기억하면 편하다.</p>
+<h3>스택/RIP 변화</h3>
+<p>조건이 참(<code>ZF=1</code>)이면 <code>RIP</code>(다음 실행할 명령 주소)가 목표 레이블 주소로 바뀐다. 조건이 거짓이면 <code>RIP</code>는 그냥 다음 명령으로 정상적으로 진행한다. <strong>스택(RSP)에는 아무 영향이 없다</strong> — <a href="rev-0071-call.html">CALL</a>과 대조되는 점으로, <code>CALL</code>은 반환 주소를 스택에 push하지만 <code>Jcc</code>는 그런 흔적을 전혀 남기지 않는다. 그래서 <code>Jcc</code>로 이동한 곳에서 "돌아가는" 개념 자체가 없다.</p>
+<h3>컴파일러가 만드는 대표 패턴</h3>
+<p><strong>패턴 1 — 직접 대응</strong>: <code>if (a == b) goto label;</code> 같은 명시적 goto나 단순 조건이 그대로 대응될 때</p>
+<pre><code class="language-c">if (a == b) {
+    handle_equal();
+}</code></pre>
+<pre><code class="language-asm">cmp     eax, ebx
+je      is_equal
+jmp     after_if
+is_equal:
+call    handle_equal
+after_if:</code></pre>
+<p>이 예시처럼 "조건이 참일 때 실행할 코드로 점프"하는 형태로 <code>je</code>가 직접 쓰이기도 한다.</p>
+<p><strong>패턴 2 — 반전된 스킵 패턴(매우 흔함)</strong>: 실제 컴파일러 출력에서는 아래처럼 <strong>조건을 뒤집어서 몸통을 건너뛰는</strong> 형태가 훨씬 흔하다.</p>
+<pre><code class="language-c">if (a == b) {
+    do_something();
+}
+next_line();</code></pre>
+<pre><code class="language-asm">cmp     eax, ebx
+jne     skip_body      ; a != b (조건이 거짓)이면 몸통을 건너뜀
+call    do_something    ; 몸통 (조건이 참일 때만 실행됨)
+skip_body:
+call    next_line</code></pre>
+<p>여기서는 <code>je</code>가 아니라 <code>jne</code>가 나온다는 점에 주의하자. "몸통을 실행하지 않고 건너뛰는" 조건(<code>a != b</code>)을 검사하는 게 더 효율적인 코드 흐름이기 때문이다. 이 반전 패턴은 <a href="rev-0068-jne-jnz.html">JNE/JNZ</a>에서 훨씬 자세히 다룬다 — 지금은 "<code>je</code>만 있는 게 아니라 <code>jne</code>로도 똑같은 <code>if (a==b)</code>가 나올 수 있다"는 것만 기억해두자.</p>
+<p><strong>패턴 3 — NULL/0 체크 관용구</strong>: <code>TEST reg, reg</code> 다음의 <code>JZ</code>는 "포인터가 NULL인가?" 또는 "반환값이 0인가?"를 검사하는 매우 흔한 관용구다.</p>
+<pre><code class="language-c">void *p = malloc(size);
+if (p == NULL) {
+    goto fail;
+}</code></pre>
+<pre><code class="language-asm">call    malloc
+test    rax, rax     ; rax AND rax -&gt; 결과가 0이면 ZF=1 (부호 검사가 아니라 순수 0 검사)
+jz      fail          ; rax == 0 (malloc 실패)이면 fail로 분기</code></pre>
+<p><code>TEST reg, reg</code>는 <code>reg</code>를 자기 자신과 <code>AND</code> 연산해서(값 자체는 바꾸지 않고) 결과의 플래그만 세팅한다. 결과가 0이면(즉 <code>reg</code>가 원래 0이었으면) <code>ZF=1</code>이 되므로, <code>test rax, rax</code> + <code>jz</code>는 "rax가 0인지" 검사하는 가장 흔한 x86 관용구다.</p>
+<h3>IDA/Ghidra 디컴파일 화면에서 보이는 형태</h3>
+<p>IDA(F5)나 Ghidra 디컴파일러는 <code>cmp</code>+<code>je</code>/<code>jz</code> 쌍을 보면 대부분 자연스럽게 <code>if (a == b)</code> 또는 <code>if (v1 == 0)</code> 형태로 재구성해서 보여준다. 대부분은 정확하지만, 최적화가 심하거나 구조체 필드 타입 추론이 틀린 경우 디컴파일러가 보여주는 변수 이름/조건이 실제와 미묘하게 다를 수 있다.</p>
+<p>디컴파일 결과의 <code>if</code> 조건이 이상하게 느껴진다면:</p>
+<ol><li>해당 줄에서 <strong>디스어셈블리 뷰</strong>로 전환한다(IDA는 그래프뷰/텍스트뷰 전환 단축키 Space, 또는 하단 상태바의 디스어셈블리 창을 직접 확인).</li><li><code>je</code>/<code>jz</code> 바로 위에 있는 <code>cmp</code> 또는 <code>test</code> 명령을 찾는다.</li><li>그 명령의 두 오퍼랜드가 정확히 무엇인지 확인한다(레지스터? 상수? 메모리 오프셋?).</li><li>"<code>ZF=1</code>이면 두 오퍼랜드가 같다(또는 결과가 0이다)"는 원칙을 그대로 적용해서, 디컴파일러의 변수 이름을 신뢰하지 말고 실제 비교 대상을 직접 재해석한다.</li></ol>
+<p>이 과정은 디컴파일러가 구조체 필드나 타입을 잘못 추측해서 <code>if</code> 조건이 실제 의미와 어긋나 보일 때 특히 중요하다.</p>
+<h3>리버싱에서의 의미</h3>
+<p>문자열 비교/<code>memcmp</code> 스타일 루프가 끝난 직후에 나오는 <code>je</code>/<code>jz</code>는 크랙미(crackme)에서 전형적인 <strong>"시리얼 번호 검사 통과 지점"</strong>이다. 이런 지점은:</p>
+<ul><li>디버거로 <code>je</code>/<code>jz</code> 주소에 브레이크포인트를 걸고 그 시점의 플래그(<code>ZF</code>) 값을 확인하는 지점,</li><li>또는 (교육/CTF 목적의) 패치 대상으로 자주 지목되는 지점이다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>디스어셈블리에서 <code>je</code>/<code>jz</code>를 만나면 다른 무엇보다 먼저 <strong>바로 위 줄</strong>부터 본다.</p>
+<ol><li><code>je</code>/<code>jz</code> 바로 위에 있는 명령이 <code>cmp</code>인지 <code>test</code>/산술 명령(<code>sub</code>, <code>and</code>, <code>dec</code> 등)인지 확인한다 — 이게 "무엇을 0/같음으로 판단했는지"의 근거다.</li><li>그 명령의 두 오퍼랜드(레지스터, 상수, 메모리)를 정확히 읽는다. <code>cmp eax, 10</code>이라면 "eax와 10", <code>test rax, rax</code>라면 "rax가 0인지"다.</li><li><code>je</code>/<code>jz</code>가 점프하는 목표 주소와, 점프하지 않았을 때(fallthrough) 이어지는 코드를 둘 다 확인해서 어느 쪽이 "조건 성립 시 실행되는 코드"인지 파악한다.</li><li>이 근처에 <code>jne</code>/<code>jnz</code>도 섞여 있는지 살펴본다 — 반전된 형태로 같은 비교가 다시 쓰이는 경우가 많다(예제 3 참고).</li></ol>
+<h2>단계별 절차</h2>
+<p>IDA를 기준으로 실제로 손을 움직이는 순서:</p>
+<ol><li><strong>그래프뷰에서 <code>je</code>/<code>jz</code> 노드를 찾는다.</strong> 화살표가 두 갈래로 갈라지는 지점(조건 분기 블록)이므로 눈에 잘 띈다.</li><li><strong>바로 위 블록의 마지막 명령</strong>(대개 <code>cmp</code> 또는 <code>test</code>)에 커서를 놓고, 오퍼랜드에 쓰인 변수/레지스터 이름을 확인한다. 이름이 <code>var_10</code>처럼 스택 변수라면, 그 위에서 <code>var_10</code>에 마지막으로 쓰인 값을 거슬러 올라가 본다.</li><li><strong>F5로 디컴파일</strong>해서 같은 지점의 <code>if</code> 문을 확인하고, 어셈블리에서 읽은 조건과 일치하는지 대조한다(디컴파일러가 조건을 반전/재구성했을 수 있으므로 대조가 중요하다).</li><li>정적으로 값이 애매하면(런타임에 계산되는 값), <code>je</code>/<code>jz</code> 주소에 브레이크포인트를 걸고(<code>F2</code>) <code>F9</code>로 실행한 뒤, 레지스터 창에서 <code>ZF</code> 비트와 실제 비교 대상 레지스터 값을 직접 확인한다.</li><li>두 갈래(점프 경로 / fallthrough 경로) 각각을 따라가서 그 안에서 무슨 문자열을 출력하거나 무슨 함수를 부르는지 보면("Correct!" vs "Wrong!" 등) 어느 쪽이 "성공 경로"인지 바로 판단할 수 있다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>Space</code>(그래프뷰/텍스트뷰 전환), <code>F5</code>(디컴파일), <code>F2</code>(브레이크포인트 설정/해제), <code>F9</code>(실행/계속), 분기 화살표를 클릭하면 해당 목표 블록으로 바로 이동</li><li>x64dbg: 조건 분기 라인에서 <code>F2</code>(브레이크포인트), <code>F9</code>(실행), 우측 플래그 패널에서 <code>ZF</code> 값 실시간 확인, 분기 직전 <code>F7</code>(Step Into)로 한 줄씩 진행하며 <code>ZF</code>가 바뀌는 순간을 관찰</li><li>GDB/Pwndbg: <code>break *0x&lt;je주소&gt;</code>, <code>info registers eflags</code>(플래그 전체 확인), <code>p/x $eflags</code>, Pwndbg는 <code>context</code> 명령으로 플래그 변화를 색으로 강조해서 보여줌</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><strong>JE/JZ를 signed/unsigned 비교(JG/JA 등)와 섞어서 생각하는 것.</strong> JE/JZ는 오직 "같다/0이다"만 검사하며, 이 판단에는 부호(signed/unsigned) 해석이 전혀 개입하지 않는다 — 두 비트 패턴이 같은지 다른지는 부호를 어떻게 해석하든 결과가 항상 같기 때문이다. <a href="rev-0069-jg-jge-jl-jle.html">JG/JGE/JL/JLE</a>와 <a href="rev-0070-ja-jae-jb-jbe.html">JA/JAE/JB/JBE</a>에서 다루는 signed/unsigned 함정이 JE/JZ에는 존재하지 않는다는 점에서 오히려 안심해도 좋다.</li><li><strong>JE와 JZ가 다른 명령이라고 착각하는 것.</strong> 같은 코드에서 어떤 곳은 <code>je</code>, 어떤 곳은 <code>jz</code>로 표시되는 걸 보고 "다른 종류의 비교인가?"라고 의심하는 초보자가 많다. 답은 "전혀 차이 없음" — 어셈블러/디스어셈블러가 직전 명령의 종류(비교냐 산술이냐)를 보고 관례적으로 이름을 고른 것뿐이다.</li><li><strong><code>Jcc</code>가 플래그를 설정한다고 착각하는 것.</strong> <code>je</code> 자체는 플래그를 절대 바꾸지 않는다. 플래그는 그 앞의 <code>cmp</code>/<code>test</code>/산술 명령이 이미 설정해 둔 것을 <code>je</code>가 읽기만 한다.</li><li><strong><code>je</code>만 찾고 <code>jne</code>로 반전된 같은 조건을 놓치는 것.</strong> <code>if (a == b)</code>가 소스에 있어도 실제 어셈블리에는 <code>jne</code>가 나올 수 있다(위 패턴 2). <code>je</code>가 안 보인다고 "이 코드에는 등호 비교가 없다"고 단정하지 말 것 — <a href="rev-0068-jne-jnz.html">JNE/JNZ</a> 참고.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>je</code>/<code>jz</code>가 뭘 검사하는지 모르겠다면 → 바로 위 명령이 <code>cmp</code>인지 <code>test</code>인지부터 다시 확인한다. 더 위로 거슬러 올라가야 할 수도 있다(컴파일러가 비교와 분기 사이에 다른 명령을 끼워 넣는 경우는 드물지만, 여러 조건이 <code>and</code>/<code>or</code>로 합쳐진 복합 <code>if</code>라면 <code>cmp</code>/<code>jcc</code> 쌍이 연달아 여러 번 나올 수 있다).</li><li>디컴파일러의 <code>if</code> 조건과 어셈블리가 다르게 느껴진다면 → 디스어셈블리 뷰(Space)로 돌아가 원문을 직접 재해석한다. 타입 추론이 틀려서 변수 이름이 오해를 유발하는 경우가 있다.</li><li>점프 목표/fallthrough 중 어느 쪽이 "성공"인지 헷갈리면 → 두 경로를 각각 끝까지 따라가서 어느 쪽이 성공 메시지 출력이나 정상 반환으로 이어지는지 실행해서 확인한다.</li><li>그래도 안 풀리면 → 이 지점에 브레이크포인트를 걸고 여러 다른 입력값으로 실행해보며 <code>ZF</code>와 분기 결과가 어떻게 달라지는지 직접 관찰한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — CMP + JE, 숫자 비교</strong></p>
+<pre><code class="language-asm">cmp     eax, 100
+je      loc_401020    ; eax == 100 이면 분기</code></pre>
+<p>C: <code>if (eax == 100) goto loc_401020;</code></p>
+<p><strong>예제 2 — TEST + JZ, NULL 포인터 체크</strong></p>
+<pre><code class="language-asm">call    malloc
+test    rax, rax
+jz      alloc_failed   ; rax == 0 이면 (malloc 실패) 분기</code></pre>
+<p>C: <code>if (p == NULL) goto alloc_failed;</code></p>
+<p><strong>예제 3 — 문자열 비교 루프 끝의 JZ (시리얼 체크 패턴)</strong></p>
+<pre><code class="language-asm">loop_start:
+    mov     al, [rsi]
+    cmp     al, [rdi]
+    jne     mismatch      ; 한 글자라도 다르면 실패로 분기
+    inc     rsi
+    inc     rdi
+    test    al, al
+    jnz     loop_start    ; 널 종료 문자가 아니면 계속 반복
+    ; 여기까지 왔다는 것은 두 문자열이 끝까지 같았다는 뜻
+    jmp     match_ok
+mismatch:
+    ; "Wrong password" 출력 등
+match_ok:
+    ; "Correct!" 출력 등</code></pre>
+<p>(이 예제에는 <code>jne</code>, <code>jnz</code>도 함께 등장한다 — 자세한 반전 조건 해석은 <a href="rev-0068-jne-jnz.html">JNE/JNZ</a> 참고.)</p>
+<p><strong>예제 4 — 반전된 스킵 패턴 (JE 대신 JNE로 컴파일된 <code>if (a==b)</code>)</strong></p>
+<pre><code class="language-asm">cmp     dword ptr [rbp-4], 0
+jne     skip_message   ; 조건(값==0)이 거짓이면 메시지 출력을 건너뜀
+lea     rcx, [format_string]
+call    printf
+skip_message:</code></pre>
+<p>C: <code>if (counter == 0) { printf(...); }</code> — <code>je</code>가 아니라 <code>jne</code>가 나왔지만 여전히 같은 등호 비교임을 기억하자.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0068-jne-jnz.html">JNE/JNZ</a> — JNE와 JNZ: ZF가 0일 때 분기 (JE/JZ의 정반대 조건)</li><li><a href="rev-0069-jg-jge-jl-jle.html">JG/JGE/JL/JLE</a> — JG JGE JL JLE: Signed 비교 분기</li><li><a href="rev-0070-ja-jae-jb-jbe.html">JA/JAE/JB/JBE</a> — JA JAE JB JBE: Unsigned 비교 분기</li><li><a href="rev-0066-jmp.html">JMP</a> — JMP: 무조건 분기</li><li><a href="rev-0075-cmovcc.html">CMOVcc</a> — CMOVcc: 분기 없는 조건부 이동</li><li><a href="rev-0076-setcc.html">SETcc</a> — SETcc: 조건 결과를 0 또는 1로 만들기</li><li><a href="rev-0071-call.html">CALL</a> — CALL: 함수 호출, 반환 주소, 인자 추적</li><li><a href="rev-0088-flags-overview.html">FLAGS 개요</a> — EFLAGS/RFLAGS 플래그 레지스터 개요</li><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li><li>TEST 명령어 (예정)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>JE/JZ 명령어 동작과 opcode 동일성: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "Jcc—Jump if Condition Is Met" 섹션 기준 (2026-09-08 검증).</li><li>Jcc 조건 코드 전체 표(ZF/CF/SF/OF/PF 조합): 위와 동일한 Intel SDM 섹션의 조건 코드 정의 표 기준.</li><li>IDA 디컴파일러의 cmp/test → if 변환 동작: Hex-Rays 공식 디컴파일러 문서(Decompiler Interactive Operation) 기준 일반 동작 설명.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

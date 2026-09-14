@@ -1,0 +1,119 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>2차원 배열 인덱싱이 어셈블리에서 보이는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / c-analysis</div>
+<article class="article-body">
+<h1>2차원 배열 인덱싱이 어셈블리에서 보이는 패턴</h1>
+<div class="article-meta"><span class="tag">c-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>arr[r][c]</code>는 1차원 배열 인덱싱(REV-1058)을 두 번 겹친 것이 아니라 <strong>"행 우선(row-major) 저장 방식에 따라 행 하나의 전체 바이트 크기를 행 번호에 곱해서 더한 뒤, 그 안에서 열 번호로 다시 오프셋을 더하는" 두 단계 계산</strong>으로 컴파일되며, 이때 열의 개수(고정된 두 번째 차원 크기)가 곱셈 상수로 코드에 직접 박혀 나타난다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>imul</code>로 어떤 값에 16이나 12 같은 상수를 곱한 뒤 그 결과를 포인터에 더하고, 그 다음에 또 다른 인덱스로 오프셋을 더하는 2단계 주소 계산을 발견했을 때</li><li>2차원 배열을 함수에 인자로 넘겼는데 그 포인터 타입이 <code>int (*)[4]</code>처럼 괄호가 들어간 낯선 문법으로 보여서 이해가 안 될 때</li><li><code>arr[r][c]</code>를 <code>arr[r*COLS+c]</code>로 손으로 펴서 계산하는 이유가 헷갈릴 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>원본 C 코드</h3>
+<pre><code class="language-c">int get2d(int arr[3][4], int r, int c) {
+    return arr[r][c];
+}</code></pre>
+<p>C에서 함수 매개변수로 쓰인 <code>int arr[3][4]</code>는 실제로는 <code>int (*arr)[4]</code>(원소가 <code>int[4]</code>인 배열을 가리키는 포인터)로 취급된다. 즉 <code>arr</code>는 <strong>"4개짜리 int 배열" 하나의 크기(16바이트)를 한 단위로 하는 포인터</strong>다.</p>
+<h3>-O0 x86-64 어셈블리</h3>
+<pre><code class="language-asm">get2d:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 0x20
+    mov     [rbp-0x18], rdi   ; arr  (int(*)[4], 행 크기 16바이트짜리 포인터)
+    mov     [rbp-0x1c], esi   ; r
+    mov     [rbp-0x20], edx   ; c
+    mov     eax, [rbp-0x1c]    ; eax = r
+    movsxd  rdx, eax           ; rdx = (int64_t)r
+    imul    rdx, rdx, 0x10     ; rdx = r * 16   (16 = 4개 * sizeof(int), 한 행의 전체 크기)
+    mov     rax, [rbp-0x18]    ; rax = arr
+    add     rax, rdx            ; rax = arr + r*16 = &amp;arr[r]  (r번째 행의 시작 주소)
+    mov     edx, [rbp-0x20]     ; edx = c
+    movsxd  rdx, edx            ; rdx = (int64_t)c
+    mov     eax, [rax+rdx*4]    ; eax = *(&amp;arr[r] + c*4) = arr[r][c]
+    leave
+    ret</code></pre>
+<h3>줄 단위 대응 — 1차원과의 결정적 차이</h3>
+<ul><li><code>imul rdx, rdx, 0x10</code> — <strong>행 하나를 통째로 건너뛰기 위한 곱셈</strong>이다. <code>0x10</code>(16바이트)은 <code>COLS(4) * sizeof(int)(4)</code>, 즉 "고정된 열 개수 × 원소 크기"다. 이 상수를 보면 <strong>원본 배열의 두 번째 차원(열 개수)을 역산</strong>할 수 있다(16 ÷ 4 = 4열).</li><li><code>add rax, rdx</code> — 행 오프셋을 베이스 포인터에 더해서 <code>&amp;arr[r]</code>을 구한다. 이 시점의 <code>rax</code>는 "4개짜리 int 배열 하나"를 가리키는 포인터이며, REV-1058에서 본 1차원 배열 접근의 베이스 역할을 그대로 이어받는다.</li><li><code>mov eax, [rax+rdx*4]</code> — 여기서부터는 REV-1058과 완전히 동일한 SIB 패턴이다. 즉 <strong>2차원 배열 인덱싱은 "행 오프셋 계산(1단계, imul)" 다음에 "1차원 배열 인덱싱(2단계, SIB)"이 그대로 이어붙은 구조</strong>다.</li><li>SIB의 스케일이 <code>*4</code>(마지막 차원의 원소 크기)로 고정되고, 행 이동에 쓰이는 곱셈 상수(<code>0x10</code>)는 SIB로 표현할 수 없는 큰 값이라 <code>imul</code>로 별도 처리된다는 점이 1차원 배열과 다르다.</li></ul>
+<h3>디컴파일러가 복원한 pseudocode</h3>
+<pre><code class="language-c">int get2d(int arr[3][4], int r, int c)
+{
+  return arr[r][c];
+}</code></pre>
+<p>IDA/Ghidra가 매개변수 타입을 <code>int (*)[4]</code>로 정확히 추론했다면 <code>arr[r][c]</code>로 깔끔하게 복원해준다. 하지만 타입 추론이 실패하면 <code>*(int *)((char *)arr + (long)r * 16 + (long)c * 4)</code>처럼 <strong>행 크기 상수(16)와 원소 크기 상수(4)가 그대로 노출된 포인터 산술식</strong>으로 보여주는 경우가 많다. 이 형태를 만나면 <code>r * 16</code>의 16을 4(int 크기)로 나눠서 "열이 4개"라는 정보를 역산해내는 게 리버싱의 실질적인 작업이 된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>imul reg, reg, N</code>(N이 16, 12, 40처럼 4/8보다 큰 상수) 뒤에 <code>add</code>로 포인터에 더하고, 그다음 다시 <code>[reg+reg*M]</code> SIB 패턴이 이어진다 — 이 "곱셈 → 더하기 → SIB" 조합이 2차원 배열의 시그니처다.</li><li>함수 시그니처에 <code>int arr[N][M]</code>처럼 대괄호가 두 번 있거나, 디스어셈블리 상 포인터 타입이 <code>int (*)[4]</code>처럼 표시된다.</li><li>상수 곱셈 값(<code>imul</code>의 N)이 항상 고정되어 있고, 반복문에서는 그 곱셈에 들어가는 변수(행 인덱스)만 바뀐다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>imul</code>로 시작해서 <code>add</code>, 그다음 다시 SIB 패턴(<code>[reg+reg*M]</code>)으로 이어지는 코드를 찾으면, 첫 <code>imul</code>의 상수(N)를 원소 크기(M)로 나눠서 열 개수를 계산한다(<code>N / M = COLS</code>). 이 한 번의 계산으로 2차원 배열의 두 번째 차원 크기를 알아낼 수 있다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>imul reg, reg, N</code> 형태의 곱셈을 찾고 N을 기록한다.</li><li>그 결과가 <code>add</code>로 어떤 포인터에 더해지는지 추적한다 — 이게 "행 시작 주소" 계산이다.</li><li>그 다음 이어지는 SIB 패턴(<code>[reg+reg*M]</code>)에서 M을 확인한다 — 이게 배열 원소(가장 안쪽 차원)의 크기다.</li><li><code>N / M</code>으로 열 개수(COLS)를 계산한다.</li><li>반복문이 두 겹으로 중첩되어 있다면(REV-1064와 유사), 바깥쪽이 행(r) 인덱스, 안쪽이 열(c) 인덱스를 순회하는지 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code>(gdb) disas get2d
+(gdb) print $rdi           ; arr 베이스 주소
+(gdb) x/12dw $rdi          ; 3행 4열 = 12개 int를 한 번에 덤프해서 행 우선 저장 확인</code></pre>
+<p>IDA: 함수 인자 타입을 <code>int (*)[4]</code> 형태로 직접 지정하면(Edit function type) <code>[rax+rdx*4]</code> 및 앞의 <code>imul</code> 계산이 자동으로 <code>arr[r][c]</code>로 정리된다.</p>
+<h2>출력 해석</h2>
+<ul><li><code>imul</code>의 상수 N이 원소 크기(보통 4 또는 8)의 배수가 아니라면, 2차원 배열이 아니라 구조체 배열(REV-1064)이거나 원소가 구조체인 배열일 가능성을 검토해야 한다.</li><li>메모리 덤프에서 <code>arr[0][0], arr[0][1], ..., arr[0][3], arr[1][0], ...</code> 순서로 값이 이어져 있는 것이 확인되면 행 우선(row-major) 저장이 맞다는 뜻이다. C는 항상 행 우선이므로 이 순서를 기준으로 인덱스를 해석하면 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>arr[r][c]</code>를 <code>arr[r*4+c]</code>처럼 손으로 계산할 때, 4(열 개수)를 원소 크기(sizeof(int)=4)와 혼동해서 우연히 같은 숫자라고 원리를 착각하는 것 — 두 개는 우연히 같은 값(4)일 뿐 의미가 다른 별개의 상수다. 열 개수가 다른 배열(<code>int arr[3][6]</code>)이면 이 둘이 서로 다른 값으로 명확히 분리되어 나타난다.</li><li>2차원 배열을 함수 인자로 받을 때 실제로는 첫 번째 차원(행 개수, 위 예시의 3)이 코드에 전혀 나타나지 않는다는 것을 놓치는 것 — 컴파일러가 아는 건 "한 행이 몇 바이트인지"뿐이고, 전체 행이 몇 개인지는 함수 시그니처 타입 정보에만 있고 주소 계산에는 등장하지 않는다.</li><li><code>int **</code>(포인터의 포인터, 실제로 각 행이 별도로 <code>malloc</code>된 경우)와 <code>int[N][M]</code>(고정 크기 2차원 배열)을 같은 것으로 착각하는 것 — 전자는 각 행 접근마다 먼저 <code>[rdi+r*8]</code>로 행 포인터를 읽어온 뒤 그 포인터를 역참조해서 다시 <code>[reg+c*4]</code>로 접근하는 <strong>두 번의 역참조</strong>가 필요하지만, 후자는 이 글처럼 역참조가 한 번뿐이다. 두 역참조가 있는지 없는지로 구분하면 된다.</li><li><code>-O2</code> 이상에서 행 크기(N)가 2의 거듭제곱이면 <code>imul</code> 대신 <code>shl</code>(시프트)로 대체될 수 있다는 점을 놓치는 것 — <code>shl rdx, 4</code>가 <code>imul rdx, rdx, 16</code>과 동일한 효과를 낸다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>1차원 배열 인덱싱의 기본 SIB 패턴이 헷갈리면 → REV-1058(1차원 배열 인덱싱이 어셈블리에서 보이는 패턴), REV-0350(다차원 배열이 어셈블리로 어떻게 변하는지).</li><li>2차원 배열을 함수에 넘길 때 포인터로 decay되는 세부 문법이 궁금하면 → REV-1077(다차원 배열을 함수로 넘길 때 포인터로 decay되는 패턴).</li><li>구조체 배열 순회와 헷갈리면 → REV-1064(구조체 배열 순회가 어셈블리에서 보이는 패턴).</li><li>시프트 명령어로 대체된 곱셈이 헷갈리면 → REV-0061(SHL/SAL).</li></ul>
+<h2>미니 예제</h2>
+<p>2차원 배열에 값을 대입하는 방향과, 이중 반복문으로 전체를 순회하는 경우도 같은 두 단계 계산을 그대로 쓴다.</p>
+<pre><code class="language-c">void set2d(int arr[3][4], int r, int c, int value) {
+    arr[r][c] = value;
+}</code></pre>
+<pre><code class="language-asm">set2d:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 0x20
+    mov     [rbp-0x18], rdi   ; arr
+    mov     [rbp-0x1c], esi   ; r
+    mov     [rbp-0x20], edx   ; c
+    mov     [rbp-0x24], ecx   ; value
+    mov     eax, [rbp-0x1c]
+    movsxd  rdx, eax
+    imul    rdx, rdx, 0x10     ; r * 16
+    mov     rax, [rbp-0x18]
+    add     rax, rdx            ; &amp;arr[r]
+    mov     edx, [rbp-0x20]
+    movsxd  rdx, edx
+    mov     ecx, [rbp-0x24]     ; value
+    mov     [rax+rdx*4], ecx    ; arr[r][c] = value
+    leave
+    ret</code></pre>
+<p>읽기(<code>get2d</code>)와 쓰기(<code>set2d</code>)는 <code>mov</code>의 방향만 다르고, 행 오프셋 계산(<code>imul ..., 0x10</code>)과 열 오프셋 SIB(<code>[rax+rdx*4]</code>) 구조는 완전히 동일하다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-1058-1d-array-indexing-asm-pattern.html">REV-1058 — 1차원 배열 인덱싱이 어셈블리에서 보이는 패턴</a></li><li><a href="rev-1077-multidim-array-decay-to-pointer-pattern.html">REV-1077 — 다차원 배열을 함수로 넘길 때 포인터로 decay되는 패턴</a></li><li><a href="rev-1064-struct-array-traversal-asm-pattern.html">REV-1064 — 구조체 배열 순회가 어셈블리에서 보이는 패턴</a></li><li><a href="rev-0350-multidim-array-in-asm.html">REV-0350 — 다차원 배열이 어셈블리로 어떻게 변하는지</a></li><li><a href="rev-0061-shl-sal.html">REV-0061 — SHL과 SAL: 왼쪽 시프트</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>행 우선(row-major) 저장 순서와 다차원 배열 인덱싱 공식(<code>arr + (r*COLS+c)*sizeof(elem)</code>): ISO C 표준(C11) 6.5.2.1 및 6.7.6.2(Array declarators) 기준.</li><li>다차원 배열 매개변수가 "원소가 배열인 포인터"(<code>int(*)[4]</code>)로 decay되는 규칙: C11 표준 6.7.6.3 Function declarators 기준 (2026-09-10 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,143 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>부모 프로세스 확인 안티디버깅(explorer.exe 체크) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>부모 프로세스 확인 안티디버깅(explorer.exe 체크)</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>평범한 사용자가 <code>.exe</code>를 더블클릭하면 그 프로세스의 부모는 항상 <code>explorer.exe</code>가 되는 반면, 리버서가 x64dbg나 IDA, 또는 <code>cmd.exe</code>에서 프로그램을 실행하면 부모 프로세스 이름이 <code>x64dbg.exe</code>, <code>ida64.exe</code>, <code>cmd.exe</code> 등으로 달라지므로, 실행 중에 자신의 부모 프로세스 이름을 확인해서 <code>explorer.exe</code>가 아니면 "정상적인 실행 방식이 아니다"라고 판단하는 것이 이 기법의 핵심이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>코드 문자열에 <code>"explorer.exe"</code>가 하드코딩되어 있는 것을 발견했을 때</li><li><code>CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)</code> + <code>Process32First</code>/<code>Process32Next</code> 조합으로 프로세스 목록을 순회하며 <code>th32ParentProcessID</code>를 확인하는 코드를 발견했을 때</li><li>탐색기에서 더블클릭하면 정상 실행되는데, x64dbg에서 열거나 <code>cmd.exe</code>에서 실행하면 프로그램이 조용히 종료되는 것을 발견했을 때</li><li><code>NtQueryInformationProcess</code>로 <code>ProcessBasicInformation</code>을 조회하는 코드가 있고, 반환된 구조체의 특정 필드(부모 PID)를 쓰는 것을 발견했을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>부모 프로세스 정보는 어디서 오나</h3>
+<p>Windows에서 새 프로세스를 만들면 커널은 "누가 이 프로세스를 만들었는가(부모 PID)"를 기록해둔다. 이 정보를 얻는 방법은 크게 두 가지다.</p>
+<p><strong>방법 1: Toolhelp 스냅샷</strong></p>
+<pre><code class="language-c">HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+PROCESSENTRY32 pe = { sizeof(pe) };
+DWORD myPid = GetCurrentProcessId();
+DWORD parentPid = 0;
+if (Process32First(snap, &amp;pe)) {
+    do {
+        if (pe.th32ProcessID == myPid) {
+            parentPid = pe.th32ParentProcessID;
+            break;
+        }
+    } while (Process32Next(snap, &amp;pe));
+}
+// parentPid로 다시 한 번 순회해서 이름(szExeFile) 확인</code></pre>
+<p>프로세스 목록 전체를 순회하며 자기 자신의 <code>PROCESSENTRY32</code> 항목을 찾고, 그 안의 <code>th32ParentProcessID</code> 필드로 부모 PID를 얻은 뒤, 다시 그 PID를 가진 항목의 <code>szExeFile</code>(실행 파일 이름)을 확인한다.</p>
+<p><strong>방법 2: NtQueryInformationProcess</strong></p>
+<pre><code class="language-c">PROCESS_BASIC_INFORMATION pbi;
+ULONG retLen;
+NtQueryInformationProcess(GetCurrentProcess(), ProcessBasicInformation,
+                           &amp;pbi, sizeof(pbi), &amp;retLen);
+// pbi.InheritedFromUniqueProcessId 가 부모 PID</code></pre>
+<p><code>ntdll.dll</code>의 비공식(정확히는 공식 문서화가 제한적인) API인 <code>NtQueryInformationProcess</code>를 <code>ProcessBasicInformation</code>(값 0) 클래스로 호출하면 <code>PROCESS_BASIC_INFORMATION</code> 구조체의 <code>InheritedFromUniqueProcessId</code> 필드에서 부모 PID를 바로 얻을 수 있다. Toolhelp 방식보다 API 호출이 하나로 끝나 더 빠르고 은밀하다.</p>
+<h3>왜 explorer.exe와 비교하나</h3>
+<p>사용자가 탐색기(Windows Explorer, <code>explorer.exe</code>)에서 <code>.exe</code> 파일을 더블클릭하면, 새 프로세스��� <code>explorer.exe</code>의 자식으로 생성된다. 이것이 "일반 사용자의 정상적인 실행 경로"의 표준 패턴이다. 반면:</p>
+<ul><li>x64dbg에서 <code>File → Open</code>으로 실행하면 부모가 <code>x64dbg.exe</code>가 된다.</li><li><code>cmd.exe</code>나 PowerShell에서 실행하면 부모가 <code>cmd.exe</code>/<code>powershell.exe</code>가 된다.</li><li>IDA의 디버거로 실행하면 부모가 <code>ida64.exe</code>/<code>ida.exe</code>가 된다.</li></ul>
+<p>이 차이를 이용해 부모 이름이 <code>explorer.exe</code>가 아니면 "리버서/디버거 환경에서 실행 중"이라고 의심하는 것이다.</p>
+<h3>이 기법의 근본적인 한계</h3>
+<p>이 검사는 <strong>오탐(false positive)이 매우 흔하다</strong>는 치명적인 약점이 있다. 배치 스크립트, 설치 프로그램, 다른 정상 프로그램이 자식 프로세스로 실행하는 경우, 원격 데스크톱/자동화 도구로 실행하는 경우 등 정상적인 사용 시나리오에서도 부모가 <code>explorer.exe</code>가 아닌 경우가 매우 많다. 그래서 실전 상용 소프트웨어에서는 이 검사를 단독으로 쓰기보다 다른 안티디버깅 기법과 조합해서 보조적으로만 사용하는 경우가 많다.</p>
+<h3>PID 재사용 문제</h3>
+<p>부모 프로세스가 이미 종료된 뒤 그 PID가 다른(전혀 무관한) 프로세스에 재사용될 수 있다는 점도 이 검사를 신뢰도 낮게 만드는 요인이다. 정교한 구현은 PID뿐 아니라 프로세스 생성 시각까지 비교해서 이런 오판을 줄이려 하지만, CTF/실전 리버싱 문제 수준에서는 대개 단순 PID+이름 비교 정도로 구현되어 있다.</p>
+<h3>조부모(grandparent)까지 검사하는 변형</h3>
+<p>일부 구현은 부모 하나만 보는 것으로 만족하지 않고, 부모의 부모(조부모)까지 거슬러 올라가며 실행 체인 전체를 검사한다. 예를 들어 사용자가 <code>cmd.exe</code>를 먼저 열고 그 안에서 탐색기 아이콘을 더블클릭하는 대신 파일 경로를 직접 입력해 실행하면 부모는 <code>cmd.exe</code>가 되고, <code>cmd.exe</code>의 부모는 다시 <code>explorer.exe</code>인 경우가 많다. 조부모까지 확인하는 검사는 이런 "간접 실행" 경로까지 걸러내려는 의도이며, 반대로 리버서 입장에서는 이런 조부모 검사 로직을 놓치면 "분명 부모를 explorer.exe로 위장했는데도 왜 걸리지?"라는 혼란을 겪을 수 있다.</p>
+<h3>형제 프로세스 개수 검사와의 결합</h3>
+<p>일부 프로그램은 부모 이름 검사와 더불어, 같은 부모를 가진 다른 자식 프로세스(형제 프로세스) 개수까지 함께 확인한다. 정상적인 탐색기 실행 환경에서는 <code>explorer.exe</code>의 자식이 매우 많은 반면(트레이 아이콘, 백그라운드 서비스 등), x64dbg 하나만 띄워놓고 그 안에서 실행한 환경은 부모의 자식 수가 비정상적으로 적을 수 있다는 통계적 특징을 이용하는 것인데, 실무에서는 오탐 위험이 커서 흔히 쓰이지는 않는다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>코드나 문자열 창에 <code>"explorer.exe"</code>가 하드코딩되어 있고, 대소문자 비교(<code>_stricmp</code>, <code>lstrcmpiA</code> 등) 함수와 함께 쓰임.</li><li><code>CreateToolhelp32Snapshot</code>, <code>Process32First</code>, <code>Process32Next</code>가 Import Table에 함께 있음.</li><li><code>ntdll.dll</code>에서 <code>NtQueryInformationProcess</code>를 직접 <code>GetProcAddress</code>로 얻어 호출하는 패턴(정적 Import에 안 보이고 문자열로만 <code>"NtQueryInformationProcess"</code>가 보일 수 있음).</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>비교 대상 문자열이 정확히 <code>"explorer.exe"</code>인지, 대소문자를 구분하는지, 전체 경로(<code>C:\Windows\explorer.exe</code>)까지 비교하는지 파일 이름만 비교하는지부터 확인한다. 이 비교 방식에 따라 x64dbg에서 프로세스 이름을 위장하는 우회 난이도가 달라진다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 부모 PID 획득 방식 확인</strong></p>
+<p>IDA에서 <code>CreateToolhelp32Snapshot</code> 계열인지 <code>NtQueryInformationProcess</code> 계열인지 구분한다.</p>
+<p><strong>2) 비교 로직 확인</strong></p>
+<p>부모 이름과 <code>"explorer.exe"</code>를 비교하는 함수(문자열 비교 함수 이름과 대소문자 구분 여부)를 확인하고, 일치/불일치에 따른 분기 방향을 반드시 실제로 따라가서 확인한다.</p>
+<p><strong>3) x64dbg에서 재현</strong></p>
+<p>x64dbg로 프로그램을 직접 열어(<code>File → Open</code>) 실행하면 부모가 <code>x64dbg.exe</code>가 되므로 검사에 걸리는지 관찰한다. <code>Attach</code>로 붙였을 때와 <code>Open</code>으로 직접 실행했을 때 부모가 다를 수 있다는 점도 함께 비교해본다.</p>
+<p><strong>4) 우회 방법 이해</strong></p>
+<p>가장 흔한 우회는 <code>explorer.exe</code>에서 x64dbg를 자식으로 실행한 뒤(예: 탐색기에서 x64dbg 바로가기 실행), 그 x64dbg가 다시 대상 프로그램을 <code>explorer.exe</code>의 손자 프로세스로 만들어버리는 방법이 아니라, <strong>대상 프로그램을 먼저 <code>explorer.exe</code>가 부모가 되도록 정상 실행시킨 뒤 x64dbg로 나중에 Attach</strong>하는 방법이다(단, 이 경우 초기 몇 명령어는 이미 지나간 상태이므로 타이밍에 주의). 더 근본적인 방법은 검사 로직 자체(비교 후 분기)를 패치하거나, <code>CreateToolhelp32Snapshot</code>/<code>NtQueryInformationProcess</code> 호출을 후킹해 항상 <code>explorer.exe</code>의 PID를 반환하도록 만드는 것이다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>Sysinternals Process Explorer: 프로세스 트리에서 부모-자식 관계를 시각적으로 확인</li><li>x64dbg: <code>File → Open</code>(직접 실행, 부모가 x64dbg가 됨) vs <code>File → Attach</code>(이미 실행된 프로세스에 붙음, 부모는 원래 실행한 프로그램 그대로)</li><li>IDA: <code>Shift+F12</code>(Strings 창)에서 <code>"explorer.exe"</code> 검색 후 xref로 사용처 추적</li></ul>
+<h2>출력 해석</h2>
+<ul><li>부모 PID로 찾은 프로세스 이름이 <code>explorer.exe</code>가 아니면 검사 로직상 "의심스러운 실행 환경"으로 분류된다.</li><li><code>InheritedFromUniqueProcessId</code>(NtQueryInformationProcess 방식)가 0이거나 이미 종료된 PID를 가리킨다면, 부모가 이미 사라졌거나 특수한 방식으로 생성된 프로세스라는 신호일 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>이 검사 하나만 우회하면 안전하다고 생각하는 것 — 오탐이 흔한 기법이라 다른 강력한 기법(REV-0533 NtQueryInformationProcess, REV-0541 Self-Debugging)과 함께 조합되는 경우가 많다.</li><li>x64dbg를 explorer.exe에서 직접 실행하지 않고 다른 방식(스크립트, 배치파일)으로 띄운 뒤 대상 프로그램을 열어서 "역시 부모가 explorer.exe가 아니네"라고 오판하는 것 — x64dbg 자체의 실행 경로도 함께 신경 써야 정확한 재현이 된다.</li><li>부모 프로세스 이름 비교가 대소문자를 구분하는지 확인하지 않고 우회 방법(프로세스 이름 위장)을 시도하는 것.</li><li>PID 재사용 가능성을 고려하지 않고 "부모 PID가 있으니 확실한 부모다"라고 단정하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>셀프 디버깅과 결합되는 경우가 궁금하다면 → REV-0541 자기 자신 디버깅(Self-Debugging) 안티디버깅 기법</li><li><code>NtQueryInformationProcess</code>의 다른 정보 클래스(디버그 포트 등)가 궁금하다면 → REV-0533 — NtQueryInformationProcess로 하는 안티디버깅</li><li>윈도우 클래스명 기반의 또 다른 환경 확인 기법이 궁금하다면 → REV-0543 윈도우 클래스명으로 디버거 탐지하는 기법(x64dbg 창 이름)</li><li>여러 안티디버깅 기법을 한눈에 정리한 표가 필��하다면 → REV-0529 — Windows 안티디버깅 기법 종류 빠른 참조표</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">#include &lt;windows.h&gt;
+#include &lt;tlhelp32.h&gt;
+
+BOOL IsParentExplorer(void) {
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    PROCESSENTRY32 pe = { sizeof(pe) };
+    DWORD myPid = GetCurrentProcessId();
+    DWORD parentPid = 0;
+
+    if (Process32First(snap, &amp;pe)) {
+        do {
+            if (pe.th32ProcessID == myPid) {
+                parentPid = pe.th32ParentProcessID;
+                break;
+            }
+        } while (Process32Next(snap, &amp;pe));
+    }
+
+    BOOL result = FALSE;
+    if (Process32First(snap, &amp;pe)) {
+        do {
+            if (pe.th32ProcessID == parentPid) {
+                result = (lstrcmpiA(pe.szExeFile, "explorer.exe") == 0);
+                break;
+            }
+        } while (Process32Next(snap, &amp;pe));
+    }
+    CloseHandle(snap);
+    return result;
+}
+
+int main(void) {
+    if (!IsParentExplorer()) {
+        ExitProcess(1);
+    }
+    printf("Enter flag: ");
+    return 0;
+}</code></pre>
+<p>x64dbg로 직접 실행하면 부모가 <code>x64dbg.exe</code>가 되어 <code>IsParentExplorer()</code>가 <code>FALSE</code>를 반환하고, 탐색기에서 더블클릭하면 부모가 <code>explorer.exe</code>라 <code>TRUE</code>가 반환되는 차이를 관찰할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0541-self-debugging-anti-debugging.html">REV-0541 — 자기 자신 디버깅(Self-Debugging) 안티디버깅 기법</a></li><li><a href="rev-0533-ntqueryinformationprocess-anti-debugging.html">REV-0533 — NtQueryInformationProcess로 하는 안티디버깅</a></li><li><a href="rev-0543-window-class-name-debugger-detection.html">REV-0543 — 윈도우 클래스명으로 디버거 탐지하는 기법(x64dbg 창 이름)</a></li><li><a href="rev-0529-windows-anti-debugging-techniques-quickref.html">REV-0529 — Windows 안티디버깅 기법 종류 빠른 참조표</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>CreateToolhelp32Snapshot</code>, <code>Process32First</code>/<code>Process32Next</code>, <code>PROCESSENTRY32</code>(<code>th32ProcessID</code>, <code>th32ParentProcessID</code>, <code>szExeFile</code>)는 Microsoft 공식 문서(learn.microsoft.com, "Tool Help Library") 기준.</li><li><code>NtQueryInformationProcess</code>와 <code>PROCESS_BASIC_INFORMATION.InheritedFromUniqueProcessId</code>는 Microsoft가 부분적으로 문서화한 ntdll 네이티브 API(learn.microsoft.com "NtQueryInformationProcess function") 및 ReactOS/Process Hacker 등에서 공개된 구조체 정의를 기준으로 서술했다.</li><li>부모 프로세스 이름 비교 기반 안티디버깅 패턴과 그 오탐 한계는 다수의 공개 안티디버깅 리서치 자료에서 공통적으로 지적하는 내용이다(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

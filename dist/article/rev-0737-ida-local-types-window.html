@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA Local Types 창 활용하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA Local Types 창 활용하기</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p><strong>Local Types</strong> 창(<code>Shift+F1</code>)은 현재 IDA 데이터베이스에 등록된 모든 사용자 정의/가져온 타입(구조체, 공용체, enum, typedef, 함수 원형)을 <strong>C 문법 텍스트</strong>로 한 번에 보고 편집할 수 있는 창으로, Structures/Enumerations 창처럼 항목을 하나씩 클릭해서 만드는 대신 C 코드를 그대로 타이핑하거나 붙여넣어 여러 타입을 한꺼번에 정의할 수 있다는 점이 가장 큰 장점이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>이미 손에 있는 C 구조체 정의(문제 소스 일부, 공개된 SDK 헤더 등)를 IDA에 빠르게 그대로 옮기고 싶을 때</li><li>REV-0734(Structures 창)에서 필드를 하나씩 클릭해 추가하는 게 번거로워서, 텍스트로 한 번에 여러 구조체/typedef를 정의하고 싶을 때</li><li>이미 정의해 둔 타입들을 한눈에 훑어보거나, 다른 IDA 데이터베이스로 옮기기 위해 내보내고(export) 싶을 때</li><li>Local Types에서 구조체를 만들었는데 필드 오프셋이 예상과 다르게 계산되어서 원인을 찾아야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Local Types가 담고 있는 것</h3>
+<p>Local Types는 현재 데이터베이스(idb)에 실제로 존재하는 모든 타입 정의의 저장소다. 여기에는 다음이 모두 포함된다.</p>
+<ul><li>분석자가 Structures/Enumerations 창에서 만든 구조체·enum(REV-0734, REV-0735)</li><li><code>File → Load file → Parse C header file...</code>로 헤더에서 가져온 타입</li><li>REV-0736에서 다룬 Type Libraries(til)에서 실제로 참조되어 복사된 타입</li><li>함수 원형(REV-0738)에 등장하는 이름 붙은 typedef</li></ul>
+<p>Structures/Enumerations 창이 각각 구조체 전용, enum 전용 뷰인 것과 달리, Local Types는 이 모든 종류의 타입을 텍스트 기반의 통합 목록으로 보여준다.</p>
+<h3>텍스트로 타입 정의하기</h3>
+<p>Local Types 창에서 <code>Ins</code>(또는 우클릭 → <strong>Insert...</strong>, 일부 버전에서는 <strong>Add...</strong>)를 누르면 C 선언 형태로 타입을 직접 입력하는 편집창이 뜬다. 예를 들어 다음처럼 여러 구조체와 typedef를 한 번에 붙여넣을 수 있다.</p>
+<pre><code class="language-c">typedef struct _PLAYER {
+  int id;
+  int hp;
+  int mp;
+  char name[16];
+} PLAYER, *PPLAYER;</code></pre>
+<p>Structures 창에서 필드를 하나씩 <code>Ins</code>로 추가하는 것과 달리, 이미 문법이 맞는 C 코드가 있다면 이 방식이 압도적으로 빠르다.</p>
+<h3>C 헤더 파일 통째로 가져오기</h3>
+<p>더 큰 규모라면 <code>File → Load file → Parse C header file...</code> 메뉴로 <code>.h</code> 파일 자체를 파싱해서 그 안의 모든 타입을 한 번에 Local Types에 채울 수 있다. 파싱 중 알 수 없는 매크로나 컴파일러 확장 문법을 만나면 오류가 나므로, 필요하면 헤더 상단에 IDA가 이해하도록 <code>#define</code> 몇 개를 추가하거나 문제되는 부분만 잘라내고 다시 시도한다.</p>
+<h3>Structures 창과의 차이 — 정렬(alignment) 주의</h3>
+<p>Local Types에서 C 문법으로 구조체를 선언하면, IDA는 기본적으로 표준 C 컴파일러의 정렬 규칙을 적용해 필드 오프셋을 계산한다. 그런데 원본 바이너리가 <code>#pragma pack(1)</code>처럼 다른 정렬 규칙으로 컴파일되었다면, Local Types에서 그냥 선언한 구조체는 실제 오프셋과 어긋나게 계산될 수 있다. 이 경우 선언 앞에 <code>#pragma pack(1)</code> (또는 필요한 정렬 값)을 명시하거나, Structures 창(REV-0734)에서 필드를 하나씩 만들며 각 필드의 정렬을 직접 통제하는 방법으로 우회해야 한다. 반대로 Structures 창에서 만든 구조체는 필드를 추가한 순서와 크기 그대로 오프셋이 결정되므로 이런 자동 재정렬 문제가 없다.</p>
+<h3>내보내기/가져오기</h3>
+<p>Local Types 창에서 타입을 선택한 뒤 우클릭 → <strong>Export...</strong>(또는 유사한 메뉴)를 사용하면 선택한 타입 정의를 <code>.h</code> 형태의 텍스트로 내보낼 수 있다. 이렇게 만든 텍스트는 다른 바이너리를 분석할 때 다시 파싱해서 재사용하거나, 팀원과 타입 정의를 공유하는 데 쓸 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>이미 여러 구조체가 뒤섞인 C 코드/헤더가 있는데 Structures 창에서 하나씩 만들기엔 양이 너무 많다.</li><li>Local Types에서 만든 구조체를 적용했더니, 실제 오프셋과 필드 위치가 미묘하게 어긋난다(패딩 문제 의심).</li><li>다른 바이너리 분석에서 썼던 구조체 정의를 이번 데이터베이스에도 그대로 옮기고 싶다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>정의하려는 타입이 이미 텍스트(C 코드, 헤더 파일)로 존재하는지 확인한다. 존재한다면 Local Types의 텍스트 편집/헤더 파싱 기능을 바로 활용하고, 존재하지 않고 오프셋만으로 새로 추정해야 한다면 REV-0734(Structures 창)에서 필드를 하나씩 통제하며 만드는 편이 정렬 문제를 피하기 쉽다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>Shift+F1</code>로 Local Types 창을 연다.</li><li>텍스트로 직접 입력하려면 <code>Ins</code>(또는 우클릭 → Insert/Add)를 눌러 C 선언 편집창을 열고, 구조체/typedef/enum 선언을 붙여넣는다.</li><li>원본 바이너리가 특수한 정렬(예: 1바이트 정렬)로 빌드된 것 같다면 선언 앞에 <code>#pragma pack(N)</code>을 추가한다.</li><li>헤더 파일 전체를 가져오려면 <code>File → Load file → Parse C header file...</code>로 <code>.h</code> 파일을 지정한다. 오류가 나면 문제 되는 매크로/문법을 헤더에서 잘라내거나 대체 정의를 추가한 뒤 다시 시도한다.</li><li>완성된 타입은 REV-0148(<code>Y</code>)로 전역/지역 변수에 적용하거나, REV-0738에서 다루는 함수 원형 지정에서 타입 이름으로 참조한다.</li><li>나중에 재사용하려면 타입을 선택한 뒤 우클릭 → <strong>Export...</strong>로 텍스트 형태로 저장해둔다.</li><li>오프셋이 이상하게 계산된 것 같으면 Structures 창(<code>Shift+F9</code>)에서 같은 이름으로 만든 구조체와 오프셋을 대조해서 정렬 문제인지 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li><code>Shift+F1</code>: Local Types 서브뷰 열기</li><li>Local Types 창에서 <code>Ins</code>: 새 타입 텍스트 입력(구조체/typedef/enum/함수 원형 등)</li><li><code>File → Load file → Parse C header file...</code>: <code>.h</code> 파일 전체를 파싱해서 Local Types에 일괄 등록</li><li>타입 선택 후 우클릭 → <strong>Export...</strong>: 선택한 타입을 텍스트(<code>.h</code> 유사 형식)로 내보내기</li><li><code>Shift+F9</code> / <code>Shift+F10</code>: 각각 Structures / Enumerations 창(정렬을 직접 통제하고 싶을 때 대조용)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>C 선언 편집창에서 문법 오류가 있으면 저장 시 오류 메시지와 함께 어느 줄/토큰이 문제인지 표시된다. 알 수 없는 타입 이름을 참조했다면 먼저 그 타입부터 정의해야 한다.</li><li>Parse C header file 실행 후 Output window에 성공적으로 파싱된 타입 개수와, 실패했다면 실패한 매크로/선언의 목록이 로그로 남는다.</li><li>Local Types에 등록은 됐지만 실제 코드 어디에도 적용되지 않은 타입은 목록에는 보이지만 Pseudocode에는 아무 영향을 주지 않는다 — 반드시 <code>Y</code>나 함수 원형 지정으로 실제 적용해야 효과가 나타난다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Local Types에서 C 문법으로 구조체를 선언하면서 원본의 특수 정렬(pack)을 고려하지 않아 필드 오프셋이 실제와 어긋나는 것.</li><li>헤더 파일을 통째로 파싱하려다 컴파일러 전용 확장 문법(예: <code>__declspec</code>, 컴파일러별 attribute) 때문에 파싱이 실패하는데, 오류 로그를 안 읽고 무작정 재시도만 반복하는 것.</li><li>Local Types에 타입만 잔뜩 등록해두고 실제 변수/함수에는 하나도 적용하지 않아 분석에 아무 도움이 안 되는 것.</li><li>Structures 창과 Local Types 창이 서로 다른 저장소라고 착각하는 것 — 실제로는 같은 타입 정보를 다른 방식(폼 기반 vs 텍스트 기반)으로 보여주는 것뿐이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>정렬 문제 없이 필드를 하나씩 통제하며 만들고 싶다면 → REV-0734 IDA에서 구조체를 직접 정의해서 디컴파일에 적용하기</li><li>enum도 텍스트로 함께 선언하고 싶다면 → REV-0735 IDA에서 Enum을 정의해서 매직넘버를 이름으로 바꾸기</li><li>표준 SDK 타입을 직접 타이핑하지 않고 가져오고 싶다면 → REV-0736 IDA 타입 라이브러리(til) 로드해서 시그니처 인식률 높이기</li><li>정의한 타입을 함수 인자에 반영하고 싶다면 → REV-0738 IDA에서 함수 프로토타입을 수동으로 수정하기</li></ul>
+<h2>미니 예제</h2>
+<p>문제에서 다음과 같은 구조체 정의 일부가 주어졌다고 하자.</p>
+<pre><code class="language-c">struct Packet {
+    unsigned short type;
+    unsigned short length;
+    char data[64];
+};</code></pre>
+<p><code>Shift+F1</code>로 Local Types 창을 열고 <code>Ins</code>를 눌러 편집창에 이 코드를 그대로 붙여넣고 확인하면, Structures 창에서 필드 세 개를 하나씩 클릭해 만드는 것보다 훨씬 빠르게 타입이 등록된다. 이후 네트워크 패킷을 파싱하는 함수의 인자 위에서 <code>Y</code>를 눌러 <code>Packet *</code>을 지정하면, <code>*(unsigned short *)(a1)</code> 같은 표현이 <code>a1-&gt;type</code>으로 바로 바뀐다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0734-ida-define-struct-for-decompile.html">REV-0734 — IDA에서 구조체를 직접 정의해서 디컴파일에 적용하기</a></li><li><a href="rev-0735-ida-define-enum-magic-number.html">REV-0735 — IDA에서 Enum을 정의해서 매직넘버를 이름으로 바꾸기</a></li><li><a href="rev-0736-ida-load-type-library-til.html">REV-0736 — IDA 타입 라이브러리(til) 로드해서 시그니처 인식률 높이기</a></li><li><a href="rev-0738-ida-edit-function-prototype-manually.html">REV-0738 — IDA에서 함수 프로토타입을 수동으로 수정하기</a></li><li><a href="rev-0148-ida-set-type.html">REV-0148 — IDA Y로 타입 지정하기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Local Types 서브뷰(<code>Shift+F1</code>)의 역할(현재 idb에 저장된 모든 타입을 텍스트 기반으로 통합 관리)과 <code>Ins</code>를 통한 C 선언 직접 입력, <code>File → Load file → Parse C header file...</code>로 헤더 일괄 파싱: Hex-Rays 공식 문서(Types) 기준.</li><li>Local Types의 C 선언 파싱이 Structures 창과 다르게 표준 정렬 규칙을 적용해 <code>#pragma pack</code> 명시가 필요할 수 있다는 실전 caveat: 리버싱 실무에서 반복적으로 보고되는 동작이며, 정확한 재현 조건은 IDA 버전에 따라 다를 수 있다.</li><li>이 문서는 2026-09-09 기준 공개된 공식 문서 검색 결과를 바탕으로 작성했으며, 정확한 메뉴 문구(Insert/Add, Export 등)는 IDA 버전에 따라 다를 수 있으므로 실제 환경에서 재확인할 것을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

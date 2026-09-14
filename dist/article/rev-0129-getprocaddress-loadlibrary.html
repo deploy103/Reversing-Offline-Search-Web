@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GetProcAddress LoadLibrary 동적 API 해석 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>GetProcAddress LoadLibrary 동적 API 해석</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>LoadLibraryA/W</code>로 DLL을 메모리에 로드하고 <code>GetProcAddress</code>로 그 안의 함수 주소를 문자열 이름으로 직접 찾아오는 패턴은, Import Table에 함수 이름이 아예 안 남기 때문에 정적 분석만으로는 "이 프로그램이 실제로 어떤 API를 쓰는지" 알아내기 어렵게 만드는 흔한 기법이며, 이 패턴을 알아보는 것이 정적 분석의 사각지대를 메우는 첫걸음이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Import Table을 봤는데 <code>kernel32.dll</code>의 <code>LoadLibraryA</code>, <code>GetProcAddress</code> 딱 이 두 개(또는 소수)만 있고 나머지 API는 안 보일 때</li><li>디스어셈블리에서 문자열을 인자로 넘기며 <code>call</code>을 두 번 연속(한 번은 DLL 이름, 한 번은 함수 이름) 하는 패턴을 봤을 때</li><li><code>call</code>의 대상이 상수 주소가 아니라 레지스터(<code>call rax</code>, <code>call rbx</code> 등)라서 IDA가 이름을 자동으로 못 붙여줄 때</li><li>악성코드/패커/난독화된 바이너리가 정적 Import Table을 최소화하려고 왜 이런 패턴을 쓰는지 이해하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>정적 링킹 vs 동적(런타임) 해석</h3>
+<p>일반적인 프로그램은 컴파일/링크 시점에 "이 함수는 <code>kernel32.dll</code>의 <code>CreateFileW</code>다"라는 정보를 Import Table에 기록해두고, Windows 로더가 프로세스 시작 시 이 테이블을 보고 자동으로 함수 주소를 채워 넣는다(정적 임포트). 반면 프로그램은 실행 중에 직접 다음 두 API 조합으로 원하는 함수의 주소를 스스로 찾아낼 수도 있다(동적/런타임 해석).</p>
+<pre><code class="language-c">HMODULE LoadLibraryA(LPCSTR lpLibFileName);
+HMODULE LoadLibraryW(LPCWSTR lpLibFileName);
+FARPROC GetProcAddress(HMODULE hModule, LPCSTR lpProcName);</code></pre>
+<ul><li><code>LoadLibraryA</code>/<code>W</code>는 DLL 이름 문자열(<code>"user32.dll"</code> 등)을 받아 해당 DLL을 프로세스 메모리에 로드하고(이미 로드되어 있으면 그 핸들을 그대로 반환) 모듈 핸들(<code>HMODULE</code>)을 돌려준다.</li><li><code>GetProcAddress</code>는 그 모듈 핸들과 함수 이름 문자열(<code>"MessageBoxW"</code> 등, ANSI만 받는다는 점에 주의 — <code>W</code> 버전이 없다)을 받아, 해당 함수의 실제 메모리 주소를 <code>FARPROC</code>(함수 포인터) 타입으로 돌려준다.</li></ul>
+<p>이렇게 얻은 함수 포인터는 이후 <code>call rax</code>처럼 레지스터를 통해 간접 호출된다.</p>
+<h3>왜 이 패턴을 쓰는가</h3>
+<ul><li><strong>정적 분석 방해</strong>: Import Table만 훑어보는 자동화 툴이나 사람은 이 프로그램이 실제로 무슨 API를 쓰는지 알 수 없다. 악성코드나 상용 프로텍터가 흔히 쓰는 이유다.</li><li><strong>함수 이름 자체를 숨기기 위한 추가 인코딩</strong>: 문자열 <code>"CreateFileW"</code>를 그대로 두면 문자열 검색(REV-0128)만으로 걸리므로, 문자열을 XOR 등으로 인코딩해뒀다가 호출 직전에 복호화해서 <code>GetProcAddress</code>에 넘기는 경우도 흔하다.</li><li><strong>API 해시(hashing) 기법</strong>: 더 나아가면 함수 이름 문자열 자체도 남기지 않고, 이름의 해시값(예: ROR13 해시, CRC32 등)만 코드에 상수로 박아두고, Export Table을 순회하며 각 함수 이름의 해시를 직접 계산해서 비교하는 방식도 있다. 이 경우 <code>GetProcAddress</code>조차 호출하지 않고 PE 구조(Export Directory)를 직접 파싱하므로 더 추적하기 어렵다. 이 문서에서는 기본적인 <code>GetProcAddress</code>/<code>LoadLibrary</code> 패턴까지만 다룬다.</li><li><strong>지연 로딩(lazy loading)</strong>: 항상 필요하지 않은 DLL을 조건에 따라 그때그때 로드해서 시작 속도를 줄이거나, 특정 OS 버전에만 있는 API를 안전하게 확인 후 쓰기 위한 정상적인 용도로도 널리 쓰인다 — 이 패턴이 항상 악의적인 것은 아니다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Import Table에 <code>LoadLibraryA</code>(또는 <code>W</code>), <code>GetProcAddress</code>만 눈에 띄게 있고 그 외 API가 극단적으로 적음(REV-0125의 Import Table 확인 절차와 연결됨).</li><li>디스어셈블리에서 문자열 주소를 인자로 넘기며 <code>call LoadLibraryA</code> → 반환값(<code>RAX</code>/<code>EAX</code>)을 다음 호출의 첫 인자로 재사용 → 다른 문자열을 두 번째 인자로 넘기며 <code>call GetProcAddress</code> 순서가 반복됨.</li><li><code>GetProcAddress</code> 호출 직후 반환값(<code>RAX</code>)을 전역 변수나 스택에 저장했다가, 나중에 그 값을 레지스터에 옮긴 뒤 <code>call rax</code>처럼 간접 호출하는 코드.</li><li>IDA에서 이런 간접 호출 지점은 이름이 자동으로 안 붙기 때문에 <code>call rax</code>처럼만 보이고, 그래프 뷰에서 화살표로 다음 함수까지 안 이어져 분석 흐름이 끊긴 것처럼 보임.</li><li>Strings 창에 DLL 이름(<code>.dll</code> 확장자 포함 문자열)과 API 함수 이름처럼 보이는 문자열들이 여럿 모여 있음.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>GetProcAddress</code> 호출을 발견하면 곧바로 그 직전의 <strong>두 번째 인자(함수 이름 문자열)</strong>부터 확인한다. Windows x64라면 <code>RDX</code>, x86 stdcall이라면 스택의 두 번째 인자 위치를 본다. 이 문자열 값만 알아내면 "이 프로그램이 결국 어떤 함수를 쓰려는 것인지" 즉시 알 수 있고, 이후의 간접 호출(<code>call rax</code> 등)이 사실상 그 함수를 부르는 것과 같다고 이해하고 분석을 이어갈 수 있다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) LoadLibrary 호출 지점 찾기</strong></p>
+<p>IDA Imports 창에서 <code>LoadLibraryA</code>/<code>LoadLibraryW</code>를 찾아 <code>X</code>(xref)로 호출 지점을 추적한다. 호출 직전 인자(x64: <code>RCX</code>, x86: 스택 첫 인자)에 어떤 DLL 이름 문자열이 들어가는지 확인한다.</p>
+<p><strong>2) LoadLibrary 반환값의 행선지 추적</strong></p>
+<p><code>call LoadLibraryA</code> 이후 <code>RAX</code>(또는 <code>EAX</code>) 값이 어느 레지스터/지역 변수에 저장되는지 따라간다. 이 값이 바로 다음 <code>GetProcAddress</code> 호출의 첫 번째 인자(<code>HMODULE</code>)로 쓰인다.</p>
+<p><strong>3) GetProcAddress 호출과 두 번째 인자(함수 이름) 확인</strong></p>
+<p><code>call GetProcAddress</code> 직전, 두 번째 인자(x64: <code>RDX</code>, x86: 스택 두 번째 인자)에 들어가는 문자열 주소를 확인한다. 이 문자열이 바로 실제로 찾으려는 함수 이름이다. IDA에서 해당 주소로 이동해 문자열 내용을 직접 읽는다.</p>
+<p><strong>4) 반환값(함수 포인터)이 쓰이는 지점(간접 호출) 찾기</strong></p>
+<p><code>GetProcAddress</code>의 반환값이 저장되는 변수를 찾고, 그 변수가 나중에 <code>call reg</code>나 <code>call [mem]</code> 형태로 호출되는 지점을 xref로 추적한다. 이 지점에 도달하면, "이 <code>call</code>은 사실 함수 이름 문자열에서 확인한 그 API를 부르는 것"이라고 주석을 달아두면 이후 분석이 훨씬 쉬워진다.</p>
+<p><strong>5) 문자열이 인코딩되어 있다면 복호화 로직부터 확인</strong></p>
+<p><code>GetProcAddress</code>에 넘기는 문자열이 사람이 읽을 수 없는 값이라면, 그 문자열이 만들어지기 직전의 루프(XOR 복호화 등)를 먼저 분석해서 원래 함수 이름을 복원해야 한다.</p>
+<p><strong>6) x64dbg로 동적 검증</strong></p>
+<p><code>GetProcAddress</code>에 브레이크포인트를 걸고 실제 실행 중에 인자 값을 직접 읽으면, 정적 분석에서 문자열 추적이 헷갈렸던 부분을 빠르게 확인할 수 있다.</p>
+<pre><code class="language-text">bp GetProcAddress
+run
+; x64: RCX = HMODULE, RDX = 함수 이름 문자열 포인터
+dq rdx        ; 또는 문자열 뷰로 [RDX] 확인</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>X</code>(xref로 호출 지점 추적), Imports 창에서 <code>LoadLibraryA</code>/<code>GetProcAddress</code> 검색</li><li>x64dbg: <code>bp GetProcAddress</code>(브레이크포인트), Registers 창에서 <code>RCX</code>(모듈 핸들)/<code>RDX</code>(함수 이름 포인터) 확인, 우클릭 → <code>Follow in Dump</code>로 문자열 내용 확인</li><li>x64dbg 커맨드바: <code>bp LoadLibraryA</code>, <code>bp LoadLibraryW</code>도 함께 걸어두면 로드되는 DLL 순서까지 추적 가능</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>GetProcAddress</code>의 두 번째 인자 문자열이 정상적인 함수 이름(<code>"VirtualAlloc"</code> 등)으로 바로 읽힌다면 단순 지연 로딩/동적 해석 패턴이다.</li><li>두 번째 인자가 숫자(정수)처럼 보인다면, 이는 함수 이름이 아니라 <strong>Ordinal(순번)로 함수를 찾는 것</strong>이다 — <code>MAKEINTRESOURCE</code> 매크로로 만든 값이며, 이 경우 함수 이름은 Export Table의 순번 매핑을 따로 확인해야 알 수 있다.</li><li><code>GetProcAddress</code>가 <code>NULL(0)</code>을 반환하면 해당 함수를 못 찾았다는 뜻이며, 이후 코드에서 <code>test rax, rax</code> / <code>jz</code>로 실패 처리를 하는 분기가 이어질 가능성이 높다.</li><li>반환된 함수 포인터가 곧바로 저장되지 않고 다른 함수의 인자로 즉시 전달된다면(예: 콜백 등록 API에 넘기는 경우), 이 함수가 나중에 이벤트/콜백 형태로 호출될 것이라는 뜻이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>GetProcAddress</code>의 반환값(함수 포인터)이 곧바로 호출되지 않아서 "이 API는 안 쓰이는구나"라고 오판하는 것 — 저장됐다가 한참 뒤 다른 곳에서 간접 호출될 수 있으므로 끝까지 xref를 추적해야 한다.</li><li>첫 번째 인자와 두 번째 인자를 헷갈려서, <code>LoadLibrary</code>가 반환한 모듈 핸들을 함수 이름으로 착각하거나 그 반대로 착각하는 것.</li><li>Ordinal(정수) 기반 <code>GetProcAddress</code> 호출을 문자열 기반과 똑같이 취급해서 두 번째 인자 주소에서 억지로 문자열을 읽으려다 엉뚱한 데이터를 읽는 것.</li><li>간접 호출(<code>call rax</code>)을 그냥 "알 수 없는 호출"로 넘기고 분석을 포기하는 것 — 앞선 <code>GetProcAddress</code> 호출만 추적하면 대부분 실제 대상 함수를 특정할 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>call</code> 직전 인자가 어느 레지스터에 담기는지 다시 확인하려면 → REV-0122 Microsoft x64 호출 규약</li><li>함수 이름 문자열이 UTF-16으로 저장되어 있어서 안 보이는 것 같다면 → REV-0128 Windows 문자열 ASCII와 UTF-16 찾기(단, <code>GetProcAddress</code>의 함수 이름 인자는 항상 ANSI/1바이트라는 점에 주의)</li><li>이 패턴이 안티디버깅 API(<code>IsDebuggerPresent</code> 등)를 동적으로 숨기려는 목적이라면 → REV-0130 IsDebuggerPresent 안티디버깅 식별</li><li>x64dbg로 직접 실행하며 확인하는 기본기가 필요하다면 → REV-0127 x64dbg로 EXE 첫 분석 시작</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">HMODULE h = LoadLibraryA("user32.dll");
+FARPROC fn = GetProcAddress(h, "MessageBoxA");
+((int(WINAPI*)(HWND,LPCSTR,LPCSTR,UINT))fn)(NULL, "Hi", "Title", MB_OK);</code></pre>
+<p>x64 디스어셈블리로는 대략 다음과 같이 나타난다.</p>
+<pre><code class="language-asm">lea  rcx, [dll_name]       ; "user32.dll"
+call LoadLibraryA
+mov  [module_handle], rax  ; HMODULE 저장
+
+mov  rcx, [module_handle]
+lea  rdx, [func_name]      ; "MessageBoxA"
+call GetProcAddress
+mov  [fn_ptr], rax         ; 함수 포인터 저장
+
+mov  r9d, 0                ; MB_OK
+lea  r8, [title_str]       ; "Title"
+lea  rdx, [msg_str]        ; "Hi"
+xor  ecx, ecx               ; NULL
+call qword ptr [fn_ptr]     ; 사실상 MessageBoxA 호출</code></pre>
+<p>마지막 <code>call qword ptr [fn_ptr]</code>은 IDA가 이름을 자동으로 못 붙이지만, 앞선 <code>GetProcAddress</code> 인자 <code>"MessageBoxA"</code>를 확인했다면 이 호출이 곧 <code>MessageBoxA(NULL, "Hi", "Title", MB_OK)</code>라는 것을 알 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0122-ms-x64-calling-convention.html">REV-0122 — Microsoft x64 Calling Convention</a></li><li><a href="rev-0128-windows-string-encoding.html">REV-0128 — Windows 문자열 ASCII와 UTF-16 찾기</a></li><li><a href="rev-0130-isdebuggerpresent.html">REV-0130 — IsDebuggerPresent 안티디버깅 식별</a></li><li><a href="rev-0127-x64dbg-first-analysis.html">REV-0127 — x64dbg로 EXE 첫 분석 시작</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>LoadLibraryA/W</code>, <code>GetProcAddress</code> 함수 시그니처와 동작(Ordinal 조회 포함)은 Microsoft 공식 문서(learn.microsoft.com, "LoadLibraryA function", "GetProcAddress function") 기준.</li><li>동적 API 해석이 정적 분석 회피에 쓰이는 관례는 일반 리버싱/악성코드 분석 레퍼런스 기준(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

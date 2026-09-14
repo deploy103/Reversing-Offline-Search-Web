@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RELRO가 리버싱에 의미하는 것 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>RELRO가 리버싱에 의미하는 것</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">checksec</span><span class="tag">readelf</span></div>
+<h2>한 줄 요약</h2>
+<p>RELRO(RELocation Read-Only)는 GOT(Global Offset Table)를 공격 대상으로 쓰지 못하게 만드는 바이너리 보호 기법으로, <code>checksec</code> 출력의 <code>RELRO</code> 항목이 <code>No/Partial/Full</code> 중 무엇이냐에 따라 GOT가 언제 채워지고 쓰기 가능한지가 완전히 달라진다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>checksec ./chall</code> 결과에 <code>RELRO: Partial RELRO</code> 또는 <code>Full RELRO</code>라고 나오는데 그 의미를 모를 때</li><li>GDB에서 GOT 슬롯을 덮어쓰려고(<code>set {long}addr = value</code>) 했는데 세그멘테이션 폴트가 날 때</li><li>REV-0100(PLT/GOT)에서 설명한 lazy binding이 실제로는 동작하지 않고, 프로그램 시작부터 GOT에 이미 진짜 주소가 채워져 있는 걸 봤을 때</li><li><code>readelf -l</code> 출력에 <code>GNU_RELRO</code>라는 세그먼트가 왜 있는지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>RELRO가 막으려는 것</h3>
+<p>REV-0100에서 봤듯, GOT는 함수 포인터가 저장된 <strong>쓰기 가능한</strong> 데이터 영역이다. 원래 목적은 lazy binding을 위해 로더가 런타임에 값을 채워 넣는 것이지만, 쓰기 가능하다는 성질 자체가 공격 표면이 된다 — 만약 공격자가 임의 주소 쓰기(arbitrary write) 취약점을 가지고 있다면, <code>printf</code>의 GOT 슬롯을 <code>system</code>의 주소로 덮어써서 <code>printf("...")</code> 호출을 <code>system("...")</code> 호출로 바꿔치기할 수 있다(GOT overwrite 공격). RELRO는 이걸 막기 위해 GOT(정확히는 <code>.got</code> 및 관련 재배치 영역)를 프로그램 초기화가 끝난 뒤 읽기 전용으로 바꿔버리는 보호 기법이다.</p>
+<h3>No RELRO</h3>
+<p>아무 보호도 없는 상태다. GOT 전체(<code>.got</code>, <code>.got.plt</code>)가 프로그램 종료 시까지 계속 쓰기 가능하다. lazy binding도 그대로 동작한다. 요즘 배포판 기본 gcc에서는 거의 나오지 않고, 일부러 <code>-z norelro</code> 옵션을 줘야 나온다.</p>
+<h3>Partial RELRO</h3>
+<p>현재 대부분의 리눅스 배포판 기본값이다. <code>.got</code>(전역 변수용, <code>GLOB_DAT</code> 재배치)는 읽기 전용으로 바뀌지만, <code>.got.plt</code>(함수용, <code>JUMP_SLOT</code> 재배치 — 즉 PLT가 참조하는 GOT)는 여전히 <strong>쓰기 가능</strong>하게 남는다. lazy binding도 그대로 유지된다. 즉 Partial RELRO는 함수 GOT를 보호하지 못하며, GOT overwrite 공격이 여전히 가능하다.</p>
+<h3>Full RELRO</h3>
+<p>가장 강한 보호다. 프로그램이 시작될 때(<code>_start</code>가 <code>main</code>을 부르기 전) <strong>모든 심볼을 즉시 다 resolve</strong>(Eager binding, <code>-z now</code>)해서 <code>.got.plt</code>에 진짜 함수 주소를 전부 채워 넣은 뒤, GOT 전체(<code>.got</code>, <code>.got.plt</code>)를 <code>mprotect</code>로 읽기 전용 세그먼트로 바꿔버린다. 이후에는 GOT에 어떤 값도 쓸 수 없다. 이때 lazy binding이 사라지므로 REV-0100에서 설명한 "첫 호출은 resolver를 거치고, 두 번째 호출부터 빠르다"는 동작 자체가 없어진다 — Full RELRO 바이너리는 <strong>모든 호출이 처음부터 이미 채워진 진짜 주소로 바로 점프</strong>한다.</p>
+<h3>리버싱 관점에서 왜 중요한가</h3>
+<ol><li><strong>정적 분석 신뢰도</strong>: Full RELRO 바이너리는 프로그램 시작 시점에 GOT가 이미 다 채워지므로, GDB에서 <code>break main</code> 이후 아무 때나 GOT를 읽어도 항상 진짜 함수 주소가 나온다. Partial RELRO에서는 아직 호출 안 된 함수의 GOT 슬롯이 PLT resolver 주소를 가리키고 있을 수 있다는 점을 기억해야 한다.</li><li><strong>exploit 전략 판단</strong>: pwn 문제를 겸하는 리버싱 문제에서 GOT overwrite가 통하는지 여부는 RELRO 상태로 즉시 판단된다. Full RELRO면 GOT 공격 대신 다른 타겟(예: 스택, 힙 메타데이터, <code>.fini_array</code> 등)을 찾아야 한다.</li><li><strong>세그먼트 구조 이해</strong>: <code>readelf -l</code>(program headers)에서 <code>GNU_RELRO</code>라는 별도의 세그먼트가 보이는데, 이건 로더에게 "프로그램 시작 후 이 범위를 읽기 전용으로 바꿔라"라고 알려주는 역할을 한다. 이 세그먼트가 존재하면 최소 Partial RELRO 이상이다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>checksec</code> 결과 줄에 <code>RELRO:</code> 항목이 <code>No RELRO</code> / <code>Partial RELRO</code> / <code>Full RELRO</code> 중 하나로 표시됨</li><li><code>readelf -l ./chall</code> 출력에 <code>GNU_RELRO</code> 세그먼트가 있으면 Partial 이상</li><li><code>readelf -d ./chall</code> 출력에 <code>BIND_NOW</code> 플래그(또는 <code>FLAGS_1</code>에 <code>NOW</code> 비트)가 있으면 Full RELRO</li><li>GDB로 GOT 슬롯에 값을 쓰려다 <code>Cannot access memory</code> 또는 프로그램이 SIGSEGV로 죽는 경우 Full RELRO일 가능성이 높음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>새 바이너리를 받으면 <code>checksec ./chall</code> 한 번으로 RELRO 상태를 포함한 모든 주요 보호 기법(NX, PIE, Canary, RELRO)을 한꺼번에 확인한다(전체 조합은 REV-0105 참고). RELRO가 Full이면 "GOT는 건드릴 수 없는 읽기 전용 데이터"라고 못 박고 다른 분석 방향을 잡고, Partial 이하이면 GOT 조작 가능성을 열어둔 채 분석한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) checksec으로 빠르게 확인</strong></p>
+<pre><code class="language-bash">checksec --file=./chall</code></pre>
+<p><strong>2) GNU_RELRO 세그먼트 확인</strong></p>
+<pre><code class="language-bash">readelf -l ./chall | grep -A1 GNU_RELRO</code></pre>
+<p>출력 예:</p>
+<pre><code>GNU_RELRO      0x0000000000002dc8 0x0000000000003dc8 0x0000000000003dc8
+               0x0000000000000238 0x0000000000000238  R      0x1</code></pre>
+<p>이 세그먼트가 있으면 로더가 이 주소 범위를 읽기 전용으로 바꾼다는 뜻이다.</p>
+<p><strong>3) BIND_NOW(Full RELRO) 여부 확인</strong></p>
+<pre><code class="language-bash">readelf -d ./chall | grep -i 'BIND_NOW\|FLAGS'</code></pre>
+<p><code>BIND_NOW</code>가 있으면 Full RELRO, 없고 <code>GNU_RELRO</code> 세그먼트만 있으면 Partial RELRO다.</p>
+<p><strong>4) GDB로 GOT 쓰기 가능 여부 실측</strong></p>
+<pre><code class="language-gdb">break main
+run
+p &amp;puts
+set {long}&amp;puts = 0x4141414141414141</code></pre>
+<p>Full RELRO면 이 <code>set</code> 명령이 <code>Cannot access memory at address ...</code> 에러를 낸다. Partial/No RELRO면 값이 정상적으로 바뀐다.</p>
+<p><strong>5) Pwndbg로 GOT와 보호 상태 함께 확인</strong></p>
+<pre><code class="language-gdb">checksec
+got</code></pre>
+<p>Pwndbg의 <code>checksec</code> 명령은 GDB 안에서 바로 보호 기법 요약을 보여주고, <code>got</code> 명령은 각 GOT 슬롯이 resolve됐는지 아닌지를 색으로 표시한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">checksec --file=./chall
+readelf -l ./chall | grep GNU_RELRO
+readelf -d ./chall | grep BIND_NOW</code></pre>
+<p>GDB/Pwndbg: <code>checksec</code>, <code>got</code>, <code>set {long}addr = value</code>(쓰기 테스트)</p>
+<h2>출력 해석</h2>
+<ul><li><code>checksec</code> 표에서 <code>RELRO</code> 열이 빨간색/<code>No RELRO</code>이면 GOT 전체가 열려 있는 가장 취약한 상태다.</li><li><code>Partial RELRO</code>(노란색 계열)는 실무에서 가장 흔한 기본값이며, <code>.got.plt</code>(함수 GOT)는 여전히 쓰기 가능하다는 점이 핵심이다.</li><li><code>Full RELRO</code>(초록색)는 GOT 전체가 잠긴 가장 강한 상태이며, <code>BIND_NOW</code>가 함께 표시된다.</li><li><code>readelf -d</code> 출력에서 <code>NOW</code> 플래그가 안 보이고 <code>GNU_RELRO</code>만 있다면 Partial RELRO로 판단한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>"RELRO가 Full이니까 GOT 관련 취약점은 전혀 없다"고 단정하는 것 — Full RELRO는 GOT를 <strong>쓰는 것</strong>만 막을 뿐, GOT 값을 <strong>읽어서 라이브러리 베이스를 leak</strong>하는 데는 아무 제약이 없다. GOT leak을 통한 ASLR 우회는 Full RELRO에서도 여전히 유효한 기법이다.</li><li>RELRO와 NX(실행 방지)를 혼동하는 것 — RELRO는 "GOT를 쓰기 금지"이고 NX는 "스택/힙 등의 데이터 영역을 실행 금지"로, 보호 대상과 방식이 전혀 다르다.</li><li>Partial RELRO에서도 <code>.got</code>(변수용)는 이미 읽기 전용이라는 사실을 잊고 무작정 전역 변수 GOT를 덮어쓰려 시도하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>GOT/PLT 구조 자체가 헷갈린다면 → REV-0100 PLT와 GOT 기초</li><li>RELRO 외 다른 보호 기법(NX, Canary, PIE)까지 한 번에 정리하고 싶다면 → REV-0105 Canary NX PIE RELRO 한 번에 이해</li><li>PIE와 주소 계산이 궁금하다면 → REV-0103 PIE와 주소 계산</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ checksec --file=./chall
+RELRO           STACK CANARY      NX            PIE
+Full RELRO      Canary found      NX enabled    PIE enabled
+
+$ readelf -d ./chall | grep -i flags
+ 0x000000006ffffffb (FLAGS_1)    Flags: NOW PIE</code></pre>
+<p><code>FLAGS_1</code>에 <code>NOW</code>가 있으므로 Full RELRO가 확정이다. 이 바이너리에서는 GDB로 <code>set {long}&amp;puts = ...</code> 같은 GOT 쓰기 시도가 모두 실패한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0100-plt-got.html">REV-0100 — PLT와 GOT 기초</a></li><li><a href="rev-0105-binary-protections-overview.html">REV-0105 — Canary NX PIE RELRO 한 번에 이해</a></li><li><a href="rev-0103-pie.html">REV-0103 — PIE와 주소 계산</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>RELRO 3단계(No/Partial/Full) 및 <code>-z relro</code>/<code>-z now</code> 옵션: Red Hat/Fedora 보안 기능 문서 및 GNU <code>ld</code> 매뉴얼(<code>-z relro</code>, <code>-z now</code>) 기준.</li><li><code>GNU_RELRO</code> 프로그램 헤더 및 GOT 보호 메커니즘: ELF/glibc 동적 링커(<code>elf/dl-reloc.c</code>의 <code>_dl_protect_relro</code> 개념) 기준.</li><li><code>checksec</code> 출력 항목 정의: <code>checksec.sh</code>/pwntools <code>checksec</code> 공식 도구 문서 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

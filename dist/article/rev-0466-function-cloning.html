@@ -1,0 +1,110 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>함수가 여러 번 복제된 것처럼 보이는 이유(Function Cloning) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>함수가 여러 번 복제된 것처럼 보이는 이유(Function Cloning)</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>컴파일러가 최적화를 위해 <strong>하나의 소스 함수</strong>를 호출 상황(전달되는 상수, 호출 빈도, 인자 사용 패턴)에 맞춰 <strong>여러 개의 비슷한 기계어 사본</strong>으로 찍어내는 것이 함수 복제(Function Cloning)이며, <code>foo.constprop.0</code>, <code>foo.isra.1</code>, <code>foo.part.0</code>, <code>foo.cold</code> 같은 접미사가 붙은 함수들이 그 결과물이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA/Ghidra Functions 창에 <code>sub_401000</code>, <code>sub_401200</code>처럼 이름이 다른데 디스어셈블리를 열어보면 로직이 거의 똑같은 함수가 여러 개 보일 때</li><li>Linux 바이너리를 <code>nm</code>이나 <code>objdump -d</code>로 열었을 때 <code>parse_input.constprop.0</code>, <code>parse_input.isra.2</code>, <code>parse_input.part.0</code> 처럼 원래 이름 뒤에 점(<code>.</code>)과 접미사가 붙은 심볼이 여러 개 보일 때</li><li>어떤 함수를 패치했는데 프로그램이 여전히 이전 동작을 하는 것 같을 때(사실은 다른 복제본이 실행되고 있는 경우)</li><li>"함수가 왜 이렇게 많지?"라는 의문이 들 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 컴파일러가 함수를 복제하는가</h3>
+<p><code>-O2</code>/<code>-O3</code> 최적화에서 GCC와 Clang은 <strong>하나의 함수를 여러 버전으로 다시 컴파일</strong>해서 각각 다른 호출 지점에 연결하는 경우가 있다. 목적은 항상 "이 특정 상황에서는 원본보다 더 빠르거나 작은 코드를 만들 수 있다"는 것이다. 대표적인 이유 세 가지:</p>
+<ol><li><strong>상수 전파(IPA-CP, Interprocedural Constant Propagation)</strong>: 어떤 함수를 호출할 때 항상 같은 상수 인자를 넘기는 호출 지점이 있으면, 컴파일러는 그 상수를 아예 함수 본문에 박아 넣은 "전용 버전"을 새로 만든다. 이러면 그 인자를 위한 분기/곱셈 등이 상수 계산으로 바뀌어 사라질 수 있다. GCC는 이런 복제본에 <code>.constprop.N</code> 접미사를 붙인다.</li><li><strong>인자 구조체 분해(IPA-SRA, Scalar Replacement of Aggregates)</strong>: 구조체나 사용하지 않는 인자를 통째로 넘기는 대신, 실제로 쓰는 필드/값만 레지스터로 바로 넘기도록 함수 시그니처 자체를 바꾼 버전을 만든다. GCC는 <code>.isra.N</code>(Interprocedural Scalar Replacement of Aggregates) 접미사를 붙인다.</li><li><strong>차가운 경로 분리(cold path splitting)</strong>: 함수 안에서 거의 실행되지 않는 부분(에러 처리, <code>abort()</code> 직전 로직 등)을 별도의 함수로 떼어내서 원래 함수의 코드 크기를 줄이고 명령어 캐시 지역성을 높인다. 이 분리된 부분은 <code>.part.N</code>(partial) 또는 <code>.cold</code> 접미사가 붙으며, 실제로는 원래 함수 안에서 <code>jmp</code>나 <code>call</code>로 연결된다.</li></ol>
+<p>Clang/LLVM도 비슷한 최적화(인라이닝 후 재분할, <code>.cold</code> 섹션 분리 등)를 수행하지만 접미사 표기 관례는 GCC와 다를 수 있고, MSVC는 다른 이름 규칙(<code>?foo@@...</code>처럼 맹글링된 이름에 별도 표시가 붙거나, PGO 빌드에서 <code>foo$hot</code>, <code>foo$cold</code>처럼 표시)을 쓴다.</p>
+<h3>복제와 인라이닝의 차이</h3>
+<p>인라이닝은 호출자 코드 안에 피호출자 코드를 통째로 붙여넣어서 CALL 자체를 없애는 것이고, 함수 복제는 <strong>여전히 독립된 함수로 존재하되 내용이 조금씩 다른 여러 벌</strong>을 만드는 것이다. 실제로는 두 최적화가 같이 쓰인다 — 복제된 특수 버전이 다시 특정 호출 지점에 인라인되기도 한다.</p>
+<h3>IDA/Ghidra에서 보이는 모습</h3>
+<p>Windows PE(MSVC)에서는 함수 이름이 원래부터 없는 경우가 많아 <code>sub_140001200</code>처럼 주소 기반 이름만 붙기 때문에, "복제된 함수들"이라는 사실 자체가 안 보이고 그냥 "비슷하게 생긴 함수가 여러 개"로만 보인다. 반면 Linux ELF(GCC/Clang, 특히 디버그 심볼이 남아있는 경우)에서는 <code>objdump -d --demangle</code>이나 <code>nm</code>으로 열면 접미사가 그대로 보여서 "원본이 무엇인지" 바로 알 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-text">$ nm ./binary | grep parse_input
+0000000000401120 t parse_input
+0000000000401340 t parse_input.constprop.0
+0000000000401410 t parse_input.isra.1
+0000000000401520 t parse_input.part.0</code></pre>
+<pre><code class="language-asm">; parse_input.constprop.0 - flag 인자가 항상 1로 고정된 버전
+mov     eax, 1          ; 원본에서는 인자로 받던 값이 상수로 박혀있음
+; (원본의 flag == 0 분기 전체가 사라져 있음)</code></pre>
+<p>IDA에서는 이런 함수들이 서로 다른 주소의 별개 <code>sub_</code>로 보이지만, F5로 디컴파일해서 나란히 놓고 보면 분기 개수, 상수 사용, 지역 변수 개수가 미묘하게 다른 "형제 함수"임을 알 수 있다.</p>
+<h2>가장 먼저 할 것</h2>
+<ol><li>심볼 이름에 <code>.constprop</code>, <code>.isra</code>, <code>.part</code>, <code>.cold</code>가 붙어 있는지 확인한다 — 있다면 원본 이름(점 앞부분)으로 다른 복제본이 더 있는지 <code>nm</code>/<code>objdump</code>에서 같이 검색한다.</li><li>로직이 거의 같아 보이는 함수 두 개를 발견하면, 어떤 상수/분기가 한쪽에서만 빠져있는지 비교해서 어떤 호출 상황을 위해 특수화됐는지 유추한다.</li><li>패치/후킹 대상이라면 <strong>모든 복제본</strong>을 함께 찾아 수정해야 한다. 원본 하나만 고치면 다른 복제본을 호출하는 코드 경로에서는 여전히 옛 동작이 남는다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 접미사가 붙은 심볼 모아보기 (Linux)</strong></p>
+<pre><code class="language-bash">nm ./binary | grep -E '\.(constprop|isra|part|cold)\.'
+objdump -d --demangle ./binary | grep '^[0-9a-f]* &lt;.*\.(constprop|isra|part|cold)'</code></pre>
+<p><strong>2) 원본과 복제본 나란히 비교</strong> IDA에서 두 함수를 각각 F5로 디컴파일한 뒤, 텍스트 편집기에 나란히 붙여넣고 diff를 뜬다. 상수 하나가 다르거나, 분기 하나가 통째로 없는 정도의 차이라면 함수 복제로 확신할 수 있다.</p>
+<p><strong>3) 어떤 호출 지점이 어떤 복제본을 쓰는지 확인</strong> 복제본 함수 이름 위에서 <code>X</code>(Xrefs to)를 눌러 어느 호출 지점들이 이 특수화된 버전을 쓰는지 확인한다. 이걸 보면 "이 호출 지점들은 항상 같은 상수를 넘긴다"는 컴파일 시점의 사실을 역으로 알아낼 수 있다.</p>
+<p><strong>4) <code>.part</code>/<code>.cold</code>는 별도 함수가 아니라 "떨어져 나간 조각"으로 취급</strong> <code>foo.part.0</code>이 <code>foo</code>에서 <code>jmp</code>나 <code>call</code>로만 연결된다면, 논리적으로는 <code>foo</code>의 일부다. 분석 시 두 개를 하나의 함수처럼 묶어서 이해하는 게 낫다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>Linux: <code>nm binary</code>, <code>objdump -d --demangle binary</code>, <code>readelf -s binary</code></li><li>IDA: <code>X</code>(Xrefs to), <code>N</code>(이름 변경으로 원본/복제본 관계 표시), Functions 창에서 이름순 정렬 후 접두어가 같은 함수 묶어보기</li><li>Ghidra: Symbol Tree에서 이름순 정렬, Function Diff(버전 추적 플러그인) 사용 가능</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>.constprop.N</code> — 특정 인자가 상수로 고정된 특수화 버전. 원본에 있던 그 인자 관련 분기/계산이 사라져 있으면 정상.</li><li><code>.isra.N</code> — 인자 전달 방식(구조체 대신 개별 필드/레지스터)이 바뀐 버전. 함수 시그니처(인자 개수/타입)가 원본과 달라 보이는 게 정상.</li><li><code>.part.N</code> — 원래 함수에서 잘려나간 일부. 대개 크기가 작고, 원본 함수 끝부분에서 <code>jmp</code>/<code>call</code>로 진입한다.</li><li><code>.cold</code> — 거의 실행되지 않는 예외/에러 경로. 실행 빈도가 낮으므로 핵심 로직(예: flag 검증)일 가능성은 낮지만, 에러 메시지 등 단서가 있을 수 있으니 완전히 무시하지는 않는다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>접미사가 붙은 함수를 완전히 별개의 새 함수로 오해하고 처음부터 다시 분석하는 것 — 원본 이름으로 먼저 검색해서 "형제 함수"가 있는지 확인하는 습관을 들이면 시간을 절약한다.</li><li>후킹/패치 시 원본 함수만 수정하고 <code>.constprop</code>/<code>.isra</code> 복제본은 그대로 두는 것 — 실행 경로에 따라 어느 쪽이 실제로 호출될지 모르므로 관련된 모든 복제본을 확인해야 한다.</li><li><code>.cold</code>로 분리된 코드를 "죽은 코드(dead code)"로 착각해서 무시하는 것 — 실제로 실행되는 정상 경로이며 단지 자주 실행되지 않을 뿐이다.</li><li>MSVC 바이너리에는 이런 접미사 표기가 없다는 것을 모르고 Linux ELF 사례만 기준으로 찾으려는 것 — Windows에서는 함수 이름이 아니라 코드 구조 유사성으로 직접 비교해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>복제본으로 의심되는 함수들의 차이가 상수 하나뿐이라면 → REV-0464(-O0과 -O2 비교) 방식으로 최적화 없는 빌드와 비교해서 원본 로직을 먼저 파악한다.</li><li>어떤 상수가 왜 그 값으로 고정됐는지 궁금하다면 → 호출 지점(Xref)에서 그 인자 위치에 항상 같은 리터럴이 들어가는지 확인한다.</li><li><code>.part</code>/<code>.cold</code>가 어디서 진입하는지 못 찾겠다면 → 원본 함수 끝부분(에필로그 직전)의 <code>jmp</code>/<code>call</code>을 다시 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — constprop로 사라지는 분기</strong></p>
+<pre><code class="language-c">// 원본 소스
+static void apply(int *arr, int n, int mode) {
+    for (int i = 0; i &lt; n; i++) {
+        if (mode) arr[i] *= 2;
+        else      arr[i] += 1;
+    }
+}
+void caller_a(int *arr, int n) { apply(arr, n, 1); }  // 항상 mode=1로 호출</code></pre>
+<pre><code class="language-asm">; apply.constprop.0 (mode=1로 특수화된 버전)
+loop_top:
+    shl     dword ptr [rdi+rax*4], 1   ; *2 만 남고 else 분기는 통째로 사라짐
+    inc     rax
+    cmp     rax, rsi
+    jl      loop_top</code></pre>
+<p><strong>예제 2 — .part로 분리된 에러 처리</strong></p>
+<pre><code class="language-c">int validate(int x) {
+    if (x &lt; 0) {
+        log_error("negative value");   // 드물게 실행 -&gt; .part.0으로 분리될 수 있음
+        return -1;
+    }
+    return x * 2;
+}</code></pre>
+<pre><code class="language-asm">validate:
+    test    edi, edi
+    js      validate.part.0     ; 음수일 때만 별도 조각으로 점프
+    lea     eax, [rdi+rdi]
+    ret</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0464-o0-vs-o2-comparison.html">REV-0464 — -O0과 -O2 컴파일 결과를 나란히 비교하는 법</a></li><li><a href="rev-0467-common-subexpression-elimination.html">REV-0467 — Common Subexpression Elimination이 코드에 남기는 흔적</a></li><li><a href="rev-0469-register-allocation-differences.html">REV-0469 — 레지스터 할당 차이로 같은 로직이 다르게 보이는 이유</a></li><li><a href="rev-0472-ifunc-multiple-entry-points.html">REV-0472 — 함수 하나가 여러 진입점을 가진 것처럼 보이는 이유(ifunc/dispatch)</a></li><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>GCC 최적화 패스(IPA-CP, IPA-SRA, cold/hot 코드 분리)와 심볼 접미사 명명 규칙: GNU GCC 공식 문서(GCC Internals, Interprocedural Optimization 챕터) 기준.</li><li>Clang/LLVM의 함수 특수화 및 cold 섹션 분리: LLVM 공식 문서(Function Attributes, <code>-fsplit-cold-code</code> 관련 설명) 기준.</li><li>위 어셈블리 예제는 x86-64 GCC/Clang <code>-O2</code> 빌드 결과를 단순화해 재구성한 예시다(2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

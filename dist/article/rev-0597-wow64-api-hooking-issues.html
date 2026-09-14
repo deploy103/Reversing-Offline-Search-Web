@@ -1,0 +1,66 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Wow64 환경에서 API 후킹/분석이 꼬일 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>Wow64 환경에서 API 후킹/분석이 꼬일 때</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>64비트 Windows에서 실행되는 32비트 프로세스는 WOW64(Windows on Windows 64) 하위 시스템이 32비트 코드와 64비트 커널 사이를 중계하기 때문에, 이 구조를 모르고 "그냥 32비트 프로세스겠지"라고 접근하면 API 후킹이 빠지거나 디버거가 엉뚱한 코드를 보여준다 — 반드시 <code>x32dbg.exe</code>(32비트 전용 디버거)로 붙고, 후킹 DLL도 32비트로 빌드해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Task Manager에서 대상 프로세스 이름 옆에 <code>*32</code>가 붙어 있는데, <code>kernel32.dll</code>의 함수를 후킹했더니 일부 호출이 걸리지 않을 때</li><li><code>x64dbg.exe</code>(64비트 빌드)로 32비트 프로세스에 attach했는데 예상과 다른 모듈/주소가 보일 때</li><li>Detours 같은 후킹 라이브러리로 만든 DLL을 인젝션했는데 아무 반응이 없을 때</li><li>디스어셈블리 중간에 코드 세그먼트가 갑자기 바뀌는 것 같은(<code>far jmp</code>/<code>retf</code>) 이상한 흐름이 보일 때</li></ul>
+<h2>핵심 개념</h2>
+<p>64비트 Windows는 32비트 애플리케이션을 네이티브로 실행할 수 없다. 대신 WOW64라는 호환 레이어가 32비트 프로세스의 주소 공간 안에 32비트 코드를 그대로 올려놓고, 그 프로세스가 시스템 콜을 해야 할 때마다 내부적으로 64비트 커널 모드로 전환해주는 다리 역할을 한다. 이 다리를 구성하는 핵심 DLL이 <code>wow64.dll</code>, <code>wow64cpu.dll</code>, <code>wow64win.dll</code>이다.</p>
+<p>실무적으로 중요한 점은, 32비트 프로세스의 주소 공간에는 32비트 <code>ntdll.dll</code>뿐 아니라 64비트 <code>ntdll.dll</code>도 함께 매핑되어 있다는 것이다. 32비트 코드가 시스템 콜을 호출하면 32비트 <code>ntdll</code> → <code>wow64cpu.dll</code>의 모드 전환 루틴(예: <code>X86SwitchTo64BitMode</code>) → 64비트 <code>ntdll</code>의 실제 <code>syscall</code> 순서로 흘러간다. 이렇게 32비트 코드 중간에 64비트 코드로 순간 이동하는 기법을 리버싱 커뮤니티에서는 흔히 "Heaven's Gate"라고 부른다. 이 전환 과정에서 사용되는 시스템 콜 번호(SSN)와 인자 전달 방식은 순수 32비트 프로세스나 순수 64비트 프로세스의 것과 다르다.</p>
+<p>이 구조 때문에 다음 두 가지가 자주 문제를 일으킨다.</p>
+<ol><li><strong>디버거 비트수 불일치</strong>: 64비트 빌드의 <code>x64dbg.exe</code>로 WOW64 프로세스에 attach하면, 그 프로세스의 "진짜" 관점(32비트 애플리케이션 코드)이 아니라 64비트 ntdll/wow64 레이어 관점에서 메모리가 보일 수 있어 주소와 레지스터 해석이 어긋난다. 32비트 WOW64 프로세스는 반드시 <code>x32dbg.exe</code>로 attach해야 애플리케이션 코드 관점의 정상적인 32비트 뷰(<code>EAX</code>/<code>EBX</code>, 32비트 모듈 베이스)를 얻는다.</li><li><strong>후킹 DLL 비트수 불일치</strong>: IAT 후킹이든 Detours 방식이든, 인젝션하는 DLL은 대상 프로세스와 반드시 같은 비트수여야 한다. 64비트로 빌드한 후킹 DLL을 32비트 WOW64 프로세스에 넣으려 하면 <code>LoadLibrary</code>가 애초에 실패한다(포맷 자체가 안 맞아서 <code>ERROR_BAD_EXE_FORMAT</code> 계열 오류).</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Task Manager "세부 정보" 탭에서 프로세스 이름 뒤에 <code>*32</code>가 표시된다 — 이는 그 프로세스가 64비트 OS 위의 WOW64(32비트) 프로세스라는 명확한 신호다.</li><li>x64dbg 64비트 빌드로 이 프로세스에 attach했을 때 모듈 목록에 <code>wow64.dll</code>, <code>wow64cpu.dll</code>, <code>wow64win.dll</code>이 보이고, 정작 애플리케이션 자체의 32비트 모듈은 이상한 주소에 걸려 보인다.</li><li>후킹한 32비트 <code>kernel32!CreateFileW</code>가 일부 경로에서는 걸리지만, 특정 상황(예: 내부적으로 다른 계층을 거치는 API)에서는 우회된 것처럼 후킹이 빠진다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>Task Manager나 Process Hacker/Process Explorer로 대상 프로세스 이름 옆에 <code>*32</code> 표시가 있는지부터 확인한다. 있다면 이후 모든 도구(디버거, 후킹 DLL, 인젝터)를 32비트로 통일해야 한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><strong>비트수 재확인</strong>: REV-0596의 방법으로 원본 EXE 파일 자체의 Machine/Magic이 32비트인지 재확인한다.</li><li><strong>32비트 디버거로 attach</strong>: <code>x32dbg.exe</code>를 관리자 권한으로 실행하고, File → Attach에서 <code>*32</code> 표시가 붙은 프로세스를 선택한다.</li><li><strong>모듈 목록 확인</strong>: Memory Map(Alt+M)에서 애플리케이션 자신의 32비트 모듈들과 <code>wow64*.dll</code>이 함께 보이는지 확인해 정상적으로 WOW64 프로세스에 붙었음을 검증한다.</li><li><strong>후킹 DLL 재빌드</strong>: 후킹 DLL이 64비트로 빌드되어 있었다면 32비트(x86) 타깃으로 다시 빌드한다. Detours를 쓴다면 <code>detours.lib</code>도 x86 버전을 링크해야 한다.</li><li><strong>API 호출 재검증</strong>: <code>bp kernel32!CreateFileW</code>처럼 이름 기반 브레이크포인트를 다시 걸어, 이번에는 애플리케이션 코드에서 실제로 호출하는 지점에서 정상적으로 걸리는지 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>Task Manager: 세부 정보 탭 → 이름 옆 <code>*32</code> 확인 (또는 Process Hacker의 "Bits" 컬럼)</li><li>x32dbg: <code>Alt+M</code>(Memory Map), File → Attach</li><li>x64dbg/x32dbg 공통: <code>bp 모듈!함수명</code> 형태로 이름 기반 브레이크포인트</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Memory Map에 <code>wow64.dll</code>, <code>wow64cpu.dll</code>, <code>wow64win.dll</code>이 함께 보이면 정상적으로 WOW64 프로세스로 인식된 것이다.</li><li>애플리케이션 모듈의 베이스 주소가 32비트 범위(예: <code>0x00400000</code>, <code>0x10000000</code>대) 안에 있으면 정상, 만약 64비트 전용 도구로 봤을 때만 이상한 고주소가 섞여 보인다면 도구 자체를 잘못 골랐다는 신호다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>"요즘 도구는 다 64비트 지원하니까"라며 x64dbg 64비트 빌드로 모든 걸 다루려는 것 — WOW64 프로세스는 반드시 32비트 빌드 도구로 다뤄야 한다.</li><li>후킹 DLL을 대상 프로세스가 아니라 개발 PC의 기본 플랫폼(대개 x64)으로만 빌드하고 32비트 대상에 그대로 인젝션하는 것.</li><li>WOW64와 REV-0596에서 다룬 "그냥 32비트 파일" 문제를 같은 것으로 착각하는 것 — REV-0596은 파일 자체의 비트수 문제, REV-0597은 64비트 OS 위에서 그 32비트 프로세스가 겪는 추가적인 호환 레이어 문제다.</li><li>64비트 ntdll이 32비트 프로세스 안에도 함께 매핑되어 있다는 사실을 몰라서, 모듈 목록에 낯선 항목이 보이면 바로 "악성/인젝션된 코드"라고 오판하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>애초에 파일이 32비트인지 64비트인지부터 헷갈린다면 → REV-0596을 먼저 확인한다.</li><li>attach 자체가 막힌다면(권한 문제) → REV-0598(관리자 권한 없어서 디버깅 막힐 때)을 확인한다.</li><li>인젝션한 코드나 원격 스레드가 안 보인다면 → REV-0602(CreateRemoteThread로 생성된 코드가 안 보일 때)를 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p>32비트 <code>sample.exe</code>를 실행한 뒤 Task Manager에서 <code>sample.exe *32</code>로 표시된 것을 확인했다. 처음에는 <code>x64dbg.exe</code>로 attach를 시도했더니 Memory Map에 이상하게 높은 주소의 모듈들이 섞여 보였다. <code>x32dbg.exe</code>로 다시 attach하자 애플리케이션 모듈이 <code>0x00400000</code> 베이스에 정상적으로 보였고, 그 위에서 <code>bp kernel32!CreateFileW</code>를 걸었더니 애플리케이션이 실제 호출하는 지점에서 정확히 멈췄다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0596-32bit-binary-64bit-tool.html">REV-0596 — 32비트 바이너리를 64비트 도구로 열어서 이상해질 때</a></li><li><a href="rev-0598-admin-privilege-debugging-blocked.html">REV-0598 — 관리자 권한이 없어서 디버깅이 막힐 때</a></li><li><a href="rev-0602-createremotethread-code-not-visible.html">REV-0602 — CreateRemoteThread로 생성된 코드가 안 보일 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>WOW64 구조(<code>wow64.dll</code>/<code>wow64cpu.dll</code>/<code>wow64win.dll</code>, 32비트 프로세스 안의 64비트 ntdll 매핑)와 Task Manager <code>*32</code> 표기는 Microsoft 공식 문서 및 일반적인 Windows 내부 구조 레퍼런스 기준이다.</li><li>x32dbg/x64dbg가 비트수별로 별도 바이너리로 제공되며 대상과 비트수를 맞춰야 한다는 점은 x64dbg 공식 문서 기준이다.</li><li>2026-09-08 기준 서술.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

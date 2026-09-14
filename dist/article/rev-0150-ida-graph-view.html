@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA Graph View에서 분기 읽기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA Graph View에서 분기 읽기</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>Graph view는 함수의 제어 흐름을 기본 블록(노드) 단위로 그려주는 화면으로, <code>Space bar</code>로 Text view와 즉시 전환할 수 있고, 조건 분기 화살표는 관례적으로 <strong>초록색 = 조건 만족(taken)</strong>, <strong>빨간색 = 조건 불만족(not taken)</strong>, <strong>파란색 = 무조건 분기/순차 흐름</strong>으로 표시되며, 위쪽으로 되돌아가는 화살표(back edge)는 루프를 의미한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>함수 안의 <code>if</code>/<code>while</code>/<code>for</code> 같은 분기 구조를 한눈에 파악하고 싶을 때</li><li>Graph view와 Text view를 어떻게 전환하는지 모를 때</li><li>화살표 색이 무슨 뜻인지 몰라서 조건이 참일 때 어디로 가는지 헷갈릴 때</li><li>루프가 어디서 어디로 도는지 시각적으로 확인하고 싶을 때</li><li>함수가 너무 복잡해서 Graph view의 노드가 겹치거나 화면 밖으로 나갈 때</li></ul>
+<h2>핵심 개념</h2>
+<p>IDA의 디스어셈블리는 두 가지 방식으로 볼 수 있다.</p>
+<ul><li><strong>Text view</strong> — 명령어를 위에서 아래로 순서대로 나열하는, 전통적인 어셈블리 리스트 형태.</li><li><strong>Graph view</strong> — 함수를 <strong>기본 블록(basic block)</strong> 단위로 쪼개서 각각을 상자(노드)로 그리고, 블록 사이의 흐름을 화살표(엣지)로 연결한 순서도 형태.</li></ul>
+<p>여기서 <strong>기본 블록</strong>이란 "분기 없이 순차적으로 실행되는 명령어 묶음"을 말한다. 즉, 블록 중간에는 절대 다른 곳에서 뛰어들어오지 않고, 블록 끝에서만 다음 블록으로 분기하거나 넘어간다. <code>cmp</code>/<code>test</code> 뒤에 오는 조건 분기 명령어(<code>jz</code>, <code>jnz</code>, <code>jg</code> 등)가 있으면 그 지점에서 블록이 끝나고 두 갈래로 나뉜다.</p>
+<h3>화살표(엣지) 색의 의미</h3>
+<p>Graph view에서 두 블록을 잇는 화살표는 색으로 그 성격을 구분한다.</p>
+<ul><li><strong>초록색(Green)</strong> — 조건 분기에서 조건이 <strong>만족되어(taken)</strong> 이동하는 경로.</li><li><strong>빨간색(Red)</strong> — 조건 분기에서 조건이 <strong>만족되지 않아(not taken)</strong> 다음 블록으로 이어지는(즉 분기하지 않고 그대로 흘러내려가는) 경로.</li><li><strong>파란색(Blue)</strong> — 조건이 없는 <strong>무조건 분기(unconditional jump)</strong> 또는 순차 흐름을 나타내는 일반 엣지.</li></ul>
+<p>이 색 구분 덕분에, 코드를 한 줄 한 줄 읽지 않고도 "이 조건이 참이면 초록 화살표를 따라가고, 거짓이면 빨간 화살표를 따라간다"는 식으로 눈으로 흐름을 훑을 수 있다. 다만 이 색 관례는 IDA 버전/테마 설정에 따라 달라질 수 있으므로, 확실하지 않으면 화살표 위에 마우스를 올려 강조되는 것을 보거나, 대응하는 조건 분기 명령어(<code>jz</code> 등)를 직접 확인하는 것이 가장 정확하다.</p>
+<h3>위로 향하는 화살표 = 루프(loop)</h3>
+<p>Graph view에서 화살표가 <strong>아래에서 위로</strong>(즉 이미 지나온 블록 쪽으로 되돌아가는 방향) 그려지면, 이는 프로그램 흐름이 다시 앞의 블록으로 돌아간다는 뜻이며 대부분 <strong>루프(반복문)</strong>를 나타낸다. 이런 "뒤로 가는 엣지"를 <strong>back edge</strong>라고 부르며, <code>while</code>/<code>for</code> 반복문이 컴파일된 결과로 흔히 나타난다. IDA는 이런 엣지를 다른 엣지보다 두껍게 그려서 시각적으로 강조하기도 한다.</p>
+<h3>언제 Graph view를 쓰고 언제 Text view/Pseudocode를 쓰나</h3>
+<ul><li><strong>Graph view</strong>: 함수의 전체적인 분기 구조("여기서 몇 갈래로 갈라지는가", "루프가 어디 있는가")를 큰 그림으로 파악할 때 가장 효과적이다. 다만 함수가 매우 크면(수십~수백 개 블록) 노드가 화면에 다 안 들어와서 오히려 읽기 불편해질 수 있다.</li><li><strong>Text view</strong>: 명령어를 순서대로 쭉 읽으며 세밀하게 분석하거나, 주소 순서대로 스크롤하며 데이터를 찾을 때 편하다.</li><li><strong>Pseudocode(F5)</strong>: 조건/반복 구조를 C 코드처럼 읽고 싶을 때 가장 빠르다(REV-0146 참고). 다만 디컴파일러가 없거나 실패하는 함수에서는 Graph view/Text view로 직접 읽어야 한다.</li></ul>
+<p>세 가지는 서로 대체재라기보다 상호 보완적이다. 큰 그림은 Graph view로, 세부 명령어는 Text view로, 고수준 로직 이해는 Pseudocode로 확인하는 식으로 오가며 쓰는 것이 일반적이다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>함수를 열었을 때 상자(노드)와 화살표로 이루어진 순서도 형태가 보이면 Graph view다.</li><li>명령어가 세로로 쭉 나열되어 있으면 Text view다.</li><li>노드 안에 명령어가 여러 줄 들어 있고, 노드 아래쪽 끝에서 화살표 한두 개가 뻗어나가는 형태를 볼 수 있다(조건 분기면 화살표 두 개, 무조건 분기/순차면 화살표 하나).</li><li>화면이 매우 복잡한 함수는 노드가 서로 겹치거나 화면 경계 밖으로 나가서, 스크롤/줌을 해야 전체를 볼 수 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>현재 보고 있는 화면이 Graph view인지 Text view인지 확인한 뒤, 분기 구조를 큰 그림으로 보고 싶으면 <code>Space bar</code>로 Graph view로 전환한다. 이미 Graph view라면 마우스 휠이나 <code>+</code>/<code>-</code>로 전체 함수가 한 화면에 들어오도록 줌을 조절한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) Graph view / Text view 전환</strong></p>
+<p>디스어셈블리 화면(IDA View)에서 <code>Space bar</code>를 누르면 Graph view ↔ Text view가 즉시 전환된다. 커서 위치는 유지되므로, 지금 보고 있던 명령어를 기준으로 화면만 바뀐다.</p>
+<p><strong>2) 노드/화살표 훑어보기</strong></p>
+<p>Graph view에서 각 노드(상자)를 보며 어떤 노드가 조건 분기로 끝나는지(화살표가 두 개 나가는지), 어떤 노드가 그냥 다음 노드로 이어지는지(화살표 한 개) 확인한다. 초록/빨강 화살표가 있는 노드는 조건 분기 지점이다.</p>
+<p><strong>3) 조건 분기 방향 파악</strong></p>
+<p>초록 화살표를 따라가면 "조건이 참일 때의 경로", 빨간 화살표를 따라가면 "조건이 거짓일 때의 경로"를 눈으로 확인할 수 있다. 정확한 조건 내용(예: <code>eax == 0</code>인지 <code>eax &gt; 5</code>인지)은 그 노드 안의 <code>cmp</code>/<code>test</code>와 바로 다음의 <code>jXX</code> 명령어를 직접 읽어야 한다.</p>
+<p><strong>4) 루프 찾기</strong></p>
+<p>화살표가 아래에서 위로(이미 지나온 노드 방향으로) 향하는 곳을 찾는다. 이런 back edge가 있는 부분이 반복문이다. 그 루프의 "시작 노드"(화살표가 다시 돌아오는 목적지)와 "탈출 조건"(루프를 빠져나가는 다른 화살표가 어디로 이어지는지)을 함께 확인하면 반복문의 전체 구조를 파악할 수 있다.</p>
+<p><strong>5) 확대/축소와 이동</strong></p>
+<p>노드가 많아 한 화면에 안 들어오면 <code>Ctrl</code> + 마우스 휠(또는 <code>+</code>/<code>-</code> 키)로 확대/축소한다. 특정 노드를 더블클릭하면(또는 <code>+</code>/<code>-</code> 아이콘) 해당 노드를 접거나(collapse) 펼칠(expand) 수 있어, 관심 없는 부분을 접어두고 핵심 흐름만 남겨서 볼 수 있다. 화면을 드래그하면 캔버스 전체를 이동할 수 있다.</p>
+<p><strong>6) 필요하면 Pseudocode로 전환</strong></p>
+<p>분기 구조는 파악했는데 각 조건의 정확한 의미(어떤 값끼리 비교하는지)를 C 코드처럼 편하게 읽고 싶다면 <code>F5</code>로 Pseudocode를 열고, Graph view와 Pseudocode를 오가며(<code>Tab</code>, REV-0146 참고) 대조한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li><code>Space bar</code> : Graph view ↔ Text view 전환</li><li><code>Ctrl</code> + 마우스 휠 (또는 <code>+</code> / <code>-</code>) : 확대/축소</li><li>노드 더블클릭 또는 접기/펼치기 아이콘 : 노드 collapse/expand</li><li>마우스 드래그(빈 공간) : 캔버스 이동(팬)</li><li><code>F5</code> : Pseudocode로 전환(디컴파일러가 있는 경우, REV-0146 참고)</li><li><code>Tab</code> : Pseudocode ↔ 디스어셈블리 전환</li></ul>
+<h2>출력 해석</h2>
+<ul><li>한 노드에서 화살표가 정확히 두 개(초록/빨강) 나가면 그 노드 끝은 조건 분기(<code>jz</code>, <code>jnz</code>, <code>jg</code> 등)다.</li><li>화살표가 한 개만(대개 파란색) 나가면 무조건 분기(<code>jmp</code>)이거나 분기 없이 다음 블록으로 자연스럽게 이어지는 경우다.</li><li>위로 향하는(뒤로 가는) 화살표가 있으면 그 목적지 노드부터 시작해서 다시 이 지점까지가 하나의 루프 범위라고 볼 수 있다.</li><li>노드가 유난히 많고 화살표가 뒤엉켜 있으면, 스위치문(<code>switch</code>)이 점프 테이블로 컴파일된 경우이거나 컴파일러 최적화로 블록이 많이 쪼개진 경우일 수 있다 — 이런 함수는 Pseudocode(F5)로 보는 것이 훨씬 이해하기 쉽다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>초록/빨강 화살표 색 관례를 반대로 기억해서, 조건이 거짓일 때의 경로를 참일 때의 경로로 착각하는 경우 — 헷갈리면 항상 노드 안의 실제 <code>jXX</code> 명령어(예: <code>jz</code>는 ZF=1일 때, 즉 비교 결과가 같을 때 분기)를 직접 확인해서 검증한다.</li><li>함수가 너무 커서 Graph view가 오히려 안 읽히는데도 계속 Graph view만 고집하는 경우 — 이럴 땐 Pseudocode(F5)나 Text view로 전환하는 것이 더 빠르다.</li><li>노드를 실수로 접어놓고(collapse) "코드가 사라졌다"고 당황하는 경우 — 접힌 노드는 다시 클릭하거나 펼치기 아이콘으로 원래대로 되돌릴 수 있다.</li><li>back edge(루프)를 못 알아보고 "왜 같은 코드가 여러 번 반복되는 것처럼 보이지"라며 헷갈리는 경우 — 화살표 방향(위로 향하는지)을 보면 루프임을 바로 알 수 있다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>분기 조건의 정확한 의미(부호 있는 비교인지, unsigned인지 등)가 헷갈리면 → REV-0149(IDA 숫자 표현 Signed/Unsigned/Hex 바꾸기)와 함께 실제 비교 연산자(jg/ja, jl/jb 등)를 다시 확인한다.</li><li>그래프가 아니라 C 코드로 통째로 읽고 싶다면 → REV-0146(F5 디컴파일과 Pseudocode 읽기)로 전환한다.</li><li>함수 자체의 경계(시작/끝)가 이상하게 잡혀서 그래프가 깨져 보인다면 → REV-0154(IDA에서 함수 경계가 잘못 잡혔을 때)를 참고한다.</li><li>노드 안 코드가 정의되지 않은 데이터처럼 보인다면 → REV-0155(IDA에서 Undefined Bytes를 Code/Data로 재해석)를 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p><code>if (x == 0) return 1; else return 0;</code> 형태의 함수가 Graph view에서 어떻게 보이는지 단순화하면:</p>
+<pre><code class="language-text">[노드 A] cmp [rbp-4], 0
+         jz  loc_LABEL_TRUE      ; 여기서 화살표 두 개 갈라짐
+   ├─(초록, taken)──&gt; [노드 B: loc_LABEL_TRUE] mov eax, 1 → ret
+   └─(빨강, not taken)──&gt; [노드 C] mov eax, 0 → ret</code></pre>
+<p>노드 A 끝에서 <code>jz</code>(Zero Flag가 1이면 분기, 즉 비교값이 0과 같으면 분기) 명령어 때문에 화살표가 둘로 갈라진다. 초록 화살표(조건 만족, x==0)는 "1을 반환하는" 노드 B로, 빨간 화살표(조건 불만족)는 "0을 반환하는" 노드 C로 이어진다. 이런 단순한 구조를 눈으로 먼저 파악한 뒤, 필요하면 F5로 Pseudocode를 열어 <code>if (x == 0) return 1; else return 0;</code> 형태로 재확인하면 이해가 빠르다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0146-ida-f5-decompile.html">REV-0146 — IDA F5 디컴파일과 Pseudocode 읽기</a></li><li><a href="rev-0149-ida-number-representation.html">REV-0149 — IDA 숫자 표현 Signed Unsigned Hex 바꾸기</a></li><li><a href="rev-0154-ida-wrong-function-boundary.html">REV-0154 — IDA에서 함수 경계가 잘못 잡혔을 때</a></li><li><a href="rev-0143-ida-functions-window.html">REV-0143 — IDA Functions 창 사용법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Graph view의 엣지 색 관례(초록=taken, 빨강=not taken, 파랑=unconditional)와 back edge(루프) 표시 방식은 Hex-Rays 공식 문서 "Graph view"(hex-rays.com/products/ida/support/idadoc/1142.shtml) 및 다수의 공개 IDA 실습 자료(강의 슬라이드, RE 치트시트류)를 통해 일관되게 확인된다(2026-09-08 검증).</li><li><code>Space bar</code>를 통한 Graph/Text view 전환은 IDA의 오래된 표준 동작으로, 공식 단축키 문서 및 다수의 실무 레퍼런스에서 일관되게 확인된다.</li><li>정확한 색상 표현(테마에 따른 미세한 색상 차이 등)은 IDA 버전/설정에 따라 달라질 수 있으므로, 실제 설치된 IDA에서 간단한 조건문 함수로 직접 확인해서 재검증할 것을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>명령어 길이가 이상하게 길게 잡힐 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>명령어 길이가 이상하게 길게 잡힐 때</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>x86/x64 명령어는 프리픽스·opcode·ModRM·SIB·변위(displacement)·즉치값(immediate)이 조합되어 최대 15바이트까지 길어질 수 있으며, 명령어가 비정상적으로 길게 잡히는 대부분의 경우는 (1) 프리픽스가 여러 개 겹친 정상 인코딩이거나 (2) REV-0476에서 다룬 코드/데이터 오인식으로 시작 위치가 어긋난 것이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA/Ghidra에서 한 줄짜리 명령어인데 바이트가 10바이트 넘게 나열되어 있어서 이상하게 느껴질 때</li><li>어셈블리 원문에 <code>66 48 0F ...</code> 처럼 접두사(prefix) 바이트가 여러 개 붙어 있는 걸 볼 때</li><li>디버거에서 한 명령어를 스텝했는데 RIP가 예상보다 훨씬 많이 증가할 때</li><li>패커/난독화 도구가 일부러 불필요한 프리픽스를 넣어 분석을 방해하는 것 같다고 느껴질 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>x86/x64 명령어의 최대 길이</h3>
+<p>Intel SDM은 x86/x64 명령어의 최대 길이를 <strong>15바이트</strong>로 명시한다. 이보다 긴 명령어는 애초에 유효하지 않은 인코딩이다. 명령어 하나는 다음 요소들의 조합으로 구성된다.</p>
+<pre><code>[프리픽스(0~4개)] [REX 프리픽스(x64, 1바이트, 옵션)] [opcode(1~3바이트)]
+[ModRM(옵션, 1바이트)] [SIB(옵션, 1바이트)] [변위(옵션, 1/2/4바이트)] [즉치값(옵션, 1/2/4/8바이트)]</code></pre>
+<p>각 요소가 다 채워지면 꽤 긴 바이트열이 만들어진다. 예를 들어 <code>mov qword ptr [rax+rbx*4+0x12345678], 0x11223344</code> 같은 명령어는 REX(1) + opcode(1) + ModRM(1) + SIB(1) + disp32(4) + imm32(4) = 12바이트나 된다.</p>
+<h3>프리픽스의 종류</h3>
+<ul><li><strong>필수 프리픽스(mandatory prefix)</strong>: SSE/AVX 명령어를 구분하기 위해 opcode의 일부처럼 쓰이는 <code>66h</code>, <code>F2h</code>, <code>F3h</code> (REV-0474 참고)</li><li><strong>REX 프리픽스</strong>: x64에서 64비트 오퍼랜드(REX.W)나 확장 레지스터(R8~R15) 접근에 필요한 1바이트 프리픽스 (<code>0x40</code>~<code>0x4F</code>)</li><li><strong>오퍼랜드 크기 오버라이드</strong>: <code>66h</code> — 기본 32비트 오퍼랜드를 16비트로 바꿈</li><li><strong>주소 크기 오버라이드</strong>: <code>67h</code> — 주소 계산 방식을 바꿈</li><li><strong>세그먼트 오버라이드</strong>: <code>2Eh</code>(CS), <code>36h</code>(SS), <code>3Eh</code>(DS), <code>26h</code>(ES), <code>64h</code>(FS), <code>65h</code>(GS)</li><li><strong>LOCK</strong>: <code>F0h</code> — 원자적 연산 지시 (REV-0080 REP 계열과는 다른 프리픽스)</li><li><strong>REP/REPNE</strong>: <code>F3h</code>/<code>F2h</code> — 문자열 명령어 반복 (REV-0080 참고)</li></ul>
+<h3>프리픽스가 여러 개 겹치는 경우</h3>
+<p>정상적인 코드에서도 프리픽스 여러 개가 겹칠 수 있다. 예를 들어 <code>movzx eax, word ptr fs:[rcx]</code> 같은 명령어는 세그먼트 오버라이드(<code>64h</code>) + opcode + ModRM이 합쳐진다. SIMD 명령어는 <code>66h</code>(필수 프리픽스) + REX + 2바이트 opcode(<code>0F 38</code> 등) + ModRM이 겹쳐서 6~7바이트를 opcode 부분만으로 소모하기도 한다.</p>
+<p><strong>의도적으로 늘어난 경우</strong>: 일부 CTF/난독화 바이너리는 실행에 아무 영향을 주지 않는 <strong>중복 프리픽스(redundant prefix)</strong>를 여러 개 반복해서 붙인다(예: <code>66 66 66 48 89 c0</code>처럼 <code>66h</code>를 여러 번). CPU는 마지막 유효한 프리픽스만 적용하고 나머지는 무시하지만, 일부 디스어셈블러/디버거는 이런 비정상적으로 긴 인코딩을 잘못 해석하거나 아예 다르게 처리해서 분석 도구마다 명령어 경계가 달라지는 문제가 생길 수 있다. 이는 정적 분석을 방해하려는 안티 디스어셈블리(anti-disassembly) 기법의 하나다.</p>
+<h3>코드/데이터 오인식으로 인해 길어 보이는 경우</h3>
+<p>REV-0476에서 다뤘듯, 데이터를 코드로 잘못 해석하기 시작하면 우연히 opcode처럼 보이는 바이트와 ModRM/SIB/변위처럼 보이는 바이트가 이어지면서 실제로는 존재하지 않는 "비정상적으로 긴 명령어"가 만들어질 수 있다. 이 경우는 진짜 프리픽스 스택이 아니라 <strong>디코딩 시작 위치 자체가 잘못된 것</strong>이므로, 프리픽스 분석이 아니라 REV-0476의 절차(Undefine 후 재해석)로 풀어야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA 디스어셈블리 줄 왼쪽 바이트 나열이 유독 한 줄만 10바이트 이상으로 길게 나옴</li><li>x64dbg의 CPU 창에서 명령어 하나의 바이트 수가 눈에 띄게 큼</li><li>같은 니모닉(<code>mov</code>)인데 다른 곳보다 바이트 수가 훨씬 많음</li><li>objdump/readelf 결과에서 <code>(bad)</code> 표시나 비정상적으로 긴 opcode 나열</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>그 명령어 앞에 반복되는 프리픽스 바이트(<code>66</code>, <code>67</code>, <code>F0</code>, <code>F2</code>, <code>F3</code>, 세그먼트 오버라이드)가 여러 번 나오는지 바이트 나열을 직접 눈으로 센다.</li><li>프리픽스가 정상적으로 딱 필요한 만큼만 있는지, 아니면 같은 프리픽스가 의미 없이 반복되는지 구분한다.</li><li>프리픽스가 이상하지 않다면 REV-0476 절차로 코드/데이터 오인식 여부를 먼저 확인한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 바이트를 프리픽스/opcode/ModRM 단위로 손으로 분해</strong></p>
+<p><code>objdump -d</code> 또는 IDA 헥스뷰에서 원본 바이트를 복사해 Intel SDM의 인코딩 표(Volume 2, Appendix A)와 대조하며 어디까지가 프리픽스이고 어디부터가 진짜 opcode인지 나눠본다. 처음엔 느리지만 반복되면 패턴이 눈에 익는다.</p>
+<p><strong>2) 여러 디스어셈블러로 교차 검증</strong></p>
+<p>IDA, Ghidra, <code>objdump -d</code>(binutils), x64dbg 각각에서 같은 주소를 디스어셈블해본다. 도구마다 명령어 경계 해석이 다르면(REV-0488 AT&amp;T vs Intel 문법 차이와는 별개로) 중복 프리픽스 기반 안티 디스어셈블리를 의심한다.</p>
+<p><strong>3) 실제 실행 결과로 확정</strong></p>
+<p>디버거로 그 주소에 브레이크포인트를 걸고 한 스텝(<code>stepi</code>/F7) 실행한 뒤 RIP가 실제로 몇 바이트 이동했는지 확인한다. 이것이 "진짜" 명령어 길이다 — CPU가 실제로 해석한 결과이기 때문에 정적 도구의 추측보다 신뢰도가 높다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>objdump: <code>objdump -d -M intel &lt;binary&gt;</code> (Intel 문법으로 디스어셈블, 바이트 나열도 <code>-d</code> 출력에 포함하려면 <code>--insn-width</code> 옵션 활용)</li><li>GDB: <code>x/5i $rip</code> (현재 위치부터 5개 명령어), <code>stepi</code> 실행 후 <code>x/i $pc-&lt;이전길이&gt;</code>로 실제 소비된 바이트 수 역산</li><li>x64dbg: CPU 창에서 명령어 우클릭 → "Edit instruction"으로 원본 바이트 직접 확인, F7로 한 스텝 실행 후 EIP/RIP 변화량 확인</li><li>IDA: 헥스뷰(View → Open subviews → Hex dump)에서 해당 주소의 raw 바이트를 직접 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>실제로 CPU가 그 길이만큼 RIP를 이동시켰다면 그 인코딩이 맞는 것이다.</li><li>도구마다 명령어 경계 해석이 갈리는데 실행 결과가 도구 A와 일치한다면, 도구 B의 자동 분석이 잘못된 것이므로 도구 B에서 수동으로 재정의해야 한다.</li><li>프리픽스를 다 제거하고 남는 "진짜 opcode + ModRM"이 흔한 명령어(<code>mov</code>, <code>add</code>, <code>cmp</code> 등)로 정리되면 정상적인 (의미 없는) 프리픽스 패딩이었다고 결론 내릴 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>프리픽스 여러 개가 붙은 명령어를 보고 무조건 "이건 SIMD 명령어다"라고 단정하는 것 — <code>66h</code>, <code>F2h</code>, <code>F3h</code>는 SIMD 필수 프리픽스이기도 하지만 오퍼랜드 크기 오버라이드/문자열 반복 등 다른 의미로도 쓰인다. 뒤에 오는 opcode까지 같이 봐야 한다.</li><li>REX 프리픽스를 항상 "64비트 명령어"라는 뜻으로 오해하는 것 — REX가 있어도 REX.W 비트가 0이면 32비트 오퍼랜드일 수 있고, R8~R15 레지스터 접근만을 위해 붙는 경우도 있다.</li><li>명령어가 길어 보이면 무조건 난독화라고 단정하는 것 — 메모리 오퍼랜드(<code>[rax+rbx*4+0x12345678]</code>)에 변위(disp32)와 SIB가 들어가면 정상적으로도 충분히 길어질 수 있다.</li><li>정적 도구의 명령어 경계 추정을 그대로 믿고 다음 명령어부터 분석을 이어가는 것 — 오인식된 경계 위에서 계속 분석하면 이후 전부 어긋난다(REV-0476).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>프리픽스 문제가 아니라 시작 위치 자체가 잘못된 것 같다면 → REV-0476(디스어셈블리가 중간부터 깨져 보일 때)</li><li>프리픽스가 왜 붙는지 원리를 더 알고 싶다면 → REV-0474(명령어 프리픽스(REX, 66h, F2h/F3h)가 붙는 이유 개요)</li><li>도구별로 표기가 다르게 나온다면 → REV-0488(어셈블리 니모닉이 도구마다 다르게 표기될 때)</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 정상적으로 긴 명령어 (메모리 오퍼랜드 + 즉치값)</strong></p>
+<pre><code class="language-asm">mov     dword ptr [rax+rbx*4+0x12345678], 0x11223344
+; REX(선택) + opcode(1) + ModRM(1) + SIB(1) + disp32(4) + imm32(4) = 최대 11바이트 이상</code></pre>
+<p>디코딩할 요소가 실제로 많아서 길어진 정상적인 경우다.</p>
+<p><strong>예제 2 — 의미 없는 중복 프리픽스 (안티 디스어셈블리 의심)</strong></p>
+<pre><code>바이트: 66 66 66 66 48 89 C0</code></pre>
+<p><code>66h</code>가 4번 반복된 뒤 REX.W(<code>48</code>) + <code>mov rax, rax</code>(<code>89 C0</code>)가 온다. CPU는 마지막 프리픽스 조합만 유효하게 처리하지만, 일부 옛 디스어셈블러 구현은 이런 과도한 반복을 다르게 처리해 분석을 흐트러뜨릴 수 있다.</p>
+<p><strong>예제 3 — 코드/데이터 오인식으로 우연히 길어진 경우</strong></p>
+<pre><code>데이터 바이트: 0F 1F 84 00 00 00 00 00   ; 사실은 NOP 패딩(REV-0473)이거나 데이터</code></pre>
+<p><code>0F 1F /0</code>은 다바이트 NOP으로도 쓰이는 인코딩이라, 정렬 패딩이 이렇게 8바이트짜리 "명령어"처럼 보이는 경우가 흔하다. 실행되지 않는 구간이라면 코드로 취급할 필요가 없다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0476-disassembly-code-data-misread.html">REV-0476 — 디스어셈블리가 중간부터 깨져 보일 때(코드/데이터 오인식)</a></li><li><a href="rev-0474-instruction-prefixes-rex-66-f2-f3.html">REV-0474 — 명령어 프리픽스(REX, 66h, F2h/F3h)가 붙는 이유 개요</a></li><li><a href="rev-0473-nop-padding-alignment.html">REV-0473 — 정렬용 NOP 패딩과 실제 코드 구분하는 법</a></li><li><a href="rev-0488-att-vs-intel-syntax.html">REV-0488 — 어셈블리 니모닉이 도구마다 다르게 표기될 때(AT&amp;T vs Intel)</a></li><li><a href="rev-0080-rep-prefix.html">REV-0080 — REP Prefix와 반복 문자열 명령</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>x86/x64 명령어 최대 길이(15바이트)와 프리픽스/ModRM/SIB 구조: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2, Chapter 2 "Instruction Format" 기준.</li><li>다바이트 NOP 인코딩(<code>0F 1F /0</code>): 동일 매뉴얼 "NOP—No Operation" 섹션 기준.</li><li>중복 프리픽스를 이용한 안티 디스어셈블리 기법: 일반적인 리버스 엔지니어링/안티 디버깅 기법 교육 자료 기준(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

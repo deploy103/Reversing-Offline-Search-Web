@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>구조체 크기를 잘못 추정해서 오프셋이 꼬일 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>구조체 크기를 잘못 추정해서 오프셋이 꼬일 때</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>구조체를 직접 정의해서 포인터에 씌웠는데 실제 크기나 멤버 배치(오프셋, 패딩)를 잘못 추정하면, 코드에서 실제로 쓰이는 오프셋(<code>field_18</code>, <code>field_20</code> 등)이 구조체 정의 범위 밖으로 나가거나 서로 다른 두 멤버가 겹쳐 보이는 등 앞뒤가 안 맞는 결과가 나오며, 이때는 그 포인터에 대한 <strong>모든</strong> 오프셋 접근을 xref로 전부 모아 실제 최대 오프셋과 각 필드의 접근 크기(1/2/4/8바이트)를 재구성한 뒤, 정렬(alignment) 규칙까지 고려해 구조체를 다시 정의해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Pseudocode에서 <code>a1-&gt;field_18</code>, <code>a1-&gt;field_1C</code>처럼 이름 없는 필드가 여러 개 나오는데, 그 중 일부가 서로 겹치는 것처럼(같은 위치를 다른 크기로 접근하는 것처럼) 보일 때</li><li><code>malloc(0x38)</code>로 할당한 객체인데, 구조체 정의는 그보다 작거나 크게 잡혀 있을 때</li><li>배열처럼 반복 접근되는 구조체인데(<code>arr[i].field_8</code>), 인덱스가 진행될수록 필드 위치가 이상하게 밀리는 것처럼 보일 때</li><li>구조체 안에 포인터/구조체 멤버가 섞여 있는데 정렬(alignment) 때문에 예상한 오프셋과 실제 오프셋이 다를 때</li></ul>
+<h2>핵심 개념</h2>
+<p>구조체를 IDA/Ghidra의 Structures 창에서 직접 만들 때는, 컴파일러가 실제로 어떤 크기와 순서로 필드를 배치했는지 전적으로 리버서가 <strong>역추적</strong>해서 입력해야 한다. 이 과정에서 자주 틀리는 지점은 다음과 같다.</p>
+<ol><li><strong>정렬(alignment)과 패딩을 무시함</strong>: C 컴파일러는 기본적으로 각 멤버를 그 타입의 크기에 맞춰 정렬한다(예: 8바이트 포인터는 8바이트 경계에 배치). 그 결과 <code>char</code> 하나 뒤에 <code>int</code>가 오면 중간에 3바이트의 빈 패딩이 삽입될 수 있다. 이 패딩을 빼먹고 필드를 촘촘하게 이어 붙이면, 이후 모든 필드의 오프셋이 실제보다 앞당겨져서 꼬인다.</li><li><strong>필드 크기를 실제 접근 크기와 다르게 잡음</strong>: 어떤 오프셋을 4바이트(<code>dword</code>)로 접근하는 코드와 8바이트(<code>qword</code>)로 접근하는 코드가 섞여 있다면, 그 필드가 실제로는 8바이트인데 일부 코드만 하위 4바이트를 쓰는 것일 수도 있고, 반대로 인접한 두 개의 4바이트 필드를 한 코드가 실수로(또는 유니온처럼) 8바이트로 한꺼번에 읽는 것일 수도 있다. 이를 구분하지 못하고 임의로 크기를 정하면 이후 필드가 다 밀린다.</li><li><strong>배열/중첩 구조체를 하나의 스칼라 필드로 잘못 정의함</strong>: 사실은 그 위치에 내부 구조체나 고정 크기 배열이 들어있는데 단일 필드로 잡으면, 그 뒤에 나오는 오프셋들이 실제 배열 크기만큼 밀려서 전혀 다른 필드를 가리키게 된다.</li><li><strong>일부 코드만 보고 구조체를 확정함</strong>: 그 구조체 타입 포인터를 쓰는 함수가 여러 개인데 그 중 하나만 보고 구조체를 만들면, 다른 함수에서만 쓰이는 뒤쪽 필드(더 큰 오프셋)를 놓쳐 구조체 전체 크기를 실제보다 작게 잡게 된다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>어떤 오프셋을 4바이트로 읽는 코드와 8바이트로 읽는 코드가 섞여 있어서 하나의 구조체 정의로는 앞뒤가 안 맞음</li><li>구조체를 씌운 이후에도 <code>+0x18</code>, <code>+0x1C</code>처럼 정의 범위를 벗어난 raw 오프셋이 여전히 남아 있음(Ghidra/IDA가 구조체 필드로 매핑하지 못함)</li><li><code>malloc</code>/<code>calloc</code> 호출의 크기 인자(상수, REV-0165로 확인 가능)와 구조체 정의 크기가 다름</li><li>배열로 순회되는 구조체인데, 두 번째 원소부터 필드 값이 이상하게 어긋남(구조체 1개 크기를 잘못 잡아서 다음 원소 시작 위치가 틀림)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>이 포인터/구조체 타입을 쓰는 <strong>모든</strong> 함수에서 오프셋 접근을 전부 모은다. 한 함수만 보고 구조체를 정의하면 반드시 나중에 다시 고쳐야 한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 실제 할당 크기 확인</strong> 이 객체를 만드는 <code>malloc</code>/<code>calloc</code>/<code>new</code> 호출을 찾아 크기 인자를 확인한다(REV-0165 상수 검색). 이 값이 구조체의 "진짜 전체 크기"의 강력한 단서다. <code>calloc(1, n)</code>이면 <code>n</code>이 그대로 크기다.</p>
+<p><strong>2) 오프셋 접근 전수 조사</strong> 이 포인터 타입을 쓰는 모든 함수에서 <code>+offset</code> 접근을 전부 나열하고, 각 접근이 몇 바이트(byte/word/dword/qword) 단위인지 기록한다. 겹치는 오프셋을 서로 다른 크기로 읽는 경우는 별도로 표시해둔다.</p>
+<p><strong>3) 정렬 규칙 적용해서 순서 재구성</strong> 발견한 필드들을 오프셋 순서대로 정렬 규칙(멤버는 자신의 크기 경계에 맞춰 정렬, 구조체 전체 크기는 가장 큰 멤버의 배수로 올림)을 감안해 배치한다. 필드 사이에 빈 공간이 남으면 그것이 패딩이다(이름 없는 필드로 남겨도 무방).</p>
+<p><strong>4) Structures 창에서 구조체 생성</strong> <code>Shift+F9</code>(Structures)에서 새 구조체를 만들고 위에서 정리한 순서/크기대로 필드를 추가한다. 이름을 모르는 필드는 우선 <code>field_XX</code> 그대로 두고, 확실한 것부터 이름을 붙인다.</p>
+<p><strong>5) 포인터에 구조체 타입 적용 후 검증</strong> 대상 포인터에서 <code>Y</code>로 새 구조체 타입을 지정한 뒤, 1단계에서 확인한 할당 크기와 <code>sizeof(struct)</code>가 일치하는지 다시 확인한다. 다르면 패딩이나 누락된 필드가 있다는 뜻이므로 2~3단계를 반복한다.</p>
+<p><strong>6) 다른 함수에서도 검증</strong> 구조체를 적용한 뒤 이 타입을 쓰는 다른 모든 함수를 다시 열어 pseudocode가 자연스러운 필드 이름으로 정리되는지 확인한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li><code>Shift+F9</code>: Structures 창 열기, 새 구조체 생성/필드 추가</li><li><code>Y</code>: 포인터/변수에 구조체 타입 적용</li><li><code>Ctrl+X</code>: 특정 함수/전역에서 이 구조체 포인터를 쓰는 다른 위치 찾기</li><li>Ghidra: Data Type Manager에서 우클릭 → New → Structure</li></ul>
+<h2>출력 해석</h2>
+<ul><li>구조체 크기가 <code>malloc</code> 인자와 정확히 일치하면 필드 구성이 맞을 가능성이 높다. 몇 바이트 차이가 난다면 패딩을 빼먹었거나 마지막 필드 하나를 놓친 것이다.</li><li>구조체 적용 후에도 여전히 raw <code>+0x28</code> 같은 오프셋이 pseudocode에 남아 있다면, 그 오프셋이 정의한 구조체 크기를 벗어난다는 뜻 — 구조체가 아직 작다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>패딩을 고려하지 않고 필드를 딱 붙여 정의해서 이후 모든 필드가 앞으로 밀리는 것.</li><li>한 함수만 보고 구조체를 확정한 뒤, 나중에 다른 함수에서 더 큰 오프셋이 나오는 것을 보고도 구조체를 다시 만들지 않고 raw 오프셋으로 억지로 계속 분석하는 것.</li><li>서로 다른 크기(4바이트 vs 8바이트)로 같은 오프셋을 접근하는 코드를 발견하고도 그 차이를 무시하고 아무 크기나 지정하는 것.</li><li>배열/중첩 구조체 가능성을 검토하지 않고 큰 구조체 하나로 뭉뚱그리는 것 — REV-0792에서 다루는 배열 재정의와 함께 판단해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>애초에 이 값이 배열인지 구조체인지부터 헷갈린다면 → REV-0792</li><li>이 포인터가 함수 포인터 배열(vtable)일 가능성이 있다면 → REV-0794</li><li>크기 관련 상수(malloc 인자 등)를 못 찾겠다면 → REV-0165</li></ul>
+<h2>미니 예제</h2>
+<p>어떤 포인터가 <code>+0x0</code>(4바이트), <code>+0x8</code>(8바이트, 포인터로 보임), <code>+0x10</code>(4바이트)로 접근되는 것을 여러 함수에서 확인했고, 이 객체를 만드는 곳에서 <code>malloc(0x18)</code>을 호출한다고 하자. <code>+0x0</code>(4바이트) 다음 8바이트 정렬 멤버(<code>+0x8</code>)가 오려면 그 사이 4바이트 패딩이 필요하므로, 구조체는 <code>int field_0; /*4바이트 패딩*/ void *field_8; int field_10;</code>이 되고 전체 크기는 0x18(패딩 포함 8의 배수로 올림)로 <code>malloc</code> 인자와 정확히 일치한다. 이렇게 확인이 되면 이 구조체 정의를 확정하고 이름을 붙여도 안전하다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0792-off-unk-byte-prefix-names.html">REV-0792 — 상수가 이상한 이름(off_, unk_, byte_)으로만 나올 때</a></li><li><a href="rev-0794-virtual-call-no-xref.html">REV-0794 — 가상함수 호출이라 Xref로 대상 함수를 못 찾을 때</a></li><li><a href="rev-0165-constant-search.html">REV-0165 — 상수 검색으로 알고리즘 찾기</a></li><li><a href="rev-0148-ida-set-type.html">REV-0148 — IDA Y로 타입 지정하기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>구조체 멤버 정렬(alignment)과 패딩 규칙(멤버는 자신의 크기 경계에 정렬, 구조체 전체 크기는 가장 큰 멤버의 배수)은 System V ABI AMD64 문서의 데이터 표현(Data Representation) 챕터 및 C 표준(구조체 레이아웃 관련 일반 규칙) 기준.</li><li>IDA Structures 창과 Ghidra Data Type Manager를 이용한 구조체 생성/적용 절차는 각각의 공식 문서(Hex-Rays "Structures", Ghidra "Data Type Manager" 챕터) 기준.</li><li>이 글은 2026-09-09 기준으로 작성되었다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SCAS와 문자열 검색 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>SCAS와 문자열 검색 패턴</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>SCAS</code>(및 <code>SCASB</code>/<code>SCASW</code>/<code>SCASD</code>/<code>SCASQ</code>)는 <code>AL</code>/<code>AX</code>/<code>EAX</code>/<code>RAX</code>에 들어있는 값과 <code>[RDI]</code>가 가리키는 메모리 값을 비교해 플래그(특히 <code>ZF</code>)를 세팅하고 <code>RDI</code>를 자동으로 전진(또는 후진)시키는 명령이다. <code>REPNE</code>(REPNZ) 접두사와 함께 쓰이면 "특정 값을 찾을 때까지 스캔"하는 루프가 되며, 그 대표 용례가 바로 <strong>NUL 바이트를 찾는 <code>strlen</code> 스타일 스캔</strong>이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>repne scasb</code>, <code>repnz scasb</code> 같은 코드가 함수 안에 보이는데 <code>strlen</code> 호출은 안 보일 때</li><li><code>SCAS</code>가 <code>MOVS</code>/<code>STOS</code>와 뭐가 다른지, 어느 레지스터를 쓰는지 헷갈릴 때</li><li><code>scasb</code> 직후 <code>RDI</code>나 <code>RCX</code> 값을 가지고 뭔가 계산(빼기)하는 코드를 볼 때 (문자열 길이를 구하는 관용구)</li><li><code>repe scasb</code>/<code>repne scasb</code>의 차이, <code>ZF</code>가 왜 관여하는지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>scasb          ; AL  와 BYTE PTR [RDI] 비교, 플래그만 갱신 (뺄셈 후 결과 버림)
+scasw          ; AX  와 WORD PTR [RDI] 비교
+scasd          ; EAX 와 DWORD PTR [RDI] 비교
+scasq          ; RAX 와 QWORD PTR [RDI] 비교   (x64 전용)</code></pre>
+<p>동작은 <code>CMP AL, [RDI]</code>(플래그만 세팅, 값은 저장 안 함)와 사실상 같지만, 추가로 <code>RDI</code>를 자동 증감시킨다는 점이 다르다.</p>
+<h3>방향 및 레지스터 효과</h3>
+<ul><li><strong>찾을 값(비교 기준)</strong>: <code>AL</code>/<code>AX</code>/<code>EAX</code>/<code>RAX</code>.</li><li><strong>스캔 대상</strong>: <code>RDI</code>가 가리키는 메모리(주의: <code>MOVS</code>/<code>CMPS</code>의 소스는 <code>RSI</code>인데, <code>SCAS</code>는 <code>STOS</code>처럼 <strong><code>RDI</code>만</strong> 사용한다 — "쓰기든 스캔이든 목적지 계열 레지스터인 <code>RDI</code>"라고 기억하면 헷갈리지 않는다).</li><li>매 비교 후 <code>DF</code>(REV-0080 참고)에 따라 <code>RDI</code>만 증가 또는 감소한다.</li><li><code>DF=0</code>: <code>RDI += size</code></li><li><code>DF=1</code>: <code>RDI -= size</code></li><li><code>RSI</code>는 <code>SCAS</code>와 무관하다.</li></ul>
+<h3>REPNE SCAS — "다를 때까지" 반복해서 "찾을 때까지" 스캔하기</h3>
+<p><code>REPNE</code>(또는 <code>REPNZ</code>)는 "<strong>같지 않은(ZF=0) 동안</strong> 반복"이라는 뜻이므로, 반대로 말하면 "<strong>같아지는 순간(ZF=1) 멈춘다</strong>" — 즉 <code>찾는 값과 일치하는 위치를 찾으면 자동으로 멈추는 루프가 된다. </code>strlen`처럼 NUL 바이트(값 0)를 찾을 때 전형적으로 쓰인다:</p>
+<pre><code class="language-asm">lea     rdi, [str]
+xor     al, al        ; 찾을 값 = 0 (NUL)
+mov     rcx, -1        ; 사실상 무제한 (0xFFFFFFFFFFFFFFFF)
+cld
+repne scasb              ; NUL을 만날 때까지 RDI를 전진시키며 스캔
+; 스캔이 끝나면 RDI는 "NUL 바이트의 다음 주소"를 가리킨다</code></pre>
+<p><code>REPE</code>/<code>REPZ</code> <code>SCAS</code>도 문법적으로 가능한데, 이건 반대로 "<strong>값이 계속 같은 동안</strong> 반복 → 다른 값이 나오면 멈춘다"는 의미다. 예를 들어 "0x00으로 채워진 영역이 어디까지인지"를 찾을 때(패딩 영역의 끝을 찾는 등) <code>REPE SCAS</code>가 쓰일 수 있다. 실무에서는 <code>REPNE SCAS</code>(뭔가를 찾을 때까지)가 압도적으로 흔하다.</p>
+<h3>RCX = -1 관용구</h3>
+<p><code>strlen</code>처럼 문자열 길이를 모르는 상태에서 스캔할 때는 <code>RCX</code>에 실제 반복 횟수 대신 <strong>-1(즉 <code>0xFFFFFFFFFFFFFFFF</code>, 사실상 무한대에 가까운 값)</strong>을 넣어두는 관용구가 흔하다. 어차피 <code>REPNE</code>는 <code>ZF</code>가 1이 되는 순간(=NUL을 찾는 순간) 먼저 멈추므로 <code>RCX</code>가 실질적인 반복 상한 역할을 거의 하지 않기 때문이다. 이 패턴(<code>mov ecx, 0FFFFFFFFh</code> 또는 <code>or rcx, -1</code> 다음 <code>repne scasb</code>)을 보면 십중팔구 "길이를 모르는 문자열/버퍼를 끝까지 스캔한다"는 뜻이다.</p>
+<h3>문자열 길이 계산 관용구</h3>
+<p>스캔이 끝난 후 <code>RDI</code>는 "찾은 위치의 다음 주소"를 가리키고 있다. 그래서 길이를 구하려면 보통:</p>
+<pre><code>길이 = (스캔 후 RDI) - (스캔 시작 시 RDI) - 1</code></pre>
+<p>또는 <code>RCX</code>를 초기값(-1)에서 빼는 방식으로 계산한다(<code>시작 RCX - 종료 RCX - 1</code>). IDA/Ghidra 디컴파일에서는 이 뺄셈 계산이 그대로 <code>strlen(str)</code> 결과값으로 뭉쳐 보이는 경우가 많다.</p>
+<h3>플래그 변화</h3>
+<p><code>SCAS</code>는 <code>CMP</code>와 동일하게 <strong><code>CF</code>, <code>ZF</code>, <code>SF</code>, <code>OF</code>, <code>AF</code>, <code>PF</code>를 갱신</strong>한다. <code>REPNE</code>/<code>REPE</code> 접두사가 종료 조건 판단에 쓰는 것이 바로 이 <code>ZF</code>다.</p>
+<h3>스택/RIP 변화</h3>
+<p>직접적인 영향 없음.</p>
+<h2>컴파일러 패턴 — strlen 인라인 인식하기</h2>
+<pre><code class="language-asm">lea     rdi, [rbp-0x50]   ; 문자열 버퍼
+xor     eax, eax            ; 찾을 값 = 0 (NUL)
+or      rcx, -1              ; RCX = 0xFFFFFFFFFFFFFFFF
+repne scasb
+not     rcx
+dec     rcx                   ; == strlen(rbp-0x50)</code></pre>
+<p><code>repne scasb</code> + 그 뒤의 <code>not</code>/<code>dec</code>/뺄셈 조합이 통째로 보이면 "이건 그냥 <code>strlen</code> 한 번이다"라고 인식하면 된다. 한 줄씩 따라가며 "왜 NOT을 하지?"라고 고민할 필요 없이, 전체 블록을 <code>strlen</code> 호출과 동일시하고 다음 코드로 넘어가는 게 효율적이다.</p>
+<h2>IDA/Ghidra 디컴파일에서 보이는 방식</h2>
+<ul><li>표준 패턴이 인식되면 <code>strlen(str)</code> 호출로 깔끔하게 표시되거나, 최소한 그 결과가 담기는 변수에 대해 "이건 길이"라는 힌트를 주는 형태로 보인다.</li><li>인식되지 않으면 <code>for (p = str; *p; p++);</code> 같은 raw 스캔 루프나, <code>n = 0; while(str[n]) n++;</code> 형태로 표시된다.</li><li>Ghidra는 특히 <code>RCX = -1</code> 초기화와 <code>repne scasb</code> 조합을 잘 인식하지 못하는 경우가 있어 raw 루프로 남는 일이 IDA보다 상대적으로 흔하다 — 이럴 때 어셈블리 원문에서 이 패턴을 직접 확인하면 빠르다.</li></ul>
+<h2>리버싱 관점에서의 의미</h2>
+<ul><li><code>repne scasb</code>는 사실상 "strlen을 함수 호출 없이 인라인한 것"이므로, 문자열 길이를 구하는 코드를 찾을 때 함수 호출 목록(Imports)에서 <code>strlen</code>이 안 보이더라도 이 패턴이 있는지 먼저 찾아봐야 한다.</li><li>찾는 값이 0(NUL)이 아니라 다른 값(예: 특정 구분자 <code>,</code>, <code>\n</code> 등)이라면 <code>strchr</code>류 함수가 인라인된 것일 수 있다.</li><li><code>RDI</code> 시작 주소를 확인하면 어떤 버퍼(사용자 입력, 파일 경로 등)의 길이/특정 문자를 찾는지 알 수 있어, 뒤이어 나오는 검증/분기 로직의 맥락을 빠르게 잡을 수 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>scasb</code>/<code>repne scasb</code>(또는 <code>repe scasb</code>)를 봤다면 가장 먼저 확인할 것:</p>
+<ol><li><strong>찾는 값</strong> — 직전에 <code>AL</code>/<code>EAX</code>에 세팅된 값. 0이면 NUL 탐색(<code>strlen</code>류), 다른 문자면 구분자 탐색(<code>strchr</code>류)이다.</li><li><strong><code>REPNE</code>인지 <code>REPE</code>인지</strong> — <code>REPNE</code>(다를 때 반복 → 같으면 멈춤, 즉 "찾으면 멈춤")가 압도적으로 흔하다. <code>REPE</code>라면 반대로 "달라지면 멈춤"이므로 무엇을 찾는지 반대로 해석해야 한다.</li><li><strong><code>RCX</code> 초기값이 <code>-1</code>(무제한)인지 특정 상수인지</strong> — <code>-1</code>이면 길이를 모르는 채로 끝까지 스캔, 상수면 최대 탐색 범위가 제한된 것이다.</li></ol>
+<h2>단계별 절차</h2>
+<ol><li><code>repne scasb</code>(또는 <code>repe scasb</code>) 바로 앞에서 <code>AL</code>/<code>EAX</code>에 어떤 값이 들어가는지 확인해 "무엇을 찾는지" 확정한다.</li><li><code>RDI</code> 세팅 지점을 역추적해서 스캔 대상 버퍼가 무엇인지 확인한다.</li><li><code>RCX</code>가 <code>-1</code>(또는 <code>or rcx, -1</code>)인지 확인한다 — 맞다면 "길이 제한 없이 찾을 때까지" 패턴이다.</li><li>F5로 디컴파일해서 <code>strlen(...)</code> 또는 유사 스캔으로 인식됐는지 확인한다. Ghidra는 이 패턴을 못 알아채고 raw 루프로 남기는 경우가 IDA보다 잦으니, 그럴 땐 어셈블리 원문을 기준으로 판단한다.</li><li><code>repne scasb</code> 직후에 이어지는 <code>not</code>/<code>dec</code>/<code>sub</code> 등 산술 명령을 따라가서 최종 결과(길이 또는 발견 위치)가 어느 레지스터/변수에 담기는지 확인한다.</li><li>결과가 맞는지 확신이 안 서면 <code>repne scasb</code> 다음 명령에 브레이크포인트를 걸고 실행 후 <code>RDI</code>/<code>RCX</code> 실제 값을 확인해 손으로 계산한 값과 대조한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>F5</code>(디컴파일), <code>Strings</code> 창(Shift+F12)에서 찾는 값이 상수 문자가 아니라 NUL인지 정황 확인, <code>F2</code>/<code>F9</code>로 브레이크포인트 후 실행</li><li>x64dbg: <code>repne scasb</code> 다음 줄에 브레이크포인트를 걸고 <code>F9</code>로 실행 후 레지스터 패널에서 <code>RDI</code>, <code>RCX</code>, 플래그 패널의 <code>ZF</code> 확인</li><li>GDB/Pwndbg: <code>break *0x&lt;repne_scasb_다음주소&gt;</code>, <code>info registers rdi rcx eflags</code>로 스캔 종료 시점의 상태를 한 번에 확인</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>SCAS</code>의 스캔 대상을 <code>RSI</code>로 착각하는 것 — <code>SCAS</code>는 <code>RDI</code>만 쓴다(<code>RSI</code>는 관여 안 함).</li><li><code>REPNE</code>와 <code>REPE</code>를 반대로 이해하는 것 — <code>REPNE</code>(다를 때 반복)는 "같아지면 멈춘다"(=찾으면 멈춘다), <code>REPE</code>(같을 때 반복)는 "달라지면 멈춘다".</li><li><code>RCX = -1</code> 세팅을 보고 "무한 루프인가?"라고 걱정하는 것 — <code>REPNE</code>가 조건에 따라 먼저 끝나므로 사실상 안전한 관용구다.</li><li>스캔이 끝난 후 <code>RDI</code>가 "찾은 값의 위치"라고 착각하는 것 — 정확히는 <strong>찾은 위치의 다음 주소</strong>(비교 후 이미 한 번 증가한 상태)라는 오프바이원(off-by-one)에 주의해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>무엇을 찾고 있는지 궁금하면 → <code>scasb</code>(등) 직전 <code>AL</code>/<code>EAX</code>에 세팅된 값을 확인 (0이면 NUL, strlen류).</li><li>스캔 시작 위치가 궁금하면 → 직전 <code>RDI</code> 세팅 지점을 역추적.</li><li>결과 길이/오프셋이 어떻게 계산되는지 궁금하면 → <code>repne scasb</code> 직후의 <code>RDI</code>/<code>RCX</code> 관련 산술 명령(<code>sub</code>, <code>not</code>, <code>dec</code>)을 따라간다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — strlen 인라인 (가장 흔한 패턴)</strong></p>
+<pre><code class="language-c">size_t n = strlen(str);</code></pre>
+<pre><code class="language-asm">lea     rdi, [str]
+xor     eax, eax     ; 찾을 값 = 0
+or      rcx, -1
+repne scasb
+not     rcx
+dec     rcx            ; rcx = strlen(str)</code></pre>
+<p><strong>예제 2 — 특정 문자(구분자) 탐색 (strchr류)</strong></p>
+<pre><code class="language-asm">lea     rdi, [line]
+mov     al, ','        ; 콤마를 찾는다
+mov     rcx, -1
+repne scasb
+; ZF=1 이면 찾음, RDI-1 이 콤마 위치
+jne     not_found</code></pre>
+<p><strong>예제 3 — REPE SCAS로 "값이 이어지는 구간의 끝" 찾기 (드문 패턴)</strong></p>
+<pre><code class="language-asm">lea     rdi, [padding_area]
+xor     al, al         ; 0이 계속되는 구간을 찾음
+mov     rcx, 256
+repe scasb                ; 0이 아닌 바이트를 만나면 멈춤</code></pre>
+<p><strong>예제 4 — 짧은 고정 길이 스캔 (RCX가 -1이 아닌 상수인 경우)</strong></p>
+<pre><code class="language-asm">lea     rdi, [buf]
+mov     al, 0FFh
+mov     ecx, 8          ; 최대 8바이트까지만 찾는다
+repne scasb
+jne     sentinel_missing  ; 8바이트 안에서 못 찾음</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0080-rep-prefix.html">rev-0080-rep-prefix.md</a> — REP Prefix와 반복 문자열 명령 (REPE/REPNE 조건 반복 규칙)</li><li><a href="rev-0081-movs.html">rev-0081-movs.md</a> — MOVS/MOVSB/MOVSW/MOVSD/MOVSQ</li><li><a href="rev-0082-stos.html">rev-0082-stos.md</a> — STOS/STOSB/STOSD/STOSQ</li><li><a href="rev-0083-lods.html">rev-0083-lods.md</a> — LODS 문자열 로드 명령</li><li><a href="rev-0085-cmps.html">rev-0085-cmps.md</a> — CMPS와 문자열 비교 패턴</li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>SCAS</code>/<code>SCASB</code>/<code>SCASW</code>/<code>SCASD</code>/<code>SCASQ</code> 동작: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2C, "SCAS/SCASB/SCASW/SCASD/SCASQ—Scan String" 섹션 기준 (2026-09-08 검증).</li><li><code>REPE</code>/<code>REPNE</code> 조건부 반복과 <code>ZF</code> 관계: 동 매뉴얼 "REP/REPE/REPZ/REPNE/REPNZ" 섹션 기준.</li><li><code>strlen</code> 인라인 시 <code>repne scasb</code> + <code>RCX=-1</code> 관용구: 일반적인 GCC/MSVC 산출물 관찰 및 리버싱 레퍼런스 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -4,8 +4,7 @@ Storage usage report for Reversing-Offline-Search-Web.
 
 Walks the repository and buckets on-disk size by top-level area (content,
 assets, dist, offline-kit, tools, research, other), then compares the total
-against the hard/soft limits recorded in STORAGE_BUDGET.md (40 GB hard limit,
-30-35 GB soft target).
+against the project's storage limits (40 GB hard limit, 30-35 GB soft target).
 
 Stdlib only. Run from repo root:
 
@@ -23,8 +22,8 @@ ROOT = Path(__file__).resolve().parent.parent
 HARD_LIMIT_GB = 40
 SOFT_TARGET_GB = 35
 
-# Top-level areas we bucket by, in the order AGENTS.md/STORAGE_BUDGET.md
-# discusses them. Anything not under one of these is bucketed as "other".
+# Top-level areas are listed in reporting order. Anything not under one of
+# these is bucketed as "other".
 BUCKETS = [
     ("content", ROOT / "content"),
     ("assets", ROOT / "assets"),
@@ -107,7 +106,7 @@ def main():
         HARD_LIMIT_GB, SOFT_TARGET_GB, total_gb))
 
     if total_gb > HARD_LIMIT_GB:
-        print("  !! OVER HARD LIMIT -- deduplicate large binaries/images per AGENTS.md priority order.")
+        print("  !! OVER HARD LIMIT -- deduplicate large binaries/images in priority order.")
         return 1
     elif total_gb > SOFT_TARGET_GB:
         print("  ! over soft target, still under hard limit -- keep an eye on offline-kit/tools growth.")

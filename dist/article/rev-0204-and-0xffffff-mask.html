@@ -1,0 +1,147 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AND 0xFFFFFF 24비트 마스크 이해 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>AND 0xFFFFFF 24비트 마스크 이해</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p><code>and eax, 0xFFFFFF</code>는 32비트 값에서 <strong>하위 24비트(3바이트)만 남기고 최상위 1바이트를 지우는 마스크</strong>이며, RGB 색상값 추출, 24비트 필드/버전 정보 처리, 또는 해시 결과를 의도적으로 축소해서 브루트포스 가능한 크기로 줄이는 CTF 트릭에서 자주 나타난다. 이 상수(<code>0xFFFFFF</code>, 십진수 <code>16777215</code>)는 검색 중 자주 마주치는 대표적인 상수다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리에 <code>and eax, 0FFFFFFh</code> 또는 <code>and eax, 16777215</code>가 보일 때</li><li>색상값(픽셀, RGB) 처리 코드로 보이는 곳에서 상위 1바이트(알파 채널 등)를 제거하는 로직을 찾을 때</li><li>해시나 체크섬 결과가 32비트인데 최종 비교는 6자리 hex(24비트)로만 이루어질 때</li><li><code>16777619</code>(FNV prime, REV-0207/0208)와 <code>16777215</code>(0xFFFFFF, 24비트 마스크)를 혼동할 때 — 숫자가 비슷해 보이지만 완전히 다른 의미다</li></ul>
+<h2>핵심 개념</h2>
+<p><code>0xFFFFFF</code>는 16진수로 <code>F</code>가 6개, 즉 <code>1111_1111_1111_1111_1111_1111</code>(24개의 1)이다. 32비트 레지스터에서 이 값과 AND하면 최상위 8비트(1바이트)가 0으로 지워지고 나머지 24비트(3바이트)는 그대로 남는다.</p>
+<p><strong>F 개수로 비트 폭 빠르게 판별하는 법 (REV-0026과 동일한 원리):</strong></p>
+<table><thead><tr><th>마스크</th><th>F 개수</th><th>유지되는 비트</th><th>유지되는 바이트</th></tr></thead><tbody><tr><td><code>0xFF</code></td><td>2</td><td>8비트</td><td>1바이트</td></tr><tr><td><code>0xFFFF</code></td><td>4</td><td>16비트</td><td>2바이트</td></tr><tr><td><code>0xFFFFFF</code></td><td>6</td><td>24비트</td><td>3바이트</td></tr><tr><td><code>0xFFFFFFFF</code></td><td>8</td><td>32비트</td><td>4바이트</td></tr></tbody></table>
+<p>24비트 마스크가 특히 자주 등장하는 맥락:</p>
+<ol><li><strong>RGB 색상값</strong>: <code>0xAARRGGBB</code> 형태의 32비트 픽셀값에서 알파(AA) 채널을 버리고 순수 색상(<code>0xRRGGBB</code>)만 남길 때.</li><li><strong>버전/매직 넘버 필드</strong>: 32비트 중 상위 1바이트를 플래그나 타입 태그로 쓰고, 나머지 24비트를 실제 값(길이, 오프셋)으로 쓰는 커스텀 포맷.</li><li><strong>해시 공간을 의도적으로 축소</strong>: 32비트 해시를 그대로 쓰면 브루트포스가 사실상 불가능(약 43억 가지)하지만, 문제 출제자가 <code>hash &amp; 0xFFFFFF</code>로 24비트(약 1677만 가지)로 줄여서 "노트북으로 몇 분 안에 브루트포스 가능한" 난이도로 조정하는 경우가 있다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">mov     eax, [pixel]
+and     eax, 0FFFFFFh      ; 알파 채널 제거, RGB만 남김
+cmp     eax, 0A1B2C3h
+jne     wrong</code></pre>
+<pre><code class="language-c">if ((color &amp; 0xFFFFFF) != 0xA1B2C3)
+    return 0;</code></pre>
+<p>해시 축소 예:</p>
+<pre><code class="language-c">unsigned int h = fnv1a_32(input);
+if ((h &amp; 0xFFFFFF) != 0x2C1A9F)   // 32비트 해시를 24비트로 축소해서 비교
+    return 0;</code></pre>
+<h2>가장 먼저 할 것</h2>
+<p><code>0xFFFFFF</code>가 마스킹하는 원본 값이 어디서 왔는지(픽셀 데이터? 해시 계산 결과? 단순 필드?) 먼저 추적한다. 만약 해시 계산 직후에 이 마스크가 걸린다면, 해시 공간이 24비트로 줄어든 것이므로 브루트포스 난이도를 재평가해야 한다(2^24 ≈ 1,677만 — 파이썬으로도 초 단위~분 단위에 끝날 수 있는 크기).</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 마스크 확인</strong>: <code>0xFFFFFF</code> 또는 <code>16777215</code>인지 IDA에서 <code>H</code>로 진법 토글해서 정확히 확인.</p>
+<p><strong>2) 원본 값의 출처 파악</strong>: 그 위 코드가 픽셀/색상 처리인지, 해시 계산인지 확인.</p>
+<p><strong>3) 파이썬으로 동일 마스킹 재현</strong></p>
+<pre><code class="language-python">value = 0xA1B2C3D4
+masked = value &amp; 0xFFFFFF
+print(hex(masked))   # 0xb2c3d4</code></pre>
+<p><strong>4) 해시 축소 상황이면 브루트포스 가능성 검토</strong></p>
+<pre><code class="language-python">def fnv1a_32(data: bytes) -&gt; int:
+    h = 0x811C9DC5
+    for b in data:
+        h ^= b
+        h = (h * 0x01000193) &amp; 0xFFFFFFFF
+    return h
+
+target = 0x2C1A9F
+import itertools, string
+charset = string.ascii_lowercase + string.digits
+for length in range(1, 5):
+    for cand in itertools.product(charset, repeat=length):
+        s = "".join(cand).encode()
+        if (fnv1a_32(s) &amp; 0xFFFFFF) == target:
+            print("found:", s)
+            break</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>H</code>(진법 토글)로 <code>0xFFFFFF</code>가 <code>16777215</code>인지, 혹은 <code>16777619</code>(FNV prime)와 헷갈리지 않았는지 재확인</li><li>Python: <code>value &amp; 0xFFFFFF</code>, <code>hex(value &amp; 0xFFFFFF)</code></li></ul>
+<h2>출력 해석</h2>
+<ul><li>마스킹 후 값이 6자리 hex(<code>0x000000</code>~<code>0xFFFFFF</code>)를 벗어나면 마스크 값 자체를 잘못 읽은 것.</li><li>해시 축소 브루트포스가 너무 오래 걸린다면 charset이나 length 범위를 문제 조건에 맞게 좁혀야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>0xFFFFFF</code>(24비트 마스크, 16777215)와 <code>16777619</code>(FNV prime, 0x01000193)를 숫자가 비슷하다고 혼동하는 것 — 하나는 AND 마스크이고 하나는 곱셈 상수로 용도 자체가 다르다.</li><li>24비트 마스크를 3바이트 정수로 다룰 때 엔디안(little-endian) 순서를 헷갈려서 바이트 나열 순서를 반대로 읽는 것.</li><li>상위 1바이트가 항상 <code>0x00</code>이라고 가정하고 원본 값을 그대로 마스킹 결과로 착각하는 것 — 원본 상위 바이트에 의미 있는 데이터(알파 채널, 플래그)가 있었을 수 있는데 이는 마스킹으로 영구히 사라지므로 복원 불가능하다는 점을 놓치는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>F</code>가 2개(8비트)라면 → REV-0203.</li><li>이 마스크가 해시 계산 뒤에 있다면 → REV-0207/REV-0208(FNV), REV-0209(CRC)에서 원본 해시 알고리즘부터 특정.</li><li>마스킹 전 값이 음수로 보인다면 → REV-0206.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 어셈블리에서 24비트 마스크 읽기</strong></p>
+<pre><code class="language-asm">mov  eax, [rbp-4]   ; eax = 0xDEADBEEF (예시)
+and  eax, 0FFFFFFh  ; eax = 0x00ADBEEF  (상위 1바이트 0xDE가 잘려나감)</code></pre>
+<p>Python으로 그대로 재현:</p>
+<pre><code class="language-python">value = 0xDEADBEEF
+masked = value &amp; 0xFFFFFF
+print(hex(masked))  # 0xadbeef</code></pre>
+<p><strong>예제 2 — RGB 색상값에서 알파 바이트 제거</strong></p>
+<pre><code class="language-python">argb = 0xFF3399CC        # 0xAA_RR_GG_BB 형태
+rgb = argb &amp; 0xFFFFFF     # 0x3399CC — 알파(0xFF)만 잘라냄</code></pre>
+<p><strong>예제 3 — 처음부터 끝까지 실행되는 전체 스크립트 (24비트로 축소된 해시를 실제로 브루트포스)</strong></p>
+<p>32비트 해시(약 43억 가지)는 무식하게 다 돌려보기 어렵지만, 문제 출제자가 <code>&amp; 0xFFFFFF</code>로 24비트(약 1677만 가지)로 줄여놨다면 짧은 입력에 한해 파이썬으로도 몇 초 안에 뚫을 수 있다. 아래 스크립트는 실제로 끝까지 실행해서 정답을 찾아내는 것까지 확인된 버전이다.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0204 실전 스크립트: 32비트 해시를 24비트(0xFFFFFF)로 축소해둔 경우,
+# 축소된 목표값을 실제로 브루트포스로 뚫어서 원문을 찾아낸다.
+
+import itertools
+import string
+
+def fnv1a_32(data: bytes) -&gt; int:
+    # FNV-1a 32비트 해시를 그대로 재현한다 (REV-0207/0208 참고).
+    h = 0x811C9DC5
+    for b in data:
+        h ^= b
+        h = (h * 0x01000193) &amp; 0xFFFFFFFF
+    return h
+
+# 1) 바이너리에서 뽑은, 24비트로 축소된 목표값(and eax, 0FFFFFFh 뒤에 나온 비교 상수)이라고 가정한다.
+target = 0x2505CA
+
+# 2) 문제 조건상 입력이 소문자+숫자, 길이 1~2자리라고 가정하고 그 범위를 전부 시도한다.
+#    (실제 문제에서는 flag 길이나 문자셋 힌트에 맞춰 charset과 length 범위를 조정해야 한다)
+charset = string.ascii_lowercase + string.digits
+found = None
+for length in range(1, 3):
+    for combo in itertools.product(charset, repeat=length):
+        candidate = "".join(combo).encode()
+        # 계산한 32비트 해시를 24비트로 마스킹한 뒤에 목표값과 비교한다 — 원본 코드와 똑같은 순서.
+        if (fnv1a_32(candidate) &amp; 0xFFFFFF) == target:
+            found = candidate
+            break
+    if found:
+        break
+
+print("찾아낸 원문:", found)
+# 실행 결과: 찾아낸 원문: b'ab'
+if found is not None:
+    print("검증:", hex(fnv1a_32(found) &amp; 0xFFFFFF), "== 목표값", hex(target))
+    # 실행 결과: 검증: 0x2505ca == 목표값 0x2505ca</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0203-and-0xff-mask.html">REV-0203 — AND 0xFF 마스크 이해</a></li><li><a href="rev-0207-fnv1-fnv1a.html">REV-0207 — FNV-1과 FNV-1a 해시 패턴</a></li><li>./rev-0208-fnv-16777619.md — 16777619 상수가 보일 때 FNV 의심하기</li><li>../assembly/rev-0055-and.md — AND 명령어</li></ul>
+<h2>출처/검증</h2>
+<ul><li>AND 마스킹 규칙은 Intel 64 and IA-32 Architectures Software Developer's Manual의 AND 명령 설명 기준.</li><li>24비트 RGB 픽셀 포맷(<code>0xRRGGBB</code>)은 일반적인 그래픽스 관례 기준(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

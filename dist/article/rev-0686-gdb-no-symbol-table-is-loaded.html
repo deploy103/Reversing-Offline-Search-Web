@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GDB에서 No symbol table is loaded 오류가 뜰 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>GDB에서 No symbol table is loaded 오류가 뜰 때</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>No symbol table is loaded.  Use the "file" command.</code>은 GDB에 <strong>아직 분석 대상 실행 파일 자체가 물려있지 않은 상태</strong>에서 <code>break</code>, <code>list</code>, <code>info line</code> 같은 심볼 기반 명령을 쳤을 때 나오는 안내 메시지이며, 해결책은 GDB를 켤 때 <code>gdb ./chall</code>처럼 바이너리를 인자로 주거나 이미 켜진 GDB 안에서 <code>file ./chall</code>로 직접 로드하는 것이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>터미널에 그냥 <code>gdb</code>만 치고 들어간 뒤 <code>break main</code>을 입력했는데 <code>No symbol table is loaded.  Use the "file" command.</code>가 뜰 때</li><li><code>list main</code>이나 <code>info line main</code>을 쳤는데 같은 메시지가 뜰 때</li><li>GDB 스크립트(<code>-x script.gdb</code>)나 <code>.gdbinit</code>에서 <code>break</code> 명령이 실행 파일 로드보다 먼저 실행되어 같은 오류가 스크롤되어 지나갈 때</li><li>이 메시지가 "바이너리가 stripped라서 나는 오류"인지 "애초에 파일을 안 물려서 나는 오류"인지 구분이 안 갈 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>이 메시지는 "심볼이 없다"가 아니라 "물린 파일 자체가 없다"는 뜻</h3>
+<p>GDB는 세션을 시작할 때 디버깅 대상 실행 파일(objfile)을 지정받지 않으면 내부적으로 아무 심볼 테이블도 갖고 있지 않은 빈 상태로 대기한다. 이 상태에서 함수 이름이나 소스 라인을 참조하는 명령(<code>break FUNC</code>, <code>list</code>, <code>info line</code>)을 쓰면, GDB는 "찾아볼 심볼 테이블 자체가 없다. <code>file</code> 명령으로 로드해라"라고 정확히 안내해준다. 이는 <strong>바이너리가 stripped(심볼 제거됨)인 경우</strong>(→ REV-0689 참고)와는 다른 상황이다. stripped 바이너리는 일단 파일이 로드는 됐지만 그 안에 찾는 심볼이 없는 경우이고, 이 문서의 상황은 애초에 아무 파일도 로드되지 않은 경우다.</p>
+<h3>어떤 상황에서 "파일 없이" GDB가 켜지는가</h3>
+<ul><li>터미널에서 그냥 <code>gdb</code>만 입력하고 실행 파일 경로를 인자로 주지 않은 경우</li><li><code>gdb -p &lt;PID&gt;</code>로 이미 실행 중인 프로세스에 attach는 했지만, 어떤 이유로 GDB가 해당 프로세스의 실행 파일을 자동으로 못 찾은 경우(권한 문제, 컨테이너 안 PID 등)</li><li><code>.gdbinit</code> 스크립트나 <code>-x</code> 옵션으로 넘긴 명령 파일 맨 위에 <code>break main</code> 같은 줄이 있는데, 정작 그 스크립트를 실행 파일 지정 없이(<code>gdb -x script.gdb</code>, 대상 없이) 돌린 경우</li><li>core 파일만 열고(<code>gdb core</code>) 원본 실행 파일은 같이 지정하지 않은 경우</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-text">(gdb) break main
+No symbol table is loaded.  Use the "file" command.
+(gdb) list
+No symbol table is loaded.  Use the "file" command.</code></pre>
+<ul><li>GDB 프롬프트가 뜬 직후, 어떤 심볼 기반 명령을 쳐도 같은 문구가 반복됨</li><li><code>info files</code>를 쳤을 때 <code>No executable file now.</code>처럼 실행 파일이 아예 없다고 나옴</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>info files</code>를 쳐서 지금 GDB에 실행 파일이 물려있는지부터 확인한다. <code>No executable file now.</code>가 나오면 파일이 전혀 로드되지 않은 상태이므로, <code>file ./chall</code>로 바로 로드한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 현재 상태 확인</strong></p>
+<pre><code class="language-gdb">(gdb) info files</code></pre>
+<p><strong>2) 파일이 없다면 file 명령으로 로드</strong></p>
+<pre><code class="language-gdb">(gdb) file ./chall
+Reading symbols from ./chall...</code></pre>
+<p>경로가 상대 경로라면 GDB를 실행한 셸의 현재 디렉터리 기준이라는 점에 주의한다(바이너리가 있는 디렉터리로 먼저 <code>cd</code>하거나 절대 경로를 쓴다).</p>
+<p><strong>3) 애초에 GDB를 켤 때 같이 지정하는 편이 더 안전</strong></p>
+<pre><code class="language-bash">gdb ./chall
+gdb -q ./chall
+gdb --args ./chall arg1 arg2</code></pre>
+<p><code>--args</code>를 쓰면 프로그램 인자까지 함께 지정한 뒤 <code>run</code>만 치면 된다.</p>
+<p><strong>4) attach 상황이라면 file을 먼저, attach를 나중에</strong></p>
+<pre><code class="language-gdb">(gdb) file ./chall
+(gdb) attach 1234</code></pre>
+<p><code>gdb -p 1234</code>만으로 시작했는데 심볼이 하나도 안 잡히는 것 같다면, <code>file</code> 명령으로 그 PID에 해당하는 실행 파일 경로(<code>/proc/1234/exe</code>를 <code>ls -l</code>로 확인)를 명시적으로 지정해준다.</p>
+<p><strong>5) 그래도 안 된다면 stripped 여부 확인</strong></p>
+<pre><code class="language-bash">file ./chall
+readelf -S ./chall | grep -i symtab</code></pre>
+<p><code>file</code> 로드는 성공했는데 여전히 <code>break FUNC</code>에서 비슷한 문제가 나면, 이번엔 다른 오류(<code>Function "FUNC" not defined.</code>)일 가능성이 높다 — REV-0689를 참고한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">gdb ./chall
+gdb -q ./chall
+gdb --args ./chall arg1</code></pre>
+<pre><code class="language-gdb">info files
+file ./chall
+file ./chall core</code></pre>
+<pre><code class="language-bash">file ./chall           # 셸의 file 명령: ELF인지, stripped인지 확인
+readelf -S ./chall | grep -i symtab</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>Reading symbols from ./chall...</code> (버전에 따라 뒤에 <code>(no debugging symbols found)</code>가 붙을 수 있음) — 파일이 정상적으로 로드됐다는 뜻. <code>(no debugging symbols found)</code>는 DWARF 소스 라인 정보가 없다는 뜻이지, <code>.symtab</code>(함수 이름)까지 없다는 뜻은 아니다. <code>break FUNC</code>는 <code>.symtab</code>만 있어도 대체로 동작한다.</li><li><code>info files</code>에서 실행 파일 경로와 <code>Entry point:</code> 주소가 출력되면 정상적으로 물려있는 상태다.</li><li><code>readelf -S ./chall | grep -i symtab</code>에서 아무 것도 안 나오면 <code>.symtab</code>이 제거된(stripped) 바이너리라는 뜻이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>이 메시지를 "바이너리가 stripped됐다"는 뜻으로 오해하고 곧바로 IDA/Ghidra로 넘어가는 것 — 사실은 단순히 <code>file</code> 명령을 안 쳐서 나는 경우가 훨씬 많다.</li><li>상대 경로로 <code>file chall</code>을 쳤는데 GDB의 현재 디렉터리가 바이너리 위치와 달라서 <code>chall: No such file or directory.</code>가 또 뜨는 것 — 이 경우는 REV-0688을 참고한다.</li><li><code>.gdbinit</code>에 <code>break main</code>을 무조건 먼저 써두고, 정작 <code>gdb</code>를 파일 인자 없이 켜서 매번 이 오류를 보는 것 — <code>.gdbinit</code>에는 파일별로 다른 심볼 기반 명령을 넣기보다 <code>file</code> 로드 이후에만 의미 있는 명령을 넣거나, <code>gdb ./chall -x script.gdb</code> 형태로 항상 파일과 함께 실행하는 습관을 들인다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>stripped 바이너리에서 함수 이름으로 브레이크포인트가 안 걸릴 때 → REV-0689 GDB에서 breakpoint를 걸었는데 Function not defined라고 할 때</li><li>파일 경로 자체가 있는데도 GDB가 못 찾는다고 할 때 → REV-0688 GDB에서 No such file or directory 오류가 뜰 때</li><li>core 파일과 함께 여는 절차가 궁금하면 → REV-0113 Core dump와 크래시 지점 분석 기초</li><li>stripped와 심볼 있는 바이너리의 차이 자체가 궁금하면 → REV-0038 심볼이 있는 바이너리와 Stripped 바이너리 차이</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ gdb
+GNU gdb (Ubuntu 12.1-0ubuntu1~22.04) 12.1
+(gdb) break main
+No symbol table is loaded.  Use the "file" command.
+(gdb) file ./chall
+Reading symbols from ./chall...
+(gdb) break main
+Breakpoint 1 at 0x1189: file chall.c, line 10.
+(gdb) run
+Breakpoint 1, main (argc=1, argv=0x7fffffffe4d8) at chall.c:10
+10          char buf[64];</code></pre>
+<p><code>file ./chall</code>을 실행하고 나서야 <code>break main</code>이 정상적으로 주소를 계산해 브레이크포인트를 걸었다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0689-gdb-function-not-defined.html">REV-0689 — GDB에서 breakpoint를 걸었는데 Function not defined라고 할 때</a></li><li><a href="rev-0688-gdb-no-such-file-or-directory.html">REV-0688 — GDB에서 No such file or directory 오류가 뜰 때</a></li><li><a href="rev-0113-core-dump-basics.html">REV-0113 — Core dump와 크래시 지점 분석 기초</a></li><li><a href="rev-0038-symbols-vs-stripped.html">REV-0038 — 심볼이 있는 바이너리와 Stripped 바이너리 차이</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>No symbol table is loaded.  Use the "file" command.</code> 메시지와 <code>file</code> 명령의 역할: GDB 공식 온라인 문서("Commands to Specify Files", "Specifying a Debugging Target") 기준.</li><li><code>.symtab</code>과 DWARF 디버그 정보(<code>-g</code>)의 차이: readelf/DWARF 일반 지식 및 GDB 문서 "Debugging Information in Separate Files" 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

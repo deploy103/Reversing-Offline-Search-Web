@@ -1,0 +1,135 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SUB: 뺄셈과 플래그 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>SUB: 뺄셈과 플래그</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>SUB dest, src</code>는 "<code>dest = dest - src</code> 를 계산해서 결과를 <code>dest</code>에 다시 쓰고, CF(빌림)·OF·SF·ZF·AF·PF 여섯 개 플래그를 전부 갱신하는" 뺄셈 명령어이며, <code>CMP</code>가 내부적으로 수행하는 연산과 완전히 동일하다(결과를 버리는지 여부만 다르다).</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>sub eax, ebx</code>, <code>sub rsp, 0x30</code>, <code>sub rax, 1</code> 같은 코드의 정확한 의미를 확인하고 싶을 때</li><li>함수 시작 부분에서 <code>sub rsp, N</code>을 보고 "스택에 지역 변수 공간을 얼마나 할당했는지" 확인하고 싶을 때</li><li><code>SUB</code> 뒤에 <code>jc</code>/<code>jb</code>(unsigned) 또는 <code>jl</code>/<code>jg</code>(signed) 분기가 붙어서 정확히 무엇을 비교하는지 알아야 할 때</li><li><code>CMP</code>가 왜 "값을 바꾸지 않는 SUB"라고 불리는지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>SUB가 실제로 하는 일</h3>
+<p><code>SUB dest, src</code>는 <code>ADD</code>(<a href="rev-0047-add.html">REV-0047</a>)와 오퍼랜드 규칙이 동일하다.</p>
+<ul><li><strong>dest</strong>: 레지스터 또는 메모리 (결과가 저장되는 목적지)</li><li><strong>src</strong>: 레지스터, 메모리, 즉시값 (dest와 src가 둘 다 메모리일 수는 없음)</li></ul>
+<p>동작은 <code>dest = dest - src</code>이고, 결과가 dest에 그대로 덮어써진다.</p>
+<pre><code class="language-asm">sub eax, ebx      ; EAX = EAX - EBX
+sub rsp, 0x30     ; RSP = RSP - 0x30
+sub dword [rbp-4], 1   ; 메모리 값 -= 1</code></pre>
+<h3>플래그 — SUB도 6개를 전부 건드린다</h3>
+<p><code>ADD</code>와 마찬가지로 <code>SUB</code>도 CF, OF, SF, ZF, AF, PF를 모두 결과에 맞춰 갱신한다. 단 CF의 의미가 덧셈 때와 다르게 해석된다.</p>
+<ul><li><strong>CF (Carry Flag, 뺄셈에서는 "Borrow" 역할)</strong> — <code>dest &lt; src</code>를 <strong>unsigned로 비교</strong>했을 때 참이면 CF=1. 즉 "빌림(borrow)이 발생했는가"를 의미한다. 예를 들어 <code>0x01 - 0x02</code>(8비트)를 계산하면 결과는 <code>0xFF</code>가 되는데, unsigned로 보면 1은 2보다 작으므로 뺄 수 없어서 빌려와야 했다는 뜻으로 CF=1이 세팅된다.</li><li><strong>OF (Overflow Flag)</strong> — 두 signed 정수를 뺀 결과가 그 비트폭의 signed 표현 범위를 벗어나면 1. 예: <code>INT_MIN - 1</code>.</li><li><strong>SF/ZF/AF/PF</strong> — ADD와 동일한 의미(결과의 부호/0 여부/니블 캐리/패리티).</li></ul>
+<p><strong>CF를 "빌림"으로 읽는 법</strong>: unsigned 관점에서 <code>dest - src</code>를 계산할 때 <code>dest</code>가 <code>src</code>보다 작으면, 실제 하드웨어는 더 높은 자리에서 자릿수를 "빌려와야" 결과를 낼 수 있다. 이 빌림이 발생했다는 표시가 CF=1이다. 그래서 <strong>CF=1은 곧 "unsigned로 봤을 때 dest &lt; src였다"</strong> 라는 뜻이며, unsigned 비교 분기(<code>JB</code>, <code>JAE</code> 등, [REV-0070 예정])는 바로 이 CF를 검사해서 대소 관계를 판단한다.</p>
+<h3>SUB와 CMP의 관계</h3>
+<p><code>CMP dest, src</code> ([REV-0060, 예정])는 내부적으로 정확히 <code>SUB dest, src</code>와 동일한 연산을 수행해서 <strong>플래그만 갱신하고 dest에 결과를 쓰지 않는다.</strong> 즉 <code>CMP</code>는 "결과를 버리는 SUB"라고 이해하면 정확하다.</p>
+<pre><code class="language-asm">sub eax, ebx   ; EAX = EAX - EBX (dest가 바뀜)
+cmp eax, ebx   ; EAX - EBX을 계산은 하지만 EAX는 그대로, 플래그만 바뀜</code></pre>
+<p>그래서 <code>cmp a, b</code> 다음에 오는 <code>jl</code>/<code>jg</code>/<code>jb</code>/<code>ja</code> 등의 조건 분기는 사실 "SUB 결과의 플래그"를 보고 판단하는 것과 완전히 동일한 원리다. <code>SUB</code>의 플래그 규칙을 이해하면 <code>CMP</code> + <code>Jcc</code> 조합을 통째로 이해하는 셈이다.</p>
+<h3>스택/RSP 변화 — 함수 진입부의 <code>sub rsp, N</code></h3>
+<p>함수가 시작할 때 지역 변수를 위한 공간을 스택에 미리 확보하는 가장 흔한 패턴이다:</p>
+<pre><code class="language-asm">push rbp
+mov  rbp, rsp
+sub  rsp, 0x30    ; 지역 변수 48바이트어치 공간 확보 (RSP가 더 낮은 주소로 이동)</code></pre>
+<p>스택은 높은 주소에서 낮은 주소로 자라기 때문에, "공간을 확보한다"는 것은 RSP 값을 <strong>감소</strong>시키는 것과 같다. 그래서 <code>SUB</code>가 쓰인다(반대로 공간을 반환할 때는 <a href="rev-0047-add.html">REV-0047 ADD</a>의 <code>add rsp, N</code>을 쓴다). RIP 자체는 변하지 않는다.</p>
+<h3>컴파일러 패턴</h3>
+<ul><li><code>sub eax, ebx</code> — 단순 정수 뺄셈 <code>a - b</code>.</li><li><code>sub rsp, N</code> — 함수 프롤로그에서 지역 변수 공간 할당. N은 지역 변수 크기의 합을 16바이트 정렬에 맞춰 올림한 값인 경우가 많다.</li><li><strong>포인터 차이 계산</strong>: <code>p2 - p1</code> 같은 포인터 뺄셈은 <code>sub</code>로 바이트 차이를 구한 뒤, 원소 크기로 나누는 <code>sar</code>/<code>idiv</code>가 뒤따르는 경우가 많다(포인터 산술은 REV-0033 예정 참고).</li><li><strong>루프 카운트 계산</strong>: <code>sub ecx, eax</code> 로 반복 횟수(trip count)를 미리 계산해 두고 그 값을 루프 카운터로 쓰는 패턴.</li><li><strong>다중 정밀도(64비트 초과) 뺄셈</strong>: 하위 워드는 <code>SUB</code>, 상위 워드는 <code>SBB</code>(Subtract with Borrow, 하위에서 발생한 CF/빌림까지 반영)를 쓴다.</li></ul>
+<pre><code class="language-asm">  sub rax, rcx     ; 하위 64비트, 여기서 빌림(CF)이 발생할 수 있음
+  sbb rdx, rbx     ; 상위 64비트 - 방금 빌림까지 반영</code></pre>
+<h3>IDA/Ghidra 디컴파일 렌더링</h3>
+<ul><li><code>sub eax, ebx</code> → <code>v1 = v1 - v2;</code> 또는 <code>v1 -= v2;</code></li><li><code>sub rsp, N</code>(프롤로그) → 디컴파일 결과에는 보통 안 보이고, 대신 지역 변수 선언(<code>char buf[32];</code> 등)으로 표현된다.</li><li><code>cmp</code>로 변환되어 보이는 SUB는 대부분 <code>if (a &lt; b)</code>, <code>if (a == b)</code> 같은 조건문의 일부로 나타난다.</li></ul>
+<h3>리버싱에서의 의미</h3>
+<ul><li>SUB 직후 <code>jb</code>/<code>jae</code>(CF 기반, unsigned)가 오면 → <strong>unsigned 비교/뺄셈 언더플로우 검사</strong>. 버퍼 크기 계산 등에서 언더플로우(음수가 되면 안 되는데 unsigned라서 거대한 양수로 뒤집히는) 취약점을 찾을 때 이 패턴을 주목한다. 예: <code>remaining = buf_size - used;</code> 에서 <code>used &gt; buf_size</code>이면 <code>remaining</code>이 거대한 값으로 뒤집혀 버퍼 오버플로우로 이어질 수 있다.</li><li>SUB 직후 <code>jl</code>/<code>jg</code>(OF/SF 기반, signed)가 오면 → signed 비교.</li><li><code>sub rsp, N</code>을 보면 그 함수가 스택에 몇 바이트를 쓰는지 즉시 파악할 수 있어, 지역 변수 배열의 대략적 크기를 짐작하는 데 유용하다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>sub eax, ebx</code>, <code>sub eax, 1</code>, <code>sub [rbp-8], eax</code> — 일반적인 뺄셈</li><li><code>sub rsp, 0x??</code> — 함수 프롤로그의 지역 변수 공간 할당 (에필로그의 <code>add rsp, 0x??</code>와 값이 대응)</li><li><code>sub ...</code> 뒤에 바로 <code>jb</code>/<code>jae</code>/<code>jc</code>/<code>jnc</code> — unsigned 언더플로우/빌림 검사</li><li><code>sub</code> 다음 줄에 <code>sbb</code> — 다중 정밀도(64비트 초과) 뺄셈</li><li><code>cmp</code>로 컴파일된 코드는 겉보기엔 안 보이지만 내부 동작은 <code>sub</code>와 동일</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>dest와 src가 레지스터/메모리/즉시값 중 무엇인지 확인</li><li>이 SUB가 "값 계산"인지 "스택 프레임 할당(<code>sub rsp, N</code>)"인지 구분</li><li>뒤따르는 분기가 unsigned(CF 기반: JB/JAE/JC/JNC)인지 signed(OF/SF 기반: JL/JG)인지 확인</li><li>언더플로우 가능성이 있는지(unsigned 변수끼리 뺄셈인데 결과가 음수가 될 수 있는 상황인지) 점검</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 단순 뺄셈 확인</strong></p>
+<pre><code class="language-asm">mov eax, [rbp-4]   ; a
+sub eax, [rbp-8]   ; a -= b
+mov [rbp-4], eax   ; a 저장</code></pre>
+<p>→ C로는 <code>a = a - b;</code>.</p>
+<p><strong>2) 스택 프레임 할당인지 확인</strong> 함수 시작부의 <code>sub rsp, 0x30</code>을 봤다면, 함수 끝에서 이 값과 정확히 같은 크기만큼 <code>add rsp, 0x30</code>이 나오는지 대조한다. 지역 변수 배열 크기를 짐작하는 데도 쓸 수 있다.</p>
+<p><strong>3) 언더플로우 취약점 의심 패턴 확인</strong></p>
+<pre><code class="language-c">size_t remaining = total_size - used_size;  // used_size &gt; total_size면 언더플로우</code></pre>
+<pre><code class="language-asm">mov  eax, [total_size]
+sub  eax, [used_size]     ; unsigned 뺄셈, used_size가 더 크면 거대한 값으로 wrap
+mov  [remaining], eax</code></pre>
+<p>→ <code>total_size</code>와 <code>used_size</code>의 대소 관계를 사전에 검사하는 코드가 없다면 정수 언더플로우 취약점 후보로 표시해 둔다.</p>
+<p><strong>4) CMP와 동일 동작임을 활용</strong></p>
+<pre><code class="language-asm">cmp eax, 10
+jl  less_than_10</code></pre>
+<p>→ 이건 내부적으로 <code>eax - 10</code>을 계산하고 그 결과(부호/오버플로우)로 분기하는 것과 동일하다. <code>eax</code>가 실제로 바뀌지 않을 뿐이다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: F7/F8로 SUB 실행 전후 플래그 패널의 C(CF)/O(OF) 비트 변화를 직접 관찰.</li><li>GDB/Pwndbg: <code>info registers eflags</code>로 CF/OF 확인. <code>p/x $eax</code> 등으로 결과값을 직접 확인.</li><li>IDA: SUB 직후 CF/OF를 보는 분기(Jcc)에 커서를 올리면 어떤 플래그를 참조하는지 상태표시줄/툴팁에서 확인 가능.</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>CF=1</code>이 SUB 직후 나오면 unsigned 관점에서 <code>dest &lt; src</code>였다는 뜻(빌림 발생).</li><li><code>OF=1</code>이 SUB 직후 나오면 signed 관점에서 결과가 표현 범위를 벗어났다는 뜻.</li><li><code>ZF=1</code>이면 두 값이 정확히 같았다는 뜻(<code>SUB</code>든 <code>CMP</code>든 동일).</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>SUB의 CF를 "오버플로우"라고 부르는 것 — 정확한 용어는 "빌림(borrow)"이다. SUB에서 CF=1은 unsigned 뺄셈이 음수 방향으로 넘어갔다(빌려왔다)는 뜻이지, ADD의 "자리올림"과는 방향이 반대다.</li><li><code>unsigned</code> 변수끼리 뺄셈해서 음수가 될 수 있는 상황을 놓치는 것 — <code>unsigned</code>는 절대 음수가 될 수 없으므로 언더플로우가 나면 거대한 양수로 뒤집힌다. 이건 실제 버그/취약점의 흔한 원인이다.</li><li><code>SUB</code>와 <code>CMP</code>를 완전히 다른 명령으로 생각하는 것 — 플래그 계산 로직은 100% 동일하다. <code>CMP</code>를 이해 못 하겠으면 <code>SUB</code>로 바꿔서 생각해보면 된다.</li><li><code>sub rsp, N</code>을 실제 값 계산으로 오해해서 그 결과를 추적하려는 것 — 대부분은 순수한 스택 공간 확보이며 계산 로직과 무관하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>SUB 뒤 분기가 CF를 보는지 OF/SF를 보는지 헷갈린다면 → <a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 Jcc 연결</a> 참고.</li><li>함수 프롤로그의 <code>sub rsp, N</code>과 에필로그의 <code>add rsp, N</code>이 값이 다르면 → 중간에 <code>push</code>/<code>pop</code>이나 정렬(16바이트) 조정이 있었는지 재확인.</li><li>언더플로우 취약점인지 확신이 안 서면 → 두 오퍼랜드의 실제 타입이 <code>unsigned</code>인지 <code>signed</code>인지, 그리고 그 값이 사용자 입력에서 오는지부터 확인.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 기본 뺄셈과 빌림(CF)</strong></p>
+<pre><code class="language-c">unsigned char a = 0x01;
+unsigned char b = 0x02;
+unsigned char c = a - b;   // c = 0xFF, unsigned 관점에서 빌림 발생</code></pre>
+<pre><code class="language-asm">mov al, 1
+sub al, 2         ; AL = 0xFF, CF=1 (1 &lt; 2, 빌림 발생), SF=1, ZF=0</code></pre>
+<p><strong>예제 2 — 스택 프레임 할당</strong></p>
+<pre><code class="language-c">void func(void) {
+    char buf[48];
+    // ...
+}</code></pre>
+<pre><code class="language-asm">func:
+    push rbp
+    mov  rbp, rsp
+    sub  rsp, 0x30     ; buf[48]과 정렬 패딩을 위해 0x30(48)바이트 확보
+    ; ...
+    add  rsp, 0x30
+    pop  rbp
+    ret</code></pre>
+<p><strong>예제 3 — 언더플로우 취약 패턴</strong></p>
+<pre><code class="language-c">size_t remaining = buf_size - offset;   // offset &gt; buf_size면 거대한 값으로 wrap
+memcpy(dst, src + offset, remaining);   // 버퍼 오버리드 가능성</code></pre>
+<pre><code class="language-asm">mov  eax, [buf_size]
+sub  eax, [offset]     ; offset이 더 크면 EAX가 0에 가까운 곳에서 거대한 값으로 뒤집힘
+mov  [remaining], eax</code></pre>
+<p>→ <code>offset &lt;= buf_size</code> 검사가 SUB 이전에 없다면 취약점 후보.</p>
+<p><strong>예제 4 — CMP는 SUB와 동일 원리</strong></p>
+<pre><code class="language-asm">cmp eax, 100      ; 내부적으로 EAX - 100 계산, 결과는 버리고 플래그만 갱신
+jge too_big        ; SF == OF (signed &gt;=)면 분기</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0047-add.html">REV-0047 — ADD: 덧셈과 플래그</a></li><li><a href="rev-0049-inc-dec.html">REV-0049 — INC와 DEC: 1 증가 감소와 CF 주의</a></li><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a></li><li><a href="rev-0060-cmp.html">REV-0060 — CMP: 값을 바꾸지 않는 SUB 비교</a></li><li><a href="rev-0069-jg-jge-jl-jle.html">REV-0069 — JG JGE JL JLE: Signed 비교 분기</a></li><li><a href="rev-0070-ja-jae-jb-jbe.html">REV-0070 — JA JAE JB JBE: Unsigned 비교 분기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>SUB 명령어 동작과 플래그 영향: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "SUB—Subtract" 섹션 기준 (2026-09-08 검증).</li><li>CMP가 SUB와 동일한 플래그 로직을 쓴다는 점: Intel SDM Volume 2A, "CMP—Compare Two Operands" 섹션 기준.</li><li>CF의 빌림(borrow) 의미: Intel SDM Volume 1, "3.4.3 EFLAGS Register" 섹션 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,138 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Import Table에서 중요한 API 찾기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>Import Table에서 중요한 API 찾기</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">PE-bear</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>Import Table은 "이 프로그램이 어떤 DLL의 어떤 함수를 가져다 쓰는지" 목록을 담은 구조로, <code>OptionalHeader.DataDirectory[1]</code>이 가리키는 <code>IMAGE_IMPORT_DESCRIPTOR</code> 배열과 그 안의 INT(Import Name Table)/IAT(Import Address Table) 두 쌍둥이 썽크(thunk) 배열을 읽을 줄 알면, 코드를 한 줄도 안 읽고 "이 파일이 파일을 쓰는지, 네트워크를 쓰는지, 레지스트리를 건드리는지" 같은 행위를 헤더만 보고 짐작할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>새로운 샘플을 받았을 때 코드 분석 전에 "이 프로그램이 뭘 할 수 있는지" 빠르게 훑어보고 싶을 때(예: <code>WinExec</code>, <code>CreateProcessA</code>가 보이면 다른 프로세스를 실행할 수 있다는 뜻)</li><li>IDA에서 <code>call cs:GetProcAddress</code> 처럼 함수 이름이 이미 붙어서 보이는데, 이게 어디서 온 정보인지 궁금할 때</li><li><code>call qword ptr [rip+0x2E45]</code>처럼 오프셋 기반 간접 호출이 왜 이렇게 컴파일되는지 궁금할 때</li><li>IAT(Import Address Table)와 INT(Import Name Table)의 차이, 그리고 왜 이 둘이 로딩 후 결국 같은 값을 갖게 되는지 궁금할 때</li><li>API 후킹이나 IAT 패치 같은 동적 분석 기법을 배우기 전에 정적 구조부터 이해하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Import Table이 필요한 이유</h3>
+<p>PE 파일은 <code>printf</code>, <code>CreateFileW</code>, <code>VirtualAlloc</code> 같은 함수를 스스로 갖고 있지 않다. 이런 함수는 <code>msvcrt.dll</code>, <code>kernel32.dll</code> 같은 별도 DLL 안에 들어 있고, 프로그램이 실행될 때 Windows 로더가 필요한 DLL들을 프로세스 주소 공간에 매핑한 뒤, 그 안의 함수들이 <strong>실제로 메모리 어느 주소에 위치하는지</strong> 알아내서 우리 실행 파일이 호출할 수 있도록 연결해줘야 한다. 이 "무엇을, 어디서 가져올지"의 목록이 Import Table이고, "로더가 실제 주소를 채워 넣을 자리"가 IAT(Import Address Table)다.</p>
+<h3>큰 그림: Descriptor → INT/IAT → IMAGE_IMPORT_BY_NAME</h3>
+<pre><code class="language-text">OptionalHeader.DataDirectory[1] (RVA, Size)
+        │
+        ▼
+IMAGE_IMPORT_DESCRIPTOR[]  ── DLL 하나당 항목 하나 (배열 끝은 전부 0인 항목으로 표시)
+   ├─ kernel32.dll  → OriginalFirstThunk(INT) ─┐   FirstThunk(IAT) ─┐
+   ├─ user32.dll    → ...                       │                    │
+   └─ (모두 0, 배열 끝)                          ▼                    ▼
+                                     IMAGE_THUNK_DATA[]        IMAGE_THUNK_DATA[]
+                                     (함수 이름/서수 목록,      (로딩 후 실제 함수
+                                      로딩 전후 값 동일)         주소로 덮어써짐)
+                                            │
+                                            ▼
+                                   IMAGE_IMPORT_BY_NAME
+                                   { Hint; Name[] }  예: "CreateFileW"</code></pre>
+<h3>IMAGE_IMPORT_DESCRIPTOR 구조체</h3>
+<pre><code class="language-c">typedef struct _IMAGE_IMPORT_DESCRIPTOR {
+    union {
+        DWORD Characteristics;
+        DWORD OriginalFirstThunk;  // ★ INT(Import Name Table)의 RVA
+    };
+    DWORD TimeDateStamp;           // 바인딩된 경우의 타임스탬프 (보통 0)
+    DWORD ForwarderChain;
+    DWORD Name;                    // ★ DLL 이름 문자열의 RVA (예: "KERNEL32.dll")
+    DWORD FirstThunk;               // ★ IAT(Import Address Table)의 RVA
+} IMAGE_IMPORT_DESCRIPTOR;          // 20바이트, DLL 하나당 하나</code></pre>
+<p><code>DataDirectory[1].VirtualAddress</code>가 가리키는 위치부터 이 구조체가 DLL 개수만큼 연속으로 나열되고, <strong>모든 필드가 0인 항목</strong>이 나오면 배열이 끝났다는 뜻이다(별도의 개수 필드가 없다).</p>
+<h3>INT(Import Name Table)와 IAT(Import Address Table): 왜 두 개가 필요한가</h3>
+<p><code>OriginalFirstThunk</code>와 <code>FirstThunk</code>는 각각 다른 배열을 가리키지만, <strong>로딩 전에는 완전히 동일한 내용</strong>을 담고 있다. 두 배열 모두 <code>IMAGE_THUNK_DATA</code>(포인터 크기와 같은, 64비트라면 8바이트) 원소들의 배열이며, 각 원소는 함수를 이름으로 가져올지(<code>IMAGE_IMPORT_BY_NAME</code> 구조체의 RVA) 서수(ordinal)로 가져올지를 인코딩한다.</p>
+<ul><li><strong><code>OriginalFirstThunk</code>가 가리키는 배열 = INT</strong> — "무슨 함수를 가져올지"의 원본 목록. 로더가 로딩 후에도 값을 바꾸지 않는다. 즉 파일을 정적으로 분석할 때 함수 이름을 알아내려면 이 배열을 읽으면 된다.</li><li><strong><code>FirstThunk</code>가 가리키는 배열 = IAT</strong> — 로딩 전에는 INT와 같은 내용(함수 이름을 가리키는 RVA)이지만, <strong>로더가 실제로 각 함수를 로드해서 그 주소를 알아낸 뒤, 이 배열의 각 원소를 "실제 함수의 절대 주소"로 덮어쓴다.</strong> 그래서 프로그램이 실제로 실행될 때 코드에서 <code>call [FirstThunk가 가리키는 위치]</code>처럼 IAT를 통해 간접 호출하면, 그 자리에는 이미 실제 함수 주소가 채워져 있어서 바로 그 함수로 점프하게 된다.</li></ul>
+<p>즉 INT는 "정적 분석용 이름표", IAT는 "실행 시점에 실제 주소가 채워지는 슬롯"이다. 컴파일러가 만드는 함수 호출 코드는 항상 IAT(<code>FirstThunk</code>) 쪽을 참조하도록 되어 있다 — INT는 로더가 어떤 함수를 찾아야 하는지 알려주는 용도로만 쓰이고, 로딩이 끝나면 그 역할이 끝난다.</p>
+<h3>32비트 vs 64비트 IMAGE_THUNK_DATA</h3>
+<pre><code class="language-c">// 64비트 (IMAGE_THUNK_DATA64), 원소 크기 8바이트
+typedef union _IMAGE_THUNK_DATA64 {
+    ULONGLONG ForwarderString;
+    ULONGLONG Function;          // IAT에서: 로딩 후 실제 함수 주소
+    ULONGLONG Ordinal;           // 최상위 비트(0x8000000000000000) 켜지면 서수 임포트
+    ULONGLONG AddressOfData;     // INT에서: IMAGE_IMPORT_BY_NAME의 RVA
+} IMAGE_THUNK_DATA64;</code></pre>
+<p>최상위 비트(<code>IMAGE_ORDINAL_FLAG64</code> = <code>0x8000000000000000</code>, 32비트는 <code>IMAGE_ORDINAL_FLAG32</code> = <code>0x80000000</code>)가 켜져 있으면 이 함수는 이름이 아니라 <strong>서수(ordinal, 숫자)</strong>로 임포트된다는 뜻이고, 나머지 하위 비트가 곧 그 서수 값이다. 이 경우 <code>IMAGE_IMPORT_BY_NAME</code>을 거치지 않고 바로 서수로 <code>GetProcAddress</code>가 호출된 것과 같은 효과를 낸다. 이름이 아니라 서수로만 임포트되는 함수는 정적 분석 도구가 이름을 자동으로 붙여주지 못하는 경우가 있어(대상 DLL의 export ordinal 매핑표가 따로 필요) 분석이 조금 더 까다롭다.</p>
+<h3>IMAGE_IMPORT_BY_NAME</h3>
+<p>서수가 아니라 이름으로 임포트하는 경우, 썽크 값은 이 구조체의 RVA를 가리킨다.</p>
+<pre><code class="language-c">typedef struct _IMAGE_IMPORT_BY_NAME {
+    WORD Hint;       // 대상 DLL의 Export Table 내 예상 인덱스(힌트, 없어도 이름으로 재검색 가능)
+    BYTE Name[1];    // 널 종료 함수 이름 문자열, 예: "CreateFileW\0"
+} IMAGE_IMPORT_BY_NAME;</code></pre>
+<p><code>Hint</code>는 대상 DLL의 Export Table(REV-0120)에서 이 함수가 몇 번째쯤 있을 것 같다는 힌트일 뿐이고, 로더는 이 힌트가 틀려도 <code>Name</code>으로 다시 찾아서 정확한 주소를 알아낸다.</p>
+<h3>코드에서 실제로 보이는 모습</h3>
+<p>64비트 코드에서 임포트 함수를 호출하는 전형적인 패턴은 다음과 같다.</p>
+<pre><code class="language-asm">call qword ptr [rip+0x2E45]   ; IAT 슬롯을 RIP 상대 주소로 간접 호출</code></pre>
+<p>IDA는 이 IAT 슬롯이 어떤 임포트 항목을 가리키는지 미리 파싱해뒀기 때문에, 실제로는 다음처럼 사람이 읽기 좋은 형태로 보여준다.</p>
+<pre><code class="language-asm">call cs:CreateFileW</code></pre>
+<p>겉보기에는 직접 호출처럼 보이지만, 내부적으로는 여전히 IAT를 거치는 간접 호출이다. 이 점을 알아야 "이 CALL이 왜 xref가 <code>.idata</code>나 <code>.rdata</code> 섹션의 특정 슬롯을 가리키는지" 이해할 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>PE-bear 좌측 트리의 <code>Import Directory</code>를 클릭하면 DLL 이름별로 그룹화된 함수 목록이 보임</li><li>IDA의 Imports 창(<code>View → Open subviews → Imports</code>)에 DLL 이름과 함수 이름이 한 줄씩 나열됨</li><li>디스어셈블리에서 <code>call cs:함수이름</code> 또는 <code>call qword ptr [rip+오프셋]</code> 형태로 함수 호출이 나타남</li><li>문자열 뷰나 <code>.rdata</code> 섹션 안에서 <code>KERNEL32.dll</code>, <code>CreateFileW</code>, <code>VirtualAlloc</code> 같은 문자열이 보임</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>IDA의 Imports 창(또는 PE-bear의 Import Directory)을 열어서 통째로 한 번 훑어본다. <code>CreateProcess</code>, <code>WinExec</code>, <code>ShellExecute</code> 계열이 보이면 다른 프로그램을 실행할 수 있다는 뜻이고, <code>InternetOpen</code>, <code>WinHttp</code>, <code>send</code>/<code>recv</code>, <code>WSAStartup</code> 계열이 보이면 네트워크 통신을 한다는 뜻이며, <code>RegOpenKey</code>, <code>RegSetValue</code> 계열이 보이면 레지스트리를 건드린다는 뜻이다. <code>VirtualAlloc</code> + <code>WriteProcessMemory</code> + <code>CreateRemoteThread</code> 조합처럼 특정 함수들이 함께 보이면 프로세스 인젝션 같은 특정 기법의 정황일 수 있다. 이렇게 Import Table만 훑어도 코드를 읽기 전에 "이 프로그램이 대략 뭘 하는지"에 대한 가설을 세울 수 있다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) DataDirectory[1]에서 Import Table 위치 확인</strong> REV-0116/REV-0118에서 배운 대로 <code>OptionalHeader.DataDirectory[1].VirtualAddress</code>(RVA)를 파일 오프셋으로 변환한다.</p>
+<p><strong>2) IMAGE_IMPORT_DESCRIPTOR 배열을 하나씩 읽기</strong> 그 오프셋부터 20바이트씩 구조체를 읽으며, 모든 필드가 0인 항목을 만날 때까지 반복한다. 각 항목의 <code>Name</code>(RVA)을 오프셋으로 변환해서 DLL 이름 문자열을 읽는다.</p>
+<p><strong>3) 각 Descriptor의 OriginalFirstThunk(INT)를 따라가서 함수 이름 나열</strong> <code>OriginalFirstThunk</code>가 가리키는 위치부터 <code>IMAGE_THUNK_DATA</code> 배열(원소 값이 0이면 끝)을 읽고, 각 원소가 서수 플래그가 꺼져 있으면 그 값(RVA)을 다시 오프셋으로 변환해 <code>IMAGE_IMPORT_BY_NAME.Name</code>을 읽는다.</p>
+<p><strong>4) IDA/PE-bear로 같은 내용을 자동으로 확인</strong></p>
+<pre><code class="language-text">IDA: View → Open subviews → Imports (단축키 대응 메뉴)
+PE-bear: 좌측 트리 → Import Directory</code></pre>
+<p><strong>5) x64dbg로 실행 중 IAT 슬롯 실제 값 확인</strong></p>
+<pre><code class="language-text">x64dbg: Memory Map에서 .rdata(또는 .idata) 섹션 찾기 → 해당 IAT 주소로 이동
+덤프 창에서 IAT 슬롯 값이 정적 분석 때 봤던 RVA가 아니라 실제 함수의 절대 주소로 바뀌어 있는지 확인</code></pre>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">IDA: Imports 창에서 함수 더블클릭 → 그 함수를 참조하는 코드로 xref 이동
+PE-bear: 좌측 트리 → Import Directory (DLL/함수 목록을 표로 표시)
+x64dbg: Alt+M(Memory Map) → .rdata 영역에서 IAT 슬롯 실시간 값 확인</code></pre>
+<h2>출력 해석</h2>
+<ul><li>Imports 창에 함수 이름이 정상적으로 나열되면 이름 기반 임포트 — 대부분의 경우</li><li>함수 이름 대신 <code>Ordinal#123</code>처럼 숫자만 보이면 서수 기반 임포트 — 대상 DLL의 export ordinal 표를 별도로 참고해야 실제 함수 이름을 알 수 있다(흔히 <code>ws2_32.dll</code>의 일부 함수 등에서 보임)</li><li>Import Table 자체가 텅 비어 있거나(<code>DataDirectory[1].Size == 0</code>) 아주 적은 수의 함수(예: <code>LoadLibraryA</code>, <code>GetProcAddress</code>만)만 있으면, 나머지 함수들을 런타임에 <code>GetProcAddress</code>로 동적으로 찾아 쓰는 패턴(패커/난독화에서 흔함)을 의심할 수 있다</li><li>IAT 슬롯을 x64dbg로 실행 중에 확인했을 때 정적 분석 때와 다른(훨씬 큰, 로드된 DLL 범위 안의) 주소가 들어 있으면 정상적으로 바인딩된 것</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>INT(<code>OriginalFirstThunk</code>)와 IAT(<code>FirstThunk</code>)를 같은 것으로 착각하는 것 — 로딩 전에는 내용이 같아 보이지만, 로딩 후 IAT만 실제 주소로 덮어써진다는 점이 핵심 차이다.</li><li>코드에서 <code>call cs:함수이름</code>을 직접 호출로 착각하는 것 — 실제로는 IAT 슬롯을 통한 간접 호출이며, 이 슬롯 자체를 패치하면(IAT Hooking) 호출 대상을 바꿀 수 있다.</li><li>서수(ordinal) 임포트를 보고 "함수 이름을 알 수 없다"고 포기하는 것 — 대상 DLL의 export ordinal 번호와 이름 매핑표(예: <code>ws2_32.dll</code>의 알려진 서수 목록)를 찾아 대조하면 이름을 복원할 수 있다.</li><li><code>IMAGE_IMPORT_DESCRIPTOR</code> 배열이 개수 필드 없이 "모두 0인 항목"으로 끝난다는 걸 모르고 고정된 개수만큼만 읽으려 하는 것.</li><li>32비트와 64비트에서 <code>IMAGE_THUNK_DATA</code>의 크기(4바이트 vs 8바이트)와 서수 플래그 비트 위치가 다르다는 걸 무시하고 같은 코드로 파싱하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>DataDirectory[1]</code>이 정의된 헤더 구조가 헷갈리면 → <a href="rev-0116-pe-coff-optional-header.html">REV-0116 PE Header COFF Optional Header 읽기</a></li><li>RVA를 파일 오프셋으로 바꾸는 계산이 필요하면 → <a href="rev-0118-rva-va-raw-offset.html">REV-0118 RVA VA Raw Offset 계산</a></li><li>반대로 이 파일이 다른 프로그램에 제공하는 함수(Export)가 궁금하면 → <a href="rev-0120-export-table.html">REV-0120 Export Table과 DLL 함수</a></li><li>임포트된 함수가 실제로 호출되는 지점(진입점→main 흐름)이 궁금하면 → <a href="rev-0121-entry-point-winmain.html">REV-0121 Entry Point와 WinMain 찾기</a></li></ul>
+<h2>미니 예제</h2>
+<p><code>DataDirectory[1]</code>을 따라가서 첫 번째 <code>IMAGE_IMPORT_DESCRIPTOR</code>를 읽었더니 다음과 같았다고 하자.</p>
+<pre><code class="language-text">IMAGE_IMPORT_DESCRIPTOR[0]:
+  OriginalFirstThunk = 0x2A100  (INT)
+  Name               = 0x2A5C0  → "KERNEL32.dll"
+  FirstThunk         = 0x2C000  (IAT)
+
+INT(0x2A100)를 따라가서 읽은 IMAGE_THUNK_DATA 배열:
+  [0] → AddressOfData = 0x2A610 → IMAGE_IMPORT_BY_NAME.Name = "CreateFileW"
+  [1] → AddressOfData = 0x2A628 → IMAGE_IMPORT_BY_NAME.Name = "ReadFile"
+  [2] → AddressOfData = 0x2A63C → IMAGE_IMPORT_BY_NAME.Name = "CloseHandle"
+  [3] → 0 (배열 끝)</code></pre>
+<p>정적 분석 시점의 IAT(<code>0x2C000</code>이 가리키는 배열)도 이 시점에는 INT와 완전히 같은 값(같은 RVA들)을 갖고 있지만, 프로그램이 실행되어 <code>kernel32.dll</code>이 로드되고 나면 이 세 슬롯은 각각 <code>CreateFileW</code>, <code>ReadFile</code>, <code>CloseHandle</code>의 <strong>실제 메모리 주소</strong>로 덮어써진다. 코드에서 이 파일을 읽는 함수는 <code>call qword ptr [rip + (0x2C000 - 현재RIP+ImageBase 등 재계산된 오프셋)]</code> 형태로 컴파일되어 있고, IDA는 이걸 <code>call cs:CreateFileW</code>처럼 사람이 읽기 좋게 보여준다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0120-export-table.html">REV-0120 — Export Table과 DLL 함수</a></li><li><a href="rev-0118-rva-va-raw-offset.html">REV-0118 — RVA VA Raw Offset 계산</a></li><li><a href="rev-0116-pe-coff-optional-header.html">REV-0116 — PE Header COFF Optional Header 읽기</a></li><li><a href="rev-0121-entry-point-winmain.html">REV-0121 — Entry Point와 WinMain 찾기</a></li><li><a href="rev-0114-pe-overview.html">REV-0114 — PE 파일 구조 한 번에 보기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>IMAGE_IMPORT_DESCRIPTOR</code>, <code>IMAGE_THUNK_DATA</code>, <code>IMAGE_IMPORT_BY_NAME</code> 구조체 정의 및 INT/IAT 관계: Microsoft Learn "PE Format" 공식 문서, "The .idata Section" 절 기준 (2026-09-08 검증).</li><li>서수 임포트 플래그(<code>IMAGE_ORDINAL_FLAG32</code>/<code>64</code>) 정의: Microsoft Learn "PE Format" 문서 및 <code>winnt.h</code> 정의 기준.</li><li>IAT를 통한 간접 호출 컴파일 패턴: 다수 리버싱 실무 참고자료 및 IDA 디스어셈블리 관찰 결과에 기반한 일반화 설명.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

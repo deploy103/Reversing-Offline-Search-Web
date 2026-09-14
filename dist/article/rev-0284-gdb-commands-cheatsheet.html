@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GDB 명령어 치트시트 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / tools</div>
+<article class="article-body">
+<h1>GDB 명령어 치트시트</h1>
+<div class="article-meta"><span class="tag">tools</span><span class="tag">입문</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>GDB로 CTF 바이너리를 분석할 때 실제로 반복해서 쓰는 명령은 <code>break</code>/<code>continue</code>/<code>stepi</code>/<code>nexti</code>/<code>disassemble</code>/<code>x</code>/<code>info registers</code>/<code>backtrace</code>/<code>watch</code> 정도로 좁혀지며, 이 카드 한 장만 옆에 두면 대부분의 상황에서 다음에 뭘 쳐야 할지 바로 찾을 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>GDB 프롬프트 앞에서 "다음에 뭘 쳐야 하지"라는 생각이 들 때</li><li><code>break</code>는 걸었는데 그다음 한 줄씩 진행하는 명령이 <code>step</code>인지 <code>stepi</code>인지 헷갈릴 때</li><li>특정 주소의 메모리 값을 16진수/문자열/명령어로 각각 어떻게 보는지 헷갈릴 때</li><li>레지스터 값, 콜스택, 워치포인트 설정 명령을 빠르게 찾고 싶을 때</li><li>PIE 바이너리에서 실제 런타임 주소를 계산하는 방법이 기억 안 날 때</li></ul>
+<h2>핵심 개념</h2>
+<p>GDB 명령은 크게 다섯 그룹으로 나눠 기억하면 편하다: <strong>(1) 실행 제어</strong>(멈추고 진행시키는 것), <strong>(2) 관찰</strong>(레지스터/메모리/스택을 읽는 것), <strong>(3) 디스어셈블</strong>(명령어를 보는 것), <strong>(4) 조건부 정지</strong>(watch), <strong>(5) 프로세스 다루기</strong>(attach/PIE). 아래 표는 이 다섯 그룹 순서로 정리했다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>지금 뭘 하고 싶은지에 따라 표에서 해당 그룹만 찾아 쓰면 된다 — 처음 붙일 때는 "실행 제어", 값을 확인할 때는 "관찰", 코드를 읽을 때는 "디스어셈블" 그룹부터 본다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>gdb ./chall</code>로 실행한다.</li><li><code>break main</code>(또는 원하는 지점)으로 멈출 곳을 정한다.</li><li><code>run</code>(인자가 있으면 <code>run arg1 arg2</code>)으로 시작한다.</li><li>아래 표의 명령으로 레지스터/메모리/디스어셈블을 확인하며 <code>stepi</code>/<code>nexti</code>/<code>continue</code>로 진행한다.</li></ol>
+<h2>명령어/단축키</h2>
+<h3>1) 시작과 실행 제어</h3>
+<table><thead><tr><th>명령</th><th>축약</th><th>설명</th></tr></thead><tbody><tr><td><code>run</code></td><td><code>r</code></td><td>프로그램을 처음부터(또는 재시작) 실행. 브레이크포인트 없으면 끝까지 실행</td></tr><tr><td><code>run arg1 arg2</code></td><td><code>r arg1 arg2</code></td><td>명령줄 인자를 주며 실행</td></tr><tr><td><code>start</code></td><td></td><td><code>main</code>에 임시 브레이크포인트를 걸고 <code>run</code></td></tr><tr><td><code>starti</code></td><td></td><td>ELF 진입점(<code>_start</code>)에서 멈춤. <code>main</code> 실행보다도 이전 시점</td></tr><tr><td><code>set args a b c</code></td><td></td><td>이후 <code>run</code>에 쓰일 인자를 미리 지정</td></tr><tr><td><code>continue</code></td><td><code>c</code></td><td>멈춘 지점에서 다음 브레이크포인트/종료까지 계속 진행</td></tr><tr><td><code>kill</code></td><td><code>k</code></td><td>실행 중인 대상 프로세스를 강제 종료</td></tr><tr><td><code>quit</code></td><td><code>q</code></td><td>GDB 종료</td></tr></tbody></table>
+<h3>2) 브레이크포인트</h3>
+<table><thead><tr><th>명령</th><th>설명</th></tr></thead><tbody><tr><td><code>break main</code> (<code>b main</code>)</td><td><code>main</code> 함수 시작에 브레이크포인트</td></tr><tr><td><code>break *0x401234</code></td><td>특정 주소에 브레이크포인트(디스어셈블리 상 주소)</td></tr><tr><td><code>break file.c:42</code></td><td>소스 라인 기준 브레이크포인트(디버그 심볼 있을 때)</td></tr><tr><td><code>tbreak &lt;위치&gt;</code></td><td>한 번 걸리면 자동 삭제되는 임시 브레이크포인트</td></tr><tr><td><code>delete &lt;번호&gt;</code></td><td>지정 브레이크포인트 삭제. 번호 생략 시 전체 삭제</td></tr><tr><td><code>disable</code>/<code>enable &lt;번호&gt;</code></td><td>삭제하지 않고 끄기/켜기</td></tr><tr><td><code>info breakpoints</code></td><td>현재 걸린 브레이크포인트 목록 확인</td></tr><tr><td><code>condition &lt;번호&gt; &lt;식&gt;</code></td><td>조건이 참일 때만 걸리는 조건부 브레이크포인트</td></tr></tbody></table>
+<h3>3) 한 줄씩 진행하기 (step 계열)</h3>
+<table><thead><tr><th>명령</th><th>축약</th><th>설명</th></tr></thead><tbody><tr><td><code>stepi</code></td><td><code>si</code></td><td>어셈블리 명령어 1개 진행. <code>call</code>이면 함수 안으로 들어감</td></tr><tr><td><code>nexti</code></td><td><code>ni</code></td><td>어셈블리 명령어 1개 진행하되 <code>call</code>은 통째로 실행하고 다음 줄로</td></tr><tr><td><code>step</code></td><td><code>s</code></td><td>소스 라인 기준으로 1줄 진행(디버그 심볼 필요), 함수 안으로 들어감</td></tr><tr><td><code>next</code></td><td><code>n</code></td><td>소스 라인 기준 1줄, 함수는 건너뜀</td></tr><tr><td><code>finish</code></td><td></td><td>현재 함수가 끝날 때까지 실행하고 리턴값까지 보여줌</td></tr><tr><td><code>until</code></td><td></td><td>현재 위치보다 뒤쪽 주소까지 진행(루프 탈출용)</td></tr></tbody></table>
+<p>스트립된 바이너리나 디버그 심볼이 없는 CTF 바이너리에서는 <code>step</code>/<code>next</code> 대신 <code>stepi</code>/<code>nexti</code>를 훨씬 자주 쓴다.</p>
+<h3>4) 레지스터/메모리 관찰</h3>
+<table><thead><tr><th>명령</th><th>설명</th></tr></thead><tbody><tr><td><code>info registers</code> (<code>i r</code>)</td><td>모든 범용 레지스터 값 출력</td></tr><tr><td><code>info registers rax</code></td><td>특정 레지스터만 출력</td></tr><tr><td><code>print $rip</code> (<code>p $rip</code>)</td><td>표현식 평가 (레지스터, 변수, 산술식 모두 가능)</td></tr><tr><td><code>x/4xw $rsp</code></td><td>메모리 조사(examine). <code>4xw</code> = 4개, 16진수(x), word(4바이트) 단위</td></tr><tr><td><code>x/s 0x402004</code></td><td>해당 주소를 문자열로 출력</td></tr><tr><td><code>x/10i $rip</code></td><td>해당 주소부터 명령어 10개를 디스어셈블 출력</td></tr><tr><td><code>x/g $rsp</code></td><td>8바이트(giant) 단위로 출력</td></tr></tbody></table>
+<p><code>x/NFU ADDR</code> 형식이 핵심이다: N=개수, F=포맷(x 16진수, d 10진수, u 부호없는10진수, s 문자열, i 명령어), U=단위(b=1바이트, h=2바이트, w=4바이트, g=8바이트).</p>
+<h3>5) 디스어셈블</h3>
+<table><thead><tr><th>명령</th><th>설명</th></tr></thead><tbody><tr><td><code>disassemble</code> (<code>disas</code>)</td><td>현재 함수 전체 디스어셈블</td></tr><tr><td><code>disassemble main</code></td><td>지정 함수 디스어셈블</td></tr><tr><td><code>disassemble 0x401000,0x401050</code></td><td>주소 범위 디스어셈블</td></tr><tr><td><code>set disassembly-flavor intel</code></td><td>AT&amp;T 대신 Intel 문법 사용(IDA/Ghidra와 동일 표기)</td></tr></tbody></table>
+<h3>6) 콜스택</h3>
+<table><thead><tr><th>명령</th><th>축약</th><th>설명</th></tr></thead><tbody><tr><td><code>backtrace</code></td><td><code>bt</code></td><td>현재까지의 함수 호출 스택 전체 출력</td></tr><tr><td><code>backtrace N</code></td><td></td><td>최근 N개 프레임만 출력</td></tr><tr><td><code>frame N</code></td><td><code>f N</code></td><td>N번 스택 프레임으로 이동해서 그 시점 변수를 봄</td></tr><tr><td><code>info frame</code></td><td></td><td>현재 프레임의 상세 정보(리턴 주소, 저장된 레지스터 위치 등)</td></tr></tbody></table>
+<h3>7) 워치포인트 (값이 바뀌는 순간 정지)</h3>
+<table><thead><tr><th>명령</th><th>설명</th></tr></thead><tbody><tr><td><code>watch &lt;변수/주소&gt;</code></td><td>해당 값이 쓰기로 바뀌는 순간 자동 정지</td></tr><tr><td><code>watch *(int*)0x404040</code></td><td>특정 메모리 주소를 감시</td></tr><tr><td><code>rwatch &lt;대상&gt;</code></td><td>읽기(read)가 발생하면 정지</td></tr><tr><td><code>awatch &lt;대상&gt;</code></td><td>읽기/쓰기 둘 다 감지</td></tr><tr><td><code>info watchpoints</code></td><td>현재 설정된 워치포인트 목록</td></tr></tbody></table>
+<p>워치포인트는 "이 변수가 대체 어디서 바뀌는지 모르겠다"는 상황(예: 전역 플래그 변수, 카나리 값)에서 매우 강력하다.</p>
+<h3>8) PIE(ASLR) 주소 다루기</h3>
+<table><thead><tr><th>명령</th><th>설명</th></tr></thead><tbody><tr><td><code>info proc mappings</code></td><td>현재 프로세스의 메모리 맵과 로드 베이스 주소 확인</td></tr><tr><td><code>break *0x1234</code> (PIE 오프셋)</td><td>GDB는 PIE 바이너리에서 <code>break *심볼오프셋</code> 형태 자동 보정 일부 지원, 함수명 사용이 더 안전</td></tr><tr><td><code>set disable-randomization on</code></td><td>(기본값) GDB가 실행할 때 ASLR을 꺼서 매번 같은 베이스로 로드 — 재현성 확보</td></tr><tr><td><code>p/x $rip - &lt;베이스&gt;</code></td><td>현재 RIP에서 로드 베이스를 빼서 바이너리 파일 기준 오프셋 계산</td></tr></tbody></table>
+<p>기본적으로 GDB는 자신이 <code>run</code>으로 띄운 프로세스의 ASLR을 꺼두기 때문에, <code>start</code> 후 확인한 주소는 다시 실행해도 대부분 동일하다.</p>
+<h3>9) 프로세스 attach</h3>
+<table><thead><tr><th>명령</th><th>설명</th></tr></thead><tbody><tr><td><code>gdb -p &lt;PID&gt;</code></td><td>이미 실행 중인 프로세스에 붙기(attach)</td></tr><tr><td><code>attach &lt;PID&gt;</code></td><td>GDB 안에서 붙기</td></tr><tr><td><code>detach</code></td><td>붙인 프로세스에서 떨어지기(프로세스는 계속 실행됨)</td></tr></tbody></table>
+<h2>출력 해석</h2>
+<ul><li><code>x/4xw $rsp</code> 결과 예: <code>0x7fffffffe420: 0x00000000 0x00007fff 0x004011a9 0x00000001</code> — 왼쪽이 주소, 오른쪽 4개가 4바이트씩 16진수 값</li><li><code>bt</code> 결과에서 <code>#0</code>이 현재 위치, 번호가 커질수록 호출한 쪽(caller) 방향</li><li><code>Breakpoint 1, 0x0000555555555169 in main ()</code>은 브레이크포인트 1번이 <code>main</code>에서 걸렸다는 뜻이며, 앞의 주소는 PIE 로드 베이스가 반영된 실제 런타임 주소</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>스트립된 바이너리에서 <code>step</code>/<code>next</code>를 썼다가 "소스 정보 없음" 에러를 보고 당황 — <code>stepi</code>/<code>nexti</code>로 바꿔야 함</li><li><code>x/4xw</code>처럼 단위를 안 붙이고 그냥 <code>x $rsp</code>만 써서 원하는 크기와 다른 값이 나옴</li><li><code>break *main</code>처럼 함수명 앞에 <code>*</code>를 붙여 심볼과 주소 문법을 혼동(함수명은 <code>*</code> 없이, 주소는 <code>*</code> 붙여서)</li><li>PIE 바이너리인데 IDA/Ghidra에서 본 주소를 그대로 <code>break</code>에 써서 안 걸림 — 로드 베이스를 더해야 함</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ol><li><code>info breakpoints</code>로 브레이크포인트가 실제로 걸려 있는지, enable 상태인지 확인</li><li>PIE 여부는 <code>file ./chall</code> 또는 <code>checksec ./chall</code>로 확인</li><li><code>disassemble</code>이 이상하게 나오면 <code>set disassembly-flavor intel</code>이 적용됐는지 확인</li><li>값이 예상과 다르면 단위(b/h/w/g)를 다시 확인 — 가장 흔한 실수 지점</li></ol>
+<h2>미니 예제</h2>
+<pre><code class="language-gdb">(gdb) break main
+(gdb) run
+(gdb) info registers rax rdi rsi
+(gdb) x/8xb $rsp
+(gdb) disassemble
+(gdb) stepi
+(gdb) backtrace
+(gdb) watch global_flag
+(gdb) continue</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0283-gdb-install.html">REV-0283 — GDB 설치와 기본 설정</a></li><li><a href="rev-0286-pwndbg-commands-cheatsheet.html">REV-0286 — Pwndbg 명령어 치트시트</a></li><li><a href="rev-0185-gdb-run-start-args.html">REV-0185 — GDB 실행 run start args 사용법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>GDB 공식 온라인 문서(sourceware.org, 브레이크포인트/스텝/메모리 조사/워치포인트 챕터)를 기준으로 명령을 정리했다.</li><li>최종 확인일: 2026-09-08</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

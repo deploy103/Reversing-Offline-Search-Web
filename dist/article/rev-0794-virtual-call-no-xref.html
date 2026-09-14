@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>가상함수 호출이라 Xref로 대상 함수를 못 찾을 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>가상함수 호출이라 Xref로 대상 함수를 못 찾을 때</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p><code>call rax</code>, <code>call [rax+8]</code>처럼 대상 주소가 레지스터/메모리 값으로 계산되는 간접 호출에서 "그 주소가 어느 데이터 테이블에 들어있는지" 찾는 일반적인 방법은 REV-0790에서 이미 다루므로, 이 글은 그중에서도 C++ 가상함수(virtual call) 특유의 어려움 — 즉 <strong>다형성 때문에 같은 호출 지점이 실행마다 서로 다른 서브클래스 함수를 부를 수 있다는 것</strong>과 <strong>다중 상속에서 객체 하나에 vtable이 여러 개 존재한다는 것</strong> — 을 다루며, RTTI(typeinfo) 정보를 이용해 클래스 계층 자체를 복원하는 절차에 집중한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>REV-0790 절차대로 vtable 주소까지는 찾았는데, 그 vtable을 가리키는 생성자가 여러 개(서브클래스마다 다른 vtable) 있어서 "이 호출 지점에서 실제로 어느 것이 불렸는지" 확정이 안 될 때</li><li>객체 하나에 vtable 포인터가 오프셋 0이 아니라 여러 곳(예: 오프셋 0과 오프셋 0x10)에 있어서 다중 상속으로 의심될 때</li><li>Ghidra의 RTTI 클래스 복원 기능을 써봤는데 클래스 이름이 맹글링(mangled)된 문자열 그대로 나와서 읽기 힘들 때</li><li>소멸자(destructor)인지 순수 가상함수(pure virtual) 슬롯인지 vtable 항목만 봐서는 구분이 안 될 때</li></ul>
+<h2>핵심 개념</h2>
+<p>REV-0790에서 설명하듯, 정적 분석 도구는 레지스터로 계산되는 호출 대상을 자동으로 xref하지 못하므로 vtable 테이블 자체를 찾아 오프셋별 함수 주소를 대조해야 한다. 이 글은 그 다음 단계, 즉 <strong>vtable을 찾은 뒤에도 남는 C++ 특유의 모호함</strong>을 다룬다.</p>
+<ol><li><strong>다형성(polymorphism)으로 인한 다중 후보</strong>: 같은 부모 타입의 포인터를 통해 호출되는 가상함수는, 실행 시점에 그 포인터가 실제로 어떤 서브클래스 객체를 가리키느냐에 따라 다른 함수가 불린다. 정적으로는 "이 타입 계층에서 가능한 후보 함수들"만 나열할 수 있고, 특정 실행에서 어떤 것이 불렸는지는 원칙적으로 실행 흐름(입력값, 분기 조건)에 달려 있다.</li><li><strong>다중 상속(multiple inheritance)과 this-포인터 보정</strong>: 클래스가 둘 이상의 베이스 클래스를 상속하면, 객체 하나 안에 <strong>베이스 클래스마다 별도의 vtable 포인터</strong>가 들어간다(전형적으로 첫 번째 베이스는 오프셋 0, 두 번째 베이스부터는 그 뒤 오프셋에). 이 경우 두 번째 이후 베이스를 통한 가상함수 호출은 <code>this</code> 포인터를 실제 객체 시작 위치로 보정하는 <strong>adjustor thunk</strong>를 거칠 수 있다. 이 보정 코드를 무시하고 vtable만 보면 함수는 맞게 찾아도 인자(this)가 왜 다르게 계산되는지 헷갈리게 된다.</li><li><strong>RTTI(typeinfo) 구조</strong>: Itanium C++ ABI를 따르는 컴파일러(GCC/Clang)는 각 다형적 클래스에 대해 vtable 바로 앞(음수 오프셋)에 <code>typeinfo</code> 포인터를 심어둔다. 이 typeinfo는 클래스 이름을 맹글링된 문자열(예: <code>_ZTI5Shape</code>)로 담고 있어, 이를 역참조하면 vtable이 어느 클래스에 속하는지 이름으로 확정할 수 있다.</li><li><strong>소멸자/순수 가상함수 슬롯</strong>: vtable의 처음 한두 슬롯은 관례적으로 소멸자(complete object destructor, deleting destructor)가 차지하는 경우가 많고, 아직 구현되지 않은 순수 가상함수 슬롯은 <code>__cxa_pure_virtual</code> 같은 특수 함수를 가리킨다. 이런 관례를 모르면 vtable 배열의 슬롯 순서를 실제 클래스 멤버 함수 선언 순서와 잘못 대응시키기 쉽다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>같은 오프셋을 호출하는 지점이 여러 곳인데, 각 호출 직전에 서로 다른 생성자를 거쳐 서로 다른 vtable이 대입된 객체가 넘어옴(다형성 후보가 여러 개)</li><li>한 객체의 생성자에서 <code>mov [rdi], offset vtableA</code> 와 <code>mov [rdi+0x10], offset vtableB</code>처럼 서로 다른 오프셋에 두 개의 vtable을 대입함(다중 상속 의심)</li><li>어떤 가상 호출 직전에 <code>this</code> 포인터에서 고정된 상수를 빼거나 더하는 연산이 끼어 있음(adjustor thunk 의심)</li><li>vtable 데이터 바로 앞(음수 오프셋)에 <code>off_</code>로 보이는 포인터가 있고, 그 포인터가 가리키는 곳에 <code>_ZTI...</code>류의 맹글링된 문자열이 있음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>REV-0790 절차로 vtable 주소와 그 안의 함수 포인터들까지는 먼저 확보한다. 그 다음, 이 객체를 만드는 생성자가 몇 개인지(서브클래스가 몇 개인지) 전부 xref로 모은다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 이 vtable을 대입하는 모든 생성자 수집</strong> <code>Ctrl+X</code>로 vtable 주소의 xref를 모으면, 이 vtable을 쓰는 생성자가 하나인지 여러 서브클래스에 걸쳐 있는지 알 수 있다. 여러 생성자가 있다면(즉 여러 서브클래스가 같은 가상함수를 오버라이드) 이 호출 지점은 여러 후보 함수 중 하나를 실행 시점에 고른다는 뜻이다.</p>
+<p><strong>2) RTTI typeinfo로 클래스 이름 확정</strong> vtable 배열 시작 주소 바로 앞(보통 8~16바이트 앞)의 포인터를 확인한다. 이것이 <code>typeinfo</code> 객체를 가리키면, 그 typeinfo 구조체 안의 이름 필드(맹글링된 문자열)를 읽어 실제 클래스 이름을 알아낸다. <code>c++filt</code> 같은 디맹글링 도구나 Ghidra의 자동 디맹글 기능으로 사람이 읽을 수 있는 이름(<code>Shape</code>, <code>Circle</code> 등)으로 바꾼다.</p>
+<p><strong>3) 다중 상속 여부 확인</strong> 생성자 안에서 <code>this</code> 포인터의 서로 다른 오프셋에 두 개 이상의 vtable 주소가 대입되는지 확인한다. 그렇다면 이 클래스는 다중 상속을 쓰고 있으며, 두 번째 이후 vtable을 통한 호출은 this 보정(덧셈/뺄셈) 코드가 따라붙을 수 있으니 그 상수 값을 기록해 둔다.</p>
+<p><strong>4) Ghidra RTTI 자동 복원 활용</strong> Ghidra는 Analysis → Auto Analyze의 RTTI 관련 분석기(또는 별도 "Recover Class Info from RTTI" 액션)로 이 과정의 상당 부분을 자동화해준다. 자동 복원 결과의 클래스 계층(상속 관계)이 2~3단계에서 직접 확인한 내용과 일치하는지 교차 검증한다.</p>
+<p><strong>5) 순수 가상/소멸자 슬롯 구분</strong> vtable 항목 중 <code>__cxa_pure_virtual</code>을 가리키는 것은 그 서브클래스가 실제로 구현하지 않은 순수 가상함수이므로 실행되면 안 되는 슬롯이다. 소멸자로 보이는 슬롯(생성자 근처에서 대칭적으로 호출되는 함수)은 일반 멤버 함수와 분리해서 표시해 둔다.</p>
+<p><strong>6) 후보가 여전히 여러 개면 동적으로 확정</strong> 이 시점에도 실행 시점에 어떤 서브클래스가 실제로 쓰이는지 정적으로 확정할 수 없다면(입력값에 따라 분기), 그 CALL에 브레이크포인트를 걸고 실제 vtable 포인터 값을 읽어 REV-0805 기준대로 동적으로 확인한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li><code>Ctrl+X</code>: vtable 주소, typeinfo 포인터의 xref 확인</li><li><code>c++filt &lt;mangled_name&gt;</code>: 맹글링된 C++ 이름을 사람이 읽을 수 있는 형태로 변환</li><li>Ghidra: Analysis → Auto Analyze → RTTI 관련 분석기, 또는 "Recover Class Info from RTTI" 액션</li><li>동적 확인: 간접 CALL 위치에 브레이크포인트 후 실제 vtable/this 값 확인(x64dbg/GDB)</li></ul>
+<h2>출력 해석</h2>
+<ul><li>typeinfo 이름을 디맹글링했을 때 알아볼 수 있는 클래스 이름이 나오면 RTTI가 정상적으로 남아 있는 빌드다. 디맹글링해도 의미 없는 문자열이면 RTTI 자체가 스트립되었거나 <code>-fno-rtti</code>로 빌드된 것이다.</li><li>같은 오프셋에 여러 서로 다른 vtable이 존재하고 각각 다른 함수 주소를 담고 있다면, 이는 오버라이드 관계에 있는 서로 다른 서브클래스라는 뜻이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>다중 상속에서 두 번째 vtable을 첫 번째와 같은 오프셋 규칙으로 취급해서 this 보정 상수를 놓치는 것.</li><li>후보 함수가 여러 개인 상황에서 그중 하나만 보고 "이 호출은 항상 이 함수"라고 단정하는 것 — 서브클래스가 여러 개면 실행마다 다를 수 있다.</li><li>RTTI typeinfo를 못 찾았다고 클래스 이름 복원 자체를 포기하는 것 — <code>-fno-rtti</code> 빌드가 아니라면 대개 vtable 근처에 있으니 오프셋을 다시 확인해야 한다.</li><li><code>__cxa_pure_virtual</code>을 가리키는 슬롯을 실제 구현된 함수로 착각해서 분석하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>vtable 자체를 아직 못 찾았거나 간접 호출 xref의 기본 절차가 필요하다면 → REV-0790</li><li>vtable 데이터를 함수 포인터 배열로 재정의하는 방법이 궁금하면 → REV-0792</li><li>정적으로 아무리 봐도 실제 호출 대상이 안 잡힌다면 → REV-0805</li><li>이 CALL의 인자 개수/타입 자체도 애매하다면 → REV-0795</li></ul>
+<h2>미니 예제</h2>
+<p><code>Shape</code>라는 베이스 클래스를 상속하는 <code>Circle</code>, <code>Square</code> 두 서브클래스가 있고, 코드 한 곳에서 <code>Shape*</code> 포인터로 가상함수 <code>area()</code>를 호출한다고 하자. REV-0790 절차로 이 호출이 vtable의 두 번째 슬롯(<code>+8</code>)을 부른다는 것까지는 확인했다. <code>Circle</code>, <code>Square</code> 생성자 두 곳에서 각각 다른 vtable 주소를 이 포인터에 대입하는 것을 발견했고, 각 vtable 앞의 typeinfo를 디맹글링해 <code>Circle</code>, <code>Square</code>라는 이름을 확인했다. 이제 이 호출 지점은 "실행 시점에 넘어오는 객체가 <code>Circle</code>이면 <code>Circle::area</code>, <code>Square</code>이면 <code>Square::area</code>를 부른다"는 것이 확정되었고, 실제로 어느 쪽이 불리는지는 그 객체를 만드는 상위 로직(입력값에 따른 분기)을 따라가면 알 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0790-xref-missing-indirect-call.html">REV-0790 — 함수가 어디서 호출되는지 Xref로 안 잡힐 때(간접 호출)</a></li><li><a href="rev-0792-off-unk-byte-prefix-names.html">REV-0792 — 상수가 이상한 이름(off_, unk_, byte_)으로만 나올 때</a></li><li><a href="rev-0795-wrong-argument-count.html">REV-0795 — 함수 인자 개수를 디컴파일러가 잘못 추론했을 때</a></li><li><a href="rev-0805-static-to-dynamic-switch-criteria.html">REV-0805 — 정적분석만으로 도저히 안 풀릴 때 동적으로 전환하는 기준</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>C++ 가상함수 호출이 vtable 포인터를 통한 간접 호출로 컴파일되는 방식, typeinfo 배치(vtable 앞 오프셋), 다중 상속에서 객체당 여러 vtable 포인터가 존재하고 this 보정을 위한 thunk가 생성되는 방식은 Itanium C++ ABI(대부분의 리눅스/GCC/Clang 환경이 따르는 표준) 공식 문서에 정의된 구현 방식이다.</li><li>순수 가상함수 슬롯이 <code>__cxa_pure_virtual</code>을 가리킨다는 점은 Itanium C++ ABI의 예외 처리/가상함수 호출 관련 챕터 기준.</li><li>Ghidra의 RTTI 기반 클래스 정보 복원 기능은 Ghidra 공식 문서(Analyzers 관련 챕터) 기준.</li><li>이 글은 2026-09-09 기준으로 작성되었다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

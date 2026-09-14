@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA Patch Program으로 바이트 수정하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA Patch Program으로 바이트 수정하기</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>IDA에서 바이트/명령어를 고치는 작업은 기본적으로 <strong>IDA 데이터베이스(idb)에만 기록</strong>되고 원본 실행 파일은 바뀌지 않으므로, 실제로 수정된 바이너리 파일을 만들어야 한다면 <code>Edit → Patch program</code> 메뉴로 바이트/명령어를 편집한 뒤 반드시 <strong>Apply patches to input file...</strong>까지 실행해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>CTF 문제에서 특정 분기 조건(<code>jz</code>를 <code>jnz</code>로, 또는 특정 비교값)을 바꿔서 패치된 실행 파일을 만들어 검증하고 싶을 때</li><li>IDA에서 바이트를 바꾼 것 같은데 그 실행 파일을 밖에서(예: 터미널에서 직접) 실행해보면 여전히 원래 동작을 할 때</li><li>디버깅 세션 중에는 패치가 적용된 것처럼 보였는데, 다시 실행하니 패치가 사라져 있을 때</li><li>어셈블리 니모닉을 직접 타이핑해서 그 자리의 바이트를 재조립(assemble)하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>idb 패치와 실제 파일 패치는 다르다</h3>
+<p>IDA는 분석 대상 바이너리를 직접 수정하지 않고, 원본 파일을 읽어 만든 자체 데이터베이스(<code>.idb</code>/<code>.i64</code>) 위에서 모든 분석/편집을 수행한다. 바이트를 고치는 명령(<code>Edit → Patch program</code> 아래의 각종 명령)을 실행해도 그 변경은 기본적으로 이 데이터베이스 안에만 기록되며, 디스크에 있는 원본 실행 파일은 그대로다. 이 사실을 모르면 "IDA에서 분명히 바꿨는데 밖에서 실행하면 그대로"라는 혼란을 겪게 된다.</p>
+<h3>Edit → Patch program 메뉴</h3>
+<p>바이트 수준 편집은 <code>Edit → Patch program</code> 하위에 모여 있다. 대표적인 항목은 다음과 같다.</p>
+<ul><li><strong>Change byte...</strong> / <strong>Change word...</strong> 계열: 커서 위치의 바이트/워드 값을 직접 숫자로 바꾼다.</li><li><strong>Assemble...</strong>: 커서 위치에 어셈블리 니모닉을 텍스트로 입력하면 IDA 내장 어셈블러가 이를 기계어 바이트로 변환해 그 자리에 채워 넣는다. 원래 명령어보다 바이트 수가 다르면 다음 명령어를 덮어쓰거나 NOP으로 남는 공간이 생길 수 있으므로 크기 차이를 항상 확인해야 한다.</li><li><strong>Fill area...</strong> / <strong>Edit selection...</strong>: 선택한 범위를 특정 바이트 값으로 채우거나 편집한다(예: 여러 바이트를 한 번에 <code>0x90</code>(NOP)으로 채우기).</li><li><strong>Apply patches to input file...</strong>: 지금까지 데이터베이스에 기록된 모든 패치를 실제로 원본 입력 파일에 반영해 새 파일(또는 원본 덮어쓰기)을 만든다. <strong>이 명령을 실행해야 비로소 디스크의 실행 파일이 실제로 바뀐다.</strong></li></ul>
+<h3>왜 두 단계로 나뉘어 있는가</h3>
+<p>분석 도중에는 "이렇게 바꾸면 어떻게 될까"를 가볍게 실험해보고 되돌리는 일이 잦다. 모든 편집이 곧바로 원본 파일에 반영된다면 실수로 원본을 망가뜨리기 쉽다. IDA는 이를 막기 위해 편집을 데이터베이스 안에서만 누적시키고, 사용자가 "이제 확정됐다"고 판단했을 때만 명시적으로 <strong>Apply patches to input file</strong>을 눌러 실제 파일에 반영하도록 설계되어 있다.</p>
+<h3>디버깅 중 패치와의 차이</h3>
+<p>IDA 디버거로 프로세스를 실행하며 메모리 값을 바꾸는 것(런타임 패치)은 그 세션이 살아있는 동안에만 유효하고, 프로세스를 다시 시작하면 사라진다. 반면 이 문서에서 다루는 <strong>Patch program</strong>은 정적 상태의 바이트 자체를 바꾸고 그 결과를 파일로 저장하는 것이므로, 파일로 저장만 해두면 이후 몇 번을 다시 실행해도 패치된 동작이 유지된다. 두 방식은 "일시적 실험(런타임 패치)"과 "영구적 수정(정적 패치)"이라는 서로 다른 목적에 쓰인다.</p>
+<h3>흔히 함께 쓰는 보조 도구</h3>
+<p>IDA 내장 어셈블러는 x86 계열만 지원하고 최신 명령어 일부를 이해하지 못할 수 있다. 더 다양한 아키텍처나 최신 명령어를 다뤄야 한다면 Keystone 엔진 기반의 서드파티 플러그인(Keypatch 등)을 함께 쓰는 경우가 많지만, 이 문서는 IDA 자체 기능만으로 가능한 범위(Change byte, Assemble, Apply patches to input file)에 집중한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>디스어셈블리에서 특정 명령어의 배경색이나 표시가 원래와 달라져 있다(패치된 위치는 보통 강조 색으로 표시된다).</li><li><code>Edit</code> 메뉴 아래에 <code>Patch program</code> 서브메뉴가 존재하고, 그 안에 <code>Change byte...</code>, <code>Assemble...</code>, <code>Apply patches to input file...</code> 항목이 보인다.</li><li>IDA에서 값을 바꾼 뒤 새로 저장된 idb를 다시 열면 바뀐 상태가 유지되지만, 원본 실행 파일을 별도로 실행하면 여전히 원래 동작을 한다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>지금 하려는 작업이 "IDA 안에서만 잠깐 실험해보는 것"인지 "실제로 패치된 실행 파일을 만들어야 하는 것"인지부터 구분한다. 후자라면 반드시 마지막에 <code>Apply patches to input file...</code>을 실행해야 한다는 것을 미리 염두에 둔다.</p>
+<h2>단계별 절차</h2>
+<ol><li>바꾸려는 위치(바이트/명령어) 위에 커서를 놓는다.</li><li>값을 직접 숫자로 바꾸려면 <code>Edit → Patch program → Change byte...</code>(또는 word/dword 계열)를 사용한다.</li><li>어셈블리 니모닉으로 바꾸려면 <code>Edit → Patch program → Assemble...</code>을 열고 새 명령어를 입력한다. 원래 명령어와 바이트 길이가 다르면 이후 코드가 밀리거나 겹칠 수 있으니, 길이가 짧아졌다면 남는 공간을 NOP(<code>90</code>)으로 채우는 것을 고려한다.</li><li>여러 바이트를 한 번에 채우거나 편집해야 하면 범위를 선택한 뒤 <code>Edit → Patch program → Fill area...</code> 또는 <code>Edit selection...</code>을 사용한다.</li><li>모든 패치가 끝났으면 <code>Edit → Patch program → Apply patches to input file...</code>을 실행해 실제 파일에 반영한다. 대화상자에서 원본을 덮어쓸지 새 파일로 저장할지 선택할 수 있다.</li><li>반영된 파일을 터미널이나 다른 도구로 직접 실행/검증해서 의도한 대로 동작이 바뀌었는지 확인한다.</li><li>ELF의 경우 섹션 권한, PE의 경우 코드 서명/체크섬처럼 패치로 인해 깨질 수 있는 부가 정보가 있는지 별도로 점검한다(체크섬이 검증되는 바이너리라면 패치 후 별도 도구로 체크섬을 재계산해야 할 수 있다).</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li><code>Edit → Patch program → Change byte...</code> / <code>Change word...</code>: 값 직접 수정</li><li><code>Edit → Patch program → Assemble...</code>: 어셈블리 니모닉으로 바이트 재조립</li><li><code>Edit → Patch program → Fill area...</code> / <code>Edit selection...</code>: 범위 채우기/편집</li><li><code>Edit → Patch program → Apply patches to input file...</code>: 데이터베이스에 누적된 패치를 실제 파일에 반영</li><li>기본 단축키는 버전마다 다를 수 있어 메뉴 경로로 접근하는 것이 가장 확실하다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li>패치를 적용한 위치는 디스어셈블리에서 보통 색이 달라져(예: 배경색 강조) 어디를 고쳤는지 한눈에 구분할 수 있다.</li><li><code>Apply patches to input file...</code> 실행 후 성공 메시지가 뜨면 지정한 경로의 파일이 실제로 갱신된 것이다. 원본을 그대로 덮어썼다면 되돌릴 수 없으므로, 검증이 끝나기 전까지는 원본 백업을 별도로 남겨두는 것이 안전하다.</li><li>Assemble 실행 시 문법 오류나 지원하지 않는 명령어를 입력하면 오류 메시지가 뜨고 바이트가 바뀌지 않는다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>idb에서만 바이트를 바꾸고 <code>Apply patches to input file...</code>을 실행하지 않아, 실제 파일은 그대로인 채 "패치가 안 먹힌다"고 착각하는 것.</li><li>Assemble로 더 짧은 명령어를 넣고 남는 바이트를 NOP으로 채우지 않아, 그 자리에 이전 명령어의 나머지 바이트가 쓰레기 명령어로 남는 것.</li><li>원본 파일을 백업하지 않고 바로 덮어써서, 패치가 잘못됐을 때 되돌릴 방법이 없어지는 것.</li><li>체크섬/서명이 검증되는 실행 파일을 패치해놓고, 체크섬 재계산 없이 그대로 실행해서 "파일이 손상되었다"는 오류를 만나는 것.</li><li>디버깅 세션 중의 메모리 패치와 이 문서의 정적 파일 패치를 혼동해서, 정적 패치를 했는데 "왜 다음 실행에도 반영이 안 되지"라고 헷갈리는 것(실제로는 Apply patches 단계를 빼먹은 경우가 대부분).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>어셈블리 명령어 자체가 헷갈린다면 → Assembly Dictionary에서 해당 니모닉(JMP/JZ 등) 항목을 먼저 확인</li><li>패치 후 코드 흐름이 깨진 것 같다면 → REV-0154 IDA에서 함수 경계가 잘못 잡혔을 때, REV-0155 IDA에서 Undefined Bytes를 Code/Data로 재해석</li><li>패치가 아니라 실행 중 메모리만 잠깐 바꿔서 실험하고 싶다면 → 디버거의 메모리 편집 기능(런타임 패치)을 사용하는 편이 더 적합하다.</li><li>IDA 자체 어셈블러의 한계를 넘는 아키텍처/명령어를 다뤄야 한다면 → Keystone 엔진 기반의 서드파티 패치 플러그인 도입을 고려한다.</li></ul>
+<h2>미니 예제</h2>
+<p>다음과 같이 조건 분기가 있는 코드가 있다고 하자.</p>
+<pre><code class="language-asm">cmp eax, 0
+jz  loc_401050</code></pre>
+<p>이 검사를 항상 통과하도록 만들고 싶다면, <code>jz</code> 명령어 위에 커서를 놓고 <code>Edit → Patch program → Assemble...</code>을 열어 <code>jmp loc_401050</code>(또는 <code>nop</code>)으로 다시 입력한다. <code>jz</code>와 <code>jmp</code>는 인코딩 길이가 다를 수 있으므로, Assemble 대화상자에서 결과 바이트 길이를 확인하고 필요하면 남는 바이트를 NOP으로 메운다. 편집이 끝나면 반드시 <code>Edit → Patch program → Apply patches to input file...</code>을 실행해 새 파일로 저장한 뒤, 그 파일을 터미널에서 직접 실행해 조건이 실제로 항상 통과하는지 확인한다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0154-ida-wrong-function-boundary.html">REV-0154 — IDA에서 함수 경계가 잘못 잡혔을 때</a></li><li><a href="rev-0155-ida-undefined-bytes.html">REV-0155 — IDA에서 Undefined Bytes를 Code/Data로 재해석</a></li><li><a href="rev-0146-ida-f5-decompile.html">REV-0146 — IDA F5 디컴파일과 Pseudocode 읽기</a></li><li><a href="rev-0148-ida-set-type.html">REV-0148 — IDA Y로 타입 지정하기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>IDA의 바이트 편집이 기본적으로 idb에만 기록되며 <code>Edit → Patch program → Apply patches to input file...</code>을 실행해야 실제 입력 파일에 반영된다는 동작: Hex-Rays 공식 문서 및 Keystone/Keypatch 공식 튜토리얼(동일한 IDA 메뉴 경로를 전제로 설명) 기준.</li><li><code>Edit → Patch program</code> 하위의 <code>Change byte...</code>, <code>Assemble...</code>, <code>Fill area...</code>/<code>Edit selection...</code> 항목 구성: Hex-Rays 공식 문서(Edit menu) 및 관련 서드파티 플러그인 문서에서 공통으로 언급되는 메뉴 구조 기준.</li><li>이 문서는 2026-09-09 기준 공개된 문서 검색 결과를 바탕으로 작성했으며, 정확한 하위 메뉴 문구/구성은 IDA 버전에 따라 다를 수 있으므로 실제 환경에서 재확인할 것을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

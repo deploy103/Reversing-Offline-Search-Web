@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>[Write-up] rev-basic-7 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / writeup</div>
+<article class="article-body">
+<h1>[Write-up] rev-basic-7</h1>
+<div class="article-meta"><span class="tag">writeup</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">x64dbg</span><span class="tag">Python</span><span class="tag">Detect It Easy</span></div>
+<h2>한 줄 요약</h2>
+<p>rev-basic-7은 입력 문자를 <code>rol(문자, i &amp; 7) ^ i</code> 형태로 왼쪽 비트 회전과 XOR을 함께 적용해 만든 31바이트 암호문과 비교하는 유형이라, 회전 폭이 인덱스마다 달라지는 점 때문에 정확한 역연산 대신 아스키 출력 가능 문자 범위(33~127)로 브루트포스하는 방법이 실전에서 더 안전하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>드림핵 rev-basic-7 검증 함수에서 <code>rol</code>이나 비트 회전을 흉내 낸 코드(<code>(v &lt;&lt; n) | (v &gt;&gt; (8-n))</code> 같은 형태)와 XOR이 함께 나와서 어떻게 풀어야 할지 막막할 때</li><li>지금까지 배운 XOR 역산이나 인접 바이트 역산으로는 안 풀리는 느낌이 들 때</li><li>암호문 배열 길이가 31바이트로, 이전 문제들의 18~24바이트보다 길어서 손으로 계산하기엔 부담스러울 때</li></ul>
+<h2>핵심 개념</h2>
+<p>이 문제의 검증 로직은 사용자 입력 각 문자를 암호화 함수에 통과시킨 뒤, 그 결과를 미리 저장된 31바이트짜리 암호문 배열과 비교하는 구조다. 암호화 함수는 <code>rol(원문 문자, i &amp; 7) ^ i</code>처럼 표현할 수 있다. 여기서 <code>rol(x, n)</code>은 <code>x</code>를 왼쪽으로 <code>n</code>비트 회전시키는 연산(REV-0064)이고, <code>i &amp; 7</code>은 인덱스 <code>i</code>를 8로 나눈 나머지(0~7)를 회전 폭으로 사용한다는 뜻이며, 마지막에 인덱스 <code>i</code> 자체를 XOR한다.</p>
+<p>이론적으로는 이 연산도 순서를 거꾸로 밟으면 역산이 가능하다: <code>rol(x, n) = 암호문 XOR i</code>이므로 양변에 오른쪽 회전(<code>ror</code>)을 적용하면 <code>x = ror(암호문 XOR i, n)</code>이 된다. 하지만 실전에서는 회전 연산이 정확히 몇 비트 폭(8비트 문자 단위인지, 32비트 레지스터 전체인지)으로 구현되었는지 디스어셈블리에서 착각하기 쉽고, 회전 폭 계산식 자체도 실수하기 쉽다. 그래서 이 유형은 정확한 역연산 공식을 유도하는 대신, 입력 문자가 결국 출력 가능한 아스키 문자(대략 33~127 범위) 중 하나일 것이라는 전제로 그 범위를 전부 시도해 암호문과 일치하는 문자를 찾는 브루트포스 방식이 더 안전하고 빠르다. 이는 REV-0219에서 다루는 "브루트포스가 가능한 입력 공간 계산"의 실제 적용 사례다 — 문자 하나당 후보가 100개 미만이고 31바이트이므로 전체 탐색 비용이 매우 작다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>실행 흐름은 이전 문제들과 동일: 입력 대기 문구 출력 → 입력 → <code>Correct</code>/<code>Wrong</code>.</li><li>디스어셈블리에서 <code>rol</code>/<code>ror</code> 명령어 또는 그것을 흉내 낸 시프트+오어(<code>shl</code>/<code>shr</code>+<code>or</code>) 조합이 XOR과 함께 반복되는 루프가 보인다.</li><li>암호문으로 쓰이는 배열이 31바이트로, 이전 문제들보다 길다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>DIE로 파일 확인 후 x64dbg로 실행해 문자열 참조로 검증 함수 위치를 찾는다. 암호화 로직이 복잡해 보이더라도, 먼저 암호문 배열의 길이(31바이트)와 값을 전부 덤프하는 것이 최우선이다. 역연산 공식을 유도하려고 시간을 오래 쓰기보다, 회전 폭과 XOR 대상이 인덱스에 의존한다는 것만 확인했다면 곧바로 브루트포스 스크립트로 넘어가는 것이 효율적이다.</p>
+<h2>단계별 절차</h2>
+<ol><li>DIE로 파일 확인, 실행해서 입출력 문구 확인.</li><li>x64dbg에서 문자열 참조로 <code>Input :</code> 등 관련 문구를 찾아 검증 함수로 진입.</li><li>암호화가 이루어지는 루프를 스텝 실행(F7/F8)하며 각 인덱스에서 회전 폭과 XOR 대상이 무엇인지 확인.</li><li>암호문이 저장된 31바이트 배열을 Dump 창에서 확인해 파이썬 리스트로 옮긴다.</li><li>파이썬에서 33부터 127까지의 아스키 후보 문자 각각에 대해 같은 암호화 연산(<code>rol</code> 후 <code>xor</code>)을 적용해보고, 암호문과 일치하는 문자를 찾는 브루트포스 루프를 작성한다.</li><li>31바이트 전체에 대해 이 과정을 반복해 원문 문자열을 복원한다.</li><li>복원한 문자열을 실제로 입력해 <code>Correct</code>가 나오는지 검증한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: 우클릭 → Search for → String references, <code>F7</code>/<code>F8</code>(Step Into/Over), Dump 창 Ctrl+G로 주소 이동.</li><li>IDA를 함께 쓴다면 <code>F5</code>(디컴파일)로 <code>rol</code>에 해당하는 코드가 어떤 형태로 풀려서 표시되는지 대조.</li><li>Python: <code>((x &lt;&lt; n) | (x &gt;&gt; (8 - n))) &amp; 0xFF</code>로 8비트 왼쪽 회전을 직접 구현.</li></ul>
+<h2>출력 해석</h2>
+<p><code>rol(x, n) ^ i == c</code>에서 <code>c</code>는 암호문의 해당 바이트, <code>i</code>는 인덱스, <code>n</code>은 <code>i &amp; 7</code>로 계산된 회전 폭이다. 브루트포스로 접근할 경우, 후보 문자 <code>x</code>를 33~127 범위에서 하나씩 대입해 <code>rol(x, n) ^ i</code>를 계산하고 그 결과가 <code>c</code>와 같은 <code>x</code>를 찾으면 그것이 해당 위치의 원문 문자다. 후보가 여러 개 나올 수도 있으므로, 실제 아스키 문자(공백~물결표 사이의 출력 가능한 문자)로 제한해서 탐색하면 후보가 보통 하나로 좁혀진다.</p>
+<h2>흔한 실수</h2>
+<ul><li>회전 연산의 비트 폭을 착각해서(8비트 문자 단위가 아니라 32비트 레지스터 전체로 회전한다고 착각) 전혀 다른 결과가 나오는 것.</li><li><code>rol</code>과 <code>xor</code>의 순서를 반대로 적용해서(<code>xor</code>을 먼저, <code>rol</code>을 나중에) 역산을 시도하는 것 — 암호화 시 적용된 순서와 정반대 순서로 되돌려야 한다.</li><li>브루트포스 범위를 아스키 전체(0~255)로 너무 넓게 잡아 후보가 여러 개 나왔을 때 어느 것이 진짜인지 판단을 못 하는 것 — 출력 가능한 문자 범위로 좁히면 대부분 해결된다.</li><li>31바이트라는 암호문 길이를 정답 길이로 오인하지 않고, 널 종료 바이트가 포함되어 있는지 여부까지 확인하지 않는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>이중 테이블 조회 방식이 궁금하면 REV-1007(rev-basic-6)을 먼저 복습한다.</li><li>브루트포스가 가능한지 판단하는 기준 자체가 궁금하면 REV-0219를 참고한다.</li><li>회전 연산(ROL/ROR) 자체의 의미가 헷갈리면 REV-0064를 먼저 본다.</li><li>이 시리즈를 다 풀었다면 rev-basic 이후의 Silver 티어 문제로 넘어가기 전에 REV-0885(알고리즘 유형별 판별 체크리스트)로 전체를 정리해보는 것도 도움이 된다.</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-python">def rol8(x, n):
+    n &amp;= 7
+    return ((x &lt;&lt; n) | (x &gt;&gt; (8 - n))) &amp; 0xFF
+
+encrypted = [...]  # 31바이트 암호문
+flag = ''
+for i, c in enumerate(encrypted):
+    n = i &amp; 7
+    for x in range(33, 128):  # 출력 가능한 아스키 범위
+        if rol8(x, n) ^ i == c:
+            flag += chr(x)
+            break
+
+print(flag)</code></pre>
+<p>회전 폭 <code>n</code>을 인덱스마다 다시 계산(<code>i &amp; 7</code>)해야 한다는 점과, 브루트포스 범위를 출력 가능한 아스키 문자로 좁혀야 후보가 하나로 정리된다는 점이 이 스크립트의 핵심이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0064-rol.html">REV-0064 — ROL: 왼쪽 Rotate</a></li><li><a href="rev-0057-xor.html">REV-0057 — XOR: XOR 연산과 XOR reg reg 제로화</a></li><li><a href="rev-0219-bruteforce-feasibility.html">REV-0219 — Brute Force가 가능한 입력 공간 계산</a></li><li><a href="rev-0221-is-it-invertible.html">REV-0221 — 역연산 가능한 알고리즘 판단법</a></li><li>[REV-1006 — [Write-up] rev-basic-5](rev-1006-writeup-rev-basic-5.html)</li><li>[REV-1007 — [Write-up] rev-basic-6](rev-1007-writeup-rev-basic-6.html)</li></ul>
+<h2>출처/검증</h2>
+<ul><li>드림핵 워게임 rev-basic-7 챌린지(dreamhack.io/wargame/challenges/21, reversing 태그, Bronze 4 티어, 풀이자 2252명, write-up 146개, 2026-09-09 조회 기준).</li><li>참고 블로그: <code>velog.io/@choiyj/Dreamhack-Reversing-Basic-Challenge-7</code> — x64dbg로 분석해 <code>rol(x, i &amp; 7) ^ i</code> 형태의 암호화 로직과 31바이트 암호문 배열을 확인하고, 33~127 아스키 범위 브루트포스로 원문을 복원한 절차를 조사함. 이 글에는 스크립트 실행 결과가 이미지로만 첨부되어 있어 최종 플래그 문자열이 본문 텍스트에 직접 명시되어 있지 않았다.</li><li>위 원문의 문장을 그대로 인용하지 않고, "회전+XOR 암호화와 아스키 범위 브루트포스"라는 패턴만 재구성해 한국어로 새로 서술했다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Delay-Load Import가 처음엔 안 보여서 함수가 없다고 착각할 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>Delay-Load Import가 처음엔 안 보여서 함수가 없다고 착각할 때</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">PE-bear</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>함수가 일반 Import Table(<code>IMAGE_DIRECTORY_ENTRY_IMPORT</code>, 인덱스 1)에는 없는데 실행하면 분명히 호출되고 있다면, <strong>Delay-Load Import</strong>(<code>IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT</code>, 인덱스 13)를 의심해야 한다. 이는 링커 옵션(<code>/DELAYLOAD</code>)으로 "이 DLL은 실제로 함수가 처음 호출되는 순간에 로드하라"고 지정한 것으로, 별도의 디렉터리와 헬퍼 코드(<code>.didat</code> 섹션, <code>__delayLoadHelper2</code>)를 통해 동작하기 때문에 일반 Import 뷰어에서 놓치기 쉽다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA Imports 창이나 PE-bear의 Import 탭에 특정 DLL/함수가 안 보이는데, 동적 분석(x64dbg)에서는 그 DLL이 실제로 로드되고 함수가 호출되는 것을 확인했을 때</li><li>문자열 목록에서 DLL 이름(예: <code>"bcrypt.dll"</code>)이 하드코딩되어 있는데 Import Table에는 그 DLL이 없을 때</li><li>디컴파일 결과에 <code>off_xxxxx()</code>처럼 함수 이름이 아니라 오프셋 변수로 호출되는 것처럼 보이는 코드가 있을 때</li><li><code>.didat</code>라는 낯선 섹션 이름을 PE 섹션 목록에서 발견했을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>일반 Import는 PE가 로드되는 즉시 Windows 로더가 모든 임포트 DLL을 메모리에 매핑하고 IAT(Import Address Table)를 실제 함수 주소로 채워 넣는다. 반면 <strong>Delay-Load Import</strong>는 프로그램이 실제로 그 함수를 처음 호출하는 순간까지 DLL 로딩과 주소 해석을 미룬다. 선택적 의존성이 있는 DLL(예: 특정 기능에서만 필요한 라이브러리)이나 시작 시간을 줄이고 싶을 때 사용하는 기법이며, Visual C++ 링커의 <code>/DELAYLOAD:&lt;dllname&gt;</code> 옵션으로 지정한다.</p>
+<p>내부 동작 방식:</p>
+<ol><li>PE Optional Header의 <code>DataDirectory[13]</code>(<code>IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT</code>)이 <code>IMAGE_DELAY_LOAD_DESCRIPTOR</code> 배열을 가리킨다. 이 구조체는 일반 <code>IMAGE_IMPORT_DESCRIPTOR</code>와 비슷하지만 별도의 필드 구성을 가진다(<code>DllNameRVA</code>, <code>ModuleHandleRVA</code>, <code>ImportAddressTableRVA</code>, <code>ImportNameTableRVA</code> 등).</li><li>코드에서 지연 로드 함수를 처음 호출하면, 실제로는 <code>__delayLoadHelper2</code>(런타임 헬퍼)로 먼저 진입한다.</li><li>이 헬퍼가 내부적으로 <code>LoadLibraryExW</code>(또는 사용자 정의 후크)로 DLL을 로드하고 <code>GetProcAddress</code>로 실제 함수 주소를 얻은 뒤, 지연 로드 IAT 슬롯을 그 주소로 덮어쓴다.</li><li>이후부터는 그 슬롯을 통한 호출이 실제 함수로 바로 연결되어, 두 번째 호출부터는 일반 Import처럼 빠르게 동작한다.</li></ol>
+<p>이 과정 때문에 정적 분석 도구가 지연 로드 임포트를 "일반 임포트처럼" 자동으로 이름 붙여주지 않는 경우가 있고(도구/버전에 따라 다름), 함수가 처음 보일 때는 이름 없는 오프셋 변수나 <code>Ordinal#N</code> 형태로만 보이기도 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>PE 섹션 목록에 <code>.didat</code>라는 섹션이 별도로 존재(지연 로드 관련 데이터가 여기 저장되는 경우가 많음)</li><li>IDA에서 함수 호출부가 <code>call __imp_load_FunctionName</code> 형태이거나, <code>call ds:off_140005000</code> 처럼 이름이 안 붙은 포인터를 통한 간접 호출로 보임</li><li>문자열 참조로 DLL 이름은 있는데 Import Table에는 해당 DLL 자체가 안 보임</li><li>x64dbg로 <code>bp LoadLibraryExW</code> 걸어두면 프로그램 시작 후 한참 뒤(해당 기능을 실제로 쓸 때) 갑자기 특정 DLL 이름으로 브레이크포인트가 걸림</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>PE-bear로 파일을 열어 Optional Header의 Data Directory 목록에서 <strong>Delay Import Descriptor</strong>(인덱스 13) 항목의 크기가 0이 아닌지 확인한다. 0이 아니면 지연 로드 임포트가 존재한다는 뜻이며, PE-bear는 보통 "Delay Import" 탭에서 이 목록을 일반 Import처럼 DLL/함수 이름으로 펼쳐서 보여준다.</p>
+<h2>단계별 절차</h2>
+<ol><li><strong>PE-bear로 Delay Import 탭 확인</strong>: PE-bear에서 파일을 열고 좌측 트리에서 "Delay Import" 항목을 클릭한다. 여기에 DLL별로 임포트되는 함수 목록이 일반 Import Table과 동일한 형태로 나열된다.</li><li><strong>IDA에서 수동으로 디렉터리 확인(자동 인식이 안 될 때)</strong>: IDA가 지연 로드 임포트를 자동으로 이름 붙이지 못했다면, <code>.didat</code> 섹션이나 <code>IMAGE_DELAY_LOAD_DESCRIPTOR</code> 배열 위치(Optional Header DataDirectory[13].VirtualAddress)로 직접 이동해 구조체를 수동으로 해석한다. 각 디스크립터의 <code>DllNameRVA</code>가 가리키는 문자열로 DLL 이름을, <code>ImportNameTableRVA</code>가 가리키는 배열로 함수 이름(또는 서수)을 확인할 수 있다.</li><li><strong>호출부 재확인</strong>: 함수 이름을 확인했으면, 그 IAT 슬롯 주소에 데이터 xref가 걸린 코드 위치(원래 함수를 호출하려던 지점)를 찾아 함수 이름을 수동으로 리네임(<code>N</code>)해준다.</li><li><strong>동적 분석으로 실제 로드 시점 확인</strong>: x64dbg에서 <code>bp LoadLibraryExW</code>(지연 로드 헬퍼가 내부적으로 이 API를 씀)를 걸고 실행하면서, 어느 시점에 어떤 DLL이 로드되는지 관찰한다. 이 시점이 바로 지연 로드가 실제로 트리거되는 순간이다.</li><li><strong>후속 GetProcAddress 확인</strong>: 이어서 <code>bp GetProcAddress</code>를 걸면 실제로 어떤 함수 이름(또는 서수)이 해석되는지 확인할 수 있다. Call Stack을 보면 <code>__delayLoadHelper2</code> 프레임이 보이는 경우가 많아 이것이 지연 로드 경로임을 재확인할 수 있다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>PE-bear: 좌측 트리 "Delay Import" 클릭</li><li>IDA: <code>G</code>(특정 주소로 이동, Data Directory RVA 확인 시), <code>N</code>(이름 바꾸기)</li><li>x64dbg: <code>bp LoadLibraryExW</code>, <code>bp GetProcAddress</code>, Call Stack 창으로 <code>__delayLoadHelper2</code> 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>Delay Import Descriptor 크기가 0이면 이 바이너리는 지연 로드를 쓰지 않는다는 뜻이니 다른 원인(예: 동적 문자열 조합으로 <code>LoadLibrary</code>/<code>GetProcAddress</code>를 직접 호출하는 수동 방식, REV-0129 참고)을 확인해야 한다.</li><li><code>LoadLibraryExW</code>가 프로그램 시작 직후가 아니라 특정 사용자 동작(예: 버튼 클릭, 특정 입력) 이후에 호출된다면, 그 DLL의 기능이 조건부로만 필요하다는 설계 의도를 알 수 있다.</li><li>첫 호출에서만 헬퍼를 거치고 두 번째 호출부터는 바로 함수로 점프하므로, 브레이크포인트가 첫 호출 이후에는 더 이상 <code>__delayLoadHelper2</code>를 거치지 않고 곧장 함수로 진입하는 것이 정상이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Import Table에 없다고 "이 DLL은 이 프로그램과 무관하다"고 성급히 결론짓는 것. 문자열에 DLL 이름이 보인다면 지연 로드나 런타임 동적 로딩(REV-0129)을 반드시 함께 확인해야 한다.</li><li><code>.didat</code> 섹션을 그냥 일반 데이터 섹션으로 넘겨버리고 그 안의 구조체를 분석하지 않는 것.</li><li>지연 로드 함수 호출부를 일반 임포트 호출부와 똑같은 방식(단순 <code>call</code> 대상 이름 확인)으로만 찾으려다가, 헬퍼 함수를 거치는 간접 호출 패턴이라 못 찾는 것.</li><li><code>GetProcAddress</code>로 서수(ordinal)만으로 함수를 가져오는 경우, 이름 문자열이 아예 없으므로 이름표만 보고 함수를 찾으려 하면 실패한다. 서수를 DLL의 Export Table과 대조해서 실제 함수 이름을 찾아야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>일반 Import Table 자체를 읽는 법이 헷갈린다면 → REV-0119(Import Table에서 중요한 API 찾기)를 먼저 확인한다.</li><li>지연 로드가 아니라 완전히 수동으로 <code>LoadLibrary</code>/<code>GetProcAddress</code>를 호출하는 패턴이라면 → REV-0129(GetProcAddress LoadLibrary 동적 API 해석)를 확인한다.</li><li>함수 이름을 확보한 뒤 그 역할을 추측해야 한다면 → REV-0138(Windows API 이름으로 기능 추측하는 법)을 참고한다.</li></ul>
+<h2>미니 예제</h2>
+<p><code>target.exe</code>의 문자열 목록에서 <code>"bcrypt.dll"</code>이 발견됐는데, IDA Imports 창에는 <code>bcrypt.dll</code>이 전혀 없었다. PE-bear로 열어 "Delay Import" 탭을 확인하니 다음과 같이 나왔다.</p>
+<pre><code class="language-text">DLL: bcrypt.dll
+  BCryptOpenAlgorithmProvider
+  BCryptHashData
+  BCryptCloseAlgorithmProvider</code></pre>
+<p>x64dbg에서 <code>bp LoadLibraryExW</code> 후 실행하니, 프로그램 시작 직후에는 걸리지 않다가 "암호화 검증" 버튼을 누른 순간 <code>bcrypt.dll</code> 이름으로 브레이크포인트가 걸렸다. 이는 이 DLL이 특정 기능(암호화 검증)에서만 필요해서 지연 로드로 지정되어 있었기 때문이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0119-import-table.html">REV-0119 — Import Table에서 중요한 API 찾기</a></li><li><a href="rev-0129-getprocaddress-loadlibrary.html">REV-0129 — GetProcAddress LoadLibrary 동적 API 해석</a></li><li><a href="rev-0138-guess-function-from-api-name.html">REV-0138 — Windows API 이름으로 기능 추측하는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Delay-Load Import의 구조(<code>IMAGE_DELAY_LOAD_DESCRIPTOR</code>, <code>IMAGE_DIRECTORY_ENTRY_DELAY_IMPORT</code> 인덱스 13)와 <code>/DELAYLOAD</code> 링커 옵션은 Microsoft PE/COFF 공식 문서 및 Visual C++ 공식 문서(Delay Loading DLLs) 기준이다.</li><li><code>__delayLoadHelper2</code>의 내부 동작(<code>LoadLibraryExW</code> + <code>GetProcAddress</code> 호출 후 IAT 슬롯 패치)은 Microsoft 공식 문서 및 Visual C++ 런타임 소스(delayimp.h/delayhlp.cpp) 공개 자료 기준이다.</li><li>미니 예제의 구체적 DLL/함수 이름과 시나리오는 설명을 위해 구성한 예시다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

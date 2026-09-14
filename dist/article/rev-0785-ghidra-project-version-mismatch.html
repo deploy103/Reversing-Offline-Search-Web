@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ghidra 프로젝트가 열리지 않을 때(버전 불일치) · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>Ghidra 프로젝트가 열리지 않을 때(버전 불일치)</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>Ghidra 프로젝트(<code>.gpr</code> 파일과 <code>.rep</code> 폴더)는 <strong>만들어진 Ghidra 버전 정보를 내부에 기록</strong>하고 있어서, 더 낮은 버전의 Ghidra로 열려고 하면 "버전이 안 맞는다"는 오류가 나거나 열기 자체가 거부되며, 반대로 더 높은 버전으로 열면 대개 "Upgrade project?" 확인 후 자동 변환되지만 이 변환은 되돌릴 수 없다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>다른 컴퓨터에서 만든 <code>.gpr</code> 프로젝트를 내 Ghidra에서 열었더니 에러가 뜰 때</li><li>Ghidra를 업데이트한 뒤 예전 프로젝트를 열려고 하니 "Upgrade" 관련 대화상자가 뜰 때</li><li>"This project was created with a newer/older version of Ghidra"류의 메시지를 봤을 때</li><li>팀원과 프로젝트 파일을 주고받았는데 서로 다른 버전이라 못 여는 상황일 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Ghidra 프로젝트는 단순한 파일 하나가 아니라 <code>&lt;프로젝트명&gt;.gpr</code>(메타데이터)과 <code>&lt;프로젝트명&gt;.rep</code>(실제 데이터베이스 폴더)이 짝을 이루는 구조다. 이 안에는 프로그램 분석 결과(함수, 타입, 주석 등)를 저장하는 내부 데이터베이스 스키마 버전이 기록되어 있으며, 이 스키마는 Ghidra 버전이 올라가면서 바뀔 수 있다.</p>
+<ul><li><strong>더 높은 버전에서 만든 프로젝트를 더 낮은 버전으로 열기</strong>: 낮은 버전은 새 스키마를 이해하지 못하므로 대부분 열기 자체가 거부되거나 명확한 오류가 뜬다. 이 방향은 자동 변환이 불가능하다.</li><li><strong>더 낮은 버전에서 만든 프로젝트를 더 높은 버전으로 열기</strong>: 대개 지원되며, Ghidra가 "이 프로그램/프로젝트를 새 버전 포맷으로 업그레이드하시겠습니까?"라고 물은 뒤 자동 변환한다. 단, 변환된 파일은 다시 예전 버전으로 되돌릴 수 없다.</li><li><strong>분석 결과(Program) 자체의 버전과 프로젝트 컨테이너의 버전은 별개</strong>: 프로젝트는 열리는데 그 안의 특정 프로그램 파일만 업그레이드가 필요하다고 뜨는 경우도 있다.</li><li><strong>잠금 파일(lock)로 인한 오픈 실패</strong>: 버전 문제가 아니라 이전 세션이 비정상 종료되어 <code>.lock</code>/<code>.lock~</code> 류의 잠금 파일이 남아 있어 "다른 프로세스가 사용 중"으로 오해하고 열기가 거부되는 경우도 있다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>프로젝트를 열 때 "Unsupported version" 또는 "This project is from a different version of Ghidra" 계열 메시지가 뜬다.</li><li>낮은 버전 Ghidra에서 실행 시 프로젝트 목록에 나타나긴 하지만 더블클릭 시 오류 다이얼로그가 뜬다.</li><li>높은 버전에서 열 때는 "Program Upgrade" 또는 "Old content" 관련 확인 창이 뜬다.</li><li>이전 세션이 비정상 종료된 경우 "project is already open/locked" 계열 메시지가 뜬다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>오류 메시지의 정확한 문구부터 확인해서 "버전이 안 맞는다"는 것인지 "잠겨 있다(locked)"는 것인지부터 구분한다. 두 문제는 해결 방법이 완전히 다르다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 오류 메시지 종류 구분</strong></p>
+<p>"version"/"upgrade" 관련 단어가 있으면 버전 문제, "lock"/"already open" 관련 단어가 있으면 잠금 파일 문제다.</p>
+<p><strong>2) 버전 문제 — 낮은 버전에서 열려는 경우</strong></p>
+<p>이 방향은 근본적으로 지원되지 않는다. 프로젝트를 만든 쪽과 동일하거나 더 높은 버전의 Ghidra를 설치해서 여는 것이 유일한 해결책이다. Ghidra 공식 배포는 여러 버전을 동시에 다른 폴더에 압축 해제해 두는 것만으로 병행 설치가 가능하다.</p>
+<p><strong>3) 버전 문제 — 높은 버전에서 여는 경우</strong></p>
+<p>"Upgrade" 확인 창이 뜨면, 원본을 보존해야 하는 상황(공유 프로젝트, 백업 필요 등)인지 먼저 판단한다. 보존이 필요하면 업그레이드 전에 <code>.gpr</code> 파일과 <code>.rep</code> 폴더 전체를 복사해 백업해 둔 뒤 진행한다. 업그레이드 후에는 예전 버전에서 다시 열 수 없다.</p>
+<p><strong>4) 잠금 파일 문제</strong></p>
+<p>Ghidra가 비정상 종료된 뒤 같은 프로젝트를 다시 열 수 없다면, 다른 Ghidra 인스턴스가 실제로 그 프로젝트를 열고 있지 않은지 먼저 확인한다(작업 관리자에서 Java 프로세스 확인). 아무 인스턴스도 없는데 계속 잠겨 있다고 나오면 <code>.rep</code> 폴더 안의 잠금 관련 파일(버전에 따라 이름이 다름)을 프로젝트를 완전히 닫은 상태에서 정리한 뒤 다시 열어본다. 이 작업 전에는 반드시 폴더 전체를 백업한다.</p>
+<p><strong>5) 프로젝트 대신 개별 프로그램만 필요한 경우</strong></p>
+<p>프로젝트 전체를 열 필요 없이 특정 바이너리 하나의 분석 결과만 필요하다면, 처음부터 새 프로젝트를 만들고 원본 바이너리를 다시 Import해서 분석하는 것이 버전 문제를 아예 피하는 가장 확실한 방법이다. 다만 이 경우 기존 분석 결과(주석, rename 등)는 이어받을 수 없다.</p>
+<p><strong>6) 팀/여러 컴퓨터에서 공유할 때</strong></p>
+<p>여러 사람이 프로젝트를 주고받아야 한다면, 애초에 모두 동일한 Ghidra 버전(가능하면 정확한 패치 버전까지)을 사용하도록 맞추는 것이 버전 불일치 문제 자체를 예방하는 가장 실용적인 방법이다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">File → Open Project           프로젝트 열기
+File → New Project            새 프로젝트 생성(버전 문제 회피용)
+(.gpr / .rep 폴더)             프로젝트 구성 요소 — 항상 함께 백업/이동</code></pre>
+<h2>출력 해석</h2>
+<ul><li>"Unsupported version X, expected Y" 형태의 메시지는 정확히 어떤 버전 차이인지 알려주므로, 어느 방향(상위/하위)의 문제인지 그대로 읽으면 된다.</li><li>Upgrade 관련 대화상자에서 "Cannot be undone"류의 경고가 함께 뜨면, 이는 되돌릴 수 없는 변환이라는 뜻이므로 백업 여부를 다시 한번 확인해야 한다.</li><li>잠금 관련 메시지에 특정 사용자/호스트 이름이 함께 표시되면, 실제로 다른 사람이 그 프로젝트를 열어둔 상태일 수 있으니 먼저 확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>백업 없이 바로 Upgrade를 눌러서, 원본 버전 프로젝트가 필요해졌을 때 되돌릴 수 없게 되는 것.</li><li>낮은 버전으로 여는 문제인데 자꾸 재설치/재시도만 반복하며 시간을 낭비하는 것 — 버전 자체를 맞추는 것 외에 다른 해결책이 없다.</li><li>잠금 문제인데 프로젝트가 손상됐다고 오해하고 처음부터 새로 분석을 시작해버리는 것.</li><li>팀 프로젝트에서 각자 다른 버전을 쓰고 있다는 사실을 사전에 확인하지 않아 매번 이 문제를 반복해서 겪는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>프로젝트는 열렸는데 특정 바이너리 Import/분석 자체가 이상하면 → REV-0156.</li><li>버전 문제로 새로 분석해야 한다면 Auto Analysis가 오래 걸릴 수 있으니 → REV-0781.</li><li>여러 버전의 Ghidra를 오프라인 환경에 함께 준비해야 한다면 → REV-0277(설치와 오프라인 준비).</li></ul>
+<h2>미니 예제</h2>
+<p>회사 PC(Ghidra 11.x)에서 만든 프로젝트를 대회장 PC(Ghidra 10.x)로 옮겨 열려는 상황이다.</p>
+<ol><li>프로젝트 폴더를 그대로 복사해 대회장 PC의 Ghidra에서 <code>File → Open Project</code>로 연다.</li><li>"This project was created with a newer version of Ghidra"류의 오류가 뜬다.</li><li>대회장 PC에 회사 PC와 같은(또는 더 높은) 버전의 Ghidra를 별도 폴더에 압축 해제해 병행 설치한다.</li><li>새로 설치한 버전으로 같은 프로젝트를 열면 정상적으로 열린다.</li></ol>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0156-ghidra-project-import.html">REV-0156 — Ghidra 프로젝트 생성과 바이너리 Import</a></li><li><a href="rev-0277-ghidra-install.html">REV-0277 — Ghidra 설치와 오프라인 준비</a></li><li><a href="rev-0781-ghidra-auto-analysis-never-finishes.html">REV-0781 — Ghidra Auto Analysis가 끝나지 않을 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>프로젝트(<code>.gpr</code>/<code>.rep</code>)가 내부 데이터베이스 버전을 기록하며, 상위 버전에서 하위 버전으로는 호환되지 않고 하위에서 상위로는 Upgrade 절차를 거친다는 점: Ghidra 공식 문서(Ghidra 설치 가이드, 프로젝트 관리 관련 Help 토픽) 기준.</li><li>여러 버전의 Ghidra를 폴더 단위로 병행 설치할 수 있다는 점: Ghidra 공식 배포 방식(압축 해제 후 실행) 특성 기준.</li><li>이 문서는 실제 버전 간 마이그레이션을 직접 재현 검증하지 않았으며, 공식 문서와 통상적인 사용 경험을 바탕으로 작성되었다. 정확한 오류 문구는 버전에 따라 다를 수 있다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

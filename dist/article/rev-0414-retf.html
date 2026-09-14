@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RETF: Far 반환 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>RETF: Far 반환</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>RETF</code>(Far Return)는 <a href="rev-0072-ret.html"><code>RET</code></a>와 달리 스택에서 반환 오프셋(IP/EIP/RIP)뿐 아니라 <strong>CS(코드 세그먼트 셀렉터)까지 함께 POP</strong>해서, <a href="rev-0413-far-call-jmp.html">Far CALL</a>로 넘어왔던 원래 세그먼트로 정확히 되돌아가는 명령어다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>retf</code> 명령어를 만났는데 일반 <code>ret</code>과 무엇이 다른지 궁금할 때</li><li><code>push 0x33</code> 뒤에 <code>retf</code>가 나오는 코드(Heaven's Gate 패턴, REV-0413 참고)를 분석할 때</li><li>Far CALL로 호출된 함수의 끝에서 어떤 명령어로 복귀해야 하는지 궁금할 때</li><li><code>RETF</code>와 <code>IRET</code>(REV-0415)가 비슷해 보이는데 정확히 뭐가 다른지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>Intel 문법과 오퍼랜드</h3>
+<pre><code>RETF            ; 오퍼랜드 없음
+RETF imm16      ; 복귀 후 스택에서 imm16 바이트를 추가로 버림 (호출자 스택 정리)</code></pre>
+<p>NASM/일부 어셈블러는 <code>RETF</code>로 표기하지만, Intel 매뉴얼 원문에서는 이것도 그냥 "RET"의 far 변형으로 다뤄진다 — 오피코드가 다르다: near RET는 <code>C3</code>(오퍼랜드 없음)/<code>C2</code>(imm16), far RET(<code>RETF</code>)는 <code>CB</code>(오퍼랜드 없음)/<code>CA</code>(imm16)이다.</p>
+<h3>실제로 하는 일 — Far CALL의 정확한 반대</h3>
+<p><a href="rev-0413-far-call-jmp.html">Far CALL</a>이 실행되면 스택에는 (아래에서부터) <strong>반환 오프셋(IP/EIP/RIP), 그 위에 CS</strong>가 순서대로 쌓인다. <code>RETF</code>는 이를 정확히 반대로 되돌린다:</p>
+<ol><li>스택 맨 위에서 반환 오프셋을 POP해서 IP/EIP/RIP에 로드한다.</li><li>그 다음 스택에서 CS 셀렉터를 POP해서 CS 레지스터에 로드한다.</li><li><code>RETF imm16</code> 형태라면 추가로 imm16 바이트만큼 스택을 더 정리한다(스택 기반 인자를 넘기는 far 호출 규약에서 호출자가 넣은 인자를 정리하는 용도).</li></ol>
+<p>일반 <code>RET</code>가 스택에서 오프셋 하나만 꺼내는 것과 달리, <code>RETF</code>는 <strong>오프셋과 셀렉터 두 개</strong>를 꺼낸다는 점이 핵심 차이다.</p>
+<h3>플래그 변화</h3>
+<p><code>RETF</code>는 플래그 레지스터를 건드리지 않는다. 이 점이 <a href="rev-0415-iret-iretd.html"><code>IRET</code></a>(REV-0415, 플래그까지 함께 복원)와의 결정적 차이다.</p>
+<h3>signed/unsigned 관점</h3>
+<p>해당 없음.</p>
+<h3>스택/RSP/RIP 변화</h3>
+<pre><code>RETF 실행 전:  스택 최상단 = [반환 오프셋][CS]  (오프셋이 더 낮은 주소)
+RETF 실행:
+  1. offset = pop()   ; RSP += (오퍼랜드 크기)
+  2. CS = pop()         ; RSP += (오퍼랜드 크기, 보통 세그먼트 셀렉터는 스택에서 워드/더블워드 단위로 정렬되어 저장됨)
+  3. RIP = offset
+  4. (imm16 있으면) RSP += imm16</code></pre>
+<h3>짝을 이루는 명령어</h3>
+<p><code>RETF</code>는 반드시 <a href="rev-0413-far-call-jmp.html">Far CALL</a>(또는 그와 동등하게 CS와 오프셋을 스택에 미리 세팅해둔 코드)과 짝을 이뤄야 의미가 있다. 만약 스택에 CS로 쓸 값과 오프셋 값을 <strong>직접 push해서 세팅한 뒤 <code>retf</code>를 실행</strong>하면, 이는 사실상 "far jmp를 흉내 내는" 용도로 쓰일 수 있다 — 바로 이것이 <a href="rev-0413-far-call-jmp.html">Heaven's Gate</a> 기법에서 <code>retf</code>가 등장하는 이유다: far call 없이도 스택만 원하는 값으로 만들어두면 <code>retf</code> 한 줄로 CS와 IP를 동시에 원하는 값으로 바꿀 수 있다.</p>
+<h3>컴파일러 패턴</h3>
+<p>일반 C 컴파일러는 사용자 모드 애플리케이션에서 <code>RETF</code>를 생성하지 않는다 — near call/ret만으로 충분한 플랫 메모리 모델을 쓰기 때문이다. <code>RETF</code>가 보이면 부트로더/커널/드라이버의 far call 반환, 또는 Heaven's Gate류의 세그먼트 전환 트릭임을 의심해야 한다.</p>
+<h3>IDA/Ghidra에서 보이는 형태</h3>
+<p><code>retf</code> 그대로 표시된다. Hex-Rays 디컴파일러는 이를 일반적인 함수 반환으로 정리하지 못하는 경우가 많으며, Heaven's Gate 패턴의 일부라면 오히려 디스어셈블리가 그 지점에서 끊기거나 이상해 보일 수 있다 — 이럴 때는 <code>retf</code> 직전 스택에 어떤 값들이 push됐는지(특히 셀렉터 값) 손으로 추적하는 것이 정확하다.</p>
+<h3>리버싱 의미</h3>
+<p><code>RETF</code>를 만나면 항상 다음 두 가지 중 하나를 의심해야 한다:</p>
+<ol><li><strong>정상적인 far call의 반환</strong> — 부트로더/커널 코드에서 far call로 호출된 서브루틴이 끝나는 지점.</li><li><strong>의도적인 CS 전환 트릭</strong> — <code>push 셀렉터; push 목적지오프셋; retf</code>처럼 far call 없이 스택을 직접 조작해서 <code>retf</code>를 "제어된 far jmp"처럼 쓰는 경우. 이 경우 Heaven's Gate 등 안티 분석 기법일 가능성이 높다.</li></ol>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>retf</code> — far call로 호출된 코드의 끝</li><li><code>retf 8</code> — 반환 후 스택에서 8바이트(예: far 호출 규약의 인자 2개)를 추가로 정리</li><li><code>push 셀렉터</code> → <code>push 오프셋</code>(또는 계산된 주소) → <code>retf</code> — Heaven's Gate류 세그먼트 전환 패턴 (REV-0413 참고)</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li><code>retf</code> 직전에 스택에 무엇이 준비돼 있는지(정상적인 far call 프레임인지, 손으로 push한 셀렉터+오프셋인지) 확인한다.</li><li><code>retf</code> 실행 후 CS 값이 무엇으로 바뀌는지 확인해서 실행 모드(16/32/64비트)가 달라지는지 판단한다.</li><li><code>imm16</code> 오퍼랜드가 있다면 그 값만큼 스택이 추가로 줄어든다는 것을 감안해서 이후 스택 계산을 맞춘다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 정상적인 far call 반환</strong></p>
+<pre><code class="language-asm">; 호출부
+call far ptr 0028h:sub_far_proc
+
+; sub_far_proc 내부
+sub_far_proc:
+    ; ... 처리 ...
+    retf              ; 호출 지점으로 CS:IP를 함께 복원하며 복귀</code></pre>
+<p><strong>2) Heaven's Gate류 세그먼트 전환 트릭</strong></p>
+<pre><code class="language-asm">push  33h              ; 목적지 셀렉터 (64비트 코드 세그먼트)
+push  target_offset      ; 목적지 오프셋
+retf                     ; CS와 IP를 동시에 target_offset, 0x33으로 교체 -&gt; 사실상 far jmp</code></pre>
+<p><strong>3) 스택 정리가 있는 far 반환</strong></p>
+<pre><code class="language-asm">sub_far_proc:
+    ; ... 처리 ...
+    retf 4              ; 복귀 후 추가로 4바이트(예: 스택 인자 하나) 정리</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>retf</code> 직전 몇 줄을 거슬러 올라가며 스택에 push된 값(특히 상수로 보이는 셀렉터 후보)을 확인</li><li>x64dbg/GDB: <code>retf</code> 실행 직전 스택 덤프에서 두 값(오프셋, 셀렉터)을 직접 확인, 실행 후 CS 레지스터 값 변화 관찰</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>retf</code> 실행 후 CS 레지스터가 실행 전과 다르다면, 세그먼트(실행 모드/권한 레벨)가 실제로 바뀐 것이다.</li><li><code>retf</code> 직전 스택 최상단 두 값이 "합리적인 코드 주소"와 "알려진 셀렉터 값(0x08, 0x23, 0x33 등)"처럼 보이면, 이는 정상적인 far call 반환이거나 계획된 세그먼트 전환이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>RETF</code>를 그냥 <code>RET</code>와 같은 것으로 취급해서 스택에서 딱 하나(오프셋)만 꺼낸다고 착각하는 것 — CS도 함께 꺼내므로 소비하는 스택 바이트 수가 다르다.</li><li><code>RETF</code>와 <code>IRET</code>(REV-0415)를 혼동하는 것 — <code>RETF</code>는 CS와 IP만 복원하고, <code>IRET</code>는 여기에 더해 FLAGS/EFLAGS까지(그리고 권한 레벨이 바뀌는 경우 SS/ESP까지) 복원한다.</li><li><code>push 셀렉터; push 오프셋; retf</code> 패턴을 보고 단순히 "함수에서 리턴하는구나"라고 넘기는 것 — 실제로는 far call 없이 <code>retf</code>를 이용한 의도적 CS 전환(Heaven's Gate 등)일 수 있다.</li><li><code>RETF imm16</code>에서 imm16을 무시하고 스택 오프셋을 잘못 계산하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>retf</code> 실행 후 코드가 이상하게 해석되면 → CS가 바뀌어서 실행 모드(16/32/64비트)가 달라졌을 가능성을 의심하고 REV-0413의 Heaven's Gate 설명을 참고한다.</li><li><code>retf</code> 앞에 대응하는 far call이 안 보이면 → 스택을 직접 조작한 세그먼트 전환 트릭일 가능성이 높으니 push된 두 값을 그대로 "새 CS:IP"로 해석해본다.</li><li>스택 정리량이 이해 안 되면 → <code>retf</code> 뒤에 붙은 imm16 값을 확인해서 몇 바이트가 추가로 버려지는지 계산한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 기본 far call/retf 쌍</strong></p>
+<pre><code class="language-asm">call far ptr 0028h:sub_1
+; ...
+sub_1:
+    mov  eax, 1
+    retf</code></pre>
+<p><strong>예제 2 — Heaven's Gate 스타일 세그먼트 전환</strong></p>
+<pre><code class="language-asm">push  33h
+push  0000000140002000h
+retf</code></pre>
+<p><strong>예제 3 — 스택 정리가 있는 far 반환</strong></p>
+<pre><code class="language-asm">sub_far_with_args:
+    ; ... 인자 2개(8바이트)를 스택으로 받아 처리 ...
+    retf 8</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0413-far-call-jmp.html">REV-0413 — 원거리(Far) CALL과 JMP 기초</a></li><li><a href="rev-0415-iret-iretd.html">REV-0415 — IRET와 IRETD: 인터럽트 반환</a></li><li><a href="rev-0072-ret.html">REV-0072 — RET: 함수 반환과 스택 변화</a></li><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>RETF(far RET) 오퍼랜드 형식, 스택에서 CS와 오프셋을 함께 POP하는 동작, imm16 스택 정리: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2B, "RET—Return from Procedure" 섹션의 far 반환 서술 기준 (2026-09-08 검증).</li><li>Heaven's Gate 기법에서 push 셀렉터 + push 오프셋 + retf 조합을 이용한 세그먼트 전환: 다수의 공개 악성코드 분석 보고서 및 리버싱 커뮤니티 기술 자료에서 공통적으로 설명하는 관찰된 기법.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA에서 여러 함수를 한 번에 배치로 이름 바꾸는 수작업 팁 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA에서 여러 함수를 한 번에 배치로 이름 바꾸는 수작업 팁</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>IDA는 서로 다른 이름을 각각 지정하는 진짜 "배치 리네임" 대화상자를 기본 제공하지는 않지만, Functions 창의 정렬/검색으로 비슷한 함수를 먼저 한데 묶고, 다중 선택 시 뜨는 "공통 접두사 + 자동 번호" 방식의 리네임과 방향키만으로 다음 항목으로 넘어가는 키보드 워크플로를 조합하면 스크립트 없이도 수십~수백 개 함수의 이름 정리 속도를 크게 높일 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>정적 링킹 바이너리(REV-0646)라 <code>sub_</code> 함수가 수백~수천 개인데, 그중 사용자 코드로 보이는 함수들만 골라 빠르게 이름을 붙이고 싶을 때</li><li>IDAPython 스크립트를 쓸 수 없는 제한된 환경(대회 PC, 스크립트 실행이 막힌 환경)에서 그래도 여러 함수 이름을 빠르게 정리해야 할 때</li><li>여러 함수가 같은 역할군(예: 여러 개의 getter/setter, 여러 개의 상태 핸들러)이라 공통 접두사만 붙이고 나머지는 번호로 구분해도 충분할 때</li><li>마우스로 하나씩 더블클릭 → N → 입력 → 확인을 반복하다 보니 리네임 자체가 병목이 되고 있을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>IDA에 진짜 "배치 리네임"은 없다</h3>
+<p>Windows 탐색기의 여러 파일 선택 후 이름 바꾸기처럼, IDA도 Functions 창에서 여러 함수를 다중 선택(<code>Shift+클릭</code>, <code>Ctrl+클릭</code>)한 뒤 <code>N</code>을 누르면 리네임 대화상자가 뜬다. 다만 이때 입력할 수 있는 것은 <strong>하나의 공통 이름</strong>뿐이며, IDA는 이를 선택된 항목 각각에 그대로 적용할 수 없으므로 자동으로 뒤에 번호를 붙여(<code>name</code>, <code>name_0</code>, <code>name_1</code>, ...) 충돌을 피한다. 즉 이 기능은 서로 다른 의미 있는 이름을 각각 붙여주는 게 아니라, "같은 역할군에 공통 접두사만 빠르게 붙이고 세부 구분은 번호로 넘기는" 상황에서나 유용하다. 완전히 다른 이름을 각각 붙여야 한다면 결국 하나씩 처리해야 하며, 이 문서는 그 "하나씩 처리하는 속도"를 최대한 끌어올리는 수작업 팁에 집중한다.</p>
+<h3>1단계 — Functions 창에서 먼저 묶기</h3>
+<p>무작위 순서로 함수를 훑으면 비슷한 함수끼리 흩어져 있어 비효율적이다. Functions 창(REV-0143)의 컬럼 헤더(주소, 크기, 이름 등)를 클릭하면 그 기준으로 정렬된다.</p>
+<ul><li><strong>크기(Size) 기준 정렬</strong>: 아주 작은 함수들(예: 몇 바이트짜리 thunk, getter/setter류)이 한데 모인다. 이런 함수는 대개 역할이 단순해서 빠르게 판단하고 넘어갈 수 있다.</li><li><strong>주소(Address) 기준 정렬</strong>: 컴파일러가 관련 함수를 인접하게 배치하는 경우가 많아, 같은 소스 파일/모듈 출신 함수들이 뭉쳐 보이는 경향이 있다.</li><li><strong>이름(Name) 기준 정렬 + 검색창</strong>: 이미 일부 함수가 <code>j_</code>(점프 스텁), 언더스코어가 붙은 라이브러리 이름(REV-0731 FLIRT 매칭 결과) 등 규칙적인 접두사를 갖고 있다면, 이름순 정렬로 같은 접두사 함수들을 한 화면에 모아 볼 수 있다.</li></ul>
+<h3>2단계 — 마우스 없이 이어서 처리하는 키보드 흐름</h3>
+<p>Functions 창에서 한 함수를 처리한 뒤 굳이 다음 함수를 마우스로 다시 찾아 클릭할 필요가 없다. 이름을 바꿀 함수 행을 선택한 상태에서 <code>Enter</code>(또는 더블클릭)로 그 함수로 이동해 내용을 확인하고, Functions 창으로 돌아와 방향키(<code>↓</code>)로 바로 다음 행으로 이동한 뒤 곧바로 <code>N</code>을 눌러 새 이름을 입력하는 흐름을 반복하면, 매번 마우스로 위치를 다시 찾는 것보다 훨씬 빠르게 여러 함수를 순서대로 처리할 수 있다.</p>
+<h3>3단계 — 공통 접두사 다중 선택 활용</h3>
+<p>정말로 여러 함수가 같은 역할군이라 세부 구분이 크게 중요하지 않다면(예: 콜백 테이블의 각 핸들러를 일단 전부 <code>handler_</code>로 시작하게만 만들어두고 싶을 때), Functions 창에서 그 함수들을 <code>Ctrl+클릭</code>으로 다중 선택한 뒤 <code>N</code>을 눌러 공통 이름을 입력한다. 자동으로 <code>handler_0</code>, <code>handler_1</code>처럼 번호가 붙으므로, 이후 각 함수를 열어보며 필요한 것만 더 구체적인 이름으로 다시 다듬으면 된다. 이는 "전부 무명 상태"보다 "일단 접두사로 구분된 상태"가 이후 분석에 훨씬 유리하기 때문에, 세부 이름을 아직 못 정했을 때의 중간 단계로 유용하다.</p>
+<h3>4단계 — Xrefs로 우선순위 정하기</h3>
+<p>함수가 너무 많아 어디부터 이름을 붙여야 할지 막막하다면, <code>main</code>이나 이미 이름 붙은 핵심 함수에서 시작해 REV-0145(Xrefs)로 호출 관계를 따라가며 실제로 분석에 필요한 함수부터 우선 처리하고, 호출된 적 없거나 라이브러리 내부 헬퍼로 보이는 함수는 나중으로 미룬다. 모든 함수의 이름을 다 붙이려 하기보다, 실제로 로직 이해에 필요한 함수만 골라 처리하는 것이 시간 대비 효율이 훨씬 높다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Functions 창에 <code>sub_401000</code>부터 <code>sub_40A000</code>까지 이름 없는 함수가 수백 개 나열되어 있다.</li><li>크기순으로 정렬해보면 몇 바이트짜리 함수 수십 개가 뭉쳐 있어, 단순 getter/setter나 thunk로 의심된다.</li><li>콜백 테이블/핸들러 배열을 참조하는 함수 여러 개가 비슷한 크기·구조를 가진 채 이름만 없다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>Functions 창을 열어 크기(Size) 컬럼 기준으로 한 번 정렬해보고, 전체 함수 수 대비 실제로 분석에 필요해 보이는 함수의 비율을 가늠한다. 대부분이 라이브러리/thunk성 함수라면 REV-0731(FLIRT)로 자동 식별을 먼저 최대한 돌려서 수작업 대상 자체를 줄이는 것이 먼저다.</p>
+<h2>단계별 절차</h2>
+<ol><li>REV-0731(FLIRT)과 REV-0736(til)으로 자동 식별 가능한 함수는 먼저 최대한 처리해서 수작업 대상 목록을 줄인다.</li><li>Functions 창을 열고 Size 또는 Address 컬럼으로 정렬해 비슷한 함수들을 화면에 모은다.</li><li><code>main</code>에서 REV-0145(Xrefs)로 실제 호출되는 함수부터 우선순위를 매긴다.</li><li>개별적으로 의미 있는 이름이 필요한 함수는 <code>Enter</code>로 들어가 내용 확인 → 이름 결정 → Functions 창으로 복귀 → <code>↓</code>로 다음 함수 이동 → <code>N</code>으로 리네임하는 흐름을 반복한다.</li><li>역할군은 같지만 세부 이름을 아직 못 정한 함수 묶음은 <code>Ctrl+클릭</code>으로 다중 선택 후 <code>N</code>으로 공통 접두사(<code>handler_</code>, <code>stub_</code> 등)를 붙여 자동 번호가 붙게 한다.</li><li>나중에 각 항목을 다시 열어보며 접두사+번호 상태에서 구체적인 이름으로 하나씩 다듬는다.</li><li>라이브러리 내부 헬퍼로 확실히 판단되는(호출되지 않거나 REV-0731로 이미 식별된) 함수는 굳이 리네임하지 않고 남겨둔다 — 모든 함수 이름을 붙이는 것 자체가 목적이 아니라, 분석 속도를 높이는 것이 목적임을 잊지 않는다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>Functions 창 컬럼 헤더 클릭: 주소/크기/이름 등 기준으로 정렬</li><li>Functions 창에서 <code>Ctrl+F</code>(또는 타이핑 시작): 이름 목록 안에서 빠른 검색/필터</li><li><code>Shift+클릭</code> / <code>Ctrl+클릭</code>: Functions 창에서 여러 함수 다중 선택</li><li>다중 선택 후 <code>N</code>: 공통 이름 입력, 자동으로 번호 접미사 부여</li><li>단일 함수에서 <code>N</code>: 개별 리네임(REV-0147)</li><li><code>↓</code> / <code>↑</code>: Functions 창 안에서 다음/이전 함수로 이동(마우스 재클릭 없이)</li><li><code>Enter</code>: 선택한 함수의 코드 위치로 이동</li></ul>
+<h2>출력 해석</h2>
+<ul><li>다중 선택 후 공통 이름을 입력하면 Functions 창에 <code>handler_0</code>, <code>handler_1</code>, <code>handler_2</code>...처럼 나열되는 것이 정상이다 — 이는 이름 충돌을 IDA가 자동으로 피한 결과다.</li><li>정렬 기준을 바꿔도 함수 자체의 주소나 코드는 전혀 바뀌지 않는다. 정렬은 순전히 화면에 보여주는 순서만 바꾸는 것이므로 안전하게 여러 번 바꿔가며 확인해도 된다.</li><li>Xrefs 개수가 0인 함수가 많다면, 그 상당수는 아직 실행되지 않는 죽은 코드이거나 다른 방식(함수 포인터 테이블 등)으로 간접 호출되는 함수일 수 있으므로, 0이라고 무조건 후순위로 미루기 전에 REV-0738(간접 호출 원형 지정)도 함께 고려한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>함수 수백 개에 전부 의미 있는 개별 이름을 붙이려다 시간을 다 쓰는 것 — 분석에 필요한 함수만 우선순위를 정해 처리해야 한다.</li><li>다중 선택 리네임이 서로 다른 이름을 각각 붙여주는 기능이라고 착각하고 사용했다가, 전부 같은 접두사+번호로 뭉뚱그려진 것을 보고 당황하는 것 — 이는 정상 동작이며, 세부 이름은 이후 개별적으로 다듬어야 한다.</li><li>Functions 창 정렬만 바꾸고 실제로 어떤 함수부터 볼지 우선순위(Xrefs 기준)를 정하지 않아, 여전히 순서 없이 훑으며 비효율적으로 시간을 쓰는 것.</li><li>FLIRT/til로 이미 자동 식별 가능한 함수까지 수작업으로 하나씩 확인하며 중복 작업을 하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>자동 식별로 대상 자체를 줄이고 싶다면 → REV-0731 IDA FLIRT 시그니처 적용해서 라이브러리 함수 식별하기</li><li>함수 목록/검색 기본 사용법이 헷갈린다면 → REV-0143 IDA Functions 창 사용법</li><li>개별 리네임의 기본 조작이 헷갈린다면 → REV-0147 IDA 함수 변수 이름 N으로 바꾸기</li><li>어떤 함수부터 봐야 할지 우선순위를 정하는 법이 궁금하다면 → REV-0145 IDA Xrefs와 X 키 사용법, REV-0166 함수 Call Graph로 핵심 로직 좁히기</li></ul>
+<h2>미니 예제</h2>
+<p>정적 링킹된 바이너리에서 Functions 창을 Size 기준으로 정렬했더니, 12바이트 안팎의 함수 20개가 연달아 모여 있고 대부분 <code>return *(int *)(this + N);</code> 형태의 단순 getter로 보인다고 하자. 이 20개를 전부 <code>Ctrl+클릭</code>으로 선택한 뒤 <code>N</code>을 누르고 <code>getter_</code>를 입력하면 <code>getter_0</code> ~ <code>getter_19</code>로 한 번에 정리된다. 이후 Xrefs(REV-0145)로 실제 검증 로직에서 자주 참조되는 몇 개(<code>getter_3</code>, <code>getter_7</code>)만 열어보고 <code>get_hp</code>, <code>get_flag_valid</code>처럼 구체적인 이름으로 다시 다듬으면, 나머지 대부분은 <code>getter_</code>라는 접두사만으로도 "단순 필드 접근 함수군"이라는 정보가 충분히 전달되어 더 이상 시간을 쓸 필요가 없어진다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0143-ida-functions-window.html">REV-0143 — IDA Functions 창 사용법</a></li><li><a href="rev-0145-ida-xrefs.html">REV-0145 — IDA Xrefs와 X 키 사용법</a></li><li><a href="rev-0147-ida-rename.html">REV-0147 — IDA 함수 변수 이름 N으로 바꾸기</a></li><li><a href="rev-0166-call-graph-narrowing.html">REV-0166 — 함수 Call Graph로 핵심 로직 좁히기</a></li><li><a href="rev-0731-ida-flirt-apply-signatures.html">REV-0731 — IDA FLIRT 시그니처 적용해서 라이브러리 함수 식별하기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Functions 창에서 여러 항목을 다중 선택한 뒤 리네임하면 공통 이름에 자동으로 번호 접미사가 붙는 동작과, 컬럼 헤더 클릭으로 정렬 기준을 바꾸는 기본 UI 동작: Hex-Rays 공식 사용자 가이드(Functions 서브뷰, 목록형 서브뷰 공통 조작) 기준.</li><li>IDA 자체에 서로 다른 이름을 한 번에 지정하는 진짜 배치 리네임 대화상자는 없으며, 이를 원할 경우 IDAPython 스크립트나 서드파티 플러그인(예: 함수 접두사 지정 플러그인)을 쓰는 것이 일반적이라는 점: 공개된 IDA 플러그인/커뮤니티 자료에서 공통적으로 언급되는 내용.</li><li>이 문서는 2026-09-09 기준 공개된 공식 문서 및 커뮤니티 자료 검색 결과를 바탕으로 작성했으며, 정확한 다중 선택 리네임 동작은 IDA 버전에 따라 다를 수 있으므로 실제 환경에서 재확인할 것을 권장한다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

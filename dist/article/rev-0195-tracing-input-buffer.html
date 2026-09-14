@@ -1,0 +1,155 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>디버거에서 입력 버퍼가 실제로 변하는 과정 추적 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>디버거에서 입력 버퍼가 실제로 변하는 과정 추적</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span><span class="tag">Pwndbg</span></div>
+<h2>한 줄 요약</h2>
+<p>입력 함수(<code>scanf</code>, <code>fgets</code>, <code>read</code> 등) 호출 직후에 브레이크포인트를 걸고 메모리/Hex 뷰로 버퍼 주소를 열어두면, 사용자가 입력한 실제 바이트가 메모리에 채워지는 순간과, 이후 코드가 그 바이트를 한 단계씩 변형(XOR, 덧셈, 비교 등)해 가는 과정을 실제 16진수 값으로 눈으로 확인할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>"입력값이 메모리 어디에 저장되는지도 모르겠고, 그 값이 어떻게 변형되는지도 모르겠다"는 완전히 막막한 상태에서 시작할 때</li><li>지금까지 배운 브레이크포인트(REV-0169), Step Into/Over(REV-0170), 레지스터/스택 추적(REV-0172, REV-0173)을 하나의 실전 흐름으로 이어서 연습하고 싶을 때</li><li>크랙미(crackme)에서 "내가 입력한 문자열이 정확히 어떤 연산을 거쳐서 정답과 비교되는지"를 처음부터 끝까지 따라가 보고 싶을 때</li><li>메모리 덤프(Hex 뷰)에서 값이 실행할 때마다 바뀌는 걸 직접 보고 싶은데 어느 창을 봐야 할지 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>이 글의 목표 — 정적 분석에서 동적 관찰로</h3>
+<p>지금까지의 글들이 "어디에 브레이크포인트를 걸어야 하는가", "레지스터를 어떻게 보는가", "스택을 어떻게 보는가"를 각각 다뤘다면, 이 글은 그것들을 이어 붙여서 <strong>입력값이 메모리에 나타나고 → 레지스터로 옮겨지고 → 변형되고 → 비교되는</strong> 전체 흐름을 하나의 예제로 처음부터 끝까지 따라가 본다. 아래 예제 바이너리는 다음과 같은 전형적인 C 코드를 가정한다.</p>
+<pre><code class="language-c">#include &lt;stdio.h&gt;
+#include &lt;string.h&gt;
+
+int main(void) {
+    char buf[16] = {0};
+    printf("Enter password: ");
+    fgets(buf, sizeof(buf), stdin);   // (1) 입력 받기
+    for (int i = 0; buf[i] != '\0' &amp;&amp; buf[i] != '\n'; i++) {
+        buf[i] ^= 0x5A;                // (2) 입력을 XOR로 변형
+    }
+    if (memcmp(buf, expected, 5) == 0) // (3) 변형된 값과 비교
+        puts("Correct!");
+    else
+        puts("Wrong!");
+    return 0;
+}</code></pre>
+<p>사용자가 <code>abcde</code>를 입력했다고 가정하고, 이 값이 메모리에서 실제로 어떻게 나타나고 바뀌는지 단계별로 추적한다.</p>
+<h3>1단계 — 입력 함수 호출 직후에 브레이크포인트</h3>
+<p><code>fgets(buf, sizeof(buf), stdin)</code> 호출은 어셈블리에서 <code>call fgets</code>(또는 정적 링크된 경우 <code>call _IO_fgets</code> 등)로 보인다. <strong>이 CALL 다음 명령어 주소</strong>에 브레이크포인트를 건다(REV-0169, REV-0176 참고). 이 시점이면 <code>fgets</code>가 이미 stdin에서 읽은 바이트를 <code>buf</code>(첫 번째 인자로 넘겼던 스택 주소)에 다 써넣은 뒤이므로, 그 메모리를 열어보면 사용자가 입력한 값이 그대로 보인다.</p>
+<h3>2단계 — buf의 실제 주소 확인</h3>
+<p><code>fgets</code> 호출 직전 인자 세팅 코드(예: <code>lea rdi, [rbp-0x20]</code>, REV-0175 참고)를 보면 <code>buf</code>가 <code>RBP-0x20</code>(예시) 위치에 있다는 것을 알 수 있다. 이 시점에 레지스터 창에서 RBP의 실제 값을 확인하고, <code>RBP - 0x20</code>을 계산하면 buf의 실제 메모리 주소가 나온다.</p>
+<h3>3단계 — Hex/Memory 뷰로 그 주소를 열기</h3>
+<p>x64dbg의 Dump(Hex) 창이나 GDB의 <code>x</code> 명령으로 그 주소를 연다. 입력 전(brekapoint가 CALL <strong>이전</strong>이라면)에는 그 영역이 0으로 초기화되어 있거나(스택이라 쓰레기 값일 수도 있음) 다음처럼 보일 수 있다.</p>
+<pre><code>주소            00 01 02 03 04 05 06 07   ASCII
+7ffee020        00 00 00 00 00 00 00 00   ........</code></pre>
+<p><code>fgets</code> 호출 <strong>직후</strong>로 넘어가면(브레이크포인트가 CALL 다음이면), 실제로 입력한 <code>abcde\n</code>이 ASCII 바이트로 채워진 것을 볼 수 있다.</p>
+<pre><code>주소            00 01 02 03 04 05 06 07   ASCII
+7ffee020        61 62 63 64 65 0A 00 00   abcde...</code></pre>
+<p>여기서 <code>61 62 63 64 65</code>는 각각 <code>a</code>(0x61), <code>b</code>(0x62), <code>c</code>(0x63), <code>d</code>(0x64), <code>e</code>(0x65)의 ASCII 코드이고, <code>0A</code>는 개행 문자(<code>\n</code>), 그 뒤 <code>00</code>은 <code>fgets</code>가 null-terminate한 문자열 끝이다. <strong>이 순간이 "입력 버퍼가 실제로 채워지는 순간"을 눈으로 확인한 것이다.</strong></p>
+<h3>4단계 — 변형 루프를 한 스텝씩 따라가며 값이 바뀌는 것 관찰</h3>
+<p>다음으로 <code>buf[i] ^= 0x5A;</code> 루프에 해당하는 어셈블리(대략 다음과 같은 형태)를 한 줄씩(<code>F7</code>/<code>si</code>) 실행하며 Hex 뷰를 계속 지켜본다.</p>
+<pre><code class="language-asm">loop_body:
+    movzx   eax, byte ptr [rbp+rcx-0x20]  ; buf[i] 읽기
+    xor     al, 5Ah                        ; buf[i] ^= 0x5A
+    mov     [rbp+rcx-0x20], al             ; buf[i]에 다시 저장
+    inc     rcx
+    ...</code></pre>
+<p><code>mov [rbp+rcx-0x20], al</code> 명령어를 한 스텝 실행할 때마다, Dump 창의 해당 바이트가 즉시 바뀌는 것을 볼 수 있다.</p>
+<pre><code>i=0 실행 전: 61 62 63 64 65 0A 00 00   (abcde..)
+i=0 실행 후: 3B 62 63 64 65 0A 00 00   (0x61 ^ 0x5A = 0x3B, ';')
+i=1 실행 후: 3B 38 63 64 65 0A 00 00   (0x62 ^ 0x5A = 0x38, '8')
+i=2 실행 후: 3B 38 39 64 65 0A 00 00   (0x63 ^ 0x5A = 0x39, '9')
+...</code></pre>
+<p>x64dbg Dump 창은 값이 바뀔 때마다 자동으로 갱신되므로, 한 스텝씩 실행하며(F7) 매번 그 줄을 눈으로 보기만 해도 XOR 연산이 실제로 무엇을 만들어내는지 확인할 수 있다. 원한다면 계산기 없이도 "입력값이 최종적으로 어떤 바이트가 되어야 정답과 일치하는지" 거꾸로(정답 바이트에 같은 키로 XOR) 계산해서 정답을 복원하는 데도 이 관찰이 그대로 쓰인다.</p>
+<h3>5단계 — 최종 비교 직전 값 확인</h3>
+<p><code>memcmp(buf, expected, 5)</code> 호출 직전(CALL 직전, REV-0175 참고)에 다시 멈춰서, 이번엔 RDI(1번째 인자, 변형된 buf)와 RSI(2번째 인자, expected 배열) 두 주소의 Hex 값을 나란히 열어 비교한다. 두 영역의 바이트가 정확히 같으면 <code>memcmp</code>는 0을 반환하고("Correct!"로 분기), 다르면 0이 아닌 값을 반환한다(REV-0176, REV-0174 참고). 이 시점에 <code>expected</code> 배열의 실제 바이트를 읽으면 — 예를 들어 <code>3B 38 39 64 65</code>라면 — 그 값에 다시 <code>0x5A</code>로 XOR하면(같은 변형을 역으로 적용) 원래 요구되는 평문 입력이 무엇인지(<code>abcde</code>) 복원할 수 있다는 것도 확인할 수 있다.</p>
+<h3>왜 이 흐름이 중요한가</h3>
+<p>이것이 정적 분석만으로는 얻기 힘든 동적 분석의 핵심 가치다 — IDA/Ghidra 디컴파일 결과로 "루프가 XOR을 한다"는 것은 알 수 있어도, 실제로 그 순간 값이 몇인지, 몇 바이트가 처리되는지, 최종적으로 무엇과 비교되는지는 실행해서 눈으로 봐야 확실해진다. 크랙미/리버싱 문제 대부분이 이런 "입력 → 변형 → 비교" 구조를 갖고 있으므로, 이 다섯 단계(입력 함수 CALL 직후 브레이크포인트 → 버퍼 주소 계산 → Hex 뷰로 열기 → 변형 루프 스텝별 관찰 → 최종 비교 직전 값 확인)는 그대로 재사용 가능한 표준 절차다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>입력 함수(<code>scanf</code>, <code>fgets</code>, <code>gets</code>, <code>read</code>) 호출 직후 스택/힙 버퍼 영역에 이전에는 0이거나 쓰레기 값이던 곳이 ASCII로 읽히는 값으로 바뀌어 있다.</li><li>반복문 안에 <code>xor</code>, <code>add</code>, <code>sub</code>, <code>rol</code>/<code>ror</code> 같은 연산이 버퍼의 각 바이트에 반복 적용되는 패턴이 있다면 전형적인 "입력 인코딩/난독화" 루프다.</li><li>루프 직후 <code>memcmp</code>, <code>strcmp</code>, 또는 바이트 단위 <code>cmp</code> 반복이 나온다면 변형된 입력을 정답과 비교하는 지점이다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>IDA/Ghidra에서 입력 함수 호출 위치와 그 이후의 변형 루프, 최종 비교 위치를 먼저 정적으로 훑어 전체 흐름을 파악한다.</li><li>입력 함수 CALL 다음 주소에 브레이크포인트를 건다.</li><li>버퍼 주소를 계산해서 Hex/Memory 뷰로 미리 열어둔다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>x64dbg</strong></p>
+<ol><li><code>call fgets</code>(또는 <code>scanf</code>) 다음 주소에 <code>F2</code>로 브레이크포인트를 건다.</li><li><code>F9</code>로 실행하고, 콘솔/입력창이 뜨면 <code>abcde</code>를 입력하고 Enter를 누른다.</li><li>브레이크포인트에서 멈추면, 인자 세팅 코드에서 확인해둔 buf 주소(RBP 기준 오프셋을 실제 RBP 값과 계산)를 Dump 창에 <code>Ctrl+G</code>로 입력해 이동한다.</li><li>Dump 창에서 <code>61 62 63 64 65 0A 00 ...</code> 같은 ASCII 값이 실제로 보이는지 확인한다.</li><li>변형 루프의 첫 줄에 다시 브레이크포인트를 걸거나, <code>F7</code>로 한 줄씩 실행하며 Dump 창이 실시간으로 갱신되는 것을 지켜본다(Dump 창은 값이 바뀔 때마다 자동 갱신됨, 필요하면 우클릭 → "Refresh"로 수동 새로고침도 가능).</li><li>루프가 끝난 뒤 <code>memcmp</code>(또는 유사 비교 함수) CALL 직전에 다시 브레이크포인트를 걸고, RDI/RSI(또는 RCX/RDX) 두 버퍼를 각각 Dump 창에서 비교한다.</li></ol>
+<p><strong>GDB / Pwndbg</strong></p>
+<ol><li><code>fgets</code>/<code>scanf</code>/<code>read</code> 호출 다음 주소에 브레이크포인트를 건다:</li></ol>
+<pre><code>   break *0x401250</code></pre>
+<ol><li><code>run</code>으로 실행하고 프롬프트에 <code>abcde</code>를 입력한다.</li><li>브레이크포인트에서 멈추면 buf 주소의 메모리를 확인한다:</li></ol>
+<pre><code>   x/16xb $rbp-0x20</code></pre>
+<p>출력 예:</p>
+<pre><code>   0x7fffffffe420: 0x61 0x62 0x63 0x64 0x65 0x0a 0x00 0x00</code></pre>
+<ol><li>문자열로도 확인 가능:</li></ol>
+<pre><code>   x/s $rbp-0x20</code></pre>
+<ol><li>변형 루프를 한 명령어씩(<code>si</code>) 실행하며 매번 같은 메모리를 다시 확인한다:</li></ol>
+<pre><code>   si
+   x/16xb $rbp-0x20</code></pre>
+<p>반복이 번거롭다면 <code>display</code>로 자동 출력 등록:</p>
+<pre><code>   display/16xb $rbp-0x20
+   si</code></pre>
+<p>(Pwndbg를 쓰면 <code>context</code> 화면에 워치 중인 메모리를 함께 정리해서 보여주는 것도 가능하다.)</p>
+<ol><li><code>memcmp</code> 호출 직전에 두 버퍼를 나란히 비교:</li></ol>
+<pre><code>   break *0x4012a0
+   continue
+   x/5xb $rdi
+   x/5xb $rsi</code></pre>
+<h2>명령어/단축키</h2>
+<ul><li>x64dbg: <code>F2</code>(브레이크포인트), <code>F9</code>(실행), <code>Ctrl+G</code>(Dump 창 주소 이동), <code>F7</code>(한 줄씩 실행하며 Dump 자동 갱신 관찰), Dump 창 우클릭 → "Refresh"</li><li>GDB/Pwndbg: <code>break *&lt;addr&gt;</code>, <code>x/Nxb &lt;addr&gt;</code>(바이트 단위 Hex), <code>x/s &lt;addr&gt;</code>(문자열), <code>si</code>(명령어 단위 스텝), <code>display/Nxb &lt;addr&gt;</code>(스텝마다 자동 출력)</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>x/16xb $rbp-0x20</code> 결과의 각 바이트를 ASCII 표로 대조하면(예: <code>0x61</code>='a', <code>0x62</code>='b') 실제 입력이 무엇이었는지 바로 읽을 수 있다.</li><li>변형 루프 실행 전후로 같은 주소를 두 번 조회해서 바이트 값이 달라졌다면, 그 바이트가 방금 실행한 명령어(예: <code>xor</code>)에 의해 변형됐다는 것이 확정된다.</li><li><code>memcmp</code> 직전 두 버퍼(RDI, RSI)의 바이트를 나란히 비교했을 때 위치별로 다른 바이트가 있다면, 그 위치의 입력 문자가 틀렸다는 뜻이고, 정답을 역산할 때 그 차이(그리고 알고 있는 변형 연산의 역연산)를 이용하면 된다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>입력 함수 <strong>호출 전</strong>(CALL 이전)에 버퍼를 열어보고 "왜 값이 없냐"고 당황하는 것 — 반드시 CALL <strong>이후</strong>에 열어야 실제 입력이 채워진 상태를 볼 수 있다.</li><li>버퍼 주소를 잘못 계산해서(RBP 오프셋 부호를 반대로 쓰거나, 32비트/64비트 오프셋 계산 실수) 엉뚱한 메모리를 보고 "입력이 안 들어갔다"고 착각하는 것 — 인자 세팅 코드(<code>lea rdi, [rbp-0x20]</code>)의 오프셋을 정확히 그대로 계산해야 한다.</li><li>변형 루프를 Step Over(F8)로 통째로 건너뛰어서 중간 과정을 놓치는 것 — 값이 바뀌는 "과정"을 보고 싶다면 반드시 Step Into/명령어 단위 스텝(F7/<code>si</code>)으로 루프 내부를 한 줄씩 실행해야 한다.</li><li>Dump 창이 자동 갱신되지 않는다고 착각하는 것 — 대부분의 디버거는 스텝할 때마다 자동으로 갱신되지만, 만약 갱신이 안 보인다면 다른 주소를 보고 있거나 새로고침이 필요한 경우다.</li><li>개행 문자(<code>\n</code>, <code>0x0A</code>)나 널 종단(<code>\0</code>, <code>0x00</code>)을 실제 비교 대상 데이터로 착각해서 바이트 개수를 잘못 세는 것 — <code>fgets</code>는 개행까지 버퍼에 포함시키지만 <code>scanf("%s", ...)</code>는 포함시키지 않는 등 함수마다 동작이 다르므로 항상 실제 Hex 값을 확인해서 판단해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>버퍼에 아무 값도 안 보인다면 → 브레이크포인트 위치(CALL 전/후)와 주소 계산을 다시 확인한다.</li><li>값이 예상과 다르게 바뀐다면 → 변형 루프의 연산(XOR인지 ADD인지 ROL인지)을 코드에서 다시 확인하고, 한 스텝씩 더 천천히 따라간다.</li><li>비교 대상(<code>expected</code> 등)의 실제 값이 어디 있는지 모르겠다면 → <code>memcmp</code>/<code>strcmp</code> 직전 두 번째 인자 레지스터(RSI 또는 RDX, REV-0175 참고)가 가리키는 주소를 Dump/<code>x</code>로 열어본다.</li><li>입력이 몇 바이트까지만 처리되는지 헷갈린다면 → 루프 종료 조건(널 종료, 개행, 고정 길이 등)을 코드에서 다시 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>전체 흐름 요약 (x64dbg 기준)</strong></p>
+<pre><code>1) call fgets 다음 줄에 F2 → F9 → 콘솔에 "abcde" 입력
+2) Dump 창에서 buf 주소로 이동: 61 62 63 64 65 0A 00 00 확인 (abcde\n)
+3) XOR 루프 시작 줄에 F2 → F9 → F7을 5번 반복하며 Dump 관찰:
+   3B 62 63 64 65 -&gt; 3B 38 63 64 65 -&gt; 3B 38 39 64 65 -&gt; 3B 38 39 3E 65 -&gt; 3B 38 39 3E 3F
+4) call memcmp 직전에 F2 → F9 → RCX(변형된 buf)와 RDX(expected) Dump 비교</code></pre>
+<p><strong>GDB/Pwndbg — 동일 흐름</strong></p>
+<pre><code>(gdb) break *0x401250      # fgets 직후
+(gdb) run
+Enter password: abcde
+(gdb) x/8xb $rbp-0x20
+0x7fffffffe420: 0x61 0x62 0x63 0x64 0x65 0x0a 0x00 0x00
+
+(gdb) break *0x401270      # XOR 루프 시작
+(gdb) continue
+(gdb) si
+(gdb) x/5xb $rbp-0x20
+0x7fffffffe420: 0x3b 0x62 0x63 0x64 0x65
+(gdb) si
+(gdb) si
+(gdb) x/5xb $rbp-0x20
+0x7fffffffe420: 0x3b 0x38 0x63 0x64 0x65</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0169-what-is-a-breakpoint.html">REV-0169 — Breakpoint가 무엇이고 어디에 걸어야 하는가</a></li><li><a href="rev-0170-step-into-vs-over.html">REV-0170 — Step Into와 Step Over 차이</a></li><li><a href="rev-0172-tracing-registers.html">REV-0172 — 레지스터 값을 실행 중 추적하는 법</a></li><li><a href="rev-0173-tracing-stack.html">REV-0173 — 스택 값을 실행 중 추적하는 법</a></li><li><a href="rev-0174-before-conditional-branch.html">REV-0174 — 조건 분기 직전에 무엇을 봐야 하는가</a></li><li><a href="rev-0175-args-before-call.html">REV-0175 — CALL 직전 함수 인자 확인하는 법</a></li><li><a href="rev-0176-return-value-after-call.html">REV-0176 — CALL 직후 반환값 확인하는 법</a></li><li><a href="rev-0031-stack-frame.html">REV-0031 — 스택 프레임이 무엇인지</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>fgets</code>/<code>scanf</code>/<code>read</code> 등 표준 입력 함수의 버퍼 채움 동작: ISO C 표준(fgets), POSIX.1 (read) 공식 명세 기준.</li><li>x64dbg Dump 창의 실시간 메모리 표시 및 갱신 동작: x64dbg 공식 문서(Memory Dump) 기준.</li><li>GDB <code>x</code>(examine memory) 명령 포맷(<code>x/Nxb</code>, <code>x/s</code>): GNU GDB 공식 매뉴얼 "Examining Memory" 챕터 기준.</li><li>ASCII 코드표(0x61='a' 등): ASCII(ISO/IEC 646) 표준 기준.</li><li>2026-09-08 검증.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

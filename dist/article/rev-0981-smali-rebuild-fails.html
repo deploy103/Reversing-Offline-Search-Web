@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>smali 코드를 수정 후 재빌드가 실패할 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dotnet-android</div>
+<article class="article-body">
+<h1>smali 코드를 수정 후 재빌드가 실패할 때</h1>
+<div class="article-meta"><span class="tag">dotnet-android</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">APK</span><span class="tag">smali</span><span class="tag">apktool</span></div>
+<h2>한 줄 요약</h2>
+<p>smali를 수정한 뒤 <code>apktool b</code>가 실패하거나, 빌드는 성공했는데 앱 실행 시 크래시가 난다면 원인은 거의 항상 <code>.locals</code> 레지스터 개수 불일치, 문법 오류(오타, 세미콜론 누락), 또는 레지스터 타입 불일치(객체 레지스터에 정수 값을 넣는 등) 세 가지 중 하나다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>.smali</code> 파일을 손으로 고친 뒤 <code>apktool b</code>를 실행했는데 오류 메시지와 함께 빌드가 중단될 때</li><li>빌드는 성공했는데 앱을 설치하고 실행하면 곧바로 크래시하거나 <code>VerifyError</code>가 날 때</li><li>새 레지스터를 코드에 추가했는데 왜 실패하는지 이유를 모를 때</li><li>smali 문법에서 어디를 고쳐야 할지 감이 안 잡힐 때</li></ul>
+<h2>핵심 개념</h2>
+<p>smali는 사람이 손으로 편집할 수 있는 텍스트지만, 결국 다시 바이트코드로 조립되어 Dalvik/ART 검증기(verifier)를 통과해야 실제로 실행된다. 검증기는 각 메서드가 선언한 것보다 많은 레지스터를 쓰지 않는지, 각 레지스터에 담긴 값의 타입이 그 시점에 기대되는 타입과 일치하는지 등을 엄격하게 검사한다.</p>
+<p>가장 흔한 실패 원인은 <code>.locals N</code> 선언이다. 이 숫자는 그 메서드가 사용하는 <strong>지역 레지스터</strong>(<code>v0</code>~<code>vN-1</code>)의 개수를 뜻하는데, 코드를 수정하면서 새 레지스터(<code>v2</code> 등)를 추가로 썼다면 <code>.locals</code> 값도 그만큼 늘려야 한다. 이걸 빼먹으면 <code>apktool b</code>(내부적으로 smali 어셈블러 호출) 단계에서 "레지스터 범위를 벗어났다"는 오류로 바로 걸러지거나, 운 좋게 빌드는 되더라도 실행 시 ART 검증기가 <code>VerifyError</code>로 앱을 크래시시킨다.</p>
+<p>두 번째 흔한 원인은 단순 문법 오류다. 타입 디스크립터의 세미콜론(<code>Ljava/lang/String;</code>)을 빼먹거나, 레이블(<code>:cond_0</code>)을 잘못 참조하거나, 명령어 이름 오타(<code>invoke-virual</code>처럼) 등이다.</p>
+<p>세 번째는 타입 불일치다. <code>const/4 v0, 0x1</code>로 정수를 넣어놓고 그 레지스터를 나중에 객체 레지스터처럼 <code>invoke-virtual</code>의 대상으로 쓰면 검증기가 거부한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>apktool b</code> 실행 중 <code>smali.jar</code> 또는 어셈블러 관련 오류 메시지와 함께 특정 파일/줄 번호가 출력된다.</li><li>빌드는 끝났는데 APK 설치 후 실행하자마자 크래시하며 <code>adb logcat</code>에 <code>java.lang.VerifyError</code> 또는 <code>dalvik.system.VerifyError</code>가 찍힌다.</li><li>오류 메시지에 <code>invalid register</code> 또는 <code>register out of range</code>류의 문구가 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>수정한 <code>.smali</code> 파일에서 <code>.locals N</code> 줄을 찾아, 그 메서드 안에서 실제로 쓰인 <code>v</code> 레지스터 중 가장 큰 번호가 <code>N-1</code>을 넘지 않는지부터 확인한다. 새 레지스터를 추가했다면 이 숫자부터 먼저 맞춘다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>apktool b</code> 오류 메시지에 나온 파일 경로와 줄 번호를 정확히 확인한다.</li><li>해당 메서드의 <code>.locals N</code> 값과 실제 사용된 최대 <code>v</code> 번호를 비교한다. 부족하면 <code>.locals</code> 숫자를 늘린다.</li><li>늘린 만큼 파라미터 레지스터(<code>p0</code>, <code>p1</code>, ...) 번호가 밀리지 않는지 확인한다 — <code>.locals</code>가 커지면 최신 baksmali 표기(<code>v</code>/<code>p</code> 분리)에서는 보통 파라미터 번호가 안 바뀌지만, 구버전 표기(전부 <code>v</code>로 통일된 스타일)에서는 전체 레지스터 번호 체계가 달라질 수 있으므로 표기 스타일을 먼저 확인한다.</li><li>타입 디스크립터(<code>L...;</code>, <code>[I</code> 등)의 세미콜론과 슬래시 표기를 다시 확인한다.</li><li>명령어 이름 오타(<code>invoke-virtual</code>, <code>move-result</code> 등)를 하나씩 다시 확인한다.</li><li>빌드가 성공했는데 실행 시 크래시하면, <code>adb logcat</code>에서 <code>VerifyError</code> 메시지에 나온 정확한 클래스/메서드명을 다시 확인해 그 메서드의 레지스터/타입 일관성을 재점검한다.</li><li>여전히 원인을 못 찾겠으면, 수정 범위를 최소화한 뒤(한 줄씩만 바꿔가며) 재빌드/재설치를 반복해 문제 지점을 좁힌다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">apktool b out -o rebuilt.apk           # 재조립
+adb install -r rebuilt.apk             # 재설치(서명 후)
+adb logcat | grep -i verifyerror       # 검증 오류 확인
+adb logcat -c &amp;&amp; adb shell am start -n pkg/.Activity   # 크래시 로그 새로 수집</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>apktool b</code>가 실패하면서 파일명과 줄 번호를 정확히 알려주면, 그 위치의 <code>.locals</code>나 문법부터 확인하면 대부분 바로 해결된다.</li><li><code>VerifyError: Rejecting class ... because it failed compile-time verification</code>은 빌드는 성공했지만 ART가 실행 시점에 바이트코드를 거부했다는 뜻이며, 로그의 클래스/메서드명을 실마리로 다시 smali를 점검해야 한다.</li><li>오류에 특정 레지스터 번호(<code>v5</code>)가 언급되면, 그 번호가 <code>.locals</code> 범위를 벗어났거나 그 시점에 기대한 타입과 다른 값이 들어있다는 뜻이다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>새 레지스터를 코드에 추가하고 <code>.locals</code> 숫자를 안 늘리는 것 — 가장 흔한 원인.</li><li>문자열 타입 디스크립터의 세미콜론을 실수로 지우는 것.</li><li>재빌드 후 재서명(<code>apksigner</code>)을 잊고 그냥 설치하려다 별도의 서명 오류를 이 문제와 혼동하는 것.</li><li>크래시 로그를 확인하지 않고 "재빌드가 잘못됐나보다"라고 막연히 처음부터 다시 시작하는 것 — <code>adb logcat</code>의 <code>VerifyError</code> 메시지가 정확한 원인 위치를 알려준다.</li><li>여러 곳을 한꺼번에 고친 뒤 오류가 나면 어디가 문제인지 못 찾고 전체를 되돌리는 것 — 한 번에 한 곳씩 수정하고 검증하는 습관이 디버깅을 훨씬 빠르게 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>smali 문법 자체가 헷갈리면 → REV-0252 smali 기초 문법</li><li>apktool 디코딩 단계 자체가 실패한다면 → REV-0979 APK가 apktool로 디코드가 안 될 때</li><li>재서명 후 설치가 안 되면 → REV-0984 APK 재서명 후 설치가 실패할 때</li></ul>
+<h2>미니 예제</h2>
+<p>다음과 같이 항상 참을 반환하도록 <code>checkPassword.smali</code>를 수정했다고 하자.</p>
+<pre><code class="language-smali">.method private checkPassword(Ljava/lang/String;)Z
+    .locals 1
+    const-string v0, "correct_password"
+    invoke-virtual {p1, v0}, Ljava/lang/String;-&gt;equals(Ljava/lang/Object;)Z
+    move-result v0
+
+    const/4 v1, 0x1
+    return v1
+.end method</code></pre>
+<p>여기서 <code>.locals 1</code>(레지스터 1개, <code>v0</code>만 허용)인데 새로 <code>v1</code>을 추가로 썼다. <code>apktool b</code> 실행 시 "invalid register: v1"류의 오류가 발생한다. <code>.locals</code>를 <code>2</code>로 바꾸면 즉시 해결된다.</p>
+<pre><code class="language-smali">.method private checkPassword(Ljava/lang/String;)Z
+    .locals 2
+    const-string v0, "correct_password"
+    invoke-virtual {p1, v0}, Ljava/lang/String;-&gt;equals(Ljava/lang/Object;)Z
+    move-result v0
+
+    const/4 v1, 0x1
+    return v1
+.end method</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0252-smali-basics.html">REV-0252 — smali 기초 문법</a></li><li><a href="rev-0251-apktool-basics.html">REV-0251 — apktool 기본 사용법</a></li><li><a href="rev-0979-apktool-decode-fails.html">REV-0979 — APK가 apktool로 디코드가 안 될 때</a></li><li><a href="rev-0984-apk-resign-install-fails.html">REV-0984 — APK 재서명 후 설치가 실패할 때</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>smali <code>.locals</code>/레지스터 규칙 및 ART/Dalvik 검증기의 <code>VerifyError</code> 동작: <code>JesusFreke/smali</code> 공식 저장소 문서 및 Android 공식 개발자 문서("ART and Dalvik") 기준으로 정리했다(2026-09-09 확인).</li><li>apktool 빌드(<code>apktool b</code>) 오류 메시지 형식은 apktool 공식 저장소(<code>iBotPeaches/Apktool</code>) 이슈 사례 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

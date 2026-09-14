@@ -1,0 +1,171 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>switch-case가 점프 테이블로 컴파일되는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / c-analysis</div>
+<article class="article-body">
+<h1>switch-case가 점프 테이블로 컴파일되는 패턴</h1>
+<div class="article-meta"><span class="tag">c-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p><code>case</code> 값들이 0부터 촘촘하게(빈틈 없이 또는 빈틈이 적게) 이어져 있으면 컴파일러는 <code>switch</code> 변수 값을 그대로 배열 인덱스로 써서 목적지 주소 테이블을 한 번에 조회하는 <strong>점프 테이블</strong>을 만들며, 어셈블리에서는 범위 체크(<code>cmp</code>+<code>ja</code>) 뒤에 <code>jmp</code>가 레지스터나 계산된 메모리 주소를 대상으로 하는 것으로 나타난다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>switch</code> 문 C 코드를 눈으로 보고 있는데, 실제 어셈블리에서는 각 case별 <code>cmp</code>가 하나도 안 보이고 <code>jmp</code> 한 줄로 바로 여러 곳으로 갈라지는 걸 봤을 때</li><li>case 값이 0, 1, 2, 3, 4처럼 연속된 정수인 switch문을 분석하면서 "이게 왜 if 체인이 아니라 이런 모양인지" 원리부터 이해하고 싶을 때</li><li>REV-0441에서 점프 테이블 자체는 배웠지만, 원본 C <code>switch</code> 코드와 나란히 놓고 대조해서 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>원본 C 코드</h3>
+<pre><code class="language-c">int op_name(int code) {
+    switch (code) {
+        case 0: return 100;
+        case 1: return 101;
+        case 2: return 102;
+        case 3: return 103;
+        case 4: return 104;
+        default: return -1;
+    }
+}</code></pre>
+<h3>-O0 x86-64 어셈블리 (x64 PIE 기준, Intel 문법)</h3>
+<pre><code class="language-asm">op_name:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 0x10
+    mov     [rbp-4], edi        ; code
+    mov     eax, [rbp-4]
+    cmp     eax, 4
+    ja      .L_default           ; code가 0~4 범위를 벗어나면(unsigned 비교) default
+    lea     rdx, [rip+.L_jtable]
+    movsxd  rax, dword [rdx+rax*4]  ; 테이블에서 상대 오프셋 읽기
+    add     rax, rdx
+    jmp     rax                   ; 계산된 주소로 간접 점프
+.L_case0:
+    mov     eax, 100
+    jmp     .L_end
+.L_case1:
+    mov     eax, 101
+    jmp     .L_end
+.L_case2:
+    mov     eax, 102
+    jmp     .L_end
+.L_case3:
+    mov     eax, 103
+    jmp     .L_end
+.L_case4:
+    mov     eax, 104
+    jmp     .L_end
+.L_default:
+    mov     eax, -1
+.L_end:
+    leave
+    ret
+
+.L_jtable:
+    dd      .L_case0 - .L_jtable
+    dd      .L_case1 - .L_jtable
+    dd      .L_case2 - .L_jtable
+    dd      .L_case3 - .L_jtable
+    dd      .L_case4 - .L_jtable</code></pre>
+<h3>줄 단위 대응</h3>
+<ul><li><code>cmp eax, 4</code> / <code>ja .L_default</code> — <code>switch</code>의 <strong>모든 case 값</strong>(0~4)이 이 한 번의 범위 체크로 커버된다. 개별 case마다 <code>cmp code, 0</code>, <code>cmp code, 1</code> ... 하는 코드가 <strong>전혀 없다</strong> — 이게 if-elseif 체인(REV-1057, REV-1055)과의 가장 큰 시각적 차이다.</li><li><code>lea rdx, [rip+.L_jtable]</code> — 테이블 시작 주소를 RIP 상대로 계산.</li><li><code>movsxd rax, dword [rdx+rax*4]</code> — <code>code</code> 값을 인덱스로 그대로 써서(<code>rax*4</code>, 정수 4바이트 스케일) 테이블 원소(상대 오프셋)를 읽는다. <strong>case 값이 곧 배열 인덱스</strong>라는 점이 점프 테이블의 본질이다.</li><li><code>add rax, rdx</code> / <code>jmp rax</code> — 오프셋을 테이블 base에 더해 실제 목적지를 계산하고 그 주소로 바로 점프한다. <code>call</code>이 아니라 <code>jmp</code>이므로 반환 주소가 스택에 남지 않는다.</li><li>각 <code>.L_caseN</code> 블록 끝의 <code>jmp .L_end</code>는 REV-1054의 if-else에서 본 것과 같은 "합류 지점으로 가는 무조건 점프" 역할이다.</li></ul>
+<h3>디컴파일러가 복원한 pseudocode</h3>
+<pre><code class="language-c">int op_name(int code)
+{
+  switch (code) {
+    case 0: return 100;
+    case 1: return 101;
+    case 2: return 102;
+    case 3: return 103;
+    case 4: return 104;
+    default: return -1;
+  }
+}</code></pre>
+<p>IDA/Ghidra는 <code>cmp</code>+<code>ja</code>(범위 체크)와 그 뒤의 계산된 <code>jmp</code>를 자동으로 인식하면 <code>jtable_xxx</code>라는 이름의 데이터 배열을 만들고, <code>switch(code) { ... }</code> 구문으로 거의 원본과 동일하게 복원해준다. 다만 테이블이 암호화되어 있거나 컴파일러가 흔치 않은 스케일을 쓰면 자동 인식이 실패해서 <code>jmp rax</code> 아래 코드가 조각조각 끊겨 보일 수 있다 — 이때는 수동으로 점프 테이블을 지정해야 한다(자세한 수동 지정 절차는 REV-0441 참고).</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>cmp reg, N</code> 다음 <code>ja</code>/<code>jbe</code> 같은 unsigned 조건부 분기(범위 체크) 하나만 있고, 개별 case 값에 대한 <code>cmp</code>가 없다.</li><li>그 직후 <code>lea</code>로 테이블 주소를 구하고, <code>movsxd</code>나 <code>mov</code>로 테이블 원소를 읽고, <code>add</code>/<code>jmp reg</code>로 마무리되는 3~4줄 조합.</li><li><code>.rodata</code>나 <code>.text</code> 안에 4바이트(또는 8바이트) 단위로 촘촘히 나열된 데이터 블록(테이블 자체).</li><li>case 개수만큼의 짧은 블록들이 코드 뒤쪽에 나열되어 있고, 각 블록 끝이 공통 <code>.L_end</code>로 점프한다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>jmp</code> 대상이 상수 레이블이 아니라 레지스터나 <code>[reg*4+addr]</code> 같은 계산식인지 확인한다. 맞다면 그 바로 위에서 범위 체크(<code>cmp</code>+<code>ja</code>류)를 찾아 case 값의 범위(대략 0~N)를 먼저 파악한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>간접 <code>jmp</code>(레지스터 또는 계산된 메모리 피연산자)를 찾는다.</li><li>그 위의 <code>cmp</code>+조건부 분기로 case 값의 유효 범위와 default로 가는 경로를 확인한다.</li><li>테이블 데이터 영역을 4(또는 8)바이트씩 끊어 읽어 각 원소가 가리키는 코드 블록 주소를 나열한다.</li><li>인덱스 0부터 순서대로 각 블록을 case 값에 매칭시켜 표로 정리한다.</li><li>각 블록의 실제 동작(반환값, 호출하는 함수 등)을 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code>(gdb) disas op_name
+(gdb) x/5xg &amp;jtable      # 테이블 원소를 8바이트씩 덤프
+(gdb) print $rax          # jmp 직전 계산된 목적지 확인</code></pre>
+<p>IDA: <code>jmp</code> 라인 우클릭 → "Create Switch/jump table"로 자동/수동 인식. Ghidra: Analysis → Auto Analyze의 switch 분석기가 자동 처리, 실패 시 데이터 재정의 후 override.</p>
+<h2>출력 해석</h2>
+<ul><li><code>cmp eax, 4</code> / <code>ja</code>의 4는 "case 개수 - 1"이다. 이 상수만 보고도 대략 몇 개의 case가 있는지(default 제외) 짐작할 수 있다.</li><li>테이블 원소가 절대 주소가 아니라 "테이블 기준 상대 오프셋"으로 저장된 x64 PIE 환경에서는, 원소 값을 그대로 주소로 오해하면 안 되고 반드시 테이블 base를 더해야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>case 값이 0부터 시작하지 않고(예: <code>case 10</code>부터 시작) 이어지는 경우, 컴파일러가 먼저 <code>sub eax, 10</code> 같은 코드로 최솟값을 빼서 인덱스를 0부터 시작하도록 정규화한다는 것을 놓치는 것 — 이 <code>sub</code>를 못 보면 case 값과 테이블 인덱스가 안 맞아 보인다.</li><li>case 값 중 일부가 비어 있는 경우(예: 0,1,2,4는 있고 3이 없음) 테이블의 3번 원소가 default 블록을 가리키도록 채워지는데, 이걸 "테이블이 잘못됐다"고 오판하는 것 — 빈 case는 정상적으로 default를 가리키는 것이 맞다.</li><li><code>-O0</code>이 아닌 <code>-O2</code> 이상에서는 case가 몇 개 안 되면 오히려 점프 테이블 대신 <code>cmovcc</code> 체인이나 if 체인으로 역변환될 수 있다는 점(테이블 생성 자체의 오버헤드가 케이스 수가 적을 때는 더 크다고 판단되면). case가 20개 이상으로 많을 때 점프 테이블이 훨씬 확실하게 나타난다.</li><li>점프 테이블을 vtable(REV-0444)과 혼동하는 것 — 점프 테이블 원소는 같은 함수 내부의 블록을, vtable 원소는 서로 다른 함수의 시작 주소를 가리킨다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>점프 테이블의 RIP 상대 오프셋 계산, PIE/비-PIE 차이, IDA 수동 지정 절차 등 더 깊은 내용은 → REV-0441(Switch문 점프 테이블(Jump Table) 완전 분석).</li><li>case 값이 듬성듬성 떨어져 있어서 점프 테이블이 아니라 순차 비교로 컴파일된 경우가 궁금하면 → REV-1057(switch-case가 if 체인으로 컴파일되는 패턴).</li><li>범위 체크에 쓰인 unsigned 비교(<code>ja</code>)의 의미가 헷갈리면 → REV-0070(JA JAE JB JBE: Unsigned 비교 분기).</li><li>테이블 주소 계산에 쓰인 RIP 상대 주소 지정이 헷갈리면 → REV-0042(LEA: 주소 계산인데 왜 산술 연산처럼 보이는가).</li></ul>
+<h2>미니 예제</h2>
+<p>문자를 소문자 알파벳 순서로 인덱싱해서 특수 처리하는 경우도 같은 원리로 컴파일된다.</p>
+<pre><code class="language-c">int vowel_code(char c) {
+    switch (c) {
+        case 'a': return 1;
+        case 'b': return 2;
+        case 'c': return 3;
+        case 'd': return 4;
+        default:  return 0;
+    }
+}</code></pre>
+<pre><code class="language-asm">vowel_code:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 0x10
+    mov     [rbp-4], dil
+    movzx   eax, byte [rbp-4]
+    sub     eax, 0x61            ; 'a'(0x61)를 빼서 인덱스를 0부터 시작하도록 정규화
+    cmp     eax, 3
+    ja      .L_default
+    lea     rdx, [rip+.L_jtable]
+    movsxd  rax, dword [rdx+rax*4]
+    add     rax, rdx
+    jmp     rax
+.L_case_a:
+    mov     eax, 1
+    jmp     .L_end
+.L_case_b:
+    mov     eax, 2
+    jmp     .L_end
+.L_case_c:
+    mov     eax, 3
+    jmp     .L_end
+.L_case_d:
+    mov     eax, 4
+    jmp     .L_end
+.L_default:
+    mov     eax, 0
+.L_end:
+    leave
+    ret</code></pre>
+<p><code>sub eax, 0x61</code>이 case 값('a'~'d', 아스키 0x61~0x64)을 0~3으로 정규화하는 과정이며, 이 한 줄을 놓치면 테이블 인덱스가 case 값과 안 맞는 것처럼 보인다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0441-switch-jump-table.html">REV-0441 — Switch문 점프 테이블(Jump Table) 완전 분석</a></li><li><a href="rev-1057-switch-if-chain-sparse-asm-pattern.html">REV-1057 — switch-case가 if 체인으로 컴파일되는 패턴(sparse case)</a></li><li><a href="rev-0070-ja-jae-jb-jbe.html">REV-0070 — JA JAE JB JBE: Unsigned 비교 분기</a></li><li><a href="rev-0042-lea.html">REV-0042 — LEA: 주소 계산인데 왜 산술 연산처럼 보이는가</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>점프 테이블 생성 조건(case 값이 촘촘할 때)과 SIB 기반 인덱싱, RIP 상대 오프셋 테이블 구조: Intel 64 and IA-32 Architectures Software Developer's Manual 및 GCC/Clang 실제 출력 기준.</li><li>IDA/Ghidra의 switch 자동 인식(jump table analysis): Hex-Rays 및 Ghidra 공식 문서 기준 (2026-09-10 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

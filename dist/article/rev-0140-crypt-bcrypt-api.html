@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Crypt API BCrypt API 흔적 찾기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>Crypt API BCrypt API 흔적 찾기</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>바이너리의 임포트 테이블에 <code>CryptAcquireContext</code>, <code>CryptHashData</code>, <code>BCryptOpenAlgorithmProvider</code> 같은 이름이 보이면 이는 개발자가 암호화 로직을 직접 구현하지 않고 Windows가 제공하는 표준 암호화 API(레거시 CryptoAPI 또는 최신 CNG/BCrypt)를 그대로 사용했다는 강력한 신호이므로, 알고리즘을 밑바닥부터 리버싱할 필요 없이 호출 인자(알고리즘 이름, 키, IV, 데이터)만 추적해서 파이썬 암호화 라이브러리로 그대로 재현하면 훨씬 빠르게 분석을 끝낼 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>임포트 테이블에 <code>advapi32.dll</code>(레거시 CryptoAPI 계열 함수 포함)이나 <code>bcrypt.dll</code>(CNG/BCrypt 계열)이 보일 때</li><li>문자열 창에 <code>"AES"</code>, <code>"RSA"</code>, <code>"SHA256"</code>, <code>"3DES"</code> 같은 알고리즘 이름이 그대로 보일 때</li><li>어떤 함수가 데이터를 뒤섞는데, 단순 XOR/회전 반복이 아니라 복잡한 S-box나 라운드 구조처럼 보여서 "이거 표준 암호 알고리즘 아닌가?" 싶을 때</li><li>커스텀 암호화 알고리즘을 리버싱하려다가 시간이 너무 오래 걸릴 것 같아서, 혹시 표준 API를 쓴 건 아닌지 먼저 확인하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<p>Windows는 암호화 기능을 직접 구현하지 않고도 쓸 수 있도록 두 세대의 공식 암호화 API를 제공한다.</p>
+<p><strong>1) 레거시 CryptoAPI(CAPI, <code>advapi32.dll</code>)</strong> 오래된 방식으로, 다음과 같은 함수들이 세트로 쓰인다.</p>
+<ul><li><code>CryptAcquireContext</code> — 암호화 서비스 제공자(CSP, Cryptographic Service Provider)에 대한 핸들을 얻는다. 거의 모든 CryptoAPI 사용의 시작점이다.</li><li><code>CryptCreateHash</code> / <code>CryptHashData</code> — 해시 객체를 만들고 데이터를 해시에 먹인다(SHA1, MD5 등).</li><li><code>CryptDeriveKey</code> — 해시 결과로부터 암호화 키를 유도한다(비밀번호 기반 키 생성에 자주 쓰임).</li><li><code>CryptEncrypt</code> / <code>CryptDecrypt</code> — 실제 암/복호화 수행.</li><li><code>CryptGenRandom</code> — 암호학적으로 안전한 난수 생성.</li></ul>
+<p><strong>2) CNG(Cryptography API: Next Generation, <code>bcrypt.dll</code>)</strong> Windows Vista 이후 권장되는 최신 방식으로, <code>BCrypt</code> 접두사가 붙는다.</p>
+<ul><li><code>BCryptOpenAlgorithmProvider</code> — 사용할 알고리즘 제공자를 연다. 이때 두 번째 인자(<code>pszAlgId</code>)로 알고리즘 이름을 문자열로 직접 넘긴다는 점이 리버싱에서 매우 중요하다.</li><li><code>BCryptCreateHash</code> / <code>BCryptHashData</code> / <code>BCryptFinishHash</code> — 해시 계산.</li><li><code>BCryptGenerateSymmetricKey</code> — 대칭키(AES 등) 객체 생성.</li><li><code>BCryptEncrypt</code> / <code>BCryptDecrypt</code> — 실제 암/복호화 수행.</li><li><code>BCryptGenRandom</code> — 난수 생성.</li></ul>
+<p>여기서 리버싱에 가장 유용한 부분은 <code>BCryptOpenAlgorithmProvider</code>의 <code>pszAlgId</code> 인자다. Microsoft는 알고리즘 식별을 위해 표준화된 문자열 상수를 정의해두었는데, 대표적으로 다음과 같다.</p>
+<pre><code class="language-text">BCRYPT_AES_ALGORITHM    = L"AES"
+BCRYPT_RSA_ALGORITHM    = L"RSA"
+BCRYPT_SHA1_ALGORITHM   = L"SHA1"
+BCRYPT_SHA256_ALGORITHM = L"SHA256"
+BCRYPT_MD5_ALGORITHM    = L"MD5"
+BCRYPT_DES_ALGORITHM    = L"DES"</code></pre>
+<p>즉 <code>BCryptOpenAlgorithmProvider</code> 호출 직전에 <code>lea rdx, [algo_name_string]</code>처럼 문자열 주소가 세팅되는 코드를 찾아 그 문자열 값만 읽으면, "이 프로그램이 무슨 암호화 알고리즘을 쓰는지"를 코드 분석 없이 바로 알아낼 수 있다. 그 다음부터는 키, IV, 체이닝 모드(<code>BCryptSetProperty</code>로 <code>BCRYPT_CHAINING_MODE</code> 설정, 예: <code>BCRYPT_CHAIN_MODE_CBC</code>) 등의 인자만 추적해서 Python의 <code>pycryptodome</code> 같은 라이브러리로 동일한 알고리즘을 그대로 재현하면 된다. 알고리즘 자체를 어셈블리 레벨에서 역산할 필요가 전혀 없다는 뜻이다.</p>
+<p>이 점이 바로 "Crypt/BCrypt API 흔적 찾기"가 리버싱 초반 트리아지에서 중요한 이유다. 반대로 이런 임포트가 전혀 없이 데이터를 뒤섞는 코드가 있다면, 이는 십중팔구 개발자가 직접 만든 <strong>커스텀 암호화(XOR 반복, 비트 회전, 자체 치환 테이블 등)</strong>이며, 이 경우엔 알고리즘 자체를 코드에서 읽어내 재구현해야 한다(관련 패턴은 알고리즘 카테고리의 XOR/회전/치환 관련 글에서 다룬다).</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>임포트 테이블에 <code>advapi32.dll</code>의 <code>CryptAcquireContextW</code>, <code>CryptHashData</code> 등이 보임</li><li>임포트 테이블에 <code>bcrypt.dll</code>의 <code>BCryptOpenAlgorithmProvider</code>, <code>BCryptEncrypt</code> 등이 보임</li><li>문자열 창(<code>Shift+F12</code>)에서 <code>AES</code>, <code>SHA256</code>, <code>RSA1</code> 같은 짧고 대문자 위주인 문자열이 보임(알고리즘 ID 상수)</li><li><code>CryptStringToBinaryA</code>/<code>CryptBinaryToStringA</code> 임포트가 있으면 Base64 인코딩/디코딩을 자체 구현 대신 API로 처리하고 있다는 뜻</li><li>데이터 변환 로직이 복잡한데도 정작 눈에 보이는 반복 연산(XOR 루프 등)이 코드에 없다면, 표준 API 호출로 처리되고 있을 가능성을 의심해야 함</li></ul>
+<h2>가장 먼저 할 것</h2>
+<ol><li>임포트 테이블에서 <code>advapi32.dll</code>과 <code>bcrypt.dll</code>을 확인해서, 이 프로그램이 표준 암호화 API를 쓰는지부터 확인한다.</li><li><code>BCryptOpenAlgorithmProvider</code>(또는 <code>CryptAcquireContext</code>)를 쓴다면, 그 호출 직전에 세팅되는 알고리즘 이름 문자열을 읽는다.</li><li>표준 API 흔적이 전혀 없다면 커스텀 암호화이므로, 데이터를 직접 조작하는 루프를 REV-0139 방식으로 추적해서 알고리즘을 코드로 재구성해야 한다.</li></ol>
+<h2>단계별 절차</h2>
+<p><strong>1) 정적으로 알고리즘 식별</strong></p>
+<ul><li>IDA 임포트 목록에서 <code>BCryptOpenAlgorithmProvider</code>를 찾아 <code>X</code>로 호출 지점을 확인한다.</li><li>호출 직전 두 번째 인자(<code>pszAlgId</code>)로 넘어가는 문자열 주소를 확인한다. 유니코드 문자열이므로 IDA에서 자동으로 <code>L"AES"</code> 형태로 표시되는 경우가 많다.</li><li><code>CryptAcquireContext</code> 계열이라면 알고리즘 이름 대신 CSP 이름과 이후의 <code>CryptCreateHash</code>/<code>CryptDeriveKey</code> 호출에서 쓰이는 <code>ALG_ID</code> 상수(예: <code>CALG_AES_256</code>, <code>CALG_SHA1</code>)를 확인해야 한다. 이 상수는 정수값이므로, MSDN에 정의된 <code>ALG_ID</code> 값 표와 대조해서 알고리즘을 특정한다.</li></ul>
+<p><strong>2) 동적으로 키/IV/데이터 추적</strong></p>
+<ul><li>x64dbg에서 <code>bp BCryptEncrypt</code>(또는 <code>CryptEncrypt</code>)로 브레이크포인트를 건다.</li><li>REV-0139에서 익힌 방법과 동일하게, x64면 <code>RCX</code>/<code>RDX</code>/<code>R8</code>/<code>R9</code>(및 스택의 추가 인자)를, x86이면 스택을 확인해서 키 핸들, 평문 버퍼, 버퍼 길이 등을 하나씩 확인한다.</li><li><code>BCryptGenerateSymmetricKey</code> 호출 시점으로 거슬러 올라가면 실제 키 바이트 값을 담은 버퍼 주소를 얻을 수 있다. 이 버퍼를 덤프해서 실제 키 값을 확보한다.</li></ul>
+<p><strong>3) Python으로 재현</strong></p>
+<ul><li>알고리즘 이름, 키, IV, 체이닝 모드를 모두 확보했다면, <code>pycryptodome</code> 같은 라이브러리로 동일한 연산을 Python에서 그대로 재현해서 복호화/암호화 결과를 확인한다. 어셈블리 레벨에서 라운드 함수를 하나하나 따라갈 필요가 없다.</li></ul>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>X</code>(교차 참조로 알고리즘 문자열 사용처 확인), <code>Shift+F12</code>(문자열 창에서 알고리즘 이름 직접 검색)</li><li>x64dbg: <code>bp BCryptOpenAlgorithmProvider</code>, <code>bp BCryptEncrypt</code>, <code>bp CryptEncrypt</code> 등으로 원하는 단계에서 바로 멈추기</li><li>참고: <code>CyberChef</code>(오프라인 버전이 있다면) 같은 도구로 확보한 키/데이터를 빠르게 검증</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>BCryptOpenAlgorithmProvider</code>의 <code>pszAlgId</code> 문자열이 <code>"AES"</code>이면 대칭키 블록 암호인 AES가 쓰인 것이며, 이후 <code>BCryptSetProperty</code>로 설정되는 체이닝 모드(<code>ECB</code>/<code>CBC</code>/<code>GCM</code> 등)와 키 길이(128/192/256비트)를 추가로 확인해야 완전한 재현이 가능하다.</li><li><code>CryptAcquireContext</code>의 <code>dwProvType</code> 인자가 <code>PROV_RSA_AES</code>(24) 같은 값이면 AES를 지원하는 CSP를 요청한 것이고, <code>PROV_RSA_FULL</code>(1)이면 RSA 계열 CSP를 요청한 것이다.</li><li>표준 API 함수의 반환값이 <code>NTSTATUS</code>(BCrypt 계열, 0이면 <code>STATUS_SUCCESS</code>) 또는 <code>BOOL</code>(CryptoAPI 계열, 0이 아니면 성공)인지 헷갈리지 않도록 두 세대 API의 반환값 규칙이 다르다는 점을 기억한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>CryptAcquireContext</code>/<code>BCryptOpenAlgorithmProvider</code>가 보인다고 무조건 "안전하게 암호화되어 있어서 못 뚫는다"고 지레 포기하는 것. 표준 알고리즘이라도 키가 하드코딩되어 있거나 고정된 IV를 쓰는 등 구현 실수가 있는 경우가 CTF에서는 흔하다.</li><li>BCrypt 계열과 레거시 CryptoAPI 계열 함수를 섞어서 인자 순서를 착각하는 것. 두 세대는 이름은 비슷해도 구조체와 인자 순서가 다르므로 반드시 각각의 공식 시그니처를 확인해야 한다.</li><li>알고리즘 이름 문자열만 확인하고 체이닝 모드나 패딩 방식(PKCS7 등)을 확인하지 않아, Python으로 재현했을 때 결과가 원본과 다르게 나오는 것.</li><li>이런 API 흔적이 전혀 없는데도 "혹시 어딘가에 숨어있지 않을까" 하고 무한정 임포트 테이블만 뒤지는 것. 흔적이 없으면 커스텀 구현일 가능성이 높으므로 빠르게 REV-0139 방식의 데이터 흐름 추적으로 전환하는 것이 효율적이다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>암호화된 데이터가 파일로 읽고 쓰인다면 → REV-0139(CreateFile ReadFile WriteFile 입력 데이터 추적)로 데이터 흐름을 함께 확인한다.</li><li>함수 이름이 낯설어 인자 개수/순서 짐작이 어렵다면 → REV-0138(Windows API 이름으로 기능 추측하는 법)을 참고한다.</li><li>암호화 키나 알고리즘 관련 문자열이 리소스에 숨겨져 있을 수도 있으니 → REV-0141(Resource Section과 숨겨진 데이터 확인)을 확인한다.</li></ul>
+<h2>미니 예제</h2>
+<p>IDA로 어떤 바이너리의 임포트 목록을 봤더니 <code>bcrypt.dll</code>에서 <code>BCryptOpenAlgorithmProvider</code>, <code>BCryptSetProperty</code>, <code>BCryptGenerateSymmetricKey</code>, <code>BCryptEncrypt</code>가 임포트되어 있었다. <code>BCryptOpenAlgorithmProvider</code> 호출 지점을 <code>X</code>로 따라가 보니 다음과 같은 코드가 있었다.</p>
+<pre><code class="language-c">BCryptOpenAlgorithmProvider(&amp;hAlg, L"AES", NULL, 0);
+BCryptSetProperty(hAlg, L"ChainingMode", (PUCHAR)L"ChainingModeCBC", ..., 0);
+BCryptGenerateSymmetricKey(hAlg, &amp;hKey, NULL, 0, key_bytes, 16, 0);
+BCryptEncrypt(hKey, plaintext, plaintext_len, NULL, iv_bytes, 16, output, ..., &amp;result_len, 0);</code></pre>
+<p>이 코드만으로 "AES-128-CBC를 쓰고, 키는 <code>key_bytes</code>(16바이트), IV는 <code>iv_bytes</code>(16바이트)"라는 것을 바로 알 수 있다. x64dbg로 <code>BCryptGenerateSymmetricKey</code> 호출 지점에 브레이크포인트를 걸어 <code>key_bytes</code>가 가리키는 실제 16바이트 값을 덤프하고, <code>BCryptEncrypt</code> 호출 지점에서 <code>iv_bytes</code>도 함께 확보하면, 이제 어셈블리를 더 볼 필요 없이 Python <code>pycryptodome</code>으로 동일하게 <code>AES.new(key, AES.MODE_CBC, iv)</code>를 구성해서 복호화를 재현할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0119-import-table.html">REV-0119 — Import Table에서 중요한 API 찾기</a></li><li><a href="rev-0138-guess-function-from-api-name.html">REV-0138 — Windows API 이름으로 기능 추측하는 법</a></li><li><a href="rev-0139-createfile-readfile-writefile.html">REV-0139 — CreateFile ReadFile WriteFile 입력 데이터 추적</a></li><li><a href="rev-0141-resource-section.html">REV-0141 — Resource Section과 숨겨진 데이터 확인</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>레거시 CryptoAPI(<code>CryptAcquireContext</code>, <code>CryptHashData</code> 등)와 CNG/BCrypt(<code>BCryptOpenAlgorithmProvider</code>, <code>BCryptEncrypt</code> 등)의 함수 시그니처와 표준 알고리즘 식별 문자열(<code>BCRYPT_AES_ALGORITHM</code> 등)은 Microsoft 공식 Cryptography API 문서 기준이다.</li><li><code>ALG_ID</code>, <code>dwProvType</code>(<code>PROV_RSA_FULL</code>, <code>PROV_RSA_AES</code> 등) 상수값은 Microsoft CryptoAPI 공식 헤더/문서 기준이다.</li><li>위 미니 예제 코드는 전형적인 CNG 사용 패턴을 보여주기 위해 구성한 예시이며 실제 특정 문제의 코드가 아니다(2026-09-08 기준 서술).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

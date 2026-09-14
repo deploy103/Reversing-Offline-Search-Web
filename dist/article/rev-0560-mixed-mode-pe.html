@@ -1,0 +1,106 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>.NET과 Native가 섞인 Mixed-mode PE 다루기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / windows-pe</div>
+<article class="article-body">
+<h1>.NET과 Native가 섞인 Mixed-mode PE 다루기</h1>
+<div class="article-meta"><span class="tag">windows-pe</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">PE</span><span class="tag">IDA</span><span class="tag">dnSpyEx</span><span class="tag">PE-bear</span></div>
+<h2>한 줄 요약</h2>
+<p>Mixed-mode PE는 C++/CLI(<code>/clr</code> 옵션)로 빌드된 어셈블리처럼 <strong>관리 코드(MSIL)와 네이티브 x86/x64 기계어가 한 파일 안에 공존</strong>하는 PE로, <code>DataDirectory[14]</code>(COM Descriptor)가 가리키는 <code>IMAGE_COR20_HEADER</code>의 <code>Flags</code> 필드에서 <code>COMIMAGE_FLAGS_ILONLY</code> 비트가 꺼져 있으면 이 파일이라는 뜻이며, dnSpy 계열 도구는 관리 부분만 디컴파일할 수 있으므로 네이티브 부분은 IDA/Ghidra로 별도 분석해야 한다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>dnSpy나 dnSpyEx로 DLL/EXE를 열었는데, 일부 메서드의 본문이 텅 비어 있거나 "native code"라는 표시만 나올 때</li><li>REV-0136에서 ".NET인지 Native인지" 구분했는데, <code>.NET</code>도 아니고 순수 <code>Native</code>도 아닌 애매한 파일을 만났을 때</li><li><code>IMAGE_COR20_HEADER</code>가 존재하는데도 IDA로 열었을 때 익숙한 x86/x64 함수들이 정상적으로 디스어셈블되는 경우</li><li>C++/CLI(<code>/clr</code>)로 빌드된 것으로 의심되는 파일을 어떤 도구 조합으로 분석해야 할지 판단이 안 설 때</li><li><code>_CorExeMain</code>, <code>_CorDllMain</code> 같은 임포트가 보이는데 이게 뭔지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>"닷넷이거나 아니거나"가 아니라 스펙트럼이다</h3>
+<p>REV-0136에서 다룬 것처럼 PE에 <code>IMAGE_COR20_HEADER</code>(CLR 헤더, <code>DataDirectory[14]</code>가 가리킴)가 있으면 ".NET 관련 파일"이라고 판단할 수 있다. 하지만 이 헤더가 있다고 해서 항상 "전부 IL(중간 언어)로만 이루어진 순수 관리 코드"인 것은 아니다. Visual C++의 <code>/clr</code> 컴파일 옵션(C++/CLI)을 쓰면, 한 어셈블리 안에 다음이 섞일 수 있다.</p>
+<ul><li>IL로 컴파일된 관리 타입/메서드 (<code>ref class</code>로 선언한 코드 등)</li><li>그대로 네이티브 x86/x64 기계어로 컴파일된 일반 C++ 코드 (<code>/clr</code>을 켜도 순수 C++ 로직은 네이티브로 남을 수 있음)</li></ul>
+<p>이런 파일을 <strong>Mixed-mode Assembly</strong>라고 부른다.</p>
+<h3>IMAGE_COR20_HEADER와 ILONLY 플래그</h3>
+<pre><code class="language-c">typedef struct IMAGE_COR20_HEADER {
+    DWORD cb;
+    WORD  MajorRuntimeVersion;
+    WORD  MinorRuntimeVersion;
+    IMAGE_DATA_DIRECTORY MetaData;      // 메타데이터(타입/멤버 정의) 위치
+    DWORD Flags;                        // ★ 여기서 ILONLY 여부 확인
+    // Flags 중 하나가 EntryPointToken이거나 EntryPointRVA(Flags에 따라 다름)
+    union {
+        DWORD EntryPointToken;          // ILONLY일 때: 관리 진입점의 메타데이터 토큰
+        DWORD EntryPointRVA;            // Native Entry Point 플래그가 있을 때: 네이티브 진입점 RVA
+    };
+    IMAGE_DATA_DIRECTORY Resources;
+    IMAGE_DATA_DIRECTORY StrongNameSignature;
+    IMAGE_DATA_DIRECTORY CodeManagerTable;
+    IMAGE_DATA_DIRECTORY VTableFixups;  // Mixed-mode에서 네이티브↔관리 호출 브릿지
+    IMAGE_DATA_DIRECTORY ExportAddressTableJumps;
+    IMAGE_DATA_DIRECTORY ManagedNativeHeader;
+} IMAGE_COR20_HEADER;</code></pre>
+<p><code>Flags</code> 필드의 <code>COMIMAGE_FLAGS_ILONLY</code>(0x00000001) 비트가 <strong>켜져 있으면</strong> 이 파일은 순수 IL로만 이루어져 있고 네이티브 코드는 전혀 없다(일반적인 C#, VB.NET 프로젝트가 여기 해당). 이 비트가 <strong>꺼져 있으면</strong> 파일 안에 실제 x86/x64 기계어 코드가 섞여 있다는 뜻이며, 대부분 C++/CLI(<code>/clr</code>) 프로젝트다.</p>
+<h3>진입점이 두 종류로 나뉜다</h3>
+<p>Mixed-mode 어셈블리의 실제 OS 진입점(PE의 <code>AddressOfEntryPoint</code>)은 여전히 네이티브 스텁 함수이며, 이 스텁은 <code>mscoree.dll</code>이 노출하는 <code>_CorExeMain</code>(EXE) 또는 <code>_CorDllMain</code>(DLL)을 호출하도록 되어 있다. 이 함수들이 CLR을 초기화하고 로드한 뒤, <code>IMAGE_COR20_HEADER</code>에 적힌 진입 지점(관리 코드라면 <code>EntryPointToken</code>, 네이티브 진입점 플래그가 설정돼 있다면 <code>EntryPointRVA</code>)으로 제어를 넘긴다.</p>
+<h3>VTableFixups: 네이티브 코드가 관리 메서드를 호출하는 다리</h3>
+<p>C++/CLI 코드에서 네이티브 함수가 관리(managed) 메서드를 호출해야 할 때, 컴파일러는 이 호출을 "VTable Fixup" 슬롯을 통해 간접적으로 연결한다. CLR이 로드되면서 이 슬롯들을 실제 관리 메서드의 JIT 컴파일된 네이티브 진입점 주소로 채워 넣는다. IDA에서 이런 슬롯을 통한 호출은 보통 <code>call [특정 데이터 영역]</code> 형태의 간접 호출로 보이고, 정적 분석만으로는 어떤 관리 메서드가 호출되는지 바로 안 보일 수 있다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>dnSpy/dnSpyEx에서 어셈블리를 열었을 때, 어떤 타입/메서드는 정상적으로 C#과 비슷한 형태로 디컴파일되지만 다른 메서드는 본문이 비어 있거나 "함수 본문이 IL이 아님"류의 메시지가 나옴</li><li>IDA로 같은 파일을 열었을 때 <code>.text</code> 섹션에 통상적인 x86/x64 함수 프롤로그(<code>push rbp</code> 등)를 가진 코드가 정상적으로 존재함</li><li>Import 테이블에 <code>mscoree.dll</code>의 <code>_CorExeMain</code> 또는 <code>_CorDllMain</code>이 보임</li><li><code>IMAGE_COR20_HEADER.Flags</code>를 확인했을 때 <code>COMIMAGE_FLAGS_ILONLY</code> 비트가 0</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>파일이 순수 .NET인지 Mixed-mode인지부터 확실히 구분한다. <code>dotPeek</code>, <code>ILSpy</code>, <code>dnSpyEx</code> 같은 관리 코드 디컴파일러를 열어봤을 때 일부 로직이 안 보이거나 비어 있다면, 곧바로 IDA에서 같은 파일을 열어 네이티브 코드가 실제로 존재하는지 확인한다. 두 도구를 나란히 켜놓고 "이 기능은 관리 코드 쪽, 저 기능은 네이티브 코드 쪽"으로 역할을 나눠서 분석하는 것이 Mixed-mode를 다루는 기본 전략이다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) IMAGE_COR20_HEADER 존재 및 ILONLY 플래그 확인</strong> <code>DataDirectory[14]</code>로 헤더를 찾고, <code>Flags &amp; COMIMAGE_FLAGS_ILONLY</code>를 확인한다. 0이 아니면(비트 켜짐) 순수 IL, 0이면(비트 꺼짐) Mixed-mode 후보다.</p>
+<p><strong>2) 네이티브 진입 스텁 확인</strong> <code>AddressOfEntryPoint</code>가 가리키는 코드를 IDA에서 열어, <code>_CorExeMain</code>/<code>_CorDllMain</code> 호출로 이어지는 전형적인 네이티브 스텁인지 확인한다.</p>
+<p><strong>3) 관리 코드 부분은 dnSpyEx로 분석</strong> <code>MetaData</code> 데이터 디렉터리가 가리키는 메타데이터를 dnSpyEx가 자동으로 파싱해서 타입/메서드 트리로 보여준다. C#과 유사한 디컴파일 결과를 읽는다.</p>
+<p><strong>4) 네이티브 코드 부분은 IDA/Ghidra로 분석</strong> <code>.text</code> 섹션의 나머지 함수들(관리 메타데이터에 매핑되지 않는 부분)은 그냥 일반 x86/x64 PE처럼 분석한다. REV-0122/REV-0123에서 다룬 호출 규약이 그대로 적용된다.</p>
+<p><strong>5) VTableFixups로 연결된 지점은 교차 참조로 추적</strong> 네이티브 코드에서 관리 메서드를 호출하는 간접 호출 지점을 발견하면, <code>VTableFixups</code> 디렉터리가 가리키는 슬롯 테이블과 대조해서 어떤 관리 메서드로 연결되는지 추적한다. dnSpyEx에서 해당 메서드에 <code>[UnmanagedFunctionPointer]</code>류 특성이나 네이티브 export 관련 표시가 있는지 함께 확인한다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">dnSpyEx: 파일 열기 → 좌측 어셈블리 트리에서 타입/메서드 탐색,
+         본문이 비어 보이면 네이티브 코드일 가능성을 의심
+IDA: File → Open → 같은 파일을 네이티브 PE로 로드,
+     Imports 창에서 mscoree.dll!_CorExeMain / _CorDllMain 확인
+CFF Explorer / PE-bear: .NET Directory(또는 COM Descriptor) 탭에서
+     Flags 필드의 ILONLY 비트 직접 확인</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>Flags</code>에 <code>COMIMAGE_FLAGS_ILONLY</code>(0x1)만 켜져 있고 다른 특이 비트가 없으면 순수 관리 코드 — dnSpyEx만으로 충분</li><li><code>COMIMAGE_FLAGS_ILONLY</code>가 꺼져 있고 <code>COMIMAGE_FLAGS_32BITREQUIRED</code>(0x2) 같은 비트가 같이 켜져 있으면, 네이티브 코드가 포함돼 있어 특정 비트니스(주로 x86)로 강제되는 경우가 많다 — Mixed-mode C++/CLI의 전형적인 조합</li><li>dnSpyEx 트리에서 네임스페이스/클래스 구조가 정상적으로 보이지만 특정 메서드만 유독 본문이 비어 있다면, 그 메서드는 IL이 아니라 VTableFixups를 통해 네이티브 함수로 연결된 것일 가능성이 크다</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>Mixed-mode 파일을 dnSpyEx 하나로만 끝까지 분석하려다가 네이티브 부분의 로직을 완전히 놓치는 것.</li><li>반대로 IDA만으로 분석하면서 관리 메서드 호출부를 "이상한 간접 호출"로만 치부하고 실제로 어떤 .NET 메서드가 실행되는지 파악하지 못하는 것.</li><li><code>IMAGE_COR20_HEADER</code>가 있다는 이유만으로 무조건 "닷넷 파일이니 IDA는 필요 없다"고 단정하는 것 — ILONLY 플래그를 반드시 확인해야 한다.</li><li><code>EntryPointToken</code>과 <code>EntryPointRVA</code>가 같은 필드 위치를 공유하는 유니온이라는 걸 모르고 항상 메타데이터 토큰으로만 해석하려는 것 — 네이티브 진입점 플래그가 설정된 경우 RVA로 해석해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>애초에 이 파일이 .NET인지 Native인지부터 다시 확인하고 싶으면 → <a href="rev-0136-dotnet-vs-native.html">REV-0136 .NET EXE인지 Native EXE인지 구분</a></li><li>진입점/WinMain 구조가 헷갈리면 → <a href="rev-0121-entry-point-winmain.html">REV-0121 Entry Point와 WinMain 찾기</a></li><li>x86/x64 호출 규약이 헷갈리면 → <a href="rev-0122-ms-x64-calling-convention.html">REV-0122 Microsoft x64 Calling Convention</a>, <a href="rev-0123-x86-calling-conventions.html">REV-0123 Windows x86 stdcall cdecl fastcall thiscall</a></li><li>DLL 분석을 어디서부터 시작할지 감이 안 잡히면 → <a href="rev-0135-dll-analysis-start.html">REV-0135 DLL 문제 분석 시작하기</a></li></ul>
+<h2>미니 예제</h2>
+<p><code>plugin.dll</code>을 dnSpyEx로 열었더니 <code>PluginHost</code> 클래스의 <code>Initialize()</code> 메서드는 정상적으로 C#처럼 보이는데, <code>NativeCrypto.Encrypt()</code>라는 메서드만 본문이 비어 있었다고 하자.</p>
+<pre><code class="language-text">1) CFF Explorer로 .NET Directory 탭 확인 → Flags에서 ILONLY 비트가 꺼져 있음(Mixed-mode 확정).
+2) IDA로 같은 plugin.dll을 로드 → Imports에 mscoree.dll!_CorDllMain 확인.
+3) .text 섹션에서 "Encrypt"와 이름이 비슷한 네이티브 함수를 xref로 탐색해서 발견.
+4) 그 함수가 표준 x64 프롤로그(push rbp; mov rbp, rsp; sub rsp, ...)를 가진
+   순수 네이티브 암호화 루틴임을 확인.
+5) 결론: PluginHost.Initialize()는 관리 코드에서 분석,
+   NativeCrypto.Encrypt()는 IDA 네이티브 분석으로 각각 나눠서 진행.</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0136-dotnet-vs-native.html">REV-0136 — .NET EXE인지 Native EXE인지 구분</a></li><li><a href="rev-0121-entry-point-winmain.html">REV-0121 — Entry Point와 WinMain 찾기</a></li><li><a href="rev-0135-dll-analysis-start.html">REV-0135 — DLL 문제 분석 시작하기</a></li><li><a href="rev-0122-ms-x64-calling-convention.html">REV-0122 — Microsoft x64 Calling Convention</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>IMAGE_COR20_HEADER</code> 구조 및 <code>COMIMAGE_FLAGS_ILONLY</code> 등 Flags 비트 정의: ECMA-335 (Common Language Infrastructure) 공식 규격 문서 및 Microsoft Learn ".NET metadata and PE headers" 관련 문서 기준 (2026-09-08 검증).</li><li>C++/CLI(<code>/clr</code>)가 관리 코드와 네이티브 코드를 한 어셈블리에 혼합할 수 있다는 점, <code>_CorExeMain</code>/<code>_CorDllMain</code> 진입 스텁: Microsoft Learn "C++/CLI" 및 ".NET 런타임 호스팅" 공식 문서 기준.</li><li>VTableFixups를 통한 네이티브-관리 코드 간 상호 호출 메커니즘: ECMA-335 규격 문서의 VTableFixups 관련 절 기준이며, 세부 구현은 CLR 버전에 따라 다를 수 있어 실제 분석 시 케이스별 확인이 필요함을 밝혀둔다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

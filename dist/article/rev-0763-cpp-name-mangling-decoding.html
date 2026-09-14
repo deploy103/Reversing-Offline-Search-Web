@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>C++ 이름 맹글링(Name Mangling) 해석하기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>C++ 이름 맹글링(Name Mangling) 해석하기</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span></div>
+<h2>한 줄 요약</h2>
+<p>C++는 함수 오버로딩과 네임스페이스/클래스를 지원하기 위해 컴파일러가 함수 이름에 매개변수 타입·소속 클래스·네임스페이스 정보를 인코딩한 "맹글된 이름"을 만들며, GCC/Clang은 <code>_Z</code>로 시작하는 Itanium C++ ABI 규칙을, MSVC는 <code>?</code>로 시작하는 자체 규칙을 쓰므로 두 규칙의 기본 문법만 익히면 스트립되지 않은 C++ 바이너리에서 함수 이름만 보고도 시그니처를 복원할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA/Ghidra Functions 목록에 <code>_Z3fooii</code>, <code>_ZN7MyClass6methodEi</code> 같은 이름이 잔뜩 보일 때</li><li>Windows C++ 바이너리에서 <code>?foo@@YAHHH@Z</code>, <code>?method@MyClass@@QEAAXH@Z</code> 같은 <code>?</code>로 시작하는 이름이 보일 때</li><li>IDA/Ghidra가 자동으로 데맹글해서 보여주는 이름(<code>MyClass::method(int)</code>)이 원래 맹글된 이름과 어떻게 대응되는지 직접 확인하고 싶을 때</li><li>오프라인 환경이라 온라인 데맹글러를 쓸 수 없어서 직접 손으로 맹글링 규칙을 해석해야 할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>왜 맹글링이 필요한가</h3>
+<p>C++는 <code>int foo(int)</code>와 <code>double foo(double)</code>처럼 이름은 같고 매개변수 타입이 다른 함수(오버로딩)를 허용한다. 하지만 링커(linker)는 심볼 이름 하나에 주소 하나만 대응시킬 수 있으므로, 컴파일러는 매개변수 타입과 소속 정보를 이름에 인코딩해서 서로 다른 고유 심볼을 만든다. 이 인코딩 규칙이 "이름 맹글링(Name Mangling)"이다. 컴파일러마다 규칙이 다르기 때문에 GCC로 컴파일한 오브젝트와 MSVC로 컴파일한 오브젝트는 서로 링크할 수 없다(ABI 비호환의 한 원인).</p>
+<h3>Itanium C++ ABI (GCC/Clang, Linux/macOS 기본)</h3>
+<p>모든 맹글된 이름은 <code>_Z</code>로 시작한다. 기본 함수는 <code>_Z</code> + 이름 길이 + 이름 + 매개변수 타입 코드 순서로 인코딩된다.</p>
+<pre><code>_Z3fooii
+  _Z      : 맹글링 시작 표시
+  3foo    : 길이 3의 이름 "foo"
+  i       : 첫 번째 매개변수 타입 int
+  i       : 두 번째 매개변수 타입 int</code></pre>
+<p>즉 <code>_Z3fooii</code>는 <code>foo(int, int)</code>를 뜻한다. 주요 타입 코드는 다음과 같다.</p>
+<table><thead><tr><th>코드</th><th>타입</th><th>코드</th><th>타입</th></tr></thead><tbody><tr><td><code>v</code></td><td>void</td><td><code>b</code></td><td>bool</td></tr><tr><td><code>c</code></td><td>char</td><td><code>a</code></td><td>signed char</td></tr><tr><td><code>h</code></td><td>unsigned char</td><td><code>s</code></td><td>short</td></tr><tr><td><code>t</code></td><td>unsigned short</td><td><code>i</code></td><td>int</td></tr><tr><td><code>j</code></td><td>unsigned int</td><td><code>l</code></td><td>long</td></tr><tr><td><code>m</code></td><td>unsigned long</td><td><code>x</code></td><td>long long</td></tr><tr><td><code>y</code></td><td>unsigned long long</td><td><code>f</code></td><td>float</td></tr><tr><td><code>d</code></td><td>double</td><td><code>Pc</code></td><td>char* (P=포인터 접두)</td></tr><tr><td><code>PKc</code></td><td>const char* (K=const 접두)</td><td><code>Ss</code></td><td>std::string (표준 축약형)</td></tr></tbody></table>
+<p>네임스페이스나 클래스에 속한 함수는 <code>N</code>...<code>E</code>로 감싸고, 각 구성 요소마다 길이를 붙인다. 예를 들어 <code>_ZN7MyClass6methodEi</code>는 다음과 같이 해석된다.</p>
+<pre><code>_Z N 7MyClass 6method E i
+  N ... E : 중첩된 이름(namespace/class::member) 시작/끝
+  7MyClass : 길이 7의 클래스 이름 "MyClass"
+  6method  : 길이 6의 메서드 이름 "method"
+  i        : 매개변수 int 하나</code></pre>
+<p>→ <code>MyClass::method(int)</code>. 생성자는 <code>C1</code>/<code>C2</code>(complete/base object constructor), 소멸자는 <code>D1</code>/<code>D2</code>로 인코딩된다(<code>_ZN7MyClassC1Ev</code>는 <code>MyClass::MyClass()</code>).</p>
+<h3>MSVC 맹글링 (Visual C++)</h3>
+<p>MSVC는 <code>?</code>로 시작하고 <code>@@</code>로 구간을 구분하며, 이름은 <strong>뒤에서부터 읽는</strong> 역순 표기를 쓰는 것이 특징이다.</p>
+<pre><code>?foo@@YAHHH@Z
+  ?foo@@  : 함수 이름 "foo" (전역 함수, 소속 없음)
+  YA      : 호출 규약 __cdecl
+  H       : 반환 타입 int
+  HH      : 매개변수 int, int
+  @Z      : 매개변수 목록 종료</code></pre>
+<p>→ <code>int __cdecl foo(int, int)</code>. 클래스 멤버 함수는 <code>?method@MyClass@@QEAAXH@Z</code> 형태로, 클래스 이름이 함수 이름 뒤에(<code>@MyClass@@</code>) 붙는다. 주요 코드는 다음과 같다.</p>
+<table><thead><tr><th>코드</th><th>의미</th><th>코드</th><th>의미</th></tr></thead><tbody><tr><td><code>H</code></td><td>int</td><td><code>X</code></td><td>void</td></tr><tr><td><code>N</code></td><td>double</td><td><code>M</code></td><td>float</td></tr><tr><td><code>D</code></td><td>char</td><td><code>E</code></td><td>unsigned char</td></tr><tr><td><code>_N</code></td><td>bool</td><td><code>PEAH</code></td><td>int* (64비트, E=64비트 포인터)</td></tr><tr><td><code>PEBD</code></td><td>const char*</td><td><code>YA</code></td><td>__cdecl</td></tr><tr><td><code>QEAA</code></td><td>public 비-const 멤버 함수(64비트 this)</td><td><code>QEBA</code></td><td>public const 멤버 함수</td></tr></tbody></table>
+<h3>extern "C"는 맹글링을 하지 않는다</h3>
+<p><code>extern "C"</code>로 선언된 함수는 C 방식 그대로 이름이 유지되어 맹글링되지 않는다. 그래서 C++ 바이너리에서도 <code>main</code>, <code>printf</code> 같은 이름은 그대로 보이는 반면, C++로 작성된 사용자 클래스 메서드만 맹글링된 형태로 나타난다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>IDA/Ghidra Functions 목록에 <code>_Z</code>로 시작하는 긴 이름, 또는 <code>?</code>로 시작하고 <code>@@</code>가 여러 번 들어간 이름이 보인다.</li><li>IDA는 기본적으로 데맹글된 이름을 "Demangled name" 필드에 별도로 보여주고(Options → Demangled names), Ghidra는 Listing/Decompile 창에 자동으로 데맹글된 이름을 표시한다.</li><li>오버로딩된 함수(<code>foo(int)</code>와 <code>foo(double)</code>)가 서로 다른 맹글된 이름(<code>_Z3fooi</code>, <code>_Z3food</code>)으로 별개 심볼이 되어 있다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>이름이 <code>_Z</code>로 시작하면 Itanium ABI(GCC/Clang), <code>?</code>로 시작하면 MSVC 규칙임을 먼저 확인한다. 그다음 도구의 자동 데맹글 기능(IDA Demangled name, Ghidra 자동 표시)을 켜서 정답을 먼저 확인하고, 필요하면 이 문서의 표로 직접 검산한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>맹글된 이름의 첫 글자(<code>_Z</code> vs <code>?</code>)로 컴파일러 계열을 판별한다.</li><li><code>c++filt</code> (GNU binutils, Linux 오프라인 환경에도 대개 포함) 또는 Windows SDK의 <code>undname.exe</code>로 자동 데맹글해 정답을 확인한다.</li><li>IDA는 <code>Options → Demangled names → Name definitions</code>에서 표시 형식(짧게/전체)을 조정할 수 있고, Ghidra는 Listing에서 함수 이름이 자동으로 데맹글된 형태로 나타난다(원본 맹글 이름은 Symbol Table에서 확인 가능).</li><li>자동 도구 없이 손으로 읽어야 한다면, 위 표를 참고해 길이 접두 숫자로 이름 구간을 하나씩 잘라내며 안쪽에서 바깥쪽으로(Itanium) 또는 지정된 순서대로(MSVC) 해석한다.</li><li>데맹글된 시그니처를 확인했으면 IDA는 <code>Y</code>(REV-0148), Ghidra는 함수 시그니처 편집으로 반환 타입과 매개변수 타입을 정확히 지정해 이후 디컴파일 가독성을 높인다.</li><li>같은 이름이 여러 개(오버로딩) 있다면 매개변수 타입 코드로 서로 구분해서 혼동하지 않도록 REV-0147/REV-0161 방식으로 별도 주석을 남긴다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">echo _Z3fooii | c++filt
+# 출력: foo(int, int)
+
+echo _ZN7MyClass6methodEi | c++filt
+# 출력: MyClass::method(int)</code></pre>
+<p>Windows: <code>undname.exe ?foo@@YAHHH@Z</code> (Visual Studio Developer Command Prompt에 포함). IDA: <code>Options → Demangled names</code>. Ghidra: Listing 창에서 함수 이름 더블클릭 시 원본/데맹글 이름 모두 확인 가능.</p>
+<h2>출력 해석</h2>
+<ul><li><code>c++filt</code>/<code>undname</code> 결과가 비정상적으로 잘리거나 실패하면, 이름이 완전히 복사되지 않았거나(중간에 공백/개행 포함) 두 컴파일러 규칙이 섞여 있는(드물지만 혼합 빌드) 경우일 수 있다.</li><li>Itanium 이름에서 <code>C1</code>/<code>C2</code>/<code>C3</code>, <code>D0</code>/<code>D1</code>/<code>D2</code>는 모두 생성자/소멸자의 변형(complete object, base object, deleting destructor 등)이며 기능적으로는 거의 같은 생성자/소멸자로 취급해도 무방하다.</li><li>MSVC 이름에서 <code>QEAA</code>(public, 64비트 this)와 <code>AEAA</code>(private)의 차이는 접근 제어자 정보이므로, 클래스 구조를 추정할 때 REV-0765에서 상속/캡슐화 단서로 활용할 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>_Z</code>와 <code>?</code> 규칙을 섞어서 해석하려는 것 — 두 체계는 완전히 다른 별개의 인코딩이므로 절대 서로 대입해서 읽으면 안 된다.</li><li>길이 접두 숫자를 잘못 세어서 이름 구간을 엉뚱하게 잘라내는 것 — 반드시 숫자만큼 정확히 문자를 세어 잘라야 한다.</li><li>데맹글된 이름을 확인하고 나서 그 함수의 클래스 구조나 상속 관계까지 이 문서만으로 다 알아냈다고 착각하는 것 — 이름 해석은 시작일 뿐이고, 실제 클래스 구조 추정은 REV-0764/REV-0765에서 이어서 다룬다.</li><li>IDA/Ghidra가 자동으로 데맹글해 준 이름만 보고 원본 맹글 이름을 확인하지 않는 것 — 자동 데맹글이 실패하거나 축약 표시될 때는 원본 이름을 직접 봐야 정확하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>데맹글된 이름으로 클래스의 멤버/필드 구조를 추정하고 싶다면 → REV-0764(데맹글된 이름으로 클래스 구조 추정하기)</li><li>여러 클래스 이름이 보이는데 상속 관계까지 알고 싶다면 → REV-0765(IDA/Ghidra에서 클래스 계층(상속) 추정하기)</li><li>맹글된 이름에 <code>vtable for</code>, <code>RTTI</code> 관련 접두사가 보인다면 → REV-0444(vtable과 가상함수 호출 패턴 분석), REV-0445(RTTI 흔적 분석)</li><li>이름 자체가 <code>_Z</code>도 <code>?</code>도 아니고 이상한 형태라면 → REV-0766(익명 함수/람다가 바이너리에서 보이는 방식)에서 람다/컴파일러 합성 이름 패턴 확인</li></ul>
+<h2>미니 예제</h2>
+<p>스트립되지 않은 Linux ELF C++ 바이너리에서 다음 심볼을 발견했다고 하자.</p>
+<pre><code>_ZN6VaultC1Ev
+_ZN6Vault8unlockedEv
+_ZN6Vault6verifyEPKc</code></pre>
+<p><code>c++filt</code>로 각각 데맹글하면:</p>
+<pre><code>Vault::Vault()
+Vault::unlocked() const   (또는 non-const, 시그니처 세부는 실제 맹글에 따라 다름)
+Vault::verify(char const*)</code></pre>
+<p>이로써 <code>Vault</code>라는 클래스가 존재하고, 생성자(<code>Vault()</code>), 잠금 상태 확인 메서드(<code>unlocked</code>), 그리고 <code>char const*</code> 하나를 받는 <code>verify</code> 메서드(사용자 입력 문자열을 검증하는 함수일 가능성이 매우 높음)를 갖는다는 것을 함수 내부를 하나도 읽지 않고 이름만으로 파악할 수 있다. 다음 단계는 <code>verify</code> 함수를 REV-0163~0165 방식으로 직접 열어보는 것이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0764-demangled-name-class-structure-inference.html">REV-0764 — 데맹글된 이름으로 클래스 구조 추정하기</a></li><li><a href="rev-0765-class-hierarchy-inheritance-inference.html">REV-0765 — IDA/Ghidra에서 클래스 계층(상속) 추정하기</a></li><li><a href="rev-0444-vtable-virtual-call.html">REV-0444 — vtable과 가상함수 호출 패턴 분석</a></li><li><a href="rev-0445-rtti-traces.html">REV-0445 — RTTI(런타임 타입 정보) 흔적 분석</a></li><li><a href="rev-0446-constructor-destructor-pattern.html">REV-0446 — C++ 생성자/소멸자 호출 패턴 읽기</a></li><li><a href="rev-0766-lambda-anonymous-function-binary-appearance.html">REV-0766 — 익명 함수/람다가 바이너리에서 보이는 방식</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>Itanium C++ ABI 이름 맹글링 규칙(<code>_Z</code> 접두사, 타입 인코딩, <code>N</code>...<code>E</code> 중첩 이름, <code>C1</code>/<code>C2</code>/<code>D0</code>/<code>D1</code>/<code>D2</code>)은 Itanium C++ ABI 공식 명세(Name Mangling 섹션) 기준.</li><li>MSVC 이름 데코레이션(<code>?</code>, <code>@@</code>, 호출 규약/타입 코드, <code>undname.exe</code>) 관련 내용은 Microsoft Learn의 Decorated Names 공식 문서 기준.</li><li><code>c++filt</code>(GNU binutils) 사용법은 binutils 공식 매뉴얼 기준으로 검증했다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

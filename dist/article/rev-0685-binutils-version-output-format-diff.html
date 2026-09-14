@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>binutils 버전 차이로 출력 포맷이 달라지는 경우 대응 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>binutils 버전 차이로 출력 포맷이 달라지는 경우 대응</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">중급</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">readelf</span><span class="tag">objdump</span><span class="tag">nm</span></div>
+<h2>한 줄 요약</h2>
+<p><code>readelf</code>, <code>objdump</code>, <code>nm</code> 같은 GNU binutils 도구는 버전이 올라가면서 컬럼 폭, 줄바꿈, 일부 필드 표기가 바뀌는 경우가 있어, 오래된 튜토리얼/스크립트가 파싱하던 출력 형식과 최신 배포판의 실제 출력이 미묘하게 달라 보이거나 스크립트가 깨질 수 있으므로, 항상 <code>--version</code>으로 실제 버전을 확인하고 <code>--wide</code> 같은 안정적인 옵션을 우선 사용하는 습관이 필요하다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>오래된 CTF 라이트업이나 블로그의 <code>readelf</code>/<code>objdump</code> 명령을 그대로 따라 했는데, 화면에 나온 출력 모양이 글의 스크린샷과 다를 때</li><li><code>readelf -S ./chall</code> 결과가 터미널 폭 때문에 컬럼이 줄바꿈되어 <code>grep</code>/<code>awk</code>로 파싱한 스크립트가 갑자기 값을 잘못 읽어올 때</li><li>신입 환경에서 apt로 새로 설치한 binutils 버전이 예전에 쓰던 버전보다 훨씬 최신이라 결과 포맷이 달라졌을 때</li><li>여러 리눅스 배포판(예: 오래된 Ubuntu 18.04 vs 최신 Ubuntu 24.04)에서 같은 명령을 돌렸는데 출력이 다를 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>binutils는 계속 업데이트되는 프로젝트다</h3>
+<p><code>readelf</code>, <code>objdump</code>, <code>nm</code>, <code>strings</code>, <code>objcopy</code> 등은 모두 GNU Binutils라는 하나의 패키지에 속한 도구들이며, 이 패키지는 활발히 유지보수되어 새로운 ELF 확장(예: 새 섹션 타입, 새 재배치 타입)을 지원하고 사소한 출력 포맷을 개선하는 릴리스가 주기적으로 나온다. 따라서 몇 년 전에 쓰인 CTF 라이트업의 캡처 화면과 최신 배포판에서 실행한 결과가 컬럼 순서, 줄바꿈, 공백 개수 등에서 다를 수 있다. 이건 버그가 아니라 정상적인 버전 차이다.</p>
+<h3>가장 흔한 차이 유형</h3>
+<ol><li><strong>터미널 폭에 따른 줄바꿈</strong>: <code>readelf -S</code>(섹션 헤더), <code>readelf -l</code>(프로그램 헤더) 등은 기본적으로 출력 폭을 제한해서 긴 줄을 여러 줄로 접어 보여준다. 최신 버전일수록 이 접힘 기준이 조금씩 다르게 동작할 수 있다.</li><li><strong>필드 추가/이름 변경</strong>: 새로운 ELF 확장(예: 새로운 동적 태그, 새로운 섹션 플래그 문자)이 추가되면서 플래그 문자 열이 늘어나거나, 헤더에 새 컬럼이 생기는 경우가 있다.</li><li><strong>색상/하이라이트 지원</strong>: 최신 <code>objdump</code>/<code>readelf</code>는 터미널이 지원하면 일부 출력에 색을 넣는 옵션이 생기기도 해서, 파이프로 다른 프로그램에 넘기면 예상치 못한 이스케이프 시퀀스가 섞여 들어갈 수 있다.</li><li><strong>디스어셈블리 문법 미세 차이</strong>: <code>objdump -d</code>의 opcode 문법 표현(특히 AT&amp;T 문법에서 접미사, 메모리 피연산자 괄호 표기 등)이 binutils 버전과 아키텍처 확장(AVX-512 등 신규 명령어 지원)에 따라 조금씩 달라질 수 있다.</li></ol>
+<h3>버전 확인이 첫 단계여야 하는 이유</h3>
+<pre><code class="language-bash">readelf --version
+objdump --version
+nm --version</code></pre>
+<p>이 명령들은 첫 줄에 <code>GNU readelf (GNU Binutils) 2.42</code> 같은 형태로 정확한 버전을 보여준다. 어떤 예제/스크립트가 어느 버전 기준으로 작성됐는지 모른 채 출력이 다르다고 당황하기보다, 먼저 내 시스템의 버전을 확인하고 그 버전의 공식 문서(<code>man readelf</code>, <code>info binutils</code>)를 기준으로 삼는 것이 정확하다.</p>
+<h3>파싱 안정성을 높이는 옵션들</h3>
+<ul><li><code>readelf --wide</code>(<code>-W</code>): 출력 폭 제한 없이 한 줄에 다 출력하도록 강제한다. 스크립트로 <code>readelf</code> 결과를 파싱할 때는 거의 필수로 붙여야 줄바꿈 때문에 정규식이 깨지는 문제를 피할 수 있다.</li><li><code>objdump --no-show-raw-insn</code>: opcode 바이트 나열을 빼고 니모닉만 남겨 출력 폭을 줄인다.</li><li>색상 출력이 방해된다면 <code>--color=never</code>(지원하는 버전의 경우)를 명시하거나, 파이프로 넘길 때는 대부분 자동으로 색상이 꺼진다(터미널이 아닌 파이프로 나갈 때 GNU 도구들이 흔히 따르는 관행이지만, 버전별로 옵션명이 다를 수 있으니 <code>--help</code>로 확인).</li><li>정확한 필드만 뽑고 싶다면 사람이 읽기 좋은 표 형식 대신 <code>readelf -x</code>(헥스 덤프), <code>objdump -j SECTION -s</code>처럼 특정 섹션만 지정해 출력 범위를 줄이는 것도 파싱 안정성에 도움이 된다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>readelf -S ./chall</code> 결과의 섹션 이름/주소/오프셋 컬럼이 두 줄에 걸쳐 나뉘어 출력됨</li><li>블로그 스크린샷과 실제 실행 결과의 컬럼 순서/헤더 문구가 다름</li><li><code>awk '{print $5}'</code> 같은 고정 컬럼 위치 기반 스크립트가 최신 버전에서 엉뚱한 값을 뽑아냄</li><li><code>objdump -d</code> 결과에 예전엔 없던 opcode 바이트 나열 방식이나 새로운 명령어 니모닉이 보임</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>readelf --version</code>, <code>objdump --version</code>으로 실제 설치된 버전을 확인하고, 파싱용 스크립트를 쓴다면 <code>--wide</code> 옵션부터 추가해 줄바꿈 문제를 우선 제거한다.</p>
+<h2>단계별 절차</h2>
+<ol><li><code>readelf --version</code> / <code>objdump --version</code>으로 정확한 버전 확인</li><li>참고하려는 튜토리얼/라이트업이 어느 버전 기준인지(대략적인 작성 연도로 추정) 감안</li><li>사람이 읽을 때는 그냥 기본 출력을 눈으로 보되, 스크립트로 파싱해야 한다면 <code>readelf -W</code>(<code>--wide</code>)를 기본으로 추가</li><li>컬럼 위치 기반 파싱(<code>awk '{print $N}'</code>) 대신 필드 이름 기반으로 <code>grep</code>/정규식을 짜서 컬럼 개수 변화에 덜 민감하게 만든다</li><li>여전히 이상하면 <code>man readelf</code>/<code>man objdump</code> 또는 <code>readelf --help</code>로 현재 버전에 실제로 존재하는 옵션인지 재확인</li><li>팀/CI 환경이라면 Dockerfile 등에 binutils 버전을 고정(<code>apt-get install binutils=2.38-*</code> 형태)해서 여러 환경 간 출력 차이 자체를 없애는 것도 방법이다</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">readelf --version
+objdump --version
+nm --version
+readelf -W -S ./chall     # wide 모드로 섹션 헤더
+readelf -W -l ./chall     # wide 모드로 프로그램 헤더
+objdump --no-show-raw-insn -d ./chall
+man readelf
+readelf --help | less</code></pre>
+<h2>출력 해석</h2>
+<p><code>readelf --version</code> 첫 줄 예:</p>
+<pre><code>GNU readelf (GNU Binutils for Ubuntu) 2.42</code></pre>
+<p>이 <code>2.42</code>가 실제 사용 중인 binutils 버전이다. 블로그/CTF 라이트업이 훨씬 오래된 버전(예: <code>2.30</code>대) 기준으로 캡처됐다면, 컬럼 개수나 줄바꿈 위치가 다른 것이 당연하다. <code>readelf -W -S</code>로 얻은 결과는 한 섹션 정보가 항상 한 줄에 다 들어가므로, <code>grep</code>/<code>awk</code>로 안정적으로 컬럼을 잘라낼 수 있다.</p>
+<h2>흔한 실수</h2>
+<ul><li>출력이 다르다고 "내 binutils가 고장났다"고 오해해서 재설치를 반복하는 것 — 대부분은 정상적인 버전 차이일 뿐이다.</li><li><code>readelf</code>/<code>objdump</code> 결과를 컬럼 번호(<code>$3</code>, <code>$5</code> 등)로만 파싱하는 스크립트를 짜서, 필드가 하나만 늘어나도 전체가 깨지는 것 — 가능하면 이름 기반 매칭이나 <code>--wide</code> + 고정 포맷 유지 옵션을 함께 쓴다.</li><li>여러 서버/CI 환경에서 각기 다른 binutils 버전이 깔려 있는데 이를 무시하고 같은 파싱 스크립트를 그대로 재사용하는 것.</li><li><code>readelf</code>의 오래된 옵션 문서만 참고하고 실제 설치된 버전에 그 옵션이 있는지 확인 안 하는 것 — 항상 <code>--help</code>나 <code>man</code>으로 현재 버전 기준 옵션을 재확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li><code>readelf</code>가 아예 잘린 헤더 오류를 내는 경우(버전 문제가 아니라 파일 손상 문제)라면 → REV-0700 readelf가 잘린 헤더라고 오류를 낼 때(손상된 ELF)</li><li>ELF 구조 자체(섹션/세그먼트 헤더 필드 의미)가 헷갈리면 → REV-0640 ELF Section 이름 관례 사전(.text .rodata .bss 등)</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ readelf --version | head -1
+GNU readelf (GNU Binutils for Ubuntu) 2.38
+
+$ readelf -S ./chall | head -6
+There are 30 section headers, starting at offset 0x3a08:
+
+Section Headers:
+  [Nr] Name              Type             Address           Offset
+       Size              EntSize          Flags  Link  Info  Align
+  [ 0]                   NULL             0000000000000000  00000000
+
+$ readelf -W -S ./chall | head -4
+There are 30 section headers, starting at offset 0x3a08:
+
+Section Headers:
+  [Nr] Name              Type            Address          Off    Size   ES Flg Lk Inf Al</code></pre>
+<p>기본 출력은 각 섹션 정보가 두 줄에 걸쳐 나오지만(<code>Address</code>/<code>Offset</code> 줄과 <code>Size</code>/<code>EntSize</code>/<code>Flags</code> 줄이 분리됨), <code>-W</code>(wide)를 추가하면 섹션 하나당 정확히 한 줄로 나와서 스크립트 파싱이 훨씬 안정적이다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0700-readelf-truncated-header.html">REV-0700 — readelf가 잘린 헤더라고 오류를 낼 때(손상된 ELF)</a></li><li><a href="rev-0640-elf-section-naming-convention.html">REV-0640 — ELF Section 이름 관례 사전(.text .rodata .bss 등)</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>GNU Binutils의 지속적 업데이트와 <code>readelf</code>/<code>objdump</code> 출력 옵션(<code>-W</code>/<code>--wide</code>, <code>--no-show-raw-insn</code> 등): GNU Binutils 공식 매뉴얼(<code>readelf(1)</code>, <code>objdump(1)</code>) 기준.</li><li>binutils 릴리스별 출력 포맷 변경 이력은 각 배포 버전의 <code>NEWS</code>/체인지로그에서 반복적으로 확인되는 패턴 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

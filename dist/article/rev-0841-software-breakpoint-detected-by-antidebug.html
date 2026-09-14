@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>소프트웨어 브레이크포인트가 안티디버깅에 걸릴 때 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>소프트웨어 브레이크포인트가 안티디버깅에 걸릴 때</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>소프트웨어 브레이크포인트는 대상 주소의 원본 바이트를 <code>0xCC</code>(INT3)로 몰래 바꿔치기하는 방식이라, 프로그램이 실행 중 자기 코드를 다시 읽어 <code>0xCC</code>가 섞여 있는지 확인하거나 체크섬(CRC 등)을 계산해 원본과 비교하면 "누군가 내 코드를 건드렸다"는 사실을 잡아낼 수 있으며, Windows/Linux 모두 원리는 같고 하드웨어 브레이크포인트로 바꾸는 것이 가장 확실한 대응이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>x64dbg에서 <code>bp</code>(소프트웨어)로 걸면 프로그램이 다르게 동작하는데, 같은 위치에 <code>ba</code>(하드웨어)로 걸면 정상 동작할 때</li><li>GDB에서 그냥 <code>break</code>로 걸었을 때만 결과가 달라지고, 브레이크포인트 없이 실행하면 정상일 때</li><li>코드 섹션(<code>.text</code>) 바이트를 순회하며 <code>0xCC</code>와 비교하거나 CRC32를 계산하는 루프를 발견했을 때</li><li>"self-checksumming" 힌트가 있는 CTF 문제를 만났을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>소프트웨어 브레이크포인트의 원리(플랫폼 공통)</h3>
+<p>x64dbg, GDB 모두 소프트웨어 브레이크포인트를 걸 때 대상 주소의 원본 바이트 1개를 저장해두고 그 자리를 <code>0xCC</code>(INT3)로 덮어쓴다. CPU가 그 지점에 도달하면 INT3 예외가 발생하고, 디버거가 이를 가로채 원래 바이트로 복원한 뒤 멈춘 것처럼 보여준다. 이 방식은 코드 메모리 자체를 수정하므로, 코드를 다시 읽어보면 이 변조가 그대로 드러난다.</p>
+<h3>Windows에서의 탐지 — 바이트 비교/코드 체크섬</h3>
+<p>가장 단순한 방법은 함수 시작 바이트가 <code>0xCC</code>인지 직접 비교하는 것이고, 더 촘촘한 방법은 코드 섹션 전체 체크섬을 계산해 미리 저장해둔 값과 비교하는 것이다. 상세 구현 패턴과 우회 절차는 REV-0537에서 다룬다.</p>
+<h3>Linux에서의 동등한 기법 — 자기 메모리 직접 읽기</h3>
+<p>Linux 바이너리도 원리는 동일하지만, 굳이 API 호출 없이 자기 자신의 코드 포인터를 그냥 역참조해서 바이트를 읽으면 된다(디버거가 붙어 있든 아니든 프로세스는 자기 자신의 코드 페이지를 읽기 권한으로 매핑하고 있다).</p>
+<pre><code class="language-c">unsigned char *p = (unsigned char *)&amp;check_password;
+if (p[0] == 0xCC) {
+    _exit(1);
+}</code></pre>
+<p>또는 <code>.text</code> 범위를 CRC32 등으로 체크섬화해서 링크 시점에 박아둔 값과 비교한다. <code>/proc/self/maps</code>로 <code>.text</code> 범위를 알아내 반복 검사하는 형태도 흔하다.</p>
+<h3>왜 정적 분석으로는 안 보이는가</h3>
+<p>디스크에 저장된 파일 자체는 <code>0xCC</code>로 패치되어 있지 않으므로, 이 검사 로직은 정적 분석 화면에서는 평범한 함수로 보인다. 오직 <strong>디버거가 실제로 붙어 브레이크포인트가 걸린 실행 시점</strong>에만 검사 대상 바이트가 바뀌어 있어 걸린다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">mov  esi, offset func_start
+mov  ecx, func_size
+scan_loop:
+    mov  al, [esi]
+    cmp  al, 0CCh
+    je   breakpoint_detected
+    inc  esi
+    loop scan_loop</code></pre>
+<ul><li>x64dbg에서 <code>bp</code>로 함수 시작에 걸었을 때만 프로그램이 종료되거나 잘못된 값을 출력하고, 브레이크포인트를 지우면 정상 동작</li><li>CRC32 다항식 상수(<code>0xEDB88320</code> 등)를 계산하는 루프와 그 결과를 고정 상수와 비교하는 코드</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>의심되는 검사 루프가 <strong>어느 주소 범위</strong>를 대상으로 하는지 먼저 확인한다(고정 함수 하나인지, <code>.text</code> 전체인지). 그 다음 문제의 주소에 소프트웨어 대신 하드웨어 브레이크포인트로 바꿔 걸어서 검사를 통과하는지 확인한다.</p>
+<h2>단계별 절차</h2>
+<ol><li>검사 루프의 시작 포인터/길이를 IDA나 Ghidra에서 추적해 대상 범위를 특정한다.</li><li>x64dbg: 문제 주소를 우클릭 → Breakpoint → Hardware, Execute로 바꿔 건다.</li><li>GDB: <code>break</code> 대신 <code>watch *(char*)0x주소</code>류의 하드웨어 워치포인트나, 아예 그 지점 대신 앞뒤 지점에 브레이크포인트를 걸어 우회한다.</li><li>하드웨어 브레이크포인트로도 계속 걸린다면 REV-0842(하드웨어 브레이크포인트 탐지)로 원인을 넘겨서 확인한다.</li><li>체크섬 비교 결과의 분기(<code>jz</code>/<code>jnz</code>)를 실제로 통과하는지 스텝 실행으로 직접 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<pre><code class="language-text">x64dbg: bp &lt;주소&gt;(소프트웨어), 주소 우클릭 → Breakpoint → Hardware, Execute</code></pre>
+<pre><code class="language-gdb">break FUNC
+watch *(char*)0x주소</code></pre>
+<h2>출력 해석</h2>
+<p>실행 중 메모리 덤프에서 원래 명령어 자리에 <code>CC</code>가 보이면 그 위치에 소프트웨어 브레이크포인트가 걸려 있다는 직접적 증거다. 체크섬 비교가 "불일치"로 나오는 분기를 따라가면 대개 종료나 잘못된 값 생성으로 이어진다.</p>
+<h2>흔한 실수</h2>
+<ul><li>하드웨어 브레이크포인트도 이 검사에 걸릴 거라고 착각하는 것 — 이 기법은 오직 코드 바이트 변조(소프트웨어 BP)만 잡는다.</li><li>검사 루프가 한 번만 실행된다고 가정하는 것 — 여러 함수 진입 시점마다 반복 호출되는 경우가 흔하다.</li><li>Linux에서는 이런 자체 검사가 없을 거라고 가정하는 것 — API 호출 없이 포인터 역참조만으로도 동일하게 구현 가능하다.</li><li>검사 로직을 발견하자마자 코드를 패치하는 것 — 패치 자체가 검사 대상 범위 안이면 다음 검사에서 다시 걸린다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>Windows 쪽 탐지 메커니즘을 더 자세히 보고 싶다면 → REV-0537 소프트웨어 브레이크포인트(0xCC) 탐지 기법</li><li>하드웨어 브레이크포인트로 바꿨는데도 계속 걸린다면 → REV-0842 하드웨어 브레이크포인트도 탐지당할 때</li><li>자기수정 코드와 결합된 경우라면 → REV-0230 Self-modifying Code 기초</li><li>애초에 브레이크포인트 자체가 안 걸리는 문제라면 → REV-0835 브레이크포인트가 안 걸릴 때 확인할 것들</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-c">BOOL CheckSoftwareBreakpoint(void* funcAddr) {
+    return (*(unsigned char*)funcAddr == 0xCC);
+}</code></pre>
+<p>x64dbg에서 <code>bp main</code>을 걸고 실행하니 프로그램이 곧바로 종료됐다. 같은 위치에 하드웨어 브레이크포인트(<code>ba x 1 main</code> 상당)로 다시 걸자 정상적으로 멈췄고, 이후 분석은 하드웨어 브레이크포인트만으로 진행했다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0537-software-breakpoint-detection.html">REV-0537 — 소프트웨어 브레이크포인트(0xCC) 탐지 기법</a></li><li><a href="rev-0842-hardware-breakpoint-also-detected.html">REV-0842 — 하드웨어 브레이크포인트도 탐지당할 때</a></li><li><a href="rev-0230-self-modifying-code.html">REV-0230 — Self-modifying Code 기초</a></li><li><a href="rev-0835-breakpoint-not-triggering.html">REV-0835 — 브레이크포인트가 안 걸릴 때 확인할 것들</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>소프트웨어 브레이크포인트가 대상 바이트를 <code>0xCC</code>(INT3)로 치환하는 방식으로 동작한다는 것은 Intel 64 and IA-32 Architectures Software Developer's Manual의 <code>INT3</code> 설명 기준.</li><li>코드 체크섬/self-checksumming 기반 안티디버깅 기법은 다수의 공개 리버싱 레퍼런스(Check Point "Anti-Debug Tricks", Unprotect Project)에서 정리된 일반적인 패턴 기준(2026-09-09 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

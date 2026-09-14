@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>재귀 함수가 어셈블리/스택에서 보이는 패턴 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / c-analysis</div>
+<article class="article-body">
+<h1>재귀 함수가 어셈블리/스택에서 보이는 패턴</h1>
+<div class="article-meta"><span class="tag">c-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">GDB</span><span class="tag">x64dbg</span></div>
+<h2>한 줄 요약</h2>
+<p>재귀 함수는 어셈블리에서 함수 자기 자신의 시작 주소로 향하는 <code>CALL</code>(자기 자신을 부르는 direct call)로 나타나며, 호출될 때마다 그 함수의 스택 프레임(지역변수 + 저장된 레지스터 + 반환 주소)이 스택 위에 새로 하나씩 쌓인다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>IDA/Ghidra에서 어떤 함수 안에 그 함수 자신의 주소로 향하는 <code>CALL</code>이 있어서 "이게 왜 자기를 부르지" 헷갈릴 때</li><li>디버거로 스택을 보는데 같은 함수의 스택 프레임이 여러 겹으로 반복해서 쌓여 있을 때</li><li>재귀 호출이 너무 깊어져서 스택 오버플로우(Stack Overflow)가 나는 이유를 코드로 확인하고 싶을 때</li><li>Call Stack 창(IDA/GDB <code>bt</code>)에 같은 함수 이름이 수십~수백 번 반복해서 나열될 때</li></ul>
+<h2>핵심 개념</h2>
+<p>재귀 함수는 특별한 명령어를 쓰지 않는다. 그냥 자기 자신의 시작 주소를 대상으로 하는 평범한 <code>CALL</code>이다(REV-0071). 컴파일러/CPU 입장에서는 "다른 함수를 부르는 것"과 "자기 자신을 부르는 것"이 코드상 전혀 다르지 않다 — 차이는 오직 <code>CALL</code>의 대상 주소가 현재 실행 중인 함수 자신의 시작 주소와 같다는 점뿐이다.</p>
+<p><code>CALL</code>은 실행될 때마다 반환 주소를 스택에 <code>PUSH</code>한다(REV-0071). 재귀 호출이 일어나면 그때마다:</p>
+<ol><li>인자를 레지스터/스택에 준비</li><li><code>CALL</code>로 반환 주소 <code>PUSH</code> + 함수 시작으로 점프</li><li>함수 프롤로그(<code>push rbp</code>, <code>sub rsp, N</code>)가 그 함수의 지역변수 공간을 스택에 추가로 확보</li></ol>
+<p>이 세 단계가 재귀 깊이만큼 반복되므로, 스택은 "반환 주소 + 저장된 rbp + 지역변수"로 이루어진 프레임이 호출 횟수만큼 겹겹이 쌓인 모양이 된다. 함수가 끝나는 조건(base case)에 도달하기 전까지 이 쌓임은 계속되고, 각 프레임은 자신만의 인자 값과 지역변수 값을 독립적으로 갖는다 — 그래서 <code>n=5</code>일 때 호출된 프레임과 <code>n=4</code>일 때 호출된 프레임은 서로 다른 메모리 주소에 각자의 <code>n</code> 값을 갖고 공존한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>CALL</code>의 대상이 현재 함수 이름/주소와 동일 (<code>factorial</code> 함수 안에서 <code>call factorial</code>)</li><li>GDB <code>bt</code>(backtrace) 또는 IDA Debugger의 Call Stack 창에 같은 함수 이름이 반복해서 여러 줄 나열됨</li><li>스택 포인터(<code>RSP</code>)가 호출이 깊어질수록 계속 낮은 주소 쪽으로 이동(스택은 아래로 자람)</li><li>재귀가 너무 깊으면 <code>Stack Overflow</code> 예외나 세그폴트(SIGSEGV)가 스택 영역 끝(가드 페이지)에서 발생</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p><code>CALL</code> 대상이 현재 함수 자신인지 함수 시작 주소와 비교해 확인한다. 그다음 종료 조건(base case, 재귀를 멈추는 <code>if</code>/<code>cmp</code>+분기)이 어디 있는지 찾는다 — 이 조건이 없거나 잘못되면 무한 재귀(스택 오버플로우)로 이어지므로 리버싱에서도 가장 먼저 확인해야 할 지점이다.</p>
+<h2>단계별 절차</h2>
+<ol><li>함수 내부에서 자기 자신의 주소로 향하는 <code>CALL</code>을 찾는다.</li><li>그 <code>CALL</code> 이전에 있는 비교/분기(<code>cmp</code>, <code>je</code>/<code>jle</code> 등)를 찾아 재귀를 멈추는 조건(base case)을 특정한다.</li><li><code>CALL</code> 이후 반환값을 어떻게 가공하는지 본다(예: <code>imul eax, [반환값]</code>처럼 재귀 결과에 현재 값을 곱하는 후처리가 있으면 이것이 "재귀 후 연산"이다).</li><li>디버거로 재귀 호출 중 브레이크포인트를 걸고 <code>bt</code>(GDB) 또는 Call Stack 창(x64dbg/IDA)으로 실제 몇 겹까지 쌓였는지 확인한다.</li><li>각 프레임의 <code>RBP</code>/<code>RSP</code> 값과 그 프레임에 저장된 인자 값을 비교해, 프레임마다 독립적인 지역변수 공간을 갖는다는 것을 직접 확인한다.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>GDB: <code>bt</code>(전체 콜스택), <code>bt 5</code>(위 5개만), <code>frame 2</code>(2번째 프레임으로 이동해 그 시점 변수 확인), <code>info frame</code></li><li>x64dbg: Call Stack 탭에서 각 프레임 클릭 → 그 시점 스택/레지스터 확인</li><li>IDA 디버거: <code>Debugger → Debugger windows → Call stack</code></li><li>Ghidra 디버거(또는 GDB 연동): 프레임별로 <code>Stack</code> 뷰에서 각 재귀 호출의 지역변수 영역 확인</li></ul>
+<h2>출력 해석</h2>
+<pre><code class="language-c">int factorial(int n) {
+    if (n &lt;= 1) {
+        return 1;              /* base case */
+    }
+    return n * factorial(n - 1); /* 재귀 호출 + 후처리(곱셈) */
+}</code></pre>
+<pre><code class="language-asm">; factorial, x86-64 SysV, gcc -O0, Intel 문법
+; rdi = n
+factorial:
+    push    rbp
+    mov     rbp, rsp
+    sub     rsp, 24
+    mov     [rbp-20], edi     ; n 저장 (이 프레임만의 n)
+    cmp     dword [rbp-20], 1
+    jg      .L_recurse        ; n &gt; 1이면 재귀로
+    mov     eax, 1            ; base case: return 1
+    jmp     .L_return
+.L_recurse:
+    mov     eax, [rbp-20]
+    sub     eax, 1
+    mov     edi, eax          ; 인자 = n - 1
+    call    factorial         ; *** 자기 자신 재귀 호출 ***
+    imul    eax, [rbp-20]     ; 반환값(하위 재귀 결과) * n  (후처리)
+.L_return:
+    leave
+    ret</code></pre>
+<p><code>call factorial</code>이 바로 재귀 호출이다. 이 시점 스택에는 이미 호출한 쪽(caller, 이전 재귀 단계 또는 <code>main</code>)의 반환 주소가 있고, <code>CALL</code> 실행으로 이 함수의 반환 주소가 추가로 <code>PUSH</code>된다. 함수에 들어가자마자 <code>push rbp</code>, <code>sub rsp, 24</code>가 다시 실행되어 <strong>이번 호출만의 새 스택 프레임</strong>이 만들어진다. <code>imul eax, [rbp-20]</code>은 재귀 호출이 끝나고 돌아온 뒤 실행되는데, 이때 <code>[rbp-20]</code>은 <strong>이 프레임의 <code>n</code></strong>(예: <code>n=3</code>일 때의 3)이고 <code>eax</code>는 <strong>더 깊은 재귀(<code>n-1=2</code>)가 반환한 결과</strong>다.</p>
+<p><strong>스택 다이어그램 (factorial(3) 호출 예시)</strong></p>
+<pre><code>[초기 호출: factorial(3)]
+높은 주소
++-----------------------------+
+| main의 반환 주소             |
++-----------------------------+
+| factorial(3) 프레임          |
+|   saved rbp                 |
+|   n = 3                     |
++-----------------------------+   &lt;- 여기까지 쌓인 상태에서 call factorial(2) 실행
+| factorial(3)이 만든 반환주소  |
++-----------------------------+
+| factorial(2) 프레임          |
+|   saved rbp                 |
+|   n = 2                     |
++-----------------------------+   &lt;- call factorial(1) 실행
+| factorial(2)가 만든 반환주소  |
++-----------------------------+
+| factorial(1) 프레임          |
+|   saved rbp                 |
+|   n = 1                     |   &lt;- base case! 여기서 더 안 내려감
++-----------------------------+
+낮은 주소 (RSP가 가장 낮은 지점)</code></pre>
+<p><code>n=1</code>(base case)에서 <code>return 1</code>이 실행되면 스택은 반대로 풀리기 시작한다. <code>factorial(1)</code> 프레임이 <code>leave</code>/<code>ret</code>으로 제거되며 <code>factorial(2)</code>로 복귀 → <code>eax(=1) * n(=2) = 2</code> 계산 → <code>factorial(2)</code> 프레임 제거하며 <code>factorial(3)</code>으로 복귀 → <code>eax(=2) * n(=3) = 6</code> 반환. 이렇게 "내려갈 때는 프레임이 쌓이고, 올라올 때는 곱셈 결과를 들고 하나씩 프레임이 사라진다"는 것이 재귀의 스택 동작 전체 그림이다.</p>
+<h2>흔한 실수</h2>
+<ul><li>재귀 호출을 "특별한 명령어가 있는 것"으로 오해하는 것 — 그냥 평범한 <code>CALL</code>이 자기 자신을 대상으로 할 뿐이다.</li><li><code>CALL</code> 이후의 후처리 코드(<code>imul eax, [rbp-20]</code>)를 재귀 호출 전에 실행되는 코드로 착각하는 것 — 이 줄은 재귀가 완전히 끝나고 <strong>돌아온 뒤</strong> 실행된다.</li><li>재귀 깊이가 깊어질 때 각 프레임의 <code>[rbp-20]</code>(n 값)이 전부 같은 메모리라고 오해하는 것 — 각 프레임은 서로 다른 <code>RBP</code>를 가지므로 실제로는 서로 다른 메모리 주소다.</li><li>Base case(종료 조건) 분기를 놓쳐서 "이 함수가 왜 멈추는지 모르겠다"며 무한 루프로 오판하는 것.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>스택 프레임/프롤로그·에필로그의 기본 구조가 헷갈리면 → REV-0341 프롤로그/에필로그 상세 읽기, REV-0031 스택 프레임</li><li>재귀 함수의 스택 쌓임을 더 깊게 다룬 개념 설명은 → REV-0355 재귀 함수가 스택에서 어떻게 쌓이는지</li><li>CALL/RET의 기본 동작(반환 주소 PUSH/POP)이 헷갈리면 → REV-0071 CALL: 함수 호출, 반환 주소, 인자 추적, REV-0072 RET: 함수 반환과 스택 변화</li><li>재귀 대신 반복문으로 최적화(tail call)된 경우를 구분하려면 → REV-0358 Tail Call이 CALL 대신 JMP로 보이는 이유</li></ul>
+<h2>미니 예제</h2>
+<p>GDB로 <code>factorial(3)</code> 실행 중 재귀가 가장 깊은 지점에서 콜스택을 확인하면:</p>
+<pre><code>(gdb) bt
+#0  factorial (n=1) at fact.c:2
+#1  0x0000555555555160 in factorial (n=2) at fact.c:4
+#2  0x0000555555555160 in factorial (n=3) at fact.c:4
+#3  0x0000555555555185 in main () at fact.c:8</code></pre>
+<p><code>#0</code>이 가장 깊은(가장 최근) 호출이고 아래로 갈수록 바깥쪽 호출이다. 같은 함수 이름(<code>factorial</code>)이 서로 다른 <code>n</code> 값으로 반복 등장하는 것이 재귀의 가장 직접적인 증거다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0355-recursive-function-stack.html">REV-0355 — 재귀 함수가 스택에서 어떻게 쌓이는지</a></li><li><a href="rev-0071-call.html">REV-0071 — CALL: 함수 호출, 반환 주소, 인자 추적</a></li><li><a href="rev-0341-prologue-epilogue-detailed-reading.html">REV-0341 — 함수 프롤로그와 에필로그 자세히 읽기</a></li><li><a href="rev-0358-tail-call-jmp-instead-of-call.html">REV-0358 — Tail Call이 CALL 대신 JMP로 보이는 이유</a></li><li><a href="rev-1065-function-pointer-call-asm-pattern.html">REV-1065 — 함수 포인터 호출이 어셈블리에서 보이는 패턴</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>CALL</code>이 반환 주소를 스택에 PUSH하고 대상으로 점프하는 동작, 재귀 호출이 동일한 메커니즘을 반복 사용한다는 점: Intel 64 and IA-32 Architectures Software Developer's Manual, CALL/RET 설명 기준.</li><li>gcc/clang <code>-O0</code>에서 재귀 함수가 매 호출마다 독립적인 프롤로그(<code>push rbp</code>/<code>sub rsp</code>)를 실행해 새 스택 프레임을 만드는 패턴은 x86-64 리눅스/윈도우 환경에서 반복 확인되는 표준 패턴이다(2026-09-10 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

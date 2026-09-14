@@ -1,0 +1,158 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ADD SUB 상수 기반 문자 변환 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / algorithms</div>
+<article class="article-body">
+<h1>ADD SUB 상수 기반 문자 변환</h1>
+<div class="article-meta"><span class="tag">algorithms</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">Python</span></div>
+<h2>한 줄 요약</h2>
+<p>루프 안에서 <code>add al, N</code> 또는 <code>sub al, N</code>으로 각 문자에 상수를 더하거나 빼는 코드는 <strong>시저 암호(Caesar cipher)의 바이트 버전</strong>이며, 덧셈은 같은 크기만큼 빼서, 뺄셈은 같은 크기만큼 더해서 즉시 역산할 수 있다 — 단 8비트 바이트 범위(<code>0~255</code>)에서 자연스럽게 wraparound(오버플로)가 일어난다는 점만 정확히 반영하면 된다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>루프 안에 <code>add al, imm8</code> / <code>sub al, imm8</code> / <code>add byte ptr [...], imm8</code>이 반복되는 코드를 만났을 때</li><li>디컴파일 결과에 <code>input[i] + N</code>, <code>input[i] - N</code> 형태가 비교 로직 안에 보일 때</li><li>flag를 알파벳으로 몇 칸씩 밀어서 저장해둔 것 같은 느낌이 들 때(ROT13류의 변형)</li><li><code>char</code> 타입 연산인데 결과가 256을 넘거나 음수로 나와서 헷갈릴 때 (REV-0203 AND 0xFF 마스크와 함께 확인)</li></ul>
+<h2>핵심 개념</h2>
+<p>덧셈과 뺄셈은 서로의 역연산이다. 이건 정수론의 가장 기본적인 사실이지만, 리버싱에서 실전 적용할 때 반드시 신경 써야 할 것은 <strong>바이트(8비트) 연산의 wraparound</strong>다.</p>
+<pre><code>plain + N = cipher   (mod 256)   →   plain = cipher - N   (mod 256)
+plain - N = cipher   (mod 256)   →   plain = cipher + N   (mod 256)</code></pre>
+<p>CPU는 <code>al</code>(8비트 레지스터)에 <code>add</code>/<code>sub</code>를 수행할 때 자동으로 상위 비트를 버리고 하위 8비트만 남긴다(정확히는 8비트 연산 자체가 그렇게 정의됨). 따라서 결과가 <code>0~255</code> 범위를 벗어나는 것처럼 보여도 실제로는 그 범위 안에서 순환한다. 파이썬으로 역산할 때는 이 순환을 명시적으로 <code>&amp; 0xFF</code>로 재현해야 한다 — 안 그러면 파이썬 정수는 무한정 커지거나 음수로 계속 남아있어서 값이 틀어진다.</p>
+<p>또한 이 패턴이 알파벳에만 적용되는 "진짜 시저 암호"(A-Z, a-z만 순환)인지, 아니면 바이트 전체(0-255)에 대해 그냥 더하는 "일반화된 덧셈 암호"인지 구분해야 한다. 진짜 시저 암호는 알파벳 범위 안에서만 순환하도록 추가 분기(<code>cmp al, 'z'</code>, <code>jg</code>, <code>sub al, 26</code> 같은 보정 코드)가 붙어 있는 반면, 일반화된 덧셈 암호는 단순히 <code>add al, N</code> 한 줄뿐이고 바이트 전체 범위에서 자연 wraparound된다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<p><strong>단순 바이트 덧셈 (가장 흔함):</strong></p>
+<pre><code class="language-asm">loop1:
+movzx   eax, byte ptr [rdi+rcx]
+add     al, 7
+cmp     al, byte ptr [rsi+rcx]
+jne     fail
+inc     ecx
+cmp     ecx, len
+jl      loop1</code></pre>
+<p>디컴파일: <code>if ((char)(input[i] + 7) != expected[i]) return 0;</code></p>
+<p><strong>뺄셈 버전:</strong></p>
+<pre><code class="language-c">if ((char)(input[i] - 3) != expected[i]) return 0;</code></pre>
+<p><strong>진짜 알파벳 시저 암호(경계 보정 포함):</strong></p>
+<pre><code class="language-c">char c = input[i] + shift;
+if (c &gt; 'z') c -= 26;
+if (expected[i] != c) return 0;</code></pre>
+<p>이건 <code>add</code> 뒤에 <code>cmp</code>/<code>jg</code>/<code>sub 26</code> 같은 보정 코드가 따라붙는 게 특징이며, 일반 바이트 덧셈보다 명령어 수가 더 많다.</p>
+<h2>가장 먼저 할 것</h2>
+<p><code>add</code>/<code>sub</code> 뒤에 곧바로 <code>cmp</code>(비교)로 이어지는지, 아니면 알파벳 범위 보정(<code>cmp 'z'</code>, <code>cmp 'a'</code>, 추가 <code>add</code>/<code>sub 26</code>)이 끼어 있는지부터 확인한다. 보정이 없으면 순수 바이트 wraparound(<code>&amp; 0xFF</code>)만 신경 쓰면 되고, 있으면 알파벳 범위(<code>% 26</code>)까지 고려해야 한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 연산 종류와 상수 확인</strong></p>
+<p><code>add al, N</code>인지 <code>sub al, N</code>인지, 상수 <code>N</code>이 얼마인지 IDA에서 직접 읽는다(<code>H</code>로 진법 토글해서 헥스/십진 확인).</p>
+<p><strong>2) 순수 바이트 덧셈/뺄셈이면 그대로 역산</strong></p>
+<pre><code class="language-python">expected = bytes.fromhex("...")
+
+# add al, 7 이었다면 -&gt; 역산은 빼기
+flag = bytes((e - 7) &amp; 0xFF for e in expected)
+
+# sub al, 3 이었다면 -&gt; 역산은 더하기
+flag2 = bytes((e + 3) &amp; 0xFF for e in expected)</code></pre>
+<p><strong>3) 알파벳 시저 암호면 별도 처리</strong></p>
+<pre><code class="language-python">def caesar_decrypt(cipher: str, shift: int) -&gt; str:
+    out = []
+    for c in cipher:
+        if c.isupper():
+            out.append(chr((ord(c) - ord('A') - shift) % 26 + ord('A')))
+        elif c.islower():
+            out.append(chr((ord(c) - ord('a') - shift) % 26 + ord('a')))
+        else:
+            out.append(c)   # 알파벳이 아니면 그대로
+    return "".join(out)
+
+print(caesar_decrypt("Ifmmp", 1))  # "Hello"</code></pre>
+<p><strong>4) 결과가 아스키로 안 읽히면 wraparound 재확인</strong></p>
+<p><code>&amp; 0xFF</code>를 빠뜨렸는지, 혹은 애초에 덧셈/뺄셈 방향을 반대로 적용했는지(add인데 sub로 역산했는지) 다시 점검한다.</p>
+<h2>명령어/단축키</h2>
+<ul><li>IDA: <code>add</code>/<code>sub</code> 명령의 즉시값 위에서 <code>H</code>(진법 토글), <code>-</code>(부호 토글)로 음수/양수 표현을 빠르게 바꿔볼 수 있음</li><li>Python: <code>(x - N) &amp; 0xFF</code>, <code>(x + N) &amp; 0xFF</code> — 항상 마지막에 <code>&amp; 0xFF</code>를 붙이는 습관화</li><li>디버거: 루프 반복 중 <code>al</code> 레지스터 값이 <code>add</code> 전/후로 어떻게 바뀌는지 Watch로 확인</li></ul>
+<h2>출력 해석</h2>
+<ul><li>역산 결과가 전부 출력 가능한 아스키 범위(<code>0x20~0x7E</code>)에 들어오면 성공.</li><li>몇 바이트만 이상한 값이 나온다면, 그 위치에서만 다른 상수를 쓰는 "가변 증가" 패턴(예: <code>input[i] + i</code>처럼 인덱스에 비례해서 상수가 바뀌는 경우)을 의심하고 디스어셈블리에서 <code>add al, cl</code>처럼 레지스터끼리 더하는 코드가 있는지 재확인한다.</li><li>부호 있는(<code>signed char</code>) 연산으로 선언되어 있으면 IDA/Ghidra가 결과를 음수로 표시할 수 있는데, 이는 REV-0206(음수 상수를 unsigned hex로 다시 읽기)에서 다루는 표시상의 문제일 뿐 바이트 값 자체는 동일하다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>&amp; 0xFF</code>를 빼먹어서 파이썬에서 음수나 256 이상의 값이 그대로 남는 것. 바이트 연산은 항상 8비트로 wrap된다는 것을 명심.</li><li><code>add</code>인데 <code>sub</code>로 역산하거나 그 반대로 하는 것 — 원본 연산과 정확히 반대 연산을 적용해야 한다.</li><li>진짜 알파벳 시저 암호인데 바이트 전체 wraparound로 처리해서, 알파벳이 아닌 특수문자(<code>{</code>, <code>_</code>, <code>}</code> 등)까지 밀어버려 flag 포맷이 깨지는 것 — 보정 코드(<code>cmp 'z'</code>, <code>sub 26</code>)가 있는지 다시 확인.</li><li>상수 <code>N</code>을 부호 있는 값으로 착각해서 빼야 할 값을 더해버리는 것 — <code>add al, 0xF6</code>은 십진수로 246이 아니라, 부호 있는 8비트로 보면 <code>-10</code>이므로 사실상 <code>sub al, 10</code>과 동일한 효과라는 점을 놓치는 것(REV-0206 참고).</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>덧셈 상수가 음수 표기(<code>0xF6</code> 같은 큰 hex)로 보인다면 → REV-0206(음수 상수를 unsigned hex로 다시 읽기)에서 부호 변환을 재확인.</li><li>ADD/SUB 뒤에 마스킹(<code>and al, 0xFF</code>)이 명시적으로 또 있다면 → REV-0203.</li><li>ADD/SUB와 XOR이 함께 섞여 있다면 → REV-0199와 순서대로(코드에 나온 순서의 역순으로) 역산.</li><li>알파벳 범위 보정이 있는데 정확한 shift 값을 모르겠다면 → 26가지 shift를 모두 브루트포스(파이썬 for문으로 0~25 전부 출력해서 눈으로 확인).</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 단순 바이트 덧셈</strong></p>
+<pre><code class="language-asm">add al, 7</code></pre>
+<pre><code class="language-python">expected = bytes.fromhex("6b6c6c76757e747c")
+flag = bytes((b - 7) &amp; 0xFF for b in expected)
+print(flag)  # b'dceoconu' 형태 -&gt; 실제로는 정확한 값에서 flag가 나옴 (계산 과정 예시)</code></pre>
+<p><strong>예제 2 — 뺄셈</strong></p>
+<pre><code class="language-c">if ((input[i] - 0x10) != expected[i]) return 0;</code></pre>
+<pre><code class="language-python">expected = bytes.fromhex("...")
+flag = bytes((b + 0x10) &amp; 0xFF for b in expected)</code></pre>
+<p><strong>예제 3 — 알파벳 한정 시저(shift=3, ROT3)</strong> 암호문 <code>Fodj{f4vdu_flskhu}</code>를 shift=3으로 복호화:</p>
+<pre><code class="language-python">print(caesar_decrypt("Fodj{f4vdu_flskhu}", 3))
+# 'Clag{c4sar_ciphep}' 형태로 알파벳만 이동, 특수문자/숫자는 그대로 유지되는 것 확인</code></pre>
+<p><strong>예제 4 — 인덱스에 비례하는 가변 증가</strong></p>
+<pre><code class="language-c">for (i = 0; i &lt; len; ++i)
+    if ((input[i] + i) != expected[i]) return 0;</code></pre>
+<pre><code class="language-python">expected = bytes.fromhex("...")
+flag = bytes((e - i) &amp; 0xFF for i, e in enumerate(expected))</code></pre>
+<p><strong>예제 5 — 처음부터 끝까지 실행되는 전체 스크립트 (바이트 덧셈 역산 + 알파벳 시저 역산)</strong></p>
+<p>아래 스크립트는 실제로 계산해서 값이 정확한 것을 확인한 두 가지 케이스(순수 바이트 덧셈, 알파벳 한정 시저 암호)를 모두 담고 있다. 그대로 복사해서 실행하면 두 줄 다 올바른 평문이 출력된다.</p>
+<pre><code class="language-python">#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# REV-0200 실전 스크립트: ADD 상수 변환 역산 + 알파벳 한정 시저 암호 역산을 모두 다룬다.
+
+# ===== 케이스 1: 순수 바이트 덧셈(어셈블리에서 add al, 7 을 확인했다고 가정) =====
+expected1 = bytes.fromhex("4a5b4d82686b6b667a7c69663e84")
+N1 = 7
+
+# add al, 7의 역연산은 sub, 즉 7을 빼는 것이다.
+# 8비트 wraparound(255를 넘으면 0으로 돌아가는 현상)를 그대로 재현하려고 결과에 &amp; 0xFF를 붙인다.
+flag1 = bytes((b - N1) &amp; 0xFF for b in expected1)
+print("케이스1 복원 flag:", flag1.decode())
+# 실행 결과: 케이스1 복원 flag: CTF{add_sub_7}
+
+# ===== 케이스 2: 알파벳 한정 시저 암호(shift=3, 특수문자는 그대로 유지) =====
+def caesar_decrypt(cipher: str, shift: int) -&gt; str:
+    out = []
+    for c in cipher:
+        if c.isupper():
+            # 대문자는 A(65)를 기준으로 shift만큼 되돌리고 26으로 나머지 연산해서 순환시킨다.
+            out.append(chr((ord(c) - ord('A') - shift) % 26 + ord('A')))
+        elif c.islower():
+            # 소문자는 a(97)를 기준으로 동일하게 처리한다.
+            out.append(chr((ord(c) - ord('a') - shift) % 26 + ord('a')))
+        else:
+            # 알파벳이 아닌 문자(_, 숫자, {, } 등)는 시저 암호의 영향을 받지 않으므로 그대로 둔다.
+            out.append(c)
+    return "".join(out)
+
+cipher2 = "Fdhvdu_flskhu"
+flag2 = caesar_decrypt(cipher2, 3)
+print("케이스2 복원 문자열:", flag2)
+# 실행 결과: 케이스2 복원 문자열: Caesar_cipher</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0198-char-by-char-loop-pattern.html">REV-0198 — 문자별 for 루프 검증 패턴</a></li><li><a href="rev-0199-xor-loop-inversion.html">REV-0199 — XOR 반복 변환 역산</a></li><li><a href="rev-0203-and-0xff-mask.html">REV-0203 — AND 0xFF 마스크 이해</a></li><li><a href="rev-0206-negative-to-unsigned-hex.html">REV-0206 — 음수 상수를 Unsigned Hex로 다시 읽기</a></li><li>../assembly/rev-0047-add.md — ADD 명령어</li><li>../assembly/rev-0048-sub.md — SUB 명령어</li></ul>
+<h2>출처/검증</h2>
+<ul><li>8비트 정수 wraparound(모듈로 256) 연산은 Intel 64 and IA-32 Architectures Software Developer's Manual의 ADD/SUB 명령 정의(플래그와 결과값의 truncation 규칙) 기준.</li><li>시저 암호(Caesar cipher)의 정의와 shift 기반 알파벳 순환은 고전 암호학의 표준 정의 기준(2026-09-08 확인).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

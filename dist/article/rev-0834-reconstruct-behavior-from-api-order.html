@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>API 호출 순서만으로 프로그램 동작을 재구성하는 법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / dynamic-analysis</div>
+<article class="article-body">
+<h1>API 호출 순서만으로 프로그램 동작을 재구성하는 법</h1>
+<div class="article-meta"><span class="tag">dynamic-analysis</span><span class="tag">중급</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p>디스어셈블리를 명령어 단위로 전부 읽는 대신, 프로그램이 호출하는 API(Windows API 또는 Linux 시스템 콜)의 이름과 순서만 <code>strace</code>/<code>ltrace</code>나 x64dbg의 다중 API 브레이크포인트로 기록하면, "파일을 열고 → 읽고 → 복호화 함수를 부르고 → 다시 쓴다"처럼 프로그램의 상위 수준 동작을 훨씬 빠르게 재구성할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>바이너리가 크고 복잡해서 명령어 단위 분석보다 먼저 "이 프로그램이 대략 뭘 하는 프로그램인지" 큰 그림부터 잡고 싶을 때</li><li>특정 동작(파일 암호화, 네트워크 통신, 레지스트리 조작)이 있는지 없는지부터 빠르게 확인하고 싶을 때</li><li>REV-0829(블랙박스 입출력 관찰)보다 한 단계 더 깊이, 내부에서 어떤 시스템 자원을 건드리는지까지 보고 싶지만 모든 명령어를 다 읽고 싶지는 않을 때</li><li>여러 스레드가 API를 호출하는 순서가 뒤섞여서(REV-0617) 어떤 흐름이 어떤 작업에 해당하는지 정리하고 싶을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>명령어 단위 대신 "행위 단위"로 프로그램을 본다</h3>
+<p>개별 어셈블리 명령어(<code>mov</code>, <code>add</code>, <code>cmp</code>)는 그 자체로는 어떤 목적을 위한 것인지 알기 어렵다. 반면 <code>CreateFileW</code> → <code>ReadFile</code> → <code>CryptDecrypt</code> → <code>WriteFile</code>처럼 API 호출의 나열은 곧바로 "파일을 읽어서 복호화한 뒤 다시 쓴다"는 의미로 해석된다. API는 이미 이름 자체가 그 기능을 설명하기 때문에, API 호출 순서만 모아도 프로그램의 의도를 상당 부분 재구성할 수 있다.</p>
+<h3>Linux — strace/ltrace로 손쉽게 얻기</h3>
+<ul><li><code>strace</code>는 커널에 요청하는 시스템 콜(<code>open</code>, <code>read</code>, <code>write</code>, <code>mmap</code>, <code>execve</code> 등)을 순서대로 출력한다. <code>strace -f ./chall</code>처럼 <code>-f</code>를 붙이면 <code>fork</code>로 생긴 자식 프로세스의 호출까지 함께 추적한다.</li><li><code>ltrace</code>는 그보다 더 상위 수준인 라이브러리 함수 호출(<code>malloc</code>, <code>strcpy</code>, <code>fopen</code> 등)을 추적한다. 정적 링킹된 바이너리에서는 <code>ltrace</code>가 라이브러리 호출을 제대로 못 잡을 수 있으니 이 경우 <code>strace</code>나 디버거의 함수 브레이크포인트로 대체한다.</li></ul>
+<h3>Windows — x64dbg 다중 API 브레이크포인트 또는 Process Monitor</h3>
+<ul><li>x64dbg에서 관심 있는 API 여러 개(<code>bp CreateFileW</code>, <code>bp ReadFile</code>, <code>bp CryptDecrypt</code>, <code>bp WriteFile</code>)에 로그 브레이크포인트(REV-0828 방식, Break condition 0, Log condition 1)를 걸어두면 실행을 멈추지 않고 호출 순서가 Log 탭에 그대로 남는다.</li><li>Sysinternals <strong>Process Monitor</strong>는 디버거 없이도 파일/레지스트리/프로세스/네트워크 API 호출을 시간 순서로 GUI에서 보여주며, 필터를 걸어 원하는 프로세스의 활동만 추릴 수 있어 큰 그림을 잡을 때 특히 편리하다.</li></ul>
+<h3>순서가 의미를 만든다</h3>
+<p>같은 API라도 호출 순서가 다르면 의미가 달라진다. 예를 들어 <code>CreateFileW</code>(쓰기 모드) 다음 바로 <code>WriteFile</code>이 오면 "새 파일 생성 후 기록"이지만, <code>CreateFileW</code>(읽기 모드) → <code>ReadFile</code> → <code>CreateFileW</code>(쓰기 모드) → <code>WriteFile</code> 순서라면 "원본을 읽어서 가공한 뒤 다른 파일에 쓰기"라는 패턴으로 해석된다. 이처럼 API 이름 하나하나보다 그 앞뒤 관계(시퀀스)가 더 많은 정보를 준다.</p>
+<h3>멀티스레드 환경에서는 순서가 스레드별로 뒤섞일 수 있음</h3>
+<p>REV-0617에서 다뤘듯 멀티스레드 프로그램은 여러 스레드가 동시에 API를 호출해 로그상 순서가 실행마다 달라 보일 수 있다. 이 경우 REV-0824의 스레드별 필터를 함께 적용하거나, 로그에 TID를 같이 남겨(<code>strace -f</code>는 기본적으로 PID를 함께 출력) 스레드별로 순서를 재정렬해서 봐야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>바이너리가 너무 커서(수 MB 이상) 디컴파일 결과를 처음부터 끝까지 읽는 게 비현실적으로 느껴짐</li><li>Import 목록(REV-0101)에 <code>CryptEncrypt</code>, <code>InternetOpenUrlA</code>, <code>RegSetValueExW</code> 같은 눈에 띄는 API 이름이 보여서 이것들의 호출 순서만 먼저 확인하고 싶어짐</li><li><code>strace ./chall</code> 실행 결과가 수백 줄 나오는데, 그 중 <code>open</code>, <code>connect</code>, <code>write</code> 같은 핵심 계열만 골라보고 싶음</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>Import 목록이나 문자열에서 눈에 띄는 API(파일, 네트워크, 암호화, 레지스트리 관련)를 먼저 추려낸다. 그 API들만 대상으로 <code>strace</code>의 <code>-e trace=</code> 옵션이나 x64dbg의 다중 로그 브레이크포인트를 걸어, 전체 명령어가 아니라 그 API들의 호출 순서만 뽑아본다.</p>
+<h2>단계별 절차</h2>
+<ol><li>Import/문자열에서 관심 API 목록 추리기(파일 I/O, 네트워크, 암호화, 레지스트리 등)</li><li>Linux는 <code>strace -f -e trace=&lt;카테고리&gt; ./chall</code>로 해당 카테고리 시스템 콜만 필터링해 실행</li><li>Windows는 x64dbg에서 관심 API마다 <code>bp API이름</code> + Log condition 로그 브레이크포인트 설정</li><li>프로그램을 정상적으로 한 번 실행해 호출 순서 전체를 로그로 확보(REV-0830으로 파일 저장)</li><li>로그를 순서대로 읽으며 "이 API 다음에 이 API가 왔다"는 인접 관계를 하나씩 표시</li><li>인접한 API 조합이 익숙한 패턴(파일 읽기+쓰기, 소켓 연결+송수신, 레지스트리 조회+수정)인지 확인</li><li>패턴이 애매한 구간만 그 부분의 디스어셈블리를 REV-0175/0176 방식으로 자세히 들여다봄(전체를 다 볼 필요는 없음)</li></ol>
+<h2>명령어/단축키</h2>
+<p>Linux:</p>
+<pre><code class="language-bash">strace -f ./chall
+strace -f -e trace=file,network ./chall
+ltrace ./chall</code></pre>
+<p>x64dbg(Windows):</p>
+<pre><code>bp CreateFileW
+bp ReadFile
+bp WriteFile
+bp CryptDecrypt
+(각 브레이크포인트 Edit → Break condition 0, Log condition 1)</code></pre>
+<p>Windows(Process Monitor):</p>
+<pre><code>Filter → Process Name is chall.exe → Include
+Operation 컬럼으로 시간순 API 호출 확인</code></pre>
+<h2>출력 해석</h2>
+<ul><li><code>strace</code> 출력의 각 줄은 <code>시스템콜이름(인자...) = 반환값</code> 형식이다. 예를 들어 <code>openat(AT_FDCWD, "secret.dat", O_RDONLY) = 3</code>은 <code>secret.dat</code>를 읽기 모드로 열어 파일 디스크립터 3을 받았다는 뜻이며, 이후 <code>read(3, ...)</code>가 나오면 그 파일을 읽는 것으로 이어진다.</li><li>x64dbg Log 탭에 쌓인 API 이름들의 순서를 위에서부터 아래로 읽으면 그것이 곧 실제 실행 순서다. 같은 API가 여러 번 반복되면(예: <code>ReadFile</code>이 여러 번) 파일을 여러 청크로 나눠 읽는 루프일 가능성이 있다.</li><li>Process Monitor의 Result 컬럼에 <code>SUCCESS</code>가 아닌 값(<code>NAME NOT FOUND</code>, <code>ACCESS DENIED</code>)이 보이면, 그 API 호출이 실패했고 프로그램이 실패 처리 분기로 갔을 가능성을 염두에 둬야 한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>API 이름만 보고 순서(인접 관계)는 신경 쓰지 않아서, 실제로는 서로 관련 없는 두 API를 하나의 흐름으로 잘못 엮어 해석하는 것</li><li>멀티스레드 프로그램의 로그를 스레드 구분 없이 하나로 뒤섞어 읽어서, 실제로는 별개의 두 작업이 동시에 진행 중인데 하나의 순차 흐름으로 착각하는 것(REV-0617, REV-0824 참고)</li><li><code>strace</code>/<code>ltrace</code>가 붙으면 실행 속도가 크게 느려지거나 일부 안티디버깅에 걸릴 수 있다는 점을 감안하지 않고 결과가 이상하다고 오해하는 것</li><li>API 호출 순서만으로 전체를 이해했다고 확신하고, 실제 로직(예: 복호화 알고리즘의 세부 계산)까지 API 이름만으로 알 수 있다고 과신하는 것 — 순서는 큰 그림이고, 세부 알고리즘은 여전히 정적/동적 분석이 필요함</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>시스템 콜 하나하나의 힌트를 더 자세히 보고 싶다면 → REV-0112 strace로 시스템 콜에서 힌트 찾기</li><li>멀티스레드라서 API 순서가 실행마다 달라 보이는 문제는 → REV-0617 실행마다 API 호출 순서가 달라 보일 때(멀티스레드)</li><li>특정 API 호출 이후 x64dbg가 멈춘 것처럼 보이는 문제는 → REV-0618 특정 API 호출 이후 x64dbg가 응답이 없을 때</li><li>이렇게 얻은 로그를 파일로 남겨 나중에 분석하려면 → REV-0830 디버거 로그를 파일로 남겨서 나중에 분석하는 법</li><li>완전히 블랙박스로(API조차 못 보고) 접근해야 하는 상황이면 → REV-0829 블랙박스 방식으로 입력-출력 관계만 파악하는 전략</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ strace -f ./chall secret.dat 2&gt;&amp;1 | grep -E "open|read|write"
+openat(AT_FDCWD, "secret.dat", O_RDONLY) = 3
+read(3, "\x1f\x8b\x08\x00...", 4096) = 128
+openat(AT_FDCWD, "secret.dat.out", O_WRONLY|O_CREAT, 0644) = 4
+write(4, "PK\x03\x04...", 96)          = 96</code></pre>
+<p><code>open(읽기)</code> → <code>read</code> → <code>open(쓰기)</code> → <code>write</code> 순서만으로도 "입력 파일을 읽어서 가공한 뒤 다른 파일에 쓰는 프로그램"이라는 상위 동작을 디스어셈블리를 한 줄도 안 읽고 파악할 수 있었다. 이후 <code>read</code>로 읽은 원본과 <code>write</code>로 쓴 결과를 비교하면 가공 방식(압축, 암호화 등)의 실마리도 얻을 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0112-strace-basics.html">REV-0112 — strace로 시스템 콜에서 힌트 찾기</a></li><li><a href="rev-0617-api-call-order-varies-multithread.html">REV-0617 — 실행마다 API 호출 순서가 달라 보일 때(멀티스레드)</a></li><li><a href="rev-0618-x64dbg-hangs-after-api-call.html">REV-0618 — 특정 API 호출 이후 x64dbg가 응답이 없을 때</a></li><li><a href="rev-0830-debugger-logging-to-file.html">REV-0830 — 디버거 로그를 파일로 남겨서 나중에 분석하는 법</a></li><li><a href="rev-0829-blackbox-input-output-strategy.html">REV-0829 — 블랙박스 방식으로 입력-출력 관계만 파악하는 전략</a></li><li><a href="rev-0824-thread-specific-breakpoint.html">REV-0824 — 멀티스레드 프로그램에서 특정 스레드만 멈추는 법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>strace</code>/<code>ltrace</code>의 시스템 콜/라이브러리 호출 추적 방식과 <code>-e trace=</code> 필터 옵션: strace(1), ltrace(1) 공식 매뉴얼 페이지 기준.</li><li>Sysinternals Process Monitor의 필터링 및 Operation 컬럼: Microsoft Sysinternals 공식 문서 기준.</li><li>x64dbg 다중 로그 브레이크포인트를 이용한 API 시퀀스 기록: x64dbg 공식 GitHub Wiki 문서 및 저자 실습 확인 (2026-09-09 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

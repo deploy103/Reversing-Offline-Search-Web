@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JCXZ JECXZ JRCXZ: 카운터가 0일 때 분기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / assembly</div>
+<article class="article-body">
+<h1>JCXZ JECXZ JRCXZ: 카운터가 0일 때 분기</h1>
+<div class="article-meta"><span class="tag">assembly</span><span class="tag">기초</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">Ghidra</span><span class="tag">x64dbg</span><span class="tag">GDB</span></div>
+<h2>한 줄 요약</h2>
+<p><code>JCXZ</code>/<code>JECXZ</code>/<code>JRCXZ</code>는 다른 모든 <code>Jcc</code>와 달리 <strong>EFLAGS를 전혀 읽지 않고</strong>, 오직 <code>CX</code>/<code>ECX</code>/<code>RCX</code> 레지스터 값이 0인지만 직접 검사해 분기하는 특수한 조건 분기 명령이다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li><code>LOOP</code> 명령 바로 앞에 <code>jecxz</code>/<code>jcxz</code>가 붙어 있는 이유가 궁금할 때</li><li>이 명령이 <code>CMP</code>/<code>TEST</code> 없이 왜 바로 조건 분기를 하는지 이해가 안 될 때</li><li>어셈블러가 <code>jecxz</code>에 대해 "목표가 너무 멀다(operand out of range)" 같은 에러를 낼 때</li><li>오래된 16/32비트 코드나 손으로 최적화된 어셈블리에서 이 명령을 처음 봤을 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>다른 Jcc와의 근본적 차이: 플래그를 안 본다</h3>
+<p><code>JE</code>, <code>JS</code>, <code>JO</code> 등 대부분의 조건 분기는 EFLAGS의 특정 비트(들)를 검사한다. 하지만 <code>JCXZ</code>/<code>JECXZ</code>/<code>JRCXZ</code>는 <strong>플래그를 전혀 읽지 않고</strong>, 카운터 레지스터 자체의 값을 직접 검사한다:</p>
+<ul><li><code>JCXZ</code>: 16비트 <code>CX</code> 레지스터가 0이면 분기.</li><li><code>JECXZ</code>: 32비트 <code>ECX</code> 레지스터가 0이면 분기.</li><li><code>JRCXZ</code>: 64비트(롱 모드 전용) <code>RCX</code> 레지스터가 0이면 분기.</li></ul>
+<p>어떤 크기를 검사할지는 니모닉 자체로 명시적으로 고정된다(어드레스 크기에 따라 어셈블러가 자동으로 선택하기도 하지만, 니모닉을 명시적으로 쓰면 그 크기가 확정된다).</p>
+<h3>오퍼랜드: rel8 전용이라는 제약</h3>
+<p><code>JCXZ</code>/<code>JECXZ</code>/<code>JRCXZ</code>는 <strong>짧은 점프(rel8, -128~+127바이트)만 지원</strong>하며 rel32 인코딩이 존재하지 않는다. 목표가 이 범위를 벗어나면 어셈블러가 에러를 내거나, 이 명령 하나만으로 먼 곳까지 점프할 수 없어 별도의 <code>JMP</code>와 조합해야 한다. 리버싱 중 "왜 하필 여기 짧은 조건 분기 하나와 그 바로 뒤에 무조건 JMP가 같이 있지?"라는 패턴을 보면 이 제약 때문일 수 있다.</p>
+<h3>왜 필요한가: LOOP의 함정</h3>
+<p>x86의 <code>LOOP</code> 명령은 "<code>ECX</code>를 1 감소시키고, 0이 아니면 분기"하는 동작을 한다. 즉 <strong>먼저 몸체를 최소 한 번 실행한 뒤에야</strong> 카운터를 검사한다. 그래서 <code>ECX</code>가 처음부터 0인 상태로 <code>LOOP</code> 기반 루프에 들어가면, 몸체가 1번 실행된 뒤 <code>ECX</code>가 0에서 1 감소해 매우 큰 값(0xFFFFFFFF)이 되어버려 루프가 사실상 끝나지 않는 심각한 버그가 생긴다.</p>
+<p>이를 막기 위해 루프 진입 <strong>전에</strong> <code>JECXZ</code>로 카운터가 0인지 먼저 확인하고, 0이면 루프 몸체 자체를 건너뛰는 "0회 실행(zero-trip) 가드"를 흔히 사용한다:</p>
+<pre><code class="language-asm">jecxz   skip_loop        ; ECX가 0이면 루프에 아예 들어가지 않음
+loop_start:
+    ...
+    loop    loop_start
+skip_loop:</code></pre>
+<h3>플래그/레지스터/스택 영향</h3>
+<ul><li>플래그: 전혀 바꾸지 않는다(애초에 읽지도 않는다).</li><li>레지스터/메모리: <code>CX</code>/<code>ECX</code>/<code>RCX</code>를 읽기만 하고 수정하지 않는다.</li><li>스택 변화 없음. RIP는 분기 성립 시 목표로, 아니면 다음 명령으로.</li></ul>
+<h3>현대 컴파일러에서는 왜 잘 안 보이는가</h3>
+<p><code>LOOP</code>/<code>JECXZ</code>는 최신 x86 CPU에서 상대적으로 느린 명령으로 취급되어, GCC/Clang/MSVC 같은 현대 컴파일러는 일반 <code>for</code>/<code>while</code> 루프를 <code>CMP</code>+<code>JNE</code>류 조합으로 컴파일하고 <code>LOOP</code>/<code>JECXZ</code>는 사실상 쓰지 않는다. 따라서 이 명령들을 보면 다음 중 하나를 강하게 의심할 수 있다:</p>
+<ul><li>손으로 직접 짠(hand-written) 어셈블리.</li><li>매우 오래된 컴파일러가 만든 16/32비트 코드.</li><li>REP 계열 문자열 명령을 직접 흉내내려는 코드.</li><li>안티디스어셈블/난독화 트릭 — 플래그를 전혀 건드리지 않는 조건 분기라는 특성을 이용해, 주변 코드가 의존하는 플래그 상태를 흐트러뜨리지 않으면서 은밀하게 분기하는 용도로 악용될 수 있다.</li></ul>
+<h2>화면/코드에서 보이는 징후</h2>
+<pre><code class="language-asm">jecxz   skip_loop
+mov     ecx, [count]
+loop_start:
+    ...
+    loop    loop_start
+skip_loop:</code></pre>
+<pre><code class="language-asm">xor     rcx, rcx
+jrcxz   handle_zero_count</code></pre>
+<p><code>cmp ecx, 0</code> 뒤에 다시 <code>jecxz</code>가 나오는 것처럼 보이면(플래그와 무관하니 중복이지만) 비최적화 코드이거나 방어적으로 작성된 코드일 수 있다.</p>
+<h2>가장 먼저 할 것</h2>
+<ol><li>이 분기가 <code>CX</code>/<code>ECX</code>/<code>RCX</code> 중 정확히 어떤 크기를 검사하는지 니모닉으로 확인한다.</li><li>근처에 <code>LOOP</code>/<code>LOOPE</code>/<code>LOOPNE</code>가 있는지 확인한다 — 있다면 zero-trip 가드일 가능성이 크다.</li><li>목표 레이블까지의 거리가 짧은지(rel8 제약) 확인해, 왜 이 자리에 있는지 이해한다.</li></ol>
+<h2>단계별 절차</h2>
+<pre><code class="language-asm">mov     ecx, [count]
+jecxz   skip_loop        ; count == 0 이면 루프 진입 자체를 건너뜀
+loop_start:
+    ; ... 루프 몸체 ...
+    loop    loop_start     ; ecx 감소 후 0이 아니면 loop_start로
+skip_loop:</code></pre>
+<ol><li><code>ECX</code>에 반복 횟수를 로드.</li><li><code>JECXZ</code>로 0인지 먼저 검사 — 0이면 아예 <code>skip_loop</code>로.</li><li>0이 아니면 정상적으로 루프 몸체를 실행하고, 끝에서 <code>LOOP</code>가 <code>ECX</code>를 감소시키며 반복.</li></ol>
+<h2>명령어/단축키</h2>
+<ul><li>IDA/Ghidra: 대개 <code>if (count == 0) goto skip;</code>으로 루프 앞에 붙은 0-트립 가드로 재구성되거나, <code>LOOP</code>와 함께 일반적인 <code>for</code> 루프 형태로 정리되기도 한다.</li><li>GDB/x64dbg: 이 명령은 플래그가 아닌 레지스터 값을 직접 보므로, 레지스터 창에서 <code>ECX</code>/<code>RCX</code> 값을 확인하는 것이 분기 예측의 전부다.</li></ul>
+<h2>출력 해석</h2>
+<ul><li><code>ECX</code>(또는 검사 대상 레지스터)가 0이면 분기, 아니면 다음 명령으로 진행 — EFLAGS 창은 이 명령의 분기 여부를 판단하는 데 아무 도움이 안 된다는 점에 유의한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>다른 <code>Jcc</code>처럼 이 명령도 직전 <code>CMP</code>/<code>TEST</code>의 플래그에 의존한다고 착각하는 것 — <code>JCXZ</code>류는 플래그를 전혀 보지 않으므로, 직전에 <code>CMP ECX, 0</code>이 있어도 그건 순전히 군더더기(혹은 다른 목적)다.</li><li><code>JECXZ</code>가 32비트든 64비트든 항상 프로그램의 "전체" 카운터를 검사한다고 착각하는 것 — 64비트 롱 모드에서 <code>JECXZ</code>를 쓰면 <code>RCX</code>의 하위 32비트인 <code>ECX</code>만 검사하며, <code>RCX</code> 상위 32비트에 값이 남아 있어도 무시된다. 진짜 64비트 전체를 보려면 <code>JRCXZ</code>를 써야 한다.</li><li>rel8 제약을 모르고 "왜 이 조건 분기 바로 뒤에 또 JMP가 있지?"라며 당황하는 것 — 목표가 멀면 <code>JECXZ</code>로 가까운 스텁까지만 뛰고, 그 스텁에서 다시 <code>JMP</code>로 먼 목표까지 가는 2단 점프 패턴이 흔하다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>검사 대상이 <code>CX</code>/<code>ECX</code>/<code>RCX</code> 중 정확히 무엇인지 다시 확인했는가?</li><li>근처에 <code>LOOP</code> 계열 명령이 있는지, 이게 zero-trip 가드 패턴인지 확인했는가?</li><li>64비트 코드인데 <code>JECXZ</code>가 쓰였다면, 상위 32비트가 무시되고 있다는 점을 인지했는가?</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — LOOP 앞의 zero-trip 가드</strong></p>
+<pre><code class="language-c">for (int i = 0; i &lt; count; i++) { body(); }</code></pre>
+<pre><code class="language-asm">mov     ecx, count
+jecxz   skip_loop         ; count가 0이면 body()를 한 번도 안 돌게 함
+loop_start:
+    call    body
+    loop    loop_start
+skip_loop:</code></pre>
+<p><strong>예제 2 — 64비트 카운터 검사</strong></p>
+<pre><code class="language-asm">xor     rcx, rcx
+mov     rcx, [item_count]
+jrcxz   handle_zero_count   ; RCX 전체(64비트)가 0인지 검사, rel8이라 가까운 곳만 가능</code></pre>
+<p><strong>예제 3 — 먼 목표로 가기 위한 2단 점프</strong></p>
+<pre><code class="language-asm">jecxz   near_stub
+jmp     main_path
+near_stub:
+    jmp     far_skip_label   ; jecxz의 rel8 한계를 우회</code></pre>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0066-jmp.html">REV-0066 — JMP: 무조건 분기</a></li><li><a href="rev-0067-je-jz.html">REV-0067 — JE와 JZ: ZF가 1일 때 분기</a></li><li><a href="rev-0080-rep-prefix.html">REV-0080 — REP Prefix와 반복 문자열 명령</a></li><li><a href="rev-0059-test.html">REV-0059 — TEST: 값을 바꾸지 않는 AND 비교</a></li><li><a href="rev-0088-flags-overview.html">REV-0088 — 플래그 레지스터와 CF ZF SF OF PF를 Jcc와 연결해서 읽기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>JCXZ/JECXZ/JRCXZ 명령어 동작, rel8 전용 인코딩, 검사 대상 레지스터 폭: Intel 64 and IA-32 Architectures Software Developer's Manual, Volume 2A, "JCXZ/JECXZ/JRCXZ—Jump if CX/ECX/RCX Is Zero" 섹션 기준 (2026-09-08 검증).</li><li>LOOP 명령의 감소 후 검사 동작과 zero-trip 문제: Intel SDM Volume 2A, "LOOP/LOOPcc—Loop According to ECX Counter" 섹션 기준.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

@@ -1,0 +1,105 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>JADX apktool adb 설치와 사용법 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / tools</div>
+<article class="article-body">
+<h1>JADX apktool adb 설치와 사용법</h1>
+<div class="article-meta"><span class="tag">tools</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">APK</span><span class="tag">JADX</span><span class="tag">apktool</span><span class="tag">adb</span></div>
+<h2>한 줄 요약</h2>
+<p>안드로이드 APK를 분석하려면 자바 소스처럼 읽는 <strong>JADX</strong>, 리소스/smali를 분해·재조립하는 <strong>apktool</strong>, 실제 기기·에뮬레이터를 제어하는 <strong>adb</strong> 세 도구가 한 세트로 필요하며, 셋 다 설치 프로그램 없이 압축 파일이나 단일 실행 파일을 받는 것으로 준비가 끝난다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>APK 파일을 처음 받았는데 어떤 도구부터 설치해야 할지 모를 때</li><li>오프라인 대회 전에 안드로이드 분석 도구 세트를 미리 준비해야 할 때</li><li><code>jadx</code>, <code>apktool</code>, <code>adb</code> 명령이 "찾을 수 없음"으로 뜰 때</li></ul>
+<p>세 도구 각각의 상세 사용법(화면 구성, smali 수정, adb 세부 명령)은 이 문서에서 반복하지 않는다. 아래 원본 문서를 참고할 것.</p>
+<ul><li>apktool 상세 사용법 → <a href="rev-0251-apktool-basics.html">apktool 기본 사용법</a></li><li>adb 상세 사용법 → <a href="rev-0255-adb-cheatsheet.html">adb 기본 명령 치트시트</a></li><li>JADX 상세 사용법은 dotnet-android 카테고리의 JADX 전용 문서(작성 예정/병행 작성 중)를 참고할 것 — 이 문서 작성 시점에는 아직 존재하지 않았다.</li></ul>
+<h2>핵심 개념</h2>
+<p>세 도구는 역할이 겹치지 않고 이어진다.</p>
+<table><thead><tr><th>도구</th><th>역할</th></tr></thead><tbody><tr><td>JADX</td><td><code>classes.dex</code>를 자바 소스에 가깝게 디컴파일해서 읽기 전용으로 보여줌</td></tr><tr><td>apktool</td><td>APK를 리소스+smali로 분해(decode)하고, 수정 후 다시 APK로 조립(build)</td></tr><tr><td>adb</td><td>PC에서 실제 기기/에뮬레이터에 APK를 설치·실행하고 로그·파일을 확인</td></tr></tbody></table>
+<p>일반적인 흐름은 "JADX로 구조 파악 → (수정 필요시) apktool로 분해·smali 수정·재조립 → adb로 설치·실행·로그 확인"이다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>세 도구 모두 자바(JRE) 또는 안드로이드 자체 런타임에 의존하므로, 설치 전 자바가 설치되어 있는지 먼저 확인한다.</p>
+<pre><code class="language-bash">java -version</code></pre>
+<p>JADX와 apktool은 둘 다 자바로 작성된 도구라 JRE 8 이상이 필요하다(도구별 최소 버전은 공식 문서에서 확인). 자바가 없다면 OpenJDK 등을 먼저 설치해 둔다.</p>
+<h2>단계별 절차</h2>
+<h3>1) JADX 설치</h3>
+<p>공식 GitHub 저장소(<code>https://github.com/skylot/jadx/releases</code>)에서 <code>jadx-&lt;버전&gt;.zip</code>을 받는다. 압축을 풀면 <code>bin/</code> 폴더 안에 두 가지 실행 스크립트가 있다.</p>
+<pre><code class="language-text">jadx        # 커맨드라인 버전 (텍스트로 자바 소스 export)
+jadx-gui    # GUI 버전 (트리 탐색, 검색, 클릭으로 코드 열람)</code></pre>
+<p>Windows는 <code>jadx.bat</code>/<code>jadx-gui.bat</code>, Linux/Mac은 <code>jadx</code>/<code>jadx-gui</code> 쉘 스크립트를 실행한다. 설치 프로그램이 없는 순수 압축 배포이므로 폴더째 오프라인 매체에 복사해 가면 된다.</p>
+<pre><code class="language-bash">./bin/jadx-gui        # GUI로 바로 실행
+./bin/jadx -d out app.apk   # 커맨드라인으로 out/ 폴더에 자바 소스 export</code></pre>
+<h3>2) apktool 설치</h3>
+<p>공식 사이트(<code>https://apktool.org</code>) 또는 GitHub(<code>ibotpeaches/Apktool</code>)에서 두 가지를 받는다.</p>
+<ol><li>실행 가능한 jar 파일(<code>apktool.jar</code>로 이름을 맞춘다)</li><li>운영체제별 wrapper 스크립트(<code>apktool.bat</code> for Windows, <code>apktool</code> for Linux/Mac)</li></ol>
+<p>두 파일을 같은 PATH 폴더에 넣으면 <code>apktool</code> 명령을 어디서든 쓸 수 있다.</p>
+<pre><code class="language-bash">apktool --version</code></pre>
+<p>버전이 출력되면 정상 설치된 것이다. 자세한 사용법(<code>d</code>/<code>b</code> 등)은 <a href="rev-0251-apktool-basics.html">apktool 기본 사용법</a>에서 다룬다.</p>
+<h3>3) adb 설치</h3>
+<p>adb는 Android SDK Platform Tools의 일부로 배포된다. 공식 페이지(<code>https://developer.android.com/tools/releases/platform-tools</code>)에서 운영체제에 맞는 zip을 받아 압축만 풀면 그 안에 <code>adb</code>(또는 <code>adb.exe</code>) 실행 파일이 있다.</p>
+<pre><code class="language-bash"># 압축을 푼 폴더 안에서
+./adb version</code></pre>
+<p>Android Studio 전체를 설치할 필요는 없다 — Platform Tools 패키지 하나만으로 <code>adb</code>는 충분히 동작한다. 오프라인 대회를 준비한다면 이 zip 하나만 미리 받아 두면 된다.</p>
+<h3>4) PATH 등록(선택이지만 강력 권장)</h3>
+<p>세 도구 모두 매번 전체 경로를 타이핑하지 않으려면, 압축을 푼 각 폴더(또는 <code>bin/</code> 하위 폴더)를 시스템 PATH 환경변수에 등록해 둔다. Windows에서는 "시스템 속성 → 환경 변수 → Path 편집"에서, Linux에서는 <code>~/.bashrc</code>에 <code>export PATH="$PATH:/경로/jadx/bin"</code> 형태로 추가한다.</p>
+<h3>5) 동작 확인 3종 세트</h3>
+<pre><code class="language-bash">java -version     # JADX/apktool 실행에 필요
+jadx --version
+apktool --version
+adb version</code></pre>
+<p>네 명령 모두 오류 없이 버전 정보를 출력하면 안드로이드 분석 준비가 끝난 것이다.</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">jadx -d out app.apk        # 커맨드라인으로 자바 소스 export
+jadx-gui                   # GUI 실행
+apktool d app.apk -o out   # 리소스+smali 분해
+apktool b out -o rebuilt.apk  # 재조립
+adb devices                # 연결된 기기/에뮬레이터 확인
+adb install app.apk        # 앱 설치</code></pre>
+<h2>흔한 실수</h2>
+<ul><li>자바(JRE)를 설치하지 않은 채 JADX/apktool을 실행해서 "명령을 찾을 수 없다"거나 알 수 없는 오류를 만나는 것 — 두 도구 모두 자바 위에서 동작한다.</li><li>apktool의 jar 파일 이름을 <code>apktool.jar</code>가 아닌 다른 이름(<code>apktool_2.9.3.jar</code> 등)으로 그대로 두어 wrapper 스크립트가 못 찾는 것 — 공식 안내대로 파일명을 <code>apktool.jar</code>로 맞춰야 한다.</li><li>Android Studio 전체(수 GB)를 설치해야 <code>adb</code>를 쓸 수 있다고 오해하는 것 — Platform Tools 패키지 하나만으로 충분하다.</li><li>오프라인 대회 당일 처음 실행해보다가 방화벽/보안 소프트웨어가 <code>adb</code>의 USB 통신을 막아 기기를 못 찾는 것 — 사전에 실제 대회 환경과 최대한 비슷한 조건에서 검증해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>APK를 분해·재조립하고 smali를 수정하는 절차 → <a href="rev-0251-apktool-basics.html">apktool 기본 사용법</a></li><li>기기 연결, 설치, 로그, 앱 데이터 접근 → <a href="rev-0255-adb-cheatsheet.html">adb 기본 명령 치트시트</a></li><li>매니페스트에서 시작점(exported 컴포넌트 등)을 먼저 찾고 싶다면 → dotnet-android 카테고리의 AndroidManifest 관련 문서</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ adb devices
+List of devices attached
+emulator-5554   device
+
+$ adb install ./challenge.apk
+Success
+
+$ java -jar jadx-cli.jar -d out ./challenge.apk
+INFO  ... load ...
+INFO  ... done</code></pre>
+<p>세 줄로 "에뮬레이터에 APK를 설치하고, 동시에 JADX로 소스를 뽑아 <code>out/</code> 폴더에서 읽을 준비"까지 끝났다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0300-offline-python-packages.html">REV-0300 — Z3 angr pwntools Python 오프라인 패키지 준비</a></li><li><a href="rev-0298-dnspyex-ilspy-install.html">REV-0298 — dnSpyEx ILSpy 설치와 사용법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>JADX 배포 형태와 실행 스크립트(<code>jadx</code>, <code>jadx-gui</code>) 구조: JADX 공식 GitHub 저장소(skylot/jadx) README 기준.</li><li>apktool 설치 방식(jar + wrapper 스크립트): apktool 공식 문서(apktool.org) 및 GitHub 저장소(ibotpeaches/Apktool) 기준.</li><li>adb 배포(Android SDK Platform Tools)와 최소 요구사항: Android 공식 개발자 문서(developer.android.com) 기준.</li><li>이 문서에서 언급한 "JADX 전용 사용법 문서"는 이 저장소의 dotnet-android 카테고리에서 병행 작성 중이며, 이 문서 작성 시점에는 파일이 존재하지 않아 직접 확인하지 못했다. 통합 시 경로/제목을 다시 검증할 것.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

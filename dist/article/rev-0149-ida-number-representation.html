@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>IDA 숫자 표현 Signed Unsigned Hex 바꾸기 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / static-analysis</div>
+<article class="article-body">
+<h1>IDA 숫자 표현 Signed Unsigned Hex 바꾸기</h1>
+<div class="article-meta"><span class="tag">static-analysis</span><span class="tag">입문</span><span class="tag">windows</span><span class="tag">linux</span><span class="tag">PE</span><span class="tag">ELF</span><span class="tag">IDA</span></div>
+<h2>한 줄 요약</h2>
+<p>IDA에서 오퍼랜드나 상수 위에 커서를 놓고 진법 변환 단축키(디스어셈블리에서는 보통 Q=16진수/H=10진수/B=2진수, Pseudocode에서는 H로 16진수·10진수 토글)를 누르거나 우클릭 메뉴에서 "Number representation" 계열 항목을 선택하면 그 숫자의 표시 형식(16진수/10진수/8진수/2진수/문자/부호 있는 수)을 원하는 대로 바꿀 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>Pseudocode나 디스어셈블리에 <code>3735928559</code>처럼 알아보기 힘든 큰 10진수가 나올 때 (사실 <code>0xDEADBEEF</code>일 수 있음)</li><li>반대로 <code>0xFFFFFF9D</code>처럼 큰 16진수가 나오는데, 이게 사실은 작은 음수(<code>-99</code>)의 부호 있는 표현일 것 같을 때</li><li>특정 상수가 ASCII 문자값(<code>0x41</code> = <code>'A'</code>)이나 매직 넘버(<code>0x504B0304</code> = ZIP 헤더)인지 확인하고 싶을 때</li><li>숫자를 클릭/선택한 뒤 우클릭했을 때 어떤 메뉴를 눌러야 하는지 모를 때</li></ul>
+<h2>핵심 개념</h2>
+<p>IDA는 상수(immediate value) 하나를 내부적으로는 그냥 비트 패턴(예: 32비트라면 4바이트)으로 저장하고, 화면에 보여줄 때만 여러 방식 중 하나로 "해석"해서 출력한다. 같은 4바이트 <code>EF BE AD DE</code>(리틀 엔디안)라도:</p>
+<ul><li><strong>16진수</strong>로 보면 <code>0xDEADBEEF</code></li><li><strong>부호 없는 10진수</strong>로 보면 <code>3735928559</code></li><li><strong>부호 있는 10진수</strong>로 보면 <code>-559038737</code></li><li><strong>2진수</strong>로 보면 <code>11011110101011011011111011101111</code></li><li><strong>문자</strong>로 보면 각 바이트가 인쇄 가능한 문자인지에 따라 코멘트로 표시되거나 표시되지 않음</li></ul>
+<p>이 중 어떤 표현이 "진짜"냐는 질문 자체가 의미가 없다 — 비트 패턴은 하나지만, 그것을 프로그램이 어떤 의도로 썼는지(매직 넘버인지, 부호 있는 카운터인지, 문자 코드인지)에 따라 사람이 읽기 좋은 표현이 달라질 뿐이다. IDA의 숫자 표현 변경 기능은 <strong>비트 값 자체를 바꾸는 것이 아니라, 그 값을 화면에 어떻게 그릴지만 바꾸는 것</strong>이다.</p>
+<p><strong>왜 이게 리버싱에서 중요한가</strong>: 컴파일러가 만들어내는 특정 상수는 16진수로 봐야 비로소 패턴이 보인다. 예를 들어 <code>0xDEADBEEF</code>, <code>0xCAFEBABE</code>, <code>0x504B0304</code>(ZIP), <code>0x7F454C46</code>(ELF 매직 <code>"\x7fELF"</code>) 같은 값들은 10진수로는 그냥 의미 없는 큰 숫자로만 보이지만, 16진수나 문자 표현으로 바꾸면 즉시 "아, 이건 파일 시그니처 검사구나" 혹은 "이건 디버깅용 sentinel 값이구나"라고 알아볼 수 있다. 반대로 에러 코드나 카운터처럼 원래 작은 음수였던 값은, IDA가 32비트 부호 없는 16진수로 표시해버리면 <code>0xFFFFFFFF</code>나 <code>0xFFFFFF9D</code>처럼 거대한 수로 보여서 오히려 이해를 방해한다. 이럴 때는 부호 있는 10진수로 바꿔서 <code>-1</code>, <code>-99</code>처럼 보는 편이 함수 로직(예: "실패 시 -1 반환")을 파악하기 훨씬 쉽다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li>Pseudocode나 디스어셈블리 상수가 <code>4294967295</code>, <code>3735928559</code>처럼 알아보기 힘든 큰 10진수로 표시되어 있다.</li><li>반대로 <code>if ( result == 0xFFFFFF9D )</code>처럼 무의미해 보이는 큰 16진수가 조건문에 등장한다.</li><li>문자열 비교/검증 로직 근처에서 4바이트씩 끊어 읽는 상수 비교가 나오는데(문자열을 정수로 한 번에 비교하는 최적화 패턴), 숫자만 봐서는 어떤 문자열인지 짐작이 안 된다.</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>바꾸고 싶은 상수를 마우스로 클릭해서 그 오퍼랜드 전체가 선택(하이라이트)되도록 한 다음, 단축키를 시도하거나 우클릭해서 컨텍스트 메뉴에 어떤 진법 변환 항목이 있는지 확인한다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 디스어셈블리 뷰에서 상수 표현 바꾸기</strong></p>
+<p>숫자 오퍼랜드(예: <code>mov eax, 0DEADBEEFh</code>의 <code>0DEADBEEFh</code> 부분) 위에 커서를 놓는다. 다음 단축키가 널리 문서화되어 있다: <strong>Q</strong>는 16진수, <strong>H</strong>는 10진수, <strong>B</strong>는 2진수로 표시를 바꾼다. 8진수는 기본 단축키가 없는 경우가 많아 우클릭 메뉴에서 선택해야 할 수 있다.</p>
+<p><strong>2) Pseudocode(F5 결과)에서 상수 표현 바꾸기</strong></p>
+<p>Pseudocode 창에서는 디스어셈블리와 단축키 배치가 다르다. <strong>H</strong> 하나로 16진수 ↔ 10진수를 토글하는 것으로 문서화되어 있고, 부호를 반전해서 보고 싶다면 <strong>밑줄(<code>_</code>, Shift+-)</strong>로 부호 있는/없는 표현을 바꿀 수 있다고 알려져 있다. 이 부분은 IDA 버전에 따라 배치가 바뀌었을 가능성이 있으므로, 아래 "출처/검증"에서 설명하듯 실제 사용 중인 버전에서 반드시 재확인해야 한다.</p>
+<p><strong>3) 확실하지 않을 때는 우클릭 컨텍스트 메뉴를 쓴다</strong></p>
+<p>숫자를 선택한 뒤 마우스 우클릭을 하면 상황에 따라 "Hexadecimal", "Decimal", "Octal", "Binary", "Char" 또는 이를 묶은 "Number representation" 하위 메뉴가 나타난다. 이 방법은 단축키를 몰라도, 혹은 버전마다 단축키가 달라도 항상 동작하는 가장 안전한 방법이다. 단축키가 기억나지 않거나 눌러도 반응이 없을 때는 무조건 이 방법으로 전환한다.</p>
+<p><strong>4) 부호 있는/없는 표현 전환하기</strong></p>
+<p>큰 16진수가 사실 음수라고 의심되면, 그 오퍼랜드를 우클릭해서 "Change sign"(또는 대응하는 부호 반전 메뉴)을 찾거나, 값을 직접 계산해본다. 예를 들어 32비트에서 <code>0xFFFFFF9D</code>는 부호 있는 정수로 보면 <code>-99</code>다(전체 비트 패턴에서 최상위 비트가 1이면 음수이고, <code>값 - 0x100000000</code>으로 계산하면 실제 음수 값이 나온다). IDA에서 표현만 바꿔도 이 계산을 IDA가 대신 해서 보여준다.</p>
+<p><strong>5) 문자/매직넘버 확인하기</strong></p>
+<p>값이 ASCII로 의미 있는 문자열처럼 보일 가능성이 있으면(예: 4바이트 정수 비교가 실제로는 4글자 문자열 비교의 최적화 결과일 때), 문자 표현으로 바꾸거나 직접 리틀 엔디안으로 바이트를 나열해서 어떤 문자들인지 확인한다. <code>0x46464F00</code>처럼 보이면 바이트 순서를 뒤집어 <code>00 4F 46 46</code>, 즉 <code>"\0OFF"</code>류의 문자열은 아닌지 등을 검토한다(실제 값과 엔디안은 상황에 맞게 계산할 것).</p>
+<h2>명령어/단축키</h2>
+<ul><li>디스어셈블리 뷰 (문서상 널리 알려진 배치, 실제 설치 버전에서 재확인 권장):</li><li><strong>Q</strong>: 16진수(Hexadecimal)</li><li><strong>H</strong>: 10진수(Decimal)</li><li><strong>B</strong>: 2진수(Binary)</li><li><strong>R</strong>: 문자(Char) 표현 토글</li><li>8진수: 기본 단축키 없음 → 우클릭 메뉴 사용</li><li><strong>밑줄 <code>_</code></strong> (또는 Shift+-): 부호 반전(Change sign)</li><li>Pseudocode 뷰 (문서상 알려진 배치, 버전 차이 가능성 있음):</li><li><strong>H</strong>: 16진수 ↔ 10진수 토글</li><li><strong>R</strong>: 문자 상수 표현으로 전환</li><li><strong>M</strong>: 열거형(enum) 심볼 표현으로 전환</li><li><strong>밑줄 <code>_</code></strong>: 부호 반전</li><li><strong>T</strong>: 구조체 오프셋 표현 적용</li><li>우클릭 → <strong>Number representation</strong> 하위 메뉴 (또는 상단 메뉴 Edit → 관련 하위 메뉴): 단축키가 불확실할 때 항상 쓸 수 있는 대안</li></ul>
+<h2>출력 해석</h2>
+<ul><li>표시 형식을 바꿔도 실제 비트 값/실행 동작은 전혀 바뀌지 않는다. 이는 순수하게 "사람이 읽기 좋은 형태로 다시 그리는 것"이며, 패치나 값 변경이 아니다.</li><li>16진수로 바꿨을 때 <code>0x</code>가 아니라 <code>...h</code> 접미사(예: <code>0DEADBEEFh</code>)로 표시되는 경우도 있다 — 이는 어셈블리 리스팅의 전통적인 인텔 표기법이며 값 자체는 동일한 16진수다. 맨 앞자리가 A~F로 시작하면 숫자로 오인되지 않도록 IDA가 앞에 <code>0</code>을 붙인다(<code>0DEADBEEFh</code>).</li><li>부호 있는 표현으로 바꿨는데도 여전히 크고 이상한 값이 나온다면, 그 값이 애초에 32비트가 아니라 64비트 폭으로 해석되고 있을 가능성이 있다. 오퍼랜드의 실제 크기(바이트 수)를 함께 확인한다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li>표시 형식만 바꾸면 되는데 값 자체를 수동으로 패치하려고 시도하는 것 — 값을 다르게 "보고 싶은" 것뿐이라면 절대 패치할 필요가 없다.</li><li>디스어셈블리와 Pseudocode의 단축키 배치가 같을 것이라고 가정하는 것 — 두 뷰는 서로 다른 명령 체계를 쓰므로, 한쪽에서 통하던 키가 다른 쪽에서는 안 통할 수 있다. 안 되면 즉시 우클릭 메뉴로 전환한다.</li><li>부호 있는 값과 없는 값을 착각해서 조건문 로직을 잘못 해석하는 것 — 예를 들어 <code>if (result &lt; 0)</code> 같은 코드가 있는데 result가 부호 없는 타입으로 잘못 지정되어 있으면 이 조건이 항상 거짓으로 착각될 수 있다. 숫자 표현을 바꿔보는 것과 별개로, 변수 자체의 타입이 <code>int</code>인지 <code>unsigned int</code>인지도 REV-0148(Y로 타입 지정하기)로 함께 확인해야 한다.</li><li>16진수 값의 자릿수(바이트 폭)를 무시하고 통짜 숫자로만 보는 것 — <code>0xFF</code>(1바이트 폭에서 -1)와 <code>0xFFFFFFFF</code>(4바이트 폭에서 -1)는 표현 폭이 다르므로 같은 "-1"이라도 실제 오퍼랜드 크기를 함께 확인해야 한다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>단축키를 눌러도 표시가 안 바뀐다면 → 커서/선택이 실제로 그 숫자 오퍼랜드 위에 있는지 다시 확인하고, 안 되면 우클릭 메뉴로 전환한다.</li><li>우클릭 메뉴에도 원하는 항목이 없다면 → 그 값이 IDA 내부적으로 오퍼랜드가 아니라 이미 다른 형태(예: 오프셋/주소, enum 멤버)로 고정 해석되어 있을 수 있다. 이 경우 Edit 메뉴의 관련 하위 메뉴나 우클릭 "Operand type" 계열 항목을 살펴본다.</li><li>부호 있는/없는 판단 자체가 헷갈린다면 → REV-0024(2의 보수), REV-0025(부호 확장과 제로 확장), REV-0206(음수를 unsigned/hex로 변환)을 함께 참고한다.</li><li>값이 계속 이상하게 보인다면 → 오퍼랜드의 실제 바이트 폭이 예상과 다른 것은 아닌지, 혹은 Y로 지정된 변수 타입 자체가 잘못된 것은 아닌지 REV-0148을 참고해 함께 점검한다.</li></ul>
+<h2>미니 예제</h2>
+<p><strong>예제 1 — 매직 넘버</strong></p>
+<pre><code class="language-c">if ( *(unsigned int *)buf == 3735928559 )
+    puts("magic ok");</code></pre>
+<p><code>3735928559</code> 위에서 표현을 16진수로 바꾸면:</p>
+<pre><code class="language-c">if ( *(unsigned int *)buf == 0xDEADBEEF )
+    puts("magic ok");</code></pre>
+<p>값을 몰라도 "DEADBEEF"라는 잘 알려진 디버그 sentinel 패턴이 즉시 눈에 들어온다.</p>
+<p><strong>예제 2 — 부호 있는 에러 코드</strong></p>
+<pre><code class="language-c">if ( ret == 0xFFFFFF9D )
+    return handle_error();</code></pre>
+<p><code>0xFFFFFF9D</code> 위에서 부호 있는 10진수로 바꾸면:</p>
+<pre><code class="language-c">if ( ret == -99 )
+    return handle_error();</code></pre>
+<p><code>-99</code>처럼 작은 음수 에러 코드로 보이면, 이 함수가 특정 에러 코드 하나만 특별 취급한다는 것을 훨씬 빠르게 파악할 수 있다.</p>
+<p><strong>예제 3 — 파일 시그니처</strong></p>
+<pre><code class="language-c">if ( *(unsigned int *)header == 1179403647 )
+    ...</code></pre>
+<p>16진수로 바꾸면 <code>0x7F454C46</code>이 되고, 이는 ELF 매직 넘버(<code>\x7fELF</code>를 리틀 엔디안 4바이트 정수로 읽은 값)와 정확히 일치한다. 즉 이 코드는 "이 파일이 ELF인지 검사하는 로직"임을 바로 알 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0146-ida-f5-decompile.html">REV-0146 — IDA F5 디컴파일과 Pseudocode 읽기</a></li><li><a href="rev-0147-ida-rename.html">REV-0147 — IDA 함수 변수 이름 N으로 바꾸기</a></li><li><a href="rev-0148-ida-set-type.html">REV-0148 — IDA Y로 타입 지정하기</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>디스어셈블리 뷰의 Q(16진수)/H(10진수)/B(2진수)/R(문자) 단축키 배치는 공개된 IDA Pro Quick Reference Sheet(OpenRCE 미러본 등 여러 사이트에 게시된 동일 표) 및 다수의 IDA 단축키 정리 페이지(defkey.com 등) 검색 결과에서 일관되게 확인됨. 다만 이 레퍼런스 시트 자체가 특정 버전(7.x 계열) 기준으로 작성된 것으로 보이며, Hex-Rays 공식 문서 사이트의 최신 "Set number representation"/"Shortcuts" 페이지에서 별도로 재확인하지 못했다(해당 개별 페이지가 검색 시점에 접근되지 않음).</li><li>Pseudocode(디컴파일러) 뷰에서 H가 16진수/10진수 토글로, 밑줄(_)이 부호 반전으로, M이 enum 표현으로 동작한다는 내용은 검색 결과로 확인된 Hex-Rays 관련 자료에 근거하나, 원문 공식 문서 페이지를 직접 열람하지 못해 100% 확정된 현재 버전 동작이라고 단정할 수 없다.</li><li>따라서 이 글의 단축키 표는 "여러 문서에서 공통적으로 보고되는 값"이라는 신뢰 수준이며, 실제 설치된 IDA에서 안 먹힐 경우 반드시 숫자를 선택한 뒤 우클릭 컨텍스트 메뉴로 대체 확인할 것을 권장한다. 우클릭 메뉴 경로는 버전이 달라도 항상 존재하는 가장 신뢰할 수 있는 방법이다.</li><li>ELF 매직 넘버(<code>0x7F454C46</code> = <code>"\x7fELF"</code>)는 ELF 스펙(System V ABI)에 정의된 공개 상수로 별도 검증이 필요 없는 표준 값이다.</li><li>이 문서는 2026-09-08 기준으로 작성되었다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

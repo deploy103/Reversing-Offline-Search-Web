@@ -1,0 +1,89 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>readelf objdump nm strings 치트시트 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / tools</div>
+<article class="article-body">
+<h1>readelf objdump nm strings 치트시트</h1>
+<div class="article-meta"><span class="tag">tools</span><span class="tag">입문</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">readelf</span><span class="tag">objdump</span><span class="tag">nm</span><span class="tag">strings</span><span class="tag">binutils</span></div>
+<h2>한 줄 요약</h2>
+<p><code>readelf</code>, <code>objdump</code>, <code>nm</code>, <code>strings</code>는 각각 ELF 구조/디스어셈블리/심볼/문자열이라는 서로 다른 관심사를 담당하는 GNU binutils 도구이며, 이 문서는 네 도구의 최다빈출 명령만 모은 빠른 조회용 표다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>네 도구 중 어떤 걸 써야 할지 헷갈릴 때</li><li>옵션 철자가 기억 안 나서 매번 <code>man</code>을 찾아보기 귀찮을 때</li></ul>
+<p>각 도구의 출력 형식 해석, 흔한 실수, 상세 예제는 이 문서에서 반복하지 않는다. 아래 원본 문서를 참고할 것.</p>
+<ul><li><a href="rev-0091-readelf-basics.html">REV-0091 readelf 기본 사용법</a></li><li><a href="rev-0092-objdump-basics.html">REV-0092 objdump 기본 사용법</a></li><li><a href="rev-0093-nm-basics.html">REV-0093 nm으로 심볼 찾기</a></li><li><a href="rev-0094-strings-basics.html">REV-0094 strings로 빠르게 단서 찾기</a></li></ul>
+<h2>핵심 개념</h2>
+<p>네 도구 모두 GNU binutils 소속이며 컴파일된 ELF를 "다른 각도"로 읽는다 — 구조(readelf)/코드(objdump)/이름표(nm)/텍스트(strings). 하나로 부족하면 나머지를 조합해서 쓰는 것이 정상이다.</p>
+<h2>가장 먼저 할 것</h2>
+<p>아래 "무엇을 볼 때 어떤 도구인가" 표에서 지금 알고 싶은 정보에 해당하는 줄만 찾아 그 명령을 그대로 복붙한다.</p>
+<h2>단계별 절차 / 명령어/단축키</h2>
+<p>아래 도구별 절 참고. 순서를 모르겠다면 "조합 예시 — 30초 트리아지"부터 그대로 따라 하면 된다.</p>
+<h2>무엇을 볼 때 어떤 도구인가</h2>
+<table><thead><tr><th>알고 싶은 것</th><th>도구</th></tr></thead><tbody><tr><td>ELF 헤더/세그먼트/섹션 구조</td><td><code>readelf</code></td></tr><tr><td>실제 디스어셈블리(기계어 → 어셈블리)</td><td><code>objdump</code></td></tr><tr><td>함수/변수 이름과 주소 한 줄 요약</td><td><code>nm</code></td></tr><tr><td>하드코딩된 텍스트(암호, flag 형식 등)</td><td><code>strings</code></td></tr></tbody></table>
+<h2>readelf — ELF 구조 (REV-0091)</h2>
+<pre><code class="language-bash">readelf -h ./chall          # ELF 헤더 (엔트리포인트, 타입, 아키텍처)
+readelf -S ./chall          # 섹션 헤더 테이블
+readelf -l ./chall          # 프로그램 헤더(세그먼트) 테이블
+readelf -s ./chall          # 심볼 테이블
+readelf -d ./chall          # 동적 섹션 (NEEDED 라이브러리 등)
+readelf -x .rodata ./chall  # 특정 섹션 헥스 덤프
+readelf -aW ./chall | less  # 전부 + 넓게 출력 + 페이저</code></pre>
+<h2>objdump — 디스어셈블리 (REV-0092)</h2>
+<pre><code class="language-bash">objdump -d -M intel ./chall                       # 실행 섹션 디스어셈블 (Intel 문법)
+objdump -d -M intel ./chall | grep -A20 '&lt;main&gt;:'  # main 함수만 잘라 보기
+objdump -T ./chall                                 # 동적 심볼 테이블
+objdump -R ./chall                                 # 재배치 정보 (GOT 엔트리 등)
+objdump -s -j .rodata ./chall                      # .rodata 섹션 원시 바이트 덤프</code></pre>
+<h2>nm — 심볼 (REV-0093)</h2>
+<pre><code class="language-bash">nm ./chall              # 심볼 테이블 (.symtab, strip되면 실패)
+nm -D ./chall           # 동적 심볼 (.dynsym, strip돼도 대부분 남음)
+nm -n ./chall           # 주소순 정렬
+nm -C ./chall           # C++ 이름 demangle
+nm --size-sort ./chall  # 크기순 정렬(핵심 로직 함수 추정에 유용)</code></pre>
+<h2>strings — 문자열 (REV-0094)</h2>
+<pre><code class="language-bash">strings ./chall                # 기본(4바이트 이상 ASCII)
+strings -n 6 ./chall           # 최소 길이 조정
+strings -t x ./chall           # 16진수 오프셋 포함
+strings ./chall | grep -i flag # 키워드 필터</code></pre>
+<h2>막혔을 때 다음 체크</h2>
+<p>표에 없는 옵션이 필요하면 각 도구의 원본 문서(REV-0091~REV-0094)로 가서 더 깊은 설명과 출력 해석을 참고한다.</p>
+<h2>미니 예제 — 조합 예시(30초 트리아지)</h2>
+<pre><code class="language-bash">file ./chall
+readelf -h ./chall | grep Type      # PIE 여부
+nm ./chall | grep ' T main'         # strip 여부 + main 주소
+strings ./chall | grep -iE 'flag|password'
+objdump -d -M intel ./chall | grep -A20 '&lt;main&gt;:'</code></pre>
+<p>이 다섯 줄이면 IDA를 열기 전에 "PIE인지, strip됐는지, main이 어디인지, 눈에 띄는 문자열이 있는지, main의 첫 흐름이 뭔지"를 모두 확인할 수 있다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0091-readelf-basics.html">REV-0091 — readelf 기본 사용법</a></li><li><a href="rev-0092-objdump-basics.html">REV-0092 — objdump 기본 사용법</a></li><li><a href="rev-0093-nm-basics.html">REV-0093 — nm으로 심볼 찾기</a></li><li><a href="rev-0094-strings-basics.html">REV-0094 — strings로 빠르게 단서 찾기</a></li><li><a href="rev-0295-checksec-install-usage.html">REV-0295 — checksec 설치와 사용법</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li>모든 명령/옵션은 이 저장소의 REV-0091~REV-0094 원본 문서(GNU binutils 공식 man page 기준으로 이미 검증됨)에서 그대로 발췌한 것이며, 이 문서 자체에서 새로 검증한 내용은 없다.</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>

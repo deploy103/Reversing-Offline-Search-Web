@@ -104,7 +104,7 @@ x64dbg: Memory Map(Alt+M)에서 대상 DLL이 로드돼 있는지 확인 후 Sym
 
 ## 막혔을 때 다음 체크
 - Export Table 구조 자체가 헷갈리면 → [REV-0120 Export Table과 DLL 함수](./rev-0120-export-table.md)
-- 서수 기반 임포트/익스포트를 이름으로 되돌리는 방법이 필요하면 CONTENT_PLAN의 REV-0555(Ordinal Import 분석법) 항목을 참고
+- 서수 기반 임포트/익스포트를 이름으로 되돌리는 방법이 필요하면 → REV-0555(Ordinal Import 분석법)를 참고
 - RVA를 파일 오프셋으로 바꾸는 계산이 헷갈리면 → [REV-0118 RVA VA Raw Offset 계산](./rev-0118-rva-va-raw-offset.md)
 - 함수 이름만으로 어떤 API 계열인지 감이 안 잡히면 → [REV-0129 GetProcAddress LoadLibrary 동적 API 해석](./rev-0129-getprocaddress-loadlibrary.md)
 

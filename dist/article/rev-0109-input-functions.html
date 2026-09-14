@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>scanf fgets read 입력 추적 · Reversing 오프라인 위키</title>
+<link rel="stylesheet" href="../assets/css/style.css">
+</head>
+<body>
+<header class="site-header">
+  <div class="header-top">
+    <a class="site-title" href="../index.html">Reversing 오프라인 위키</a>
+    <form class="header-search" action="../index.html" method="get">
+      <input type="search" name="q" placeholder="검색: call, positive sp value, 16777619...">
+      <button type="submit">검색</button>
+    </form>
+    <button id="theme-toggle" type="button">다크 모드</button>
+  </div>
+  <nav class="site-nav">
+    <ul><li><a href="../index.html">처음 시작</a></li><li><a href="../index.html?cat=triage">30초 트리아지</a></li><li><a href="../index.html?q=%ED%99%95%EC%9E%A5%EC%9E%90">파일 종류별 접근</a></li><li><a href="../index.html?stuck=1">증상으로 찾기</a></li><li><a href="../index.html?cat=assembly">Assembly Dictionary</a></li><li><a href="../index.html?q=PE">Windows / PE</a></li><li><a href="../index.html?cat=linux-elf">Linux / ELF</a></li><li><a href="../index.html?cat=static-analysis">정적 분석</a></li><li><a href="../index.html?cat=dynamic-analysis">동적 분석</a></li><li><a href="../index.html?cat=packing">패킹 / 안티디버깅</a></li><li><a href="../index.html?cat=algorithms">알고리즘 패턴</a></li><li><a href="../index.html?cat=tools">툴 사용법</a></li><li><a href="../index.html?q=%EB%8B%A8%EC%B6%95%ED%82%A4">단축키</a></li><li><a href="../index.html?cat=automation">자동화 / Solver</a></li><li><a href="../index.html?cat=writeup">Write-up (드림핵)</a></li><li><a href="../index.html?cat=c-analysis">C 코드 분석</a></li><li><a href="../index.html?cat=other-targets">타 아키텍처/언어</a></li></ul>
+  </nav>
+</header>
+<main>
+<div class="breadcrumb"><a href="../index.html">홈</a> / linux-elf</div>
+<article class="article-body">
+<h1>scanf fgets read 입력 추적</h1>
+<div class="article-meta"><span class="tag">linux-elf</span><span class="tag">기초</span><span class="tag">linux</span><span class="tag">ELF</span><span class="tag">IDA</span><span class="tag">GDB</span><span class="tag">Pwndbg</span><span class="tag">ltrace</span></div>
+<h2>한 줄 요약</h2>
+<p>CTF 리버싱에서 사용자 입력이 프로그램 안 어디로 들어가는지 알고 싶다면 <code>scanf</code>/<code>fgets</code>/<code>read</code>/<code>gets</code> 같은 입력 함수의 <strong>호출 직전 레지스터</strong>(SysV AMD64 규약, REV-0106)를 보면 되고, 대개 "버퍼 주소"가 첫 번째나 두 번째 인자에 그대로 들어있어 그 자리에 브레이크포인트를 걸고 실행 후 버퍼를 들여다보면 입력값을 바로 확인할 수 있다.</p>
+<h2>언제 검색해야 하나</h2>
+<ul><li>디스어셈블리에서 <code>call scanf</code>, <code>call __isoc99_scanf</code>, <code>call fgets</code>, <code>call read</code>가 보이는데 사용자가 입력한 값이 정확히 어느 변수(스택 오프셋)에 들어가는지 찾고 싶을 때</li><li>입력값을 받은 뒤 그 값을 어디서 검사하는지(비교 로직으로 이어지는지) 추적하고 싶을 때</li><li><code>gets</code>가 왜 위험한 함수로 취급되는지, <code>fgets</code>와 뭐가 다른지 궁금할 때</li></ul>
+<h2>핵심 개념</h2>
+<h3>각 함수의 시그니처와 인자 의미</h3>
+<p>CTF/리버싱에서 자주 보는 입력 함수들을 SysV AMD64 규약(<code>RDI, RSI, RDX, ...</code>, REV-0106) 기준으로 정리하면:</p>
+<table><thead><tr><th>함수</th><th>시그니처</th><th>RDI</th><th>RSI</th><th>RDX</th></tr></thead><tbody><tr><td><code>scanf</code></td><td><code>int scanf(const char *format, ...)</code></td><td>포맷 문자열 주소</td><td>첫 버퍼 주소(있다면)</td><td>(추가 버퍼)</td></tr><tr><td><code>__isoc99_scanf</code></td><td>glibc 내부에서 <code>scanf</code>가 실제로 링크되는 이름(C99 규격 반영)</td><td>위와 동일</td><td>위와 동일</td><td></td></tr><tr><td><code>fgets</code></td><td><code>char *fgets(char *s, int size, FILE *stream)</code></td><td>버퍼 주소</td><td>최대 읽을 크기</td><td>스트림(<code>stdin</code> 등)</td></tr><tr><td><code>gets</code></td><td><code>char *gets(char *s)</code> (사실상 폐기된 위험 함수)</td><td>버퍼 주소만 (크기 제한 없음!)</td><td></td><td></td></tr><tr><td><code>read</code></td><td><code>ssize_t read(int fd, void *buf, size_t count)</code></td><td>파일 디스크립터(0=stdin)</td><td>버퍼 주소</td><td>읽을 최대 바이트 수</td></tr><tr><td><code>getchar</code></td><td><code>int getchar(void)</code></td><td>(인자 없음)</td><td></td><td></td></tr></tbody></table>
+<p><code>scanf</code>류는 인자 개수가 가변적이라(포맷 문자열의 <code>%</code> 지시자 개수만큼) 버퍼 인자가 두 번째(<code>RSI</code>)부터 순서대로 이어진다 — <code>scanf("%d %s", &amp;num, buf)</code>라면 <code>RDI</code>=포맷 문자열, <code>RSI</code>=<code>&amp;num</code>, <code>RDX</code>=<code>buf</code>가 된다.</p>
+<h3>gets가 특히 위험한 이유</h3>
+<p><code>gets</code>는 읽을 최대 길이를 아예 인자로 받지 않는다 — 개행문자가 나올 때까지 무한정 읽어서 버퍼에 채운다. 그래서 버퍼 크기를 넘는 입력을 주면 그대로 스택을 덮어써버리는(버퍼 오버플로우) 것이 사실상 확정적이다. 이 문제 때문에 glibc는 <code>gets</code>를 쓰면 링크 시점에 경고를 내고, 최신 표준(C11)에서는 아예 제거됐다. CTF 문제에서 <code>gets</code> 또는 <code>gets_s</code>가 아닌 그냥 <code>gets</code> import가 보이면, 그 자체로 "여기가 취약점이다"라는 강한 신호로 읽어도 좋다.</p>
+<p><code>fgets</code>는 두 번째 인자로 최대 크기를 받으므로 크기를 초과한 입력은 잘라서 받고(개행 또는 크기-1 바이트까지) 안전하다 — <strong>단, 그 크기 인자를 프로그래머가 버퍼의 실제 크기보다 크게 잘못 넣었다면</strong> <code>fgets</code>를 써도 오버플로우가 날 수 있다는 점은 주의해야 한다. 즉 함수 이름만 보고 안전하다고 단정하지 말고, 실제로 넘어온 크기 인자 값을 확인하는 습관이 중요하다.</p>
+<h3>read()와 libc 버퍼링</h3>
+<p><code>read</code>는 libc 함수가 아니라 시스템 콜 래퍼다(REV-0106의 syscall 규약 참고). <code>scanf</code>/<code>fgets</code>는 내부적으로 결국 <code>read</code> 시스템 콜을 호출하지만, libc가 중간에 버퍼링을 하기 때문에 실제 <code>read</code> 호출 횟수나 타이밍이 코드에서 보이는 <code>scanf</code> 호출과 1:1로 대응하지 않을 수 있다. 정적 링킹 바이너리이거나 <code>strace</code>로 커널 레벨에서 관찰하고 싶다면 REV-0112(strace)를 참고한다. 반대로 프로그램이 <code>scanf</code>/<code>fgets</code> 같은 libc 함수를 아예 안 쓰고 <code>read(0, buf, n)</code>을 직접 호출하는 경우(정적 링킹, 어셈블리로 직접 작성, 또는 단순히 그렇게 짜여진 코드)도 흔하니 import 목록에 <code>scanf</code>가 없다고 입력이 없는 프로그램이라 오해하면 안 된다 — <code>read</code>도 함께 확인해야 한다.</p>
+<h3>포맷 문자열로 입력 개수/타입 짐작하기</h3>
+<p><code>scanf</code>를 만나면 가장 먼저 첫 번째 인자(포맷 문자열)를 읽어서 몇 개의, 어떤 타입의 값을 받는지 파악한다. <code>%d</code>는 <code>int*</code>, <code>%s</code>는 <code>char*</code>(공백까지 읽음, 길이 제한 없어 위험할 수 있음), <code>%c</code>는 <code>char*</code>, <code>%lf</code>는 <code>double*</code> 하나씩을 뒤이은 인자로 요구한다. <code>%s</code>는 <code>gets</code>와 마찬가지로 길이 제한이 없는 형태로 자주 쓰이므로(<code>scanf("%s", buf)</code>), CTF에서 <code>scanf("%s", ...)</code> 패턴은 버퍼 오버플로우 후보로 항상 의심해봐야 한다.</p>
+<h2>화면/코드에서 보이는 징후</h2>
+<ul><li><code>call scanf</code> 또는 <code>call __isoc99_scanf</code> 직전에 <code>lea rax, [rbp-0x20]</code>처럼 스택 버퍼의 주소를 계산해 <code>RSI</code>(또는 그 이후)에 넣는 코드가 보임</li><li><code>call fgets</code> 직전에 세 개의 값(버퍼, 크기, <code>stdin</code>)이 순서대로 채워짐, 특히 <code>RDX</code>에 <code>stdin</code>(전역 변수 <code>_IO_2_1_stdin_</code>의 주소 또는 GOT를 거친 값)이 들어감</li><li>Import 목록에 <code>gets</code>가 보임 — 그 자체로 취약점 후보</li><li><code>call read</code>(PLT 경유) 직전에 <code>EDI=0</code>(stdin 파일 디스크립터)이 세팅됨</li></ul>
+<h2>가장 먼저 할 것</h2>
+<p>프로그램의 import 목록(REV-0101)에서 <code>scanf</code>, <code>__isoc99_scanf</code>, <code>fgets</code>, <code>gets</code>, <code>read</code>, <code>getchar</code> 등이 있는지부터 확인한다. 있다면 그 호출부로 바로 이동해서, 버퍼로 쓰이는 스택 주소(또는 힙 주소)가 어느 로컬 변수인지 특정하고, 그 변수의 크기(주변 <code>sub rsp, N</code>이나 다른 변수와의 오프셋 차이로 추정)를 함께 기록해둔다.</p>
+<h2>단계별 절차</h2>
+<p><strong>1) 입력 함수 호출부 찾기</strong> IDA에서 import 목록의 <code>scanf</code>/<code>fgets</code>/<code>read</code>를 더블클릭해 Xref(cross-reference)를 확인하거나, <code>objdump -d ./chall | grep -B10 'call.*scanf@plt'</code>로 직전 코드를 훑는다.</p>
+<p><strong>2) 호출 직전 인자 확인(정적)</strong> <code>RDI</code>, <code>RSI</code>, <code>RDX</code> 각각에 어떤 값이 들어가는지 코드로 읽는다.</p>
+<p><strong>3) GDB로 실제 버퍼 주소와 크기 확인(동적)</strong></p>
+<pre><code class="language-gdb">break *0x&lt;call주소&gt;
+run
+info registers rdi rsi rdx</code></pre>
+<p><strong>4) 함수 실행 후 입력값 확인</strong></p>
+<pre><code class="language-gdb">finish
+x/s $rsi        ; fgets라면 버퍼 주소가 rdi였으므로 x/s $rdi</code></pre>
+<p><code>fgets</code>는 <code>finish</code> 이후 <code>RAX</code>에도 버퍼 시작 주소가 그대로 반환되므로 <code>x/s $rax</code>로도 확인 가능하다.</p>
+<p><strong>5) 버퍼가 스택의 어느 위치인지, 카나리/리턴 주소와 얼마나 떨어져 있는지 확인</strong></p>
+<pre><code class="language-gdb">p $rbp - $rsi     ; fgets라면 rdi가 버퍼 주소</code></pre>
+<p>결과 값이 그 함수가 선언한 스택 버퍼 크기보다 작다면, 카나리나 리턴 주소를 덮어쓸 여지가 있는지 대략 가늠할 수 있다(순수 리버싱이라면 이 정보는 "버퍼 이름/크기 추정"에, pwn 관점이라면 오버플로우 가능성 판단에 쓰인다).</p>
+<h2>명령어/단축키</h2>
+<pre><code class="language-bash">objdump -d ./chall | grep -B10 'call.*scanf@plt'</code></pre>
+<p>GDB: <code>break *0x&lt;addr&gt;</code>, <code>info registers rdi rsi rdx</code>, <code>finish</code>, <code>x/s $rax</code></p>
+<h2>출력 해석</h2>
+<ul><li><code>x/s $rax</code>(fgets 리턴 후)에 사람이 입력한 문자열이 그대로 보이면 그 값이 프로그램 안에서 어떻게 쓰이는지 다음 코드를 계속 따라가면 된다.</li><li><code>scanf</code>의 리턴값(<code>RAX</code>)은 "성공적으로 채운 변수 개수"다 — 포맷에 지시자가 3개인데 리턴값이 2라면 마지막 하나는 입력에 실패했다는 뜻이고, 코드에서 이 리턴값을 검사하는 분기가 있는지 확인하면 입력 검증 로직을 파악할 수 있다.</li></ul>
+<h2>흔한 실수</h2>
+<ul><li><code>scanf("%s", buf)</code>와 <code>scanf("%9s", buf)</code>를 구분하지 않는 것 — 폭 지정자(<code>%9s</code>처럼 숫자)가 있으면 그만큼 길이 제한이 걸린 것이라 오버플로우 후보에서 제외해야 한다.</li><li><code>fgets</code>가 항상 안전하다고 가정하는 것 — 두 번째 인자(크기)가 버퍼의 실제 크기보다 크게 잘못 지정된 코드도 실제로 존재한다.</li><li><code>read</code> 호출을 시스템 콜 레벨로 착각해 <code>scanf</code>/<code>fgets</code>와 무관하다고 생각하는 것 — libc 함수 내부에서도 결국 <code>read</code> 시스템 콜로 귀결되므로 개념적으로 연결돼 있다(REV-0112 참고).</li><li>입력 함수 호출 후 버퍼 값을 바로 확인하지 않고 한참 뒤 코드까지 실행시켜버려 원본 입력값을 놓치는 것 — <code>finish</code> 직후 바로 <code>x/s</code>로 확인하는 습관을 들인다.</li></ul>
+<h2>막혔을 때 다음 체크</h2>
+<ul><li>입력값이 이후 <code>strcmp</code>/<code>memcmp</code>로 비교되는 부분을 추적하고 싶다면 → REV-0110 strcmp strncmp memcmp 비교 추적</li><li>호출 규약 자체를 더 알고 싶다면 → REV-0106 SysV AMD64 Calling Convention</li><li>라이브러리 호출을 코드 수정 없이 빠르게 다 보고 싶다면 → REV-0111 ltrace로 라이브러리 호출 빠르게 보기</li><li>시스템 콜 레벨(<code>read</code>)에서 관찰하고 싶다면 → REV-0112 strace로 시스템 콜에서 힌트 찾기</li></ul>
+<h2>미니 예제</h2>
+<pre><code class="language-bash">$ objdump -d ./chall | grep -B6 'call.*fgets@plt' | head -8
+  40116a: 48 8d 45 e0    lea    rax,[rbp-0x20]
+  40116e: ba 20 00 00 00 mov    edx,0x20        ; size = 32
+  401173: 48 89 c6       mov    rsi,rax          ; 잘못 배치 예시(실제로는 rdi=buf, rsi=size, rdx=stream 순)</code></pre>
+<pre><code class="language-gdb">(gdb) break *0x401178
+(gdb) run
+(gdb) info registers rdi rsi rdx
+rdi   0x7fffffffe4c0   ; 버퍼 주소
+rsi   0x20             ; 최대 32바이트
+rdx   0x7ffff7dd1980    ; stdin
+(gdb) finish
+Run till exit ...
+(gdb) x/s $rax
+0x7fffffffe4c0: "hello_input\n"</code></pre>
+<p>버퍼 주소(<code>RDI</code>), 크기(<code>RSI</code>), 스트림(<code>RDX</code>)이 정확히 확인되고, <code>finish</code> 후 실제 입력값도 그대로 보인다.</p>
+<h2>관련 글</h2>
+<ul><li><a href="rev-0110-comparison-functions.html">REV-0110 — strcmp strncmp memcmp 비교 추적</a></li><li><a href="rev-0106-sysv-amd64-calling-convention.html">REV-0106 — SysV AMD64 Calling Convention</a></li><li><a href="rev-0111-ltrace-basics.html">REV-0111 — ltrace로 라이브러리 호출 빠르게 보기</a></li><li><a href="rev-0112-strace-basics.html">REV-0112 — strace로 시스템 콜에서 힌트 찾기</a></li><li><a href="rev-0101-dynamic-linking.html">REV-0101 — Dynamic Linking과 Import 함수 추적</a></li></ul>
+<h2>출처/검증</h2>
+<ul><li><code>scanf</code>/<code>fgets</code>/<code>gets</code>/<code>read</code> 함수 시그니처: POSIX.1-2017 / ISO C 표준 라이브러리 명세 및 Linux man-pages(<code>scanf(3)</code>, <code>fgets(3)</code>, <code>gets(3)</code>, <code>read(2)</code>) 기준.</li><li><code>gets</code> 폐기(C11에서 제거) 배경: ISO/IEC 9899:2011(C11) 및 glibc 링크 경고 문서 기준 (2026-09-08 검증).</li></ul>
+</article>
+</main>
+<footer class="site-footer">
+  <p>Reversing-Offline-Search-Web &mdash; 완전 오프라인 한국어 리버싱 지식베이스. 인터넷 연결 없이 <code>dist/index.html</code>을 더블클릭해서 사용하세요.</p>
+</footer>
+<script src="../assets/search-index.js"></script>
+<script src="../assets/js/theme.js"></script>
+<script src="../assets/js/search.js"></script>
+</body>
+</html>
